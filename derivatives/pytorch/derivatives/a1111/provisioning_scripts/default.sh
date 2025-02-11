@@ -14,6 +14,9 @@ PIP_PACKAGES=(
 
 )
 
+EXTENSIONS=(
+)
+
 CHECKPOINT_MODELS=(
     "https://civitai.com/api/download/models/798204?type=Model&format=SafeTensor&size=full&fp=fp16"
 )
@@ -43,6 +46,18 @@ function provisioning_start() {
     provisioning_get_files \
         "${A1111_DIR}/models/Stable-diffusion" \
         "${CHECKPOINT_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/Lora" \
+        "${LORA_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/controlnet" \
+        "${VAE_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/VAE" \
+        "${ESRGAN_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/ESRGAN" \
+        "${CONTROLNET_MODELS[@]}"
 
     
     # Avoid git errors because we run as root but files are owned by 'user'
