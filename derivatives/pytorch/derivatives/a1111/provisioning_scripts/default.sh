@@ -11,7 +11,6 @@ APT_PACKAGES=(
 )
 
 PIP_PACKAGES=(
-
 )
 
 EXTENSIONS=(
@@ -51,13 +50,16 @@ function provisioning_start() {
         "${LORA_MODELS[@]}"
     provisioning_get_files \
         "${A1111_DIR}/models/controlnet" \
-        "${VAE_MODELS[@]}"
+        "${CONTROLNET_MODELS[@]}"
     provisioning_get_files \
         "${A1111_DIR}/models/VAE" \
-        "${ESRGAN_MODELS[@]}"
+        "${VAE_MODELS[@]}"
     provisioning_get_files \
         "${A1111_DIR}/models/ESRGAN" \
-        "${CONTROLNET_MODELS[@]}"
+        "${ESRGAN_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/adetailer" \
+        "${ADETAILER_MODELS[@]}"
 
     
     # Avoid git errors because we run as root but files are owned by 'user'
