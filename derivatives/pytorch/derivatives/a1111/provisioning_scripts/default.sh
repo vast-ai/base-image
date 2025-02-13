@@ -17,7 +17,7 @@ EXTENSIONS=(
 )
 
 CHECKPOINT_MODELS=(
-    "https://civitai.com/api/download/models/798204?type=Model&format=SafeTensor&size=full&fp=fp16"
+    "https://civitai.com/api/download/models/798204?token=YOUR_TOKEN"
 )
 
 UNET_MODELS=(
@@ -33,6 +33,9 @@ ESRGAN_MODELS=(
 )
 
 CONTROLNET_MODELS=(
+)
+
+ADETAILER_MODELS=(
 )
 
 ### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
