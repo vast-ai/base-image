@@ -17,7 +17,7 @@ EXTENSIONS=(
 )
 
 CHECKPOINT_MODELS=(
-    "https://civitai.com/api/download/models/798204?token=YOUR_TOKEN"
+    "https://civitai.com/api/download/models/1061268?type=Model&format=SafeTensor&size=pruned&fp=fp16"
 )
 
 UNET_MODELS=(
