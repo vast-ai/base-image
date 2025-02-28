@@ -1,13 +1,13 @@
 
 # SD.Next
 
-> Stable Diffusion WebUI Forge is a platform on top of Stable Diffusion WebUI (based on Gradio) to make development easier, optimize resource management, speed up inference, and study experimental features.
+> SD.Next is a platform on top of Stable Diffusion WebUI (based on Gradio) that adds optimizations, localization options, and a wide range of additional features.  
 
 
 ## Contents
 
 1. [About the SD.Next Image](#about-the-SD.Next-image)
-    - [Upgrading SD.Next](#upgrading-Forge)
+    - [Upgrading SD.Next](#upgrading-sdnext)
     - [Migrating to a new Instance](#migrating-to-a-new-instance)
 2. [Connecting to the Instance](#connecting-to-the-instance)
 3. [Additional Software](#additional-software)
@@ -99,9 +99,9 @@ When creating SSH port forwards, use the internal ports listed above. These port
 
 * Note: Jupyter is not proxied so forwarding this will require connection to https://localhost:8080 and you will need to supply the auth token which is stored in the instance in environment variable `JUPYTER_TOKEN`. 
 
-#### Example: Forwarding Forge to localhost
+#### Example: Forwarding SD.Next to localhost
 
-To forward Forge to your local machine:
+To forward SD.Next to your local machine:
 
 ```bash
 ssh root@INSTANCE_IP -p SSH_PORT -L 7860:localhost:17860
@@ -110,7 +110,7 @@ ssh root@INSTANCE_IP -p SSH_PORT -L 7860:localhost:17860
 This command:
 
 - Creates a SSH local port forward for your localhost:7860
-- Connects to the instance internal Forge port (17860)
+- Connects to the instance internal SD.Next port (17860)
 - Allows you to access the application at http://localhost:7860 on your machine
 - Maintains a secure, encrypted connection through SSH
 
@@ -293,6 +293,6 @@ supervisorctl reload
 
 ## Useful Links
 
-- [Forge](https://github.com/vladmandic/sdnext)
+- [SD.Next](https://github.com/vladmandic/sdnext)
 - [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/sdnext)
 - [Base Image](https://github.com/vast-ai/base-image)
