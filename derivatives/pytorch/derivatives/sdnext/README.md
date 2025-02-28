@@ -1,13 +1,13 @@
 
-# Stable Diffusion WebUI Forge
+# SD.Next
 
 > Stable Diffusion WebUI Forge is a platform on top of Stable Diffusion WebUI (based on Gradio) to make development easier, optimize resource management, speed up inference, and study experimental features.
 
 
 ## Contents
 
-1. [About the Forge Image](#about-the-forge-image)
-    - [Upgrading Forge](#upgrading-Forge)
+1. [About the SD.Next Image](#about-the-SD.Next-image)
+    - [Upgrading SD.Next](#upgrading-Forge)
     - [Migrating to a new Instance](#migrating-to-a-new-instance)
 2. [Connecting to the Instance](#connecting-to-the-instance)
 3. [Additional Software](#additional-software)
@@ -18,27 +18,27 @@
 8. [Dynamic Provisioning](#dynamic-provisioning)
 9. [Useful Links](#useful-links)
 
-## About the Forge Image
+## About the SD.Next Image
 
-This Stable Diffusion WebUI Forge image is built and maintained by Vast.ai. It contains development libraries to enable building custom extensions and add-ons. Please see the associated documentation below for configuration details.
+This SD.Next image is built and maintained by Vast.ai. It contains development libraries to enable building custom extensions and add-ons. Please see the associated documentation below for configuration details.
 
-The installation directory is `/workspace/stable-diffusion-webui-forge`, where you can download models and extensions.
+The installation directory is `/workspace/dnext`, where you can download models and extensions.
 
 No models are included in the Docker image, but a [provisioning script](#dynamic-provisioning) is defined with the environment variable `PROVISIONING_SCRIPT`. When the instance starts, this script will be downloaded and executed. It will attempt to download [RealVisXL V5.0](https://civitai.com/models/139562?modelVersionId=798204) so new users can begin generating high-quality images immediately. If you prefer to start with a clean slate, simply delete the `PROVISIONING_SCRIPT` variable from the template - or create your own script to download your preferred models.
 
 Alternatively, you can build your own Docker image with models included by modifying the Dockerfile. Image sources are linked at the end of this document.
 
-### Upgrading Forge
+### Upgrading SD.Next
 
-Forge can be upgraded by checking out a new version with git, installing the requirements and then restarting:
+SD.Next can be upgraded by checking out a new version with git, installing the requirements and then restarting:
 
 ```bash
-cd /workspace/stable-diffusion-webui-forge
+cd /workspace/sdnext
 git checkout main
 git fetch
 git checkout [desired_ref]
-pip install -r requirements-versions.txt
-supervisorctl restart forge
+pip install -r requirements.txt
+supervisorctl restart sdnext
 ```
 
 ### Migrating to a New Instance
@@ -47,7 +47,7 @@ supervisorctl restart forge
 
 1. On the __destination__ instance:
    - Open a terminal (virtual environment activates automatically)
-   - Run: `cd /workspace/ && rm -rf stable-diffusion-webui-forge`
+   - Run: `cd /workspace/ && rm -rf sdnext`
 
 2. Complete an instance to instance transfer from the source instance to the destination instance. Source and destination directories should both be set to `/workspace/`
 
@@ -91,7 +91,7 @@ Instead of connecting to ports exposed to the internet, you can use SSH port for
 | Service | External Port | Internal Port |
 | --- | --- | --- |
 | Instance Portal | 1111 | 11111 |
-| Forge | 7860 | 17860 |
+| SD.Next | 7860 | 17860 |
 | Syncthing | 8384 | 18384 |
 | Jupyter | 8080 | 8080 |
 
@@ -241,9 +241,9 @@ Common Supervisor commands:
 supervisorctl status
 
 # Control specific services
-supervisorctl start forge
+supervisorctl start sdnext
 supervisorctl stop syncthing
-supervisorctl restart forge
+supervisorctl restart sdnext
 
 # Reload configuration after changes
 supervisorctl reload
@@ -293,6 +293,6 @@ supervisorctl reload
 
 ## Useful Links
 
-- [Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge)
-- [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/sd-forge)
+- [Forge](https://github.com/vladmandic/sdnext)
+- [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/sdnext)
 - [Base Image](https://github.com/vast-ai/base-image)
