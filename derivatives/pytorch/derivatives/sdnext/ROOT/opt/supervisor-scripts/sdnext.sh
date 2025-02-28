@@ -27,7 +27,7 @@ done
 export GIT_CONFIG_GLOBAL=/tmp/temporary-git-config
 git config --file $GIT_CONFIG_GLOBAL --add safe.directory '*'
 
-# Launch Forge
+# Launch SDnext
 cd ${WORKSPACE}/sdnext
 LD_PRELOAD=libtcmalloc_minimal.so.4 \
         python launch.py \

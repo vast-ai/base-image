@@ -4,7 +4,7 @@ FROM ${PYTORCH_BASE}
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
-LABEL org.opencontainers.image.description="Stable Diffusion Forge image suitable for Vast.ai."
+LABEL org.opencontainers.image.description="SD.Next image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Copy Supervisor configuration and startup scripts
@@ -15,7 +15,7 @@ ARG SDNEXT_REF
 
 RUN \
     set -euo pipefail && \
-    [[ -n "${SDNEXT_REF}" ]] || { echo "Must specify SDNEXt_REF" && exit 1; } && \
+    [[ -n "${SDNEXT_REF}" ]] || { echo "Must specify SDNEXT_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
@@ -28,7 +28,7 @@ RUN \
     cd /opt/workspace-internal/sdnext && \
     git checkout "${SDNEXT_REF}" && \
     pip install --no-cache-dir \
-        -r requirements_versions.txt && \
+        -r requirements.txt && \
     # Download custom models into the build if you want them - None included in default build
     # wget -O /opt/workspace-internal/stable-diffusion-webui-forge/models/Stable-diffusion/model1.safetensors https://url.to.files/model1.safetensors && \
     # wget -O /opt/workspace-internal/stable-diffusion-webui-forge/models/Stable-diffusion/model2.safetensors https://url.to.files/model2.safetensors && \
