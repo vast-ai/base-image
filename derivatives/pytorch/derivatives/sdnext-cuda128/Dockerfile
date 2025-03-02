@@ -22,7 +22,7 @@ RUN \
     #SIKE!! We're gonna completely ignore the base image's PyTorch version and install our own
     # Don't need xformers bc it's not supported on current sdnext
     pip uninstall -y torch && \
-    pip install -y --pre torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/nightly/cu128" && \
+    pip install --pre torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/nightly/cu128" && \
     #keeping this to make sure that the requirements.txt doesn't do something stupid
     #torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     
