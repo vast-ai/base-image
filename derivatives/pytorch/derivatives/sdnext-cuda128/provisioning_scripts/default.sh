@@ -36,6 +36,8 @@ CONTROLNET_MODELS=(
 ### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
 
 function provisioning_start() {
+    # upgrade yielded TREMENDOUS performance boost
+    sudo apt-get update && sudo apt-get upgrade -y
     provisioning_print_header
     provisioning_get_apt_packages
     provisioning_get_extensions
