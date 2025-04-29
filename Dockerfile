@@ -203,7 +203,7 @@ RUN \
             "128") driver_version=570 ;; \
         esac; \
         if [[ -n "$driver_version" ]]; then \
-            if [[ "${TARGETARCH}" = "arm64" ]] && [[ "$driver_version" -lt 510 ]]; then \
+            if [[ "${TARGETARCH}" = "arm64" ]] && [[ "$driver_version" -lt 550 ]]; then \
                 echo "No suitable libnvidia-compute package is available for arm64 with driver ${driver_version}"; \
             else \
                 compute_version=$(apt-cache madison "libnvidia-compute-${driver_version}" | awk '{print $3}' | sort -V | head -n1 || true); \
