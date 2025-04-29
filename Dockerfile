@@ -320,8 +320,6 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN git clone --recursive https://github.com/AUTOMATIC1111/stable-diffusion-webui
-
 ENV PATH=/opt/instance-tools/bin:${PATH}
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
