@@ -16,8 +16,8 @@ exceptiongroup==1.2.2
 fastapi==0.115.2
 fastapi-cli==0.0.5
 GPUtil==1.4.0
-h11==0.14.0
-httpcore==1.0.6
+h11==0.16.0
+httpcore==1.0.9
 httptools==0.6.4
 httpx==0.27.2
 idna==3.10
@@ -63,8 +63,8 @@ exceptiongroup==1.2.2
 fastapi==0.115.2
 fastapi-cli==0.0.5
 frozenlist==1.4.1
-h11==0.14.0
-httpcore==1.0.6
+h11==0.16.0
+httpcore==1.0.9
 httptools==0.6.4
 httpx==0.27.2
 idna==3.10
