@@ -1,0 +1,5 @@
+#!/bin/bash
+
+cd /opt/vast-cli
+
+/usr/bin/python3 vast.py "$@" 
