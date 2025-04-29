@@ -39,8 +39,10 @@ main() {
     # First run...
     if [[ ! -f /.first_boot_complete ]]; then
         echo "Applying first boot optimizations..."
-        # Ensure our installed vastai package is updated
-        /usr/bin/pip install -U vastai
+        # Prevent dubious ownership 
+        set_git_safe_dirs
+        # Ensure we have an up-to-date version of the CLI tool
+        (cd /opt/vast-cli && git pull)
         # Attempt to upgrade Instance Portal to latest or specified version
         update-portal ${PORTAL_VERSION:+-v $PORTAL_VERSION}
         # Copy /opt/workspace-internal to /workspace - Brings to top layer and will support mounting a volume
@@ -59,8 +61,14 @@ main() {
         [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
         # Initial venv backup - Also runs as a cron job every 30 minutes
         /opt/instance-tools/bin/venv-backup.sh
-        # Populate /etc/environment - Skip HOME directory and ensure values are enclosed in single quotes
-        env | grep -v "^HOME=" | awk -F= '{ value = substr($0, index($0, "=") + 1); printf "%s='\''%s'\''\n", $1, value }' > /etc/environment
+        # Populate /etc/environment - Skip HOME directory and ensure values are enclosed in double quotes
+        env -0 | grep -zv "^HOME=" | while IFS= read -r -d '' line; do
+            name=${line%%=*}
+            value=${line#*=}
+            printf '%s="%s"\n' "$name" "$value"
+        done > /etc/environment
+        # Ensure /etc/environment is sourced on login
+        echo '. /opt/instance-tools/bin/export_env.sh' | tee -a /root/.bashrc /home/user/.bashrc
         # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1 
         echo 'cd ${WORKSPACE} && if [ -f "${WORKSPACE}/venv/${ACTIVE_VENV:-main}/bin/activate" ]; then source "${WORKSPACE}/venv/${ACTIVE_VENV:-main}/bin/activate"; else source /venv/${ACTIVE_VENV:-main}/bin/activate; fi' | tee -a /root/.bashrc /home/user/.bashrc
         # Warn CLI users if the container provisioning is not yet complete. Red >>>
@@ -147,6 +155,30 @@ main() {
     # Remove the blocker and leave supervisord to run
     rm -f /.provisioning
     wait $supervisord_pid
+}
+
+set_git_safe_dirs() {
+    # Prevents dubious ownership issues for root user.
+    for dir in /opt/workspace-internal/*; do
+        # Check if it's a directory
+        if [ -d "$dir" ]; then
+            # Get just the directory name without the path
+            dirname=$(basename "$dir")
+            
+            # Set the target path
+            target_path="${WORKSPACE:-/workspace}/${dirname}"
+
+            # Handle parent directory
+            echo "Adding safe.directory: $target_path"
+            git config --global --add safe.directory "$target_path"
+            
+            # Handle submodules
+            find $target_path -name ".git" | while read gitpath; do
+                parent_dir=$(dirname "$gitpath")
+                git config --global --add safe.directory "$parent_dir"
+            done
+        fi
+    done
 }
 
 main "$@"

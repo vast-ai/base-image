@@ -41,8 +41,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
 
+# Blackwell fix
+ARG BASE_IMAGE
+RUN \
+    # Update libnccl for Blackwell GPUs
+    set -euo pipefail && \
+    if [[ "$BASE_IMAGE" == "nvidia/cuda:12.8"* ]]; then \
+        NCCL_VERSION=$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null | cut -d'-' -f1 || echo "0.0.0"); \
+        if dpkg --compare-versions "$NCCL_VERSION" lt "2.26.2"; then \
+            apt-get -y update; \
+            apt-get install -y --allow-change-held-packages libnccl2 libnccl-dev; \
+        fi; \
+    fi && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Interactive container
-RUN yes | unminimize
+RUN \
+    set -euo pipefail && \
+    # Not present in Ubuntu 24.04
+    if ! command -v unminimize >/dev/null 2>&1; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends unminimize; \
+    fi && \
+    printf "%s\n%s" y y | unminimize && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create a useful base environment with commonly used tools
 ARG TARGETARCH
@@ -84,7 +108,8 @@ RUN \
         fonts-freefont-ttf \
         fonts-ubuntu \
         ffmpeg \
-        libgl1-mesa-glx \
+        libgl1 \
+        libglx-mesa0 \
         # System monitoring & debugging
         htop \
         iotop \
@@ -104,7 +129,7 @@ RUN \
         python3-dev \
         python3-pip \
         # Network utilities
-        netcat \
+        netcat-traditional \
         net-tools \
         dnsutils \
         iproute2 \
@@ -132,64 +157,65 @@ RUN \
         ocl-icd-opencl-dev && \
     # Ensure TensorRT where applicable
     if [ -n "${CUDA_VERSION:-}" ]; then \
-        CUDA_MAJOR_MINOR=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d ".") && \
-        if [ "$CUDA_MAJOR_MINOR" -ge "126" ]; then \
-            apt-get update && apt-get install -y --no-install-recommends \
-                libnvinfer10 \
-                libnvinfer-plugin10; \
-        elif [ "$CUDA_MAJOR_MINOR" -ge "121" ]; then \
-            apt-get update && apt-get install -y --no-install-recommends \
-                libnvinfer8 \
-                libnvinfer-plugin8; \
+        CUDA_MAJOR_MINOR=$(echo ${CUDA_VERSION} | cut -d. -f1,2) && \
+        nvinfer10_version=$(apt-cache madison libnvinfer10 | grep cuda${CUDA_MAJOR_MINOR} | awk '{print $3}' | sort -V | tail -n1 || true) && \
+        # Only CUDA 12.0 and 11.8 are available and we do not support < 11.8
+        nvinfer8_version=$(apt-cache madison libnvinfer8 | grep cuda${CUDA_MAJOR_MINOR%.*} | awk '{print $3}' | sort -V | tail -n1 || true) && \
+        if [[ -n "$nvinfer10_version" ]]; then \
+            apt-get install -y --no-install-recommends \
+                libnvinfer10=$nvinfer10_version \
+                libnvinfer-plugin10=$nvinfer10_version; \
+                libnvonnxparsers10=$nvinfer10_version; \
+                apt-mark hold libnvinfer10 libnvinfer-plugin10 libnvonnxparsers10; \
+        elif [[ -n "$nvinfer8_version" ]]; then \
+            apt-get install -y --no-install-recommends \
+                libnvinfer8=$nvinfer8_version \
+                libnvinfer-plugin8=$nvinfer8_version; \
+                libnvonnxparsers8=$nvinfer8_version; \
+                apt-mark hold libnvinfer8 libnvinfer-plugin8 libnvonnxparsers8; \
         fi \
-    fi
-    # Install OpenCL Runtimes
+    fi && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+    # Install Extra Nvidia packages (OpenCL)
+    # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
+    # We cannot know the runtime driver version so we aim for best compatibility 
     ARG TARGETARCH
     RUN \
     set -euo pipefail && \
-        if command -v rocm-smi >/dev/null 2>&1; then \
-            apt-get install -y rocm-opencl-runtime; \
-        elif [ -n "${CUDA_VERSION:-}" ]; then \
-            CUDA_MAJOR_MINOR=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d ".") && \
-            # Refer to https://docs.nvidia.com/deploy/cuda-compatibility/#id3 and set one version below to avoid driver conflicts (patch versions > driver)
-            # Avoid transitional packages - They will cause NVML errors and broken nvidia-smi by bumping the version 
-            if [ "${CUDA_MAJOR_MINOR}" -ge 118 ]; then \
-                case "${CUDA_MAJOR_MINOR}" in \
-                    "118"|"120") \
-                        driver_version=470 \
-                        ;; \
-                    "121") \
-                        driver_version=525 \
-                        ;; \
-                    "122") \
-                        driver_version=525 \
-                        ;; \
-                    "123") \
-                        driver_version=535 \
-                        ;; \
-                    "124") \
-                        driver_version=535 \
-                        ;; \
-                    "125") \
-                        driver_version=545 \
-                        ;; \
-                    "126") \
-                        driver_version=555 \
-                        ;; \
-                    *) \
-                        driver_version=555 \
-                        ;; \
-                esac \
-            else \
-                driver_version=390; \
-            fi && \
-            if [ "${TARGETARCH}" = "arm64" ] && [ "${driver_version}" -lt 510 ]; then \
+    apt-get update && \
+    if command -v rocm-smi >/dev/null 2>&1; then \
+        apt-get install -y rocm-opencl-runtime; \
+    elif [[ -n "${CUDA_VERSION:-}" ]]; then \
+        CUDA_MAJOR_MINOR=$(echo "${CUDA_VERSION}" | cut -d. -f1,2 | tr -d ".") && \
+        driver_version=""; \
+        case "${CUDA_MAJOR_MINOR}" in \
+            "118") driver_version=450 ;; \
+            "120") driver_version=525 ;; \
+            "121") driver_version=530 ;; \
+            "122") driver_version=535 ;; \
+            "123") driver_version=545 ;; \
+            "124") driver_version=550 ;; \
+            "125") driver_version=555 ;; \
+            "126") driver_version=560 ;; \
+            "127") driver_version=565 ;; \
+            "128") driver_version=570 ;; \
+        esac; \
+        if [[ -n "$driver_version" ]]; then \
+            if [[ "${TARGETARCH}" = "arm64" ]] && [[ "$driver_version" -lt 510 ]]; then \
                 echo "No suitable libnvidia-compute package is available for arm64 with driver ${driver_version}"; \
             else \
-                apt-get install -y libnvidia-compute-${driver_version}; \
-            fi \
-        fi && \
-        apt-get clean -y
+                compute_version=$(apt-cache madison "libnvidia-compute-${driver_version}" | awk '{print $3}' | sort -V | head -n1 || true); \
+                if [[ -n "$compute_version" ]]; then \
+                    apt-get install -y "libnvidia-compute-${driver_version}=$compute_version"; \
+                    apt-mark hold "libnvidia-compute-${driver_version}"; \
+                fi; \
+            fi; \
+        fi; \
+    fi && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
     
 
 # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
@@ -202,8 +228,8 @@ RUN \
     sudo chmod 0440 /etc/sudoers.d/user && \
     mkdir -m 700 -p /run/user/1001 && \
     chown 1001:1001 /run/user/1001 && \
-    mkdir /run/dbus && \
-    mkdir /opt/workspace-internal/ && \
+    mkdir -p /run/dbus && \
+    mkdir -p /opt/workspace-internal/ && \
     chown 1001:1001 /opt/workspace-internal/ && \
     chmod g+s /opt/workspace-internal/ && \
     chmod 775 /opt/workspace-internal/ && \
@@ -226,6 +252,7 @@ COPY --from=caddy_builder /go/caddy /opt/portal-aio/caddy_manager/caddy
 ARG TARGETARCH
 RUN \
     set -euo pipefail && \
+    apt-get update && \
     apt-get install --no-install-recommends -y \
         python3.10-venv && \
     python3.10 -m venv /opt/portal-aio/venv && \
@@ -237,18 +264,21 @@ RUN \
     chmod +x /opt/portal-aio/tunnel_manager/cloudflared && \
     # Make these portal-provided tools easily reachable
     ln -s /opt/portal-aio/caddy_manager/caddy /opt/instance-tools/bin/caddy && \
-    ln -s /opt/portal-aio/tunnel_manager/cloudflared /opt/instance-tools/bin/cloudflared
+    ln -s /opt/portal-aio/tunnel_manager/cloudflared /opt/instance-tools/bin/cloudflared && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Populate the system Python environment with useful tools.  Add jupyter to speed up instance creation and install tensorboard as it is quite useful if training
 # These are in the system and not the venv because we want that to be as clean as possible
 RUN \
     set -euo pipefail && \
+    cd /opt && \
+    git clone https://github.com/vast-ai/vast-cli && \
     wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
     pip install --no-cache-dir \
         jupyter \
-        tensorboard \
-        vastai
+        tensorboard
 
 # Install Syncthing
 ARG TARGETARCH
@@ -263,6 +293,7 @@ ARG PYTHON_VERSION=3.10
 ENV PYTHON_VERSION=${PYTHON_VERSION}
 RUN \
     set -euo pipefail && \
+    apt-get update && \
     # Supplementary Python
     apt-get install --no-install-recommends -y \
         python${PYTHON_VERSION} \
@@ -285,7 +316,11 @@ RUN \
         --name="python3" \
         --display-name="Python3 (ipykernel)" && \
     # Add a cron job to regularly backup all venvs in /venv/*
-    echo "*/30 * * * * /opt/instance-tools/bin/venv-backup.sh" | crontab -
+    echo "*/30 * * * * /opt/instance-tools/bin/venv-backup.sh" | crontab - && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --recursive https://github.com/AUTOMATIC1111/stable-diffusion-webui
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
 
