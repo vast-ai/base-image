@@ -10,13 +10,19 @@ while read -r line || [[ -n "$line" ]]; do
         var_name="${BASH_REMATCH[1]}"
         var_value="${BASH_REMATCH[2]}"
         
-        # Only handle simple quoted values - skip anything complex
+        # Handle single quoted values
         if [[ "$var_value" =~ ^\'[^[:cntrl:]\']*\'$ ]]; then
             # Simple quoted value without any control characters or nested quotes
             var_value="${var_value#\'}"
             var_value="${var_value%\'}"
             export "$var_name=$var_value"
-        elif [[ "$var_value" =~ ^[^[:space:]\']+$ ]]; then
+        # Handle double quoted values
+        elif [[ "$var_value" =~ ^\"[^[:cntrl:\"]]*\"$ ]]; then
+            # Simple double quoted value without any control characters or nested quotes
+            var_value="${var_value#\"}"
+            var_value="${var_value%\"}"
+            export "$var_name=$var_value"
+        elif [[ "$var_value" =~ ^[^[:space:]\'\"]+$ ]]; then
             # Simple unquoted value without spaces or quotes
             export "$var_name=$var_value"
         fi
