@@ -73,7 +73,7 @@ def is_port_auth_excluded(external_port):
     return external_port in excluded_ports
 
 def generate_caddyfile(config):
-    if os.environ.get('ENABLE_HTTPS', 'false').lower() != 'true' and wait_for_valid_certs():
+    if os.environ.get('ENABLE_HTTPS', 'false').lower() != 'true' or not wait_for_valid_certs():
         enable_https = False
     else:
         enable_https = True
