@@ -1781,7 +1781,7 @@ window.InstancePortal = (function() {
             
             skipWaiting.addEventListener('click', (e) => {
                 e.preventDefault();
-                this.skipWaiting(); // You'll need to implement this method
+                this.skipWaiting();
             });
     
             // Show the skip waiting link after the specified delay
@@ -1792,7 +1792,12 @@ window.InstancePortal = (function() {
 
         skipWaiting: function() {
             this._skipWaiting = true;
+            // Handle initial route
+            this.handleRoute();
+            // Remove the loading screen
             this.hideLoader();
+            // Listen for hash changes
+            window.addEventListener('hashchange', this.handleRoute);
         },
 
         hideLoader: function() {
@@ -1905,15 +1910,16 @@ window.InstancePortal = (function() {
             
             // Redirect away from the IP address if not secure context
             await this.redirectIfInsecure();
+            if (this._skipWaiting !== true) {
+                // Handle initial route
+                this.handleRoute();
 
-            // Handle initial route
-            this.handleRoute();
+                // Remove the loading screen
+                this.hideLoader();
 
-            // Remove the loading screen
-            this.hideLoader();
-
-            // Listen for hash changes
-            window.addEventListener('hashchange', this.handleRoute);
+                // Listen for hash changes
+                window.addEventListener('hashchange', this.handleRoute);
+            }
             
             return this;
         }
