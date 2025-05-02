@@ -80,39 +80,78 @@ def generate_caddyfile(config):
 
     enable_auth = True if os.environ.get('ENABLE_AUTH', 'true').lower() != 'false' else False
     web_username = os.environ.get('WEB_USERNAME', 'vastai')
-    web_password = web_password = os.environ.get('WEB_PASSWORD') or os.environ.get('OPEN_BUTTON_TOKEN') or shortuuid.uuid()
+    web_password = os.environ.get('WEB_PASSWORD') or os.environ.get('OPEN_BUTTON_TOKEN') or shortuuid.uuid()
     caddy_identifier = os.environ.get('VAST_CONTAINERLABEL')
 
-    caddyfile = "{\n"
+    caddyfile=''
+
     if enable_https:
-        caddyfile += '    servers { listener_wrappers { http_redirect\ntls } }\n'
-    caddyfile += "}\n\n"
+        servers_block = 'servers {\n    listener_wrappers {\n        http_redirect\n        tls\n    }\n}'
+    else:
+        servers_block = ''
 
-    caddyfile += '    (noauth) {\n'
-    caddyfile += '        @noauth {\n'
-    caddyfile += '            path /.well-known/acme-challenge/*\n'
-    caddyfile += '            path /.well-known/change-password\n'
-    caddyfile += '            path /manifest.json\n'
-    caddyfile += '            path /manifest.webmanifest\n'
-    caddyfile += '            path /site.webmanifest\n'
-    caddyfile += '            path /.well-known/security.txt\n'
-    caddyfile += '            path /security.txt\n'
-    caddyfile += '            path /health.ico\n'
-    caddyfile += '        }\n'
-    caddyfile += '    }\n\n'
+    caddyfile = fr'''
+    {{
+        {servers_block}
+    }}
 
-    # Add a simple icon we can load in javascript to ensure tunnel DNS resolution
-    caddyfile += '    (healthicon) {\n'
-    caddyfile += '            route /health.ico {\n'
-    caddyfile += '                header Content-Type image/x-icon\n'
-    caddyfile += '                header Access-Control-Allow-Origin *\n'
-    caddyfile += '                header Access-Control-Allow-Methods GET, OPTIONS\n'
-    caddyfile += '                header Access-Control-Allow-Headers *\n'
-    caddyfile += '                respond 200 {\n'
-    caddyfile += '                    body "GIF89a\\x01\\x00\\x01\\x00\\x80\\x00\\x00\\xff\\xff\\xff\\x00\\x00\\x00!\\xf9\\x04\\x01\\x00\\x00\\x00\\x00,\\x00\\x00\\x00\\x00\\x01\\x00\\x01\\x00\\x00\\x02\\x02D\\x01\\x00;"\n'
-    caddyfile += '                }\n'
-    caddyfile += '            }\n'
-    caddyfile += '        }\n\n'
+    (noauth_matcher) {{
+        @noauth {{
+            path /.well-known/acme-challenge/*
+            path /.well-known/change-password
+            path /manifest.json
+            path /manifest.webmanifest
+            path /site.webmanifest
+            path /.well-known/security.txt
+            path /security.txt
+            path /health.ico
+        }}
+    }}
+
+    (healthicon) {{
+        route /health.ico {{
+            header Content-Type image/x-icon
+            header Access-Control-Allow-Origin *
+            header Access-Control-Allow-Methods GET, OPTIONS
+            header Access-Control-Allow-Headers *
+            respond 200 {{
+                body "GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+            }}
+        }}
+    }}
+
+    (real_ip_map) {{
+        map {{http.request.header.cf-connecting-ip}} {{real_ip}} {{
+            ""     {{remote_host}}
+            default {{http.request.header.cf-connecting-ip}}
+        }}
+    }}
+
+    (forwarded_protocol_map) {{
+        map {{http.request.header.cf-visitor}} {{forwarded_protocol}} {{
+            ""     {{scheme}}
+            default https
+        }}
+    }}
+
+    (token_auth_matcher) {{
+        @token_auth {{
+            query token={web_password}
+        }}
+    }}
+
+    (has_valid_auth_cookie_matcher) {{
+        @has_valid_auth_cookie {{
+            header_regexp Cookie {caddy_identifier}_auth_token={web_password}
+        }}
+    }}
+
+    (has_valid_bearer_token_matcher) {{
+        @has_valid_bearer_token {{
+            header Authorization "Bearer {web_password}"
+        }}
+    }}
+    '''
 
     for app_name, app_config in config.items():
         external_port = app_config['external_port']
@@ -142,51 +181,63 @@ def generate_caddyfile(config):
 
     return caddyfile, web_username, web_password
 
-# Helper function to generate reverse_proxy block with conditional header_up
-def get_reverse_proxy_block(hostname, internal_port):
-    include_header_up_host = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '').lower() == 'true'
-    if include_header_up_host:
-        return f'''
-        header_up Host {hostname}:{internal_port}
-        header_up X-Real-IP {{remote_host}}
-    '''
+# Helper function to generate reverse_proxy block with conditional headers
+def get_reverse_proxy_block(hostname, internal_port):    
+    def headers_get_host(hostname, port):
+        # Get the ports list from environment variable
+        header_up_localhost_ports = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '')
+
+        # Check if the current port is in the list
+        ports_list = [p.strip() for p in header_up_localhost_ports.split(',')]
+        use_localhost = str(port) in ports_list
+        
+        # Set the appropriate Host header
+        if use_localhost:
+            return f"header_up Host localhost:{port}"
+        else:
+            return f"header_up Host {{upstream_hostport}}"
+    
     return f'''
-        header_up Host {{upstream_hostport}}
-        header_up X-Real-IP {{remote_host}}
-'''
+        {headers_get_host(hostname, internal_port)}
+        header_up X-Forwarded-Proto {{forwarded_protocol}}
+        header_up X-Real-IP {{real_ip}}
+    '''
+
 
 def generate_noauth_config(hostname, internal_port):
     no_auth_config = f'''
-    reverse_proxy {hostname}:{internal_port} {{
-        {get_reverse_proxy_block(hostname, internal_port)}
+    import real_ip_map
+    import forwarded_protocol_map
+
+    handle {{
+        reverse_proxy {hostname}:{internal_port} {{
+            {get_reverse_proxy_block(hostname, internal_port)}
+        }}
     }}
-'''
+    '''
     return no_auth_config
 
 def generate_auth_config(caddy_identifier, username, password, hostname, internal_port):
     hashed_password = subprocess.check_output([CADDY_BIN, 'hash-password', '-p', password]).decode().strip()
    
     auth_config = f'''    
-    import noauth
+    import noauth_matcher
+    import real_ip_map
+    import forwarded_protocol_map
 
-    @token_auth {{
-        query token={password}
-    }}
-
-    handle @noauth {{
+    route @noauth {{
         import healthicon
-        reverse_proxy {hostname}:{internal_port} {{
-            {get_reverse_proxy_block(hostname, internal_port)}        
+
+        handle {{
+            reverse_proxy {hostname}:{internal_port} {{
+                {get_reverse_proxy_block(hostname, internal_port)}
+            }}
         }}
     }}
 
-    @has_valid_auth_cookie {{
-        header_regexp Cookie {caddy_identifier}_auth_token={password}
-    }}
-
-    @has_valid_bearer_token {{
-        header Authorization "Bearer {password}"
-    }}
+    import token_auth_matcher
+    import has_valid_auth_cookie_matcher
+    import has_valid_bearer_token_matcher
 
     route @token_auth {{
         header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
@@ -195,14 +246,18 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
     }}
 
     route @has_valid_auth_cookie {{
-        reverse_proxy {hostname}:{internal_port} {{
-            {get_reverse_proxy_block(hostname, internal_port)}        
+        handle {{
+            reverse_proxy {hostname}:{internal_port} {{
+                {get_reverse_proxy_block(hostname, internal_port)}
+            }}
         }}
     }}
 
     route @has_valid_bearer_token {{
-        reverse_proxy {hostname}:{internal_port} {{
-            {get_reverse_proxy_block(hostname, internal_port)}
+        handle {{
+            reverse_proxy {hostname}:{internal_port} {{
+                {get_reverse_proxy_block(hostname, internal_port)}
+            }}
         }}
     }}
 
@@ -211,8 +266,11 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
             {username} "{hashed_password}"
         }}
         header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
-        reverse_proxy {hostname}:{internal_port} {{
-            {get_reverse_proxy_block(hostname, internal_port)}
+
+        handle {{
+            reverse_proxy {hostname}:{internal_port} {{
+                {get_reverse_proxy_block(hostname, internal_port)}
+            }}
         }}
     }}
 '''
