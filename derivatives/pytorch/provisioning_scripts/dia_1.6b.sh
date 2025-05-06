@@ -74,6 +74,7 @@ while [ -f "/.provisioning" ]; do
 done
 
 cd ${DATA_DIRECTORY}/dia
+export HF_HOME="${DATA_DIRECTORY}/huggingface"
 export GRADIO_SERVER_NAME=${GRADIO_SERVER_NAME:-127.0.0.1}
 export GRADIO_SERVER_PORT=${GRADIO_SERVER_PORT:-17860}
 
