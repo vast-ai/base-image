@@ -183,17 +183,17 @@ def generate_caddyfile(config):
 
 # Helper function to generate reverse_proxy block with conditional headers
 def get_reverse_proxy_block(hostname, internal_port):    
-    def headers_get_host(hostname, port):
-        # Get the ports list from environment variable
-        header_up_localhost_ports = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '')
-
-        # Check if the current port is in the list
-        ports_list = [p.strip() for p in header_up_localhost_ports.split(',')]
-        use_localhost = str(port) in ports_list
+    def headers_get_host(hostname, internal_port):
+        # Check if the current port is in the list OR CADDY_HEADER_UP_LOCALHOST is 'true'
+        use_localhost = False
+        header_up_localhost = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '')
+        if header_up_localhost:
+            ports_list = [p.strip() for p in header_up_localhost.split(',')]
+            use_localhost = header_up_localhost.lower() == "true" or str(internal_port) in ports_list
         
         # Set the appropriate Host header
         if use_localhost:
-            return f"header_up Host localhost:{port}"
+            return f"header_up Host localhost:{internal_port}"
         else:
             return f"header_up Host {{upstream_hostport}}"
     
