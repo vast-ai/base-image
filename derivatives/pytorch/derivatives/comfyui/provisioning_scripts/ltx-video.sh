@@ -24,16 +24,15 @@ NODES=(
 )
 
 WORKFLOWS=(
-    "https://raw.githubusercontent.com/Lightricks/ComfyUI-LTXVideo/refs/heads/master/example_workflows/tricks/ltxvideo-flow-edit.json"
-    "https://raw.githubusercontent.com/Lightricks/ComfyUI-LTXVideo/refs/heads/master/example_workflows/tricks/ltxvideo-rf-edit.json"
+    "https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/comfyui/derivatives/pytorch/derivatives/comfyui/workflows/ltxv-text-to-video-simple.json"
 )
 
 CHECKPOINT_MODELS=(
-    "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.1.safetensors"
+    "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors"
 )
 
 CLIP_MODELS=(
-    "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors"
+    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
 )
 
 UNET_MODELS=(
