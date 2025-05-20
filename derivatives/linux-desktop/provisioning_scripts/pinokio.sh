@@ -8,6 +8,7 @@ export USER_HOME="/home/${USER_NAME}"
 # Execute the rest of the commands as the specified user
 bash << 'EOF'
 set -euo pipefail
+mkdir -p "${USER_HOME}/Desktop"
 cd /tmp
 [[ -n ${PINOKIO_VERSION:-} ]] || PINOKIO_VERSION=$(curl -s https://api.github.com/repos/pinokiocomputer/pinokio/releases/latest |jq -r .tag_name)
 VERSION_NUMBER=${PINOKIO_VERSION}
