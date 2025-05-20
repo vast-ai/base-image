@@ -21,7 +21,7 @@ rm -f "/tmp/${FILE_NAME}"
 EOF
 
 # Create the desktop file as the user
-sudo -u ${USER_NAME} bash -c "cat > ${USER_HOME}/Desktop/Pinokio.desktop << 'EOF'
+sudo -u "${USER_NAME}" bash -c "cat > ${USER_HOME}/Desktop/Pinokio.desktop << 'EOF'
 [Desktop Entry]
 Version=1.0
 Type=Application
