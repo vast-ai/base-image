@@ -11,7 +11,7 @@ set -euo pipefail
 mkdir -p "${USER_HOME}/Desktop"
 cd /tmp
 [[ -n ${PINOKIO_VERSION:-} ]] || PINOKIO_VERSION=$(curl -s https://api.github.com/repos/pinokiocomputer/pinokio/releases/latest |jq -r .tag_name)
-VERSION_NUMBER=${PINOKIO_VERSION}
+VERSION_NUMBER=${PINOKIO_VERSION:-3.8.0}
 FILE_NAME="pinokio_${VERSION_NUMBER}_amd64.AppImage"
 wget -O "${FILE_NAME}" "https://github.com/pinokiocomputer/pinokio/releases/download/${VERSION_NUMBER}/Pinokio-${VERSION_NUMBER}.AppImage"
 chmod +x "${FILE_NAME}"
@@ -28,7 +28,7 @@ Version=1.0
 Type=Application
 Name=Pinokio
 Comment=Pinokio Application
-Exec=env HOME=${WORKSPACE} APPDIR=/opt/pinokio /opt/pinokio/AppRun --no-sandbox %U
+Exec=env HOME=${WORKSPACE} APPDIR=/opt/pinokio vglrun -nodl /opt/pinokio/AppRun --no-sandbox %U
 Icon=/opt/pinokio/pinokio.png
 Terminal=false
 Categories=Utility;
