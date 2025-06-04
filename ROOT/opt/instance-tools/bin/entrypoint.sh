@@ -4,6 +4,10 @@ main() {
     local propagate_user_keys=true
     local export_env=true
     local generate_tls_cert=true
+    local activate_python_environment=true
+    # Default behavior is sync only if $WORKSPACE is a volume
+    local sync_python_environment=$(mountpoint "$WORKSPACE" > /dev/null 2>&1 && echo true || echo false)
+    local sync_home_to_workspace=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -17,6 +21,22 @@ main() {
                 ;;
             --no-cert-gen)
                 generate_tls_cert=false
+                shift
+                ;;
+            --no-activate-pyenv)
+                activate_python_environment=false
+                shift
+                ;;
+            --no-sync-pyenv)
+                sync_python_environment=false
+                shift
+                ;;
+            --force-sync-pyenv)
+                sync_python_environment=true
+                shift
+                ;;
+            --sync-home)
+                sync_home_to_workspace=true
                 shift
                 ;;
             *)
@@ -39,24 +59,18 @@ main() {
     # First run...
     if [[ ! -f /.first_boot_complete ]]; then
         echo "Applying first boot optimizations..."
-        # Prevent dubious ownership 
-        set_git_safe_dirs
         # Ensure we have an up-to-date version of the CLI tool
         (cd /opt/vast-cli && git pull)
         # Attempt to upgrade Instance Portal to latest or specified version
         update-portal ${PORTAL_VERSION:+-v $PORTAL_VERSION}
-        # Copy /opt/workspace-internal to /workspace - Brings to top layer and will support mounting a volume
-        # Ensure user 1001 has full access - Avoids permission errors if running with the normal user
-        workspace=${WORKSPACE:-/workspace}
-        mkdir -p "${workspace}/" > /dev/null 2>&1
-        chown -f 1001:1001 "${workspace}/" > /dev/null 2>&1
-        chmod g+s "${workspace}/" > /dev/null 2>&1
-        find "${workspace}/" -type d -exec chmod g+s {} + > /dev/null 2>&1
-        chmod 775 "${workspace}/" > /dev/null 2>&1
-        sudo -u user cp -rn /opt/workspace-internal/. "${workspace}/"
-        find "${workspace}/" -type d -exec chmod g+s {} + > /dev/null 2>&1
-        find "${workspace}/" -not -user 1001 -exec chown 1001:1001 {} +
-        setfacl -R -d -m g:user:rw- "${workspace}/" > /dev/null 2>&1
+        # Move /home to ${WORKSPACE}
+        [[ "${sync_home_to_workspace}" = "true" ]] && sync_home
+        # Move files from /opt/workspace-internal to ${WORKSPACE}
+        sync_workspace
+        # Prevent dubious ownership 
+        set_git_safe_dirs
+        # Sync Python environment if using volumes and not overridden
+        [[ "${sync_python_environment}" = "true" ]] && sync_venv
         # Let the 'user' account connect via SSH
         [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
         # Initial venv backup - Also runs as a cron job every 30 minutes
@@ -67,17 +81,27 @@ main() {
             value=${line#*=}
             printf '%s="%s"\n' "$name" "$value"
         done > /etc/environment
+
+        if [[ "$sync_home_to_workspace" = "true" && -d "${WORKSPACE}/home" ]] && grep -q "/etc/environment" "${WORKSPACE}/home/user/.bashrc"; then
+            target_bashrc="/root/.bashrc"
+        else
+            target_bashrc="/root/.bashrc /home/user/.bashrc"
+        fi
         # Ensure /etc/environment is sourced on login
-        echo '. /opt/instance-tools/bin/export_env.sh' | tee -a /root/.bashrc /home/user/.bashrc
-        # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1 
-        echo 'cd ${WORKSPACE} && if [ -f "${WORKSPACE}/venv/${ACTIVE_VENV:-main}/bin/activate" ]; then source "${WORKSPACE}/venv/${ACTIVE_VENV:-main}/bin/activate"; else source /venv/${ACTIVE_VENV:-main}/bin/activate; fi' | tee -a /root/.bashrc /home/user/.bashrc
+        [[ "${export_env}" = "true" ]] &&  echo '. /etc/environment' | tee -a $target_bashrc
+        # Ensure node npm (nvm) are available on login
+        echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
+        # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
+        if [[ "${activate_python_environment}" == "true" ]]; then
+            echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
+        fi
         # Warn CLI users if the container provisioning is not yet complete. Red >>>
-        echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a /root/.bashrc /home/user/.bashrc
+        echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
         touch /.first_boot_complete
     fi
 
     # Source the file at /etc/environment - We can now edit environment variables in a running instance
-    [[ "${export_env}" = "true" ]] && . /opt/instance-tools/bin/export_env.sh
+    [[ "${export_env}" = "true" ]] && . /etc/environment
 
     # We may be busy for a while.
     # Indicator for supervisor scripts to prevent launch during provisioning if necessary (if [[ -f /.provisioning ]] ...)
@@ -158,27 +182,119 @@ main() {
 }
 
 set_git_safe_dirs() {
-    # Prevents dubious ownership issues for root user.
-    for dir in /opt/workspace-internal/*; do
-        # Check if it's a directory
-        if [ -d "$dir" ]; then
-            # Get just the directory name without the path
-            dirname=$(basename "$dir")
-            
-            # Set the target path
-            target_path="${WORKSPACE:-/workspace}/${dirname}"
-
-            # Handle parent directory
-            echo "Adding safe.directory: $target_path"
-            git config --global --add safe.directory "$target_path"
-            
-            # Handle submodules
-            find $target_path -name ".git" | while read gitpath; do
-                parent_dir=$(dirname "$gitpath")
-                git config --global --add safe.directory "$parent_dir"
-            done
+    # Prevents dubious ownership issues
+    find "${WORKSPACE}" -name ".git" | while read gitpath; do
+        parent_dir=$(dirname "$gitpath")
+        if ! grep -q "$parent_dir" /root/.gitconfig > /dev/null 2>&1; then
+            git config --global --add safe.directory "$parent_dir"
+        fi
+        if ! grep -q "$parent_dir" /home/user/.gitconfig > /dev/null 2>&1; then
+            sudo -u user bash -c "HOME=/home/user git config --global --add safe.directory $parent_dir"
         fi
     done
+}
+
+# Move /home into workspace
+sync_home() {
+    workspace=${WORKSPACE:-/workspace}
+    # Use lockfile to prevent multiple instances syncing to a volume
+    lockfile=${workspace}/.sync_home
+    if [[ ! -f $lockfile ]]; then
+        echo "Starting sync from C.${CONTAINER_ID}:/home" > $lockfile
+        mv -n /home "${workspace}"
+        echo "Complete!" >> $lockfile
+    fi
+    # Always symlink
+    rm -rf /home > /dev/null 2>&1
+    ln -s "${WORKSPACE}/home" /home
+}
+
+# Move workspace from image into container/volume
+sync_workspace() {
+    workspace=${WORKSPACE:-/workspace}
+    # Use lockfile to prevent multiple instances syncing to a volume
+    lockfile=${workspace}/.sync_content_${IMAGE_ID}
+    if [[ ! -f $lockfile ]]; then
+        echo "Starting sync from C.${CONTAINER_ID}:/opt/workspace-internal" > $lockfile
+        mkdir -p "${workspace}/" > /dev/null 2>&1
+        chown -f 0:1001 "${workspace}/" > /dev/null 2>&1
+        chmod 2775 "${workspace}/" > /dev/null 2>&1
+        setfacl -d -m g:1001:rwX "${workspace}/" > /dev/null 2>&1
+
+        # Copy each item in /opt/workspace-internal and avoid clobbering user generated files if volume
+        find /opt/workspace-internal -mindepth 1 -maxdepth 1 -print0 | while IFS= read -r -d '' item; do
+        basename_item=$(basename "$item")
+        target="${workspace}/${basename_item}"
+        
+        if [[ -d "$item" ]]; then
+            # Copy directory recursively
+            sudo -u user bash -c "umask 002 && cp -r --update=none '$item' '${workspace}/'"
+            # Apply ownership and permissions to the copied directory and its contents
+            find "$target" -type d -exec chown 0:1001 {} \; -exec chmod 2775 {} \;
+            find "$target" -type f -exec chown 0:1001 {} \; -exec chmod u+rw,g+rw,o+r {} \;
+            setfacl -R -d -m g:1001:rwX "$target" > /dev/null
+        elif [[ -f "$item" ]]; then
+            # Copy file
+            sudo -u user bash -c "umask 002 && cp --update=none '$item' '${workspace}/'"
+            # Apply ownership to the copied file
+            chown 0:1001 "$target"
+            chmod u+rw,g+rw,o+r "$target"
+        fi
+    done
+        echo "Complete!" >> $lockfile
+    fi
+    # Remove default files that do not belong in the workspace
+    rm -f ${WORKSPACE}/onstart.sh ${WORKSPACE}/ports.log 
+}
+
+# Move the venvs from /venv/* to $workspace volume
+sync_venv() {
+    workspace=${WORKSPACE:-/workspace}
+    lockfile=${workspace}/.sync_python_${IMAGE_ID}
+    
+    if [[ ! -f $lockfile ]]; then
+        # Iterate through each directory in /venv and check if it's a virtual environment
+        for dir in /venv/*/; do
+            # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
+            if [[ -d "$dir" && -f "${dir}pyvenv.cfg" ]]; then
+                venv_name=$(basename "$dir")
+                origin_path="/venv/${venv_name}"
+                target_path="${workspace}/venv/${IMAGE_ID:-unspecified-image}/${venv_name}"
+                
+                echo "Starting python env sync from C.${CONTAINER_ID}:${target_path}" > $lockfile
+                mkdir -p "$(dirname $target_path)"
+                mv "/venv/${venv_name}" "${target_path}"
+
+                cd "$target_path"
+
+                # Fix the pyvenv.cfg file
+                sed -i "s|$origin_path|$target_path|g" pyvenv.cfg
+
+                # Fix all the activation scripts
+                for file in bin/activate bin/activate.csh bin/activate.fish; do
+                    if [ -f "$file" ]; then
+                        sed -i "s|$origin_path|$target_path|g" "$file"
+                        sed -i "s|(${venv_name})|(vol->${venv_name})|g" "$file"
+                    fi
+                done
+
+                # Fix shebang lines in all executable scripts
+                find bin -type f -executable -exec sed -i "1s|#!$origin_path|#!$target_path|" {} \;
+
+                # Fix any .pth files
+                find . -name "*.pth" -type f -exec sed -i "s|$origin_path|$target_path|g" {} \;
+
+                # Fix egg-link files (for editable installs)
+                find . -name "*.egg-link" -type f -exec sed -i "s|$origin_path|$target_path|g" {} \;
+                
+                # Always create the symlink for this venv
+                rm -rf "$origin_path" > /dev/null 2>&1
+                ln -s "$target_path" "$origin_path"
+            fi
+        done
+        
+        echo "Complete!" >> $lockfile
+    fi
 }
 
 main "$@"
