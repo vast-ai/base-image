@@ -201,6 +201,7 @@ RUN \
             "126") driver_version=560 ;; \
             "127") driver_version=565 ;; \
             "128") driver_version=570 ;; \
+            "129") driver_version=575 ;; \
         esac; \
         if [[ -n "$driver_version" ]]; then \
             if [[ "${TARGETARCH}" = "arm64" ]] && [[ "$driver_version" -lt 550 ]]; then \
