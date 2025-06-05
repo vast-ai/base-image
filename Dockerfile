@@ -241,9 +241,7 @@ RUN \
     git clone https://github.com/nvm-sh/nvm.git /opt/nvm && \
     (cd /opt/nvm/ && git checkout `git describe --abbrev=0 --tags --match "v[0-9]*" $(git rev-list --tags --max-count=1)`) && \
     source /opt/nvm/nvm.sh && \
-    nvm install --lts && \
-    echo "source /opt/nvm/nvm.sh" >> /root/.bashrc && \
-    echo "source /opt/nvm/nvm.sh" >> /home/user/.bashrc
+    nvm install --lts
 
 # Add the 'service portal' web app into this container to avoid needing to specify in onstart.  
 # We will launch each component with supervisor - Not the standalone launch script.
@@ -286,8 +284,11 @@ RUN \
     set -euo pipefail && \
     SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
     SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz" && \
-    mkdir /opt/syncthing/ && \
-    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz
+    mkdir -p /opt/syncthing/config && \
+    mkdir -p /opt/syncthing/data && \
+    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz && \
+    chown -R root:user /opt/syncthing && \
+    chmod -R ug+rwX /opt/syncthing
 
 ARG PYTHON_VERSION=3.10
 ENV PYTHON_VERSION=${PYTHON_VERSION}
@@ -301,6 +302,11 @@ RUN \
         python${PYTHON_VERSION}-venv \
         python${PYTHON_VERSION}-tk && \
     mkdir -p /venv && \
+    chown 0:1001 /venv && \
+    chmod g+rwxs /venv && \
+    setfacl -R -d -m g:1001:rwX /venv && \
+    setfacl -R -d -m u::rwX /venv && \
+    setfacl -R -d -m o::r-X /venv && \
     # Create a virtual env - This gives us portability without sacrificing any functionality
     python${PYTHON_VERSION} -m venv /venv/main && \
     /venv/main/bin/pip install --no-cache-dir \
@@ -321,6 +327,7 @@ RUN \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
+ENV IMAGE_ID=vastai-base-image
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
