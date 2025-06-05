@@ -19,7 +19,7 @@ fi
 
 # Keep the per-machine settings out of /home/user in case of volume syncing /home
 export STCONFDIR=${STCONFDIR:-/opt/syncthing/config}
-export STDATADIR=${STCONFDIR:-/opt/syncthing/config}
+export STDATADIR=${STDATADIR:-/opt/syncthing/data}
 
 # We run this as user (uid 1001) because Syncthing displays security warnings if run as root
 run_syncthing() {
