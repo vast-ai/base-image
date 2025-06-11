@@ -228,7 +228,7 @@ sync_workspace() {
         
         if [[ -d "$item" ]]; then
             # Copy directory recursively
-            sudo -u user bash -c "umask 002 && cp -r --update=none '$item' '${workspace}/'"
+            sudo -u user bash -c "umask 002 && cp -rf --update=none '$item' '${workspace}/'"
             # Apply ownership and permissions to the copied directory and its contents
             find "$target" -type d -exec chown 0:1001 {} \; -exec chmod 2775 {} \;
             find "$target" -type f -exec chown 0:1001 {} \; -exec chmod u+rw,g+rw,o+r {} \;
@@ -252,7 +252,10 @@ sync_venv() {
     workspace=${WORKSPACE:-/workspace}
     lockfile=${workspace}/.sync_python_${IMAGE_ID}
     
+    # Copy if no lock
     if [[ ! -f $lockfile ]]; then
+        sudo -u user bash -c "umask 002 && cp -rf --update=none /.uv '${workspace}'"
+        cp -rf --update=none /.uv "$workspace" 
         # Iterate through each directory in /venv and check if it's a virtual environment
         for dir in /venv/*/; do
             # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
@@ -263,38 +266,30 @@ sync_venv() {
                 
                 echo "Starting python env sync from C.${CONTAINER_ID}:${target_path}" > $lockfile
                 mkdir -p "$(dirname $target_path)"
-                mv "/venv/${venv_name}" "${target_path}"
+                sudo -u user bash -c "umask 002 && cp -rf --update=none '/venv/${venv_name}' '${target_path}'"
 
                 cd "$target_path"
 
-                # Fix the pyvenv.cfg file
-                sed -i "s|$origin_path|$target_path|g" pyvenv.cfg
-
-                # Fix all the activation scripts
-                for file in bin/activate bin/activate.csh bin/activate.fish; do
-                    if [ -f "$file" ]; then
-                        sed -i "s|$origin_path|$target_path|g" "$file"
-                        sed -i "s|(${venv_name})|(vol->${venv_name})|g" "$file"
-                    fi
-                done
-
-                # Fix shebang lines in all executable scripts
-                find bin -type f -executable -exec sed -i "1s|#!$origin_path|#!$target_path|" {} \;
-
-                # Fix any .pth files
-                find . -name "*.pth" -type f -exec sed -i "s|$origin_path|$target_path|g" {} \;
-
-                # Fix egg-link files (for editable installs)
-                find . -name "*.egg-link" -type f -exec sed -i "s|$origin_path|$target_path|g" {} \;
-                
-                # Always create the symlink for this venv
-                rm -rf "$origin_path" > /dev/null 2>&1
-                ln -s "$target_path" "$origin_path"
+                # Fix the activation script
+                sed -i 's|VIRTUAL_ENV_PROMPT=$(basename "$VIRTUAL_ENV")|VIRTUAL_ENV_PROMPT="vol->$(basename $VIRTUAL_ENV)"|g' bin/activate                
             fi
         done
-        
-        echo "Complete!" >> $lockfile
     fi
+    
+    # Delete and link always
+    for dir in /venv/*/; do
+        # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
+        if [[ -d "$dir" && -f "${dir}pyvenv.cfg" ]]; then
+            venv_name=$(basename "$dir")
+            origin_path="/venv/${venv_name}"
+            target_path="${workspace}/venv/${IMAGE_ID:-unspecified-image}/${venv_name}"
+            rm -rf "$origin_path" > /dev/null 2>&1
+            ln -s "$target_path" "$origin_path"
+        fi
+    done
+
+    rm -rf /.uv >/dev/null 2>&1
+    ln -s "${workspace}/.uv" /.uv
 }
 
 main "$@"
