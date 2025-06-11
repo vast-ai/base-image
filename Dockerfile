@@ -50,7 +50,7 @@ RUN \
         NCCL_VERSION=$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null | cut -d'-' -f1 || echo "0.0.0"); \
         if dpkg --compare-versions "$NCCL_VERSION" lt "2.26.2"; then \
             apt-get -y update; \
-            apt-get install -y --allow-change-held-packages libnccl2 libnccl-dev; \
+            apt-get install -y --allow-change-held-packages libnccl2=2.26.2-1+cuda12.8 libnccl-dev=2.26.2-1+cuda12.8; \
         fi; \
     fi && \
     apt-get clean && \
@@ -76,19 +76,11 @@ RUN \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install --no-install-recommends -y \
-        software-properties-common \
-        gpg-agent && \
-    # For alternative Python versions.  Nightly as fallback is helpful when building ARM images with recent Python versions
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    add-apt-repository -y ppa:deadsnakes/nightly && \
-    mkdir -p /etc/apt/preferences.d && \
-    echo $'Package: *\nPin: release o=LP-PPA-deadsnakes-ppa\nPin-Priority: 900\n\nPackage: *\nPin: release o=LP-PPA-deadsnakes-nightly\nPin-Priority: 50' \
-        > /etc/apt/preferences.d/deadsnakes-priority && \
-    apt-get update && \
-    apt-get install --no-install-recommends -y \
         # Base system utilities
         acl \
         ca-certificates \
+        gpg-agent \
+        software-properties-common \
         locales \
         lsb-release \
         curl \
@@ -124,6 +116,7 @@ RUN \
         cmake \
         ninja-build \
         gdb \
+        libssl-dev \
         # System Python
         python3-full \
         python3-dev \
@@ -178,6 +171,40 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+    # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
+    RUN \
+        set -euo pipefail && \
+        groupadd -g 1001 user && \
+        useradd -ms /bin/bash user -u 1001 -g 1001 && \
+        echo "PATH=${PATH}" >> /home/user/.bashrc && \
+        echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
+        sudo chmod 0440 /etc/sudoers.d/user && \
+        mkdir -m 700 -p /run/user/1001 && \
+        chown 1001:1001 /run/user/1001 && \
+        mkdir -p /run/dbus && \
+        mkdir -p /opt/workspace-internal/ && \
+        chown 0:1001 /opt/workspace-internal && \
+        chmod g+rwxs /opt/workspace-internal && \
+        setfacl -R -d -m g:1001:rwX /opt/workspace-internal && \
+        setfacl -R -d -m u::rwX /opt/workspace-internal && \
+        setfacl -R -d -m o::r-X /opt/workspace-internal
+
+    # Add support for uv, the excellent Python environment manager
+    ENV UV_CACHE_DIR=/.uv/cache
+    ENV UV_LINK_MODE=symlink
+    ENV UV_MANAGED_PYTHON=1
+    ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
+    ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
+    RUN \
+        set -euo pipefail && \
+        mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        chown 0:1001 "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        chmod g+rwxs "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        setfacl -R -d -m g:1001:rwX "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        setfacl -R -d -m u::rwX "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        setfacl -R -d -m o::r-X "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        pip install uv
+
     # Install Extra Nvidia packages (OpenCL)
     # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
     # We cannot know the runtime driver version so we aim for best compatibility 
@@ -219,23 +246,6 @@ RUN \
     rm -rf /var/lib/apt/lists/*
     
 
-# Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
-RUN \
-    set -euo pipefail && \
-    groupadd -g 1001 user && \
-    useradd -ms /bin/bash user -u 1001 -g 1001 && \
-    echo "PATH=${PATH}" >> /home/user/.bashrc && \
-    echo "user ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/user && \
-    sudo chmod 0440 /etc/sudoers.d/user && \
-    mkdir -m 700 -p /run/user/1001 && \
-    chown 1001:1001 /run/user/1001 && \
-    mkdir -p /run/dbus && \
-    mkdir -p /opt/workspace-internal/ && \
-    chown 1001:1001 /opt/workspace-internal/ && \
-    chmod g+s /opt/workspace-internal/ && \
-    chmod 775 /opt/workspace-internal/ && \
-    setfacl -d -m g:user:rw- /opt/workspace-internal/
-
 # Install NVM for node version management
 RUN \
     set -euo pipefail && \
@@ -251,14 +261,15 @@ COPY --from=caddy_builder /go/caddy /opt/portal-aio/caddy_manager/caddy
 ARG TARGETARCH
 RUN \
     set -euo pipefail && \
-    apt-get update && \
-    apt-get install --no-install-recommends -y \
-        python3.10-venv && \
-    python3.10 -m venv /opt/portal-aio/venv && \
+    uv venv /opt/portal-aio/venv -p 3.11 && \
+    echo -e '#!/bin/bash\n\n.  $(dirname "$0")/activate\nuv pip $@\n' > /opt/portal-aio/venv/bin/pip && \
+    chmod +x /opt/portal-aio/venv/bin/pip && \
     mkdir -m 770 -p /var/log/portal && \
     chown 0:1001 /var/log/portal/ && \
     mkdir -p opt/instance-tools/bin/ && \
-    /opt/portal-aio/venv/bin/pip install -r /opt/portal-aio/requirements.txt && \
+    . /opt/portal-aio/venv/bin/activate && \
+    uv pip install -r /opt/portal-aio/requirements.txt && \
+    deactivate && \
     wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH} && \
     chmod +x /opt/portal-aio/tunnel_manager/cloudflared && \
     # Make these portal-provided tools easily reachable
@@ -293,35 +304,38 @@ RUN \
 
 ARG PYTHON_VERSION=3.10
 ENV PYTHON_VERSION=${PYTHON_VERSION}
+ENV UV_PYTHON=${PYTHON_VERSION}
+
 RUN \
     set -euo pipefail && \
-    apt-get update && \
-    # Supplementary Python
-    apt-get install --no-install-recommends -y \
-        python${PYTHON_VERSION} \
-        python${PYTHON_VERSION}-dev \
-        python${PYTHON_VERSION}-venv \
-        python${PYTHON_VERSION}-tk && \
     mkdir -p /venv && \
     chown 0:1001 /venv && \
     chmod g+rwxs /venv && \
     setfacl -R -d -m g:1001:rwX /venv && \
     setfacl -R -d -m u::rwX /venv && \
     setfacl -R -d -m o::r-X /venv && \
-    # Create a virtual env - This gives us portability without sacrificing any functionality
-    python${PYTHON_VERSION} -m venv /venv/main && \
-    /venv/main/bin/pip install --no-cache-dir \
+    # Create a UV virtual env - This gives us portability without sacrificing any functionality
+    uv venv /venv/main --relocatable -p ${PYTHON_VERSION} && \
+    echo -e '#!/bin/bash\n\n.  $(dirname "$0")/activate\nuv pip $@\n' > /venv/main/bin/pip && \
+    chmod +x /venv/main/bin/pip && \
+    . /venv/main/bin/activate && \
+    uv pip install \
         wheel \
         huggingface_hub[cli] \
         ipykernel \
         ipywidgets && \
-    /venv/main/bin/python -m ipykernel install \
+    python -m ipykernel install \
         --name="main" \
         --display-name="Python3 (main venv)" && \
     # Re-add as default.  We don't want users accidentally installing packages in the system python
-    /venv/main/bin/python -m ipykernel install \
+    python -m ipykernel install \
         --name="python3" \
         --display-name="Python3 (ipykernel)" && \
+    deactivate && \
+    /usr/bin/pip install ipykernel && \
+    /usr/bin/python3 -m ipykernel install \
+        --name="system-python" \
+        --display-name="Python3 (System)" && \
     # Add a cron job to regularly backup all venvs in /venv/*
     echo "*/30 * * * * /opt/instance-tools/bin/venv-backup.sh" | crontab - && \
     apt-get clean && \
