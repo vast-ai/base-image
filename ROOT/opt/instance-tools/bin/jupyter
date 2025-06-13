@@ -2,7 +2,7 @@
 
 # Very simple wrapper to ensure the Vast Jupyter launcher uses the Python binary from /venv/main 
 
-[[ -f ${WORKSPACE}/venv/main/bin/activate ]] && . "${WORKSPACE}/venv/main/bin/activate" || . /venv/main/bin/activate
+. /venv/main/bin/activate
 
 type="$1"
 
@@ -15,6 +15,7 @@ shift
 
 # Add some useful options to the default Jupyter startup
 set -- "$type" \
+  "--no-browser" \
   "--ContentsManager.allow_hidden=True" \
   "--ServerApp.root_dir=/" \
   "--ServerApp.preferred_dir=${JUPYTER_DIR:-${WORKSPACE:-/}}" \
