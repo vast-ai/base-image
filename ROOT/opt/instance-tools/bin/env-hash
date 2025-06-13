@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Generate environment hash for UV venv and cache
+
+main() {
+    set -euo pipefail
+    # Get individual hashes
+    SYSTEM_HASH=$(get_system_hash)
+    APT_HASH=$(get_apt_hash)
+
+    # Get all venv hashes
+    VENV_HASHES=""
+    for venv_dir in /venv/*/; do
+        real_path=$(realpath $venv_dir)
+        [[ -d "$real_path" ]] && VENV_HASHES+=$(get_venv_hash "$real_path")
+    done
+
+    # Combine all hashes and hash the result
+    ENV_HASH=$(echo "${SYSTEM_HASH}${APT_HASH}${VENV_HASHES}" | sha256sum | cut -d' ' -f1 | head -c 12)
+    echo "$ENV_HASH"
+}
+
+get_venv_info() {
+    local venv_path="$1"
+    if [[ -x "$venv_path/bin/python" ]]; then
+        "$venv_path/bin/python" -c "
+import sys
+try:
+    import importlib.metadata as metadata
+except ImportError:
+    import importlib_metadata as metadata
+
+# Python version for this venv
+print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')
+
+# Installed packages
+packages = []
+for dist in metadata.distributions():
+    packages.append(f'{dist.metadata[\"Name\"]}=={dist.version}')
+print('\n'.join(sorted(packages)))
+" 2>/dev/null
+    fi
+}
+
+get_system_hash() {
+    local system_info
+    system_info=$(python3 -c "
+import sysconfig, platform
+print(sysconfig.get_platform())
+print(platform.machine())
+")
+    local ubuntu_info
+    ubuntu_info=$(grep -E '^(VERSION_ID|VERSION_CODENAME)=' /etc/os-release | sort)
+    
+    echo -e "${system_info}\n${ubuntu_info}" | sha256sum | cut -d' ' -f1 | head -c 12
+}
+
+get_apt_hash() {
+    dpkg -l | grep '^ii' | awk '{print $2 "=" $3}' | grep -E '(^lib|dev$|cuda|rocm)' | sort | sha256sum | cut -d' ' -f1 | head -c 12
+}
+
+get_venv_hash() {
+    local venv_path="$1"
+    get_venv_info "$venv_path" | sha256sum | cut -d' ' -f1 | head -c 12
+}
+
+main
