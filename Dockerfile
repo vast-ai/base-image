@@ -191,10 +191,12 @@ RUN \
 
     # Add support for uv, the excellent Python environment manager
     ENV UV_CACHE_DIR=/.uv/cache
+    # Symlink is generally a good option.  Some packages may require installation with copy mode
     ENV UV_LINK_MODE=symlink
     ENV UV_MANAGED_PYTHON=1
     ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
     ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
+    ENV UV_COMPILE_BYTECODE=1
     RUN \
         set -euo pipefail && \
         mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
@@ -244,7 +246,6 @@ RUN \
     fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-    
 
 # Install NVM for node version management
 RUN \
@@ -261,9 +262,7 @@ COPY --from=caddy_builder /go/caddy /opt/portal-aio/caddy_manager/caddy
 ARG TARGETARCH
 RUN \
     set -euo pipefail && \
-    uv venv /opt/portal-aio/venv -p 3.11 && \
-    echo -e '#!/bin/bash\n\n.  $(dirname "$0")/activate\nuv pip $@\n' > /opt/portal-aio/venv/bin/pip && \
-    chmod +x /opt/portal-aio/venv/bin/pip && \
+    uv venv --seed /opt/portal-aio/venv -p 3.11 && \
     mkdir -m 770 -p /var/log/portal && \
     chown 0:1001 /var/log/portal/ && \
     mkdir -p opt/instance-tools/bin/ && \
@@ -304,7 +303,6 @@ RUN \
 
 ARG PYTHON_VERSION=3.10
 ENV PYTHON_VERSION=${PYTHON_VERSION}
-ENV UV_PYTHON=${PYTHON_VERSION}
 
 RUN \
     set -euo pipefail && \
@@ -315,9 +313,12 @@ RUN \
     setfacl -R -d -m u::rwX /venv && \
     setfacl -R -d -m o::r-X /venv && \
     # Create a UV virtual env - This gives us portability without sacrificing any functionality
-    uv venv /venv/main --relocatable -p ${PYTHON_VERSION} && \
-    echo -e '#!/bin/bash\n\n.  $(dirname "$0")/activate\nuv pip $@\n' > /venv/main/bin/pip && \
-    chmod +x /venv/main/bin/pip && \
+    uv venv /venv/main --seed --relocatable -p ${PYTHON_VERSION} && \
+    printf '%s\n' \
+        'echo -e "\033[32mActivated uv virtual environment at \033[36m$(realpath $VIRTUAL_ENV)\033[0m"' \
+        'echo -e "\033[32mCache location: \033[36m$(realpath /.uv)\033[0m"' \
+        'echo -e "\033[32mLink mode: \033[33m${UV_LINK_MODE:-symlink}\033[0m"' \
+        'echo ""' >> /venv/main/bin/activate && \
     . /venv/main/bin/activate && \
     uv pip install \
         wheel \
@@ -342,7 +343,11 @@ RUN \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
-ENV IMAGE_ID=vastai-base-image
+
+# Defend against environment clashes when syncing to volume
+RUN \
+    set -euo pipefail &&\
+    env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

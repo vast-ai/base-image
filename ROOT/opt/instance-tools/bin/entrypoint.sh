@@ -44,7 +44,7 @@ main() {
                 shift
                 ;;
         esac
-    done
+    done  
 
     # Remove Jupyter from the portal config if the external port 8080 isn't defined
     if [ -z "${VAST_TCP_PORT_8080}" ]; then
@@ -141,6 +141,14 @@ main() {
         export ENABLE_HTTPS=false
     fi
 
+    # Hotfix enablement
+    # Allows modifying the environment before supervisor launches main processes.
+    # Use this to assist user in fixing broken container.  Add in env or /etc/environment
+    # This will run on every boot.  Script must handle its own run conditions
+    if [[ -n $HOTFIX_SCRIPT ]]; then
+        curl -LsSf "$HOTFIX_SCRIPT" | bash
+    fi
+
     # Now we run supervisord - Put it in the background so provisioning can be monitored in Instance Portal
     supervisord \
         -n \
@@ -153,7 +161,7 @@ main() {
     # Experienced users will be able to convert the script to Dockerfile RUN and build a self-contained image
     # NOTICE: If the provisioning script introduces new supervisor processes it must:
     # - Remove the file /etc/portal.yaml
-    # - run `supervisorctl reload`
+    # - run `supervisorctl reread && supervisorctl update`
 
     if [[ -n $PROVISIONING_SCRIPT && ! -f /.provisioning_complete ]]; then
         echo "*****"
@@ -209,31 +217,28 @@ sync_home() {
     ln -s "${WORKSPACE}/home" /home
 }
 
-# Move workspace from image into container/volume
+# Move workspace from image into container/volume only if the target does not exist
 sync_workspace() {
     workspace=${WORKSPACE:-/workspace}
-    # Use lockfile to prevent multiple instances syncing to a volume
-    lockfile=${workspace}/.sync_content_${IMAGE_ID}
-    if [[ ! -f $lockfile ]]; then
-        echo "Starting sync from C.${CONTAINER_ID}:/opt/workspace-internal" > $lockfile
-        mkdir -p "${workspace}/" > /dev/null 2>&1
-        chown -f 0:1001 "${workspace}/" > /dev/null 2>&1
-        chmod 2775 "${workspace}/" > /dev/null 2>&1
-        setfacl -d -m g:1001:rwX "${workspace}/" > /dev/null 2>&1
 
-        # Copy each item in /opt/workspace-internal and avoid clobbering user generated files if volume
-        find /opt/workspace-internal -mindepth 1 -maxdepth 1 -print0 | while IFS= read -r -d '' item; do
+    mkdir -p "${workspace}/" > /dev/null 2>&1
+    chown -f 0:1001 "${workspace}/" > /dev/null 2>&1
+    chmod 2775 "${workspace}/" > /dev/null 2>&1
+    setfacl -d -m g:1001:rwX "${workspace}/" > /dev/null 2>&1
+
+    # Copy each item in /opt/workspace-internal and avoid clobbering user generated files if volume
+    find /opt/workspace-internal -mindepth 1 -maxdepth 1 -print0 | while IFS= read -r -d '' item; do
         basename_item=$(basename "$item")
         target="${workspace}/${basename_item}"
         
-        if [[ -d "$item" ]]; then
+        if [[ -d "$item" && ! -e "$target" ]]; then
             # Copy directory recursively
             sudo -u user bash -c "umask 002 && cp -rf --update=none '$item' '${workspace}/'"
             # Apply ownership and permissions to the copied directory and its contents
             find "$target" -type d -exec chown 0:1001 {} \; -exec chmod 2775 {} \;
             find "$target" -type f -exec chown 0:1001 {} \; -exec chmod u+rw,g+rw,o+r {} \;
             setfacl -R -d -m g:1001:rwX "$target" > /dev/null
-        elif [[ -f "$item" ]]; then
+        elif [[ -f "$item" && ! -e "$target" ]]; then
             # Copy file
             sudo -u user bash -c "umask 002 && cp --update=none '$item' '${workspace}/'"
             # Apply ownership to the copied file
@@ -241,30 +246,31 @@ sync_workspace() {
             chmod u+rw,g+rw,o+r "$target"
         fi
     done
-        echo "Complete!" >> $lockfile
-    fi
+
     # Remove default files that do not belong in the workspace
-    rm -f ${WORKSPACE}/onstart.sh ${WORKSPACE}/ports.log 
+    rm -f ${WORKSPACE}/onstart.sh ${WORKSPACE}/ports.log
 }
 
 # Move the venvs from /venv/* to $workspace volume
 sync_venv() {
     workspace=${WORKSPACE:-/workspace}
-    lockfile=${workspace}/.sync_python_${IMAGE_ID}
+    hash=$(cat /.env_hash)
+    venv_dir="${workspace}/.python_sync/${hash}/venv"
+    uv_dir="${workspace}/.python_sync/${hash}/uv"
     
-    # Copy if no lock
-    if [[ ! -f $lockfile ]]; then
-        sudo -u user bash -c "umask 002 && cp -rf --update=none /.uv '${workspace}'"
-        cp -rf --update=none /.uv "$workspace" 
+    # Copy if not present
+    if [[ ! -d "$venv_dir" ]]; then
+        mkdir -p "$venv_dir" "$uv_dir"
+        sudo -u user bash -c "umask 002 && cp -rf --update=none /.uv/* '${uv_dir}'"
+        cp -rf --update=none /.uv/* "$uv_dir" 
         # Iterate through each directory in /venv and check if it's a virtual environment
         for dir in /venv/*/; do
             # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
             if [[ -d "$dir" && -f "${dir}pyvenv.cfg" ]]; then
                 venv_name=$(basename "$dir")
                 origin_path="/venv/${venv_name}"
-                target_path="${workspace}/venv/${IMAGE_ID:-unspecified-image}/${venv_name}"
-                
-                echo "Starting python env sync from C.${CONTAINER_ID}:${target_path}" > $lockfile
+                target_path="${venv_dir}/${venv_name}"
+
                 mkdir -p "$(dirname $target_path)"
                 sudo -u user bash -c "umask 002 && cp -rf --update=none '/venv/${venv_name}' '${target_path}'"
 
@@ -275,21 +281,21 @@ sync_venv() {
             fi
         done
     fi
-    
+
     # Delete and link always
     for dir in /venv/*/; do
         # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
         if [[ -d "$dir" && -f "${dir}pyvenv.cfg" ]]; then
             venv_name=$(basename "$dir")
             origin_path="/venv/${venv_name}"
-            target_path="${workspace}/venv/${IMAGE_ID:-unspecified-image}/${venv_name}"
+            target_path="${venv_dir}/${venv_name}"
             rm -rf "$origin_path" > /dev/null 2>&1
             ln -s "$target_path" "$origin_path"
         fi
     done
 
     rm -rf /.uv >/dev/null 2>&1
-    ln -s "${workspace}/.uv" /.uv
+    ln -s "${uv_dir}" /.uv
 }
 
 main "$@"
