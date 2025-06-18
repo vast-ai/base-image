@@ -4,9 +4,10 @@ main() {
     local propagate_user_keys=true
     local export_env=true
     local generate_tls_cert=true
+    local activate_conda_environment=false
     local activate_python_environment=true
     # Default behavior is sync only if $WORKSPACE is a volume
-    local sync_python_environment=$(mountpoint "$WORKSPACE" > /dev/null 2>&1 && echo true || echo false)
+    local sync_environment=$(mountpoint "$WORKSPACE" > /dev/null 2>&1 && echo true || echo false)
     local sync_home_to_workspace=false
 
     while [[ $# -gt 0 ]]; do
@@ -23,16 +24,20 @@ main() {
                 generate_tls_cert=false
                 shift
                 ;;
+            --activate-conda)
+                activate_conda_environment=true
+                shift
+                ;;
             --no-activate-pyenv)
                 activate_python_environment=false
                 shift
                 ;;
-            --no-sync-pyenv)
-                sync_python_environment=false
+            --no-sync-environment)
+                sync_environment=false
                 shift
                 ;;
-            --force-sync-pyenv)
-                sync_python_environment=true
+            --force-sync-environment)
+                sync_environment=true
                 shift
                 ;;
             --sync-home)
@@ -69,8 +74,8 @@ main() {
         sync_workspace
         # Prevent dubious ownership 
         set_git_safe_dirs
-        # Sync Python environment if using volumes and not overridden
-        [[ "${sync_python_environment}" = "true" ]] && sync_venv
+        # Sync Python and conda environments if using volumes and not overridden
+        [[ "${sync_environment}" = "true" ]] && sync_environment
         # Let the 'user' account connect via SSH
         [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
         # Initial venv backup - Also runs as a cron job every 30 minutes
@@ -91,6 +96,10 @@ main() {
         [[ "${export_env}" = "true" ]] &&  echo '. /etc/environment' | tee -a $target_bashrc
         # Ensure node npm (nvm) are available on login
         echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
+        # Activate the conda env
+        if [[ "${activate_conda_environment}" == "true" ]]; then
+            echo 'cd ${WORKSPACE} && /opt/miniforge3/condabin/conda activate /conda/${ACTIVE_CONDA:-main}' | tee -a $target_bashrc
+        fi
         # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
         if [[ "${activate_python_environment}" == "true" ]]; then
             echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
@@ -251,41 +260,67 @@ sync_workspace() {
     rm -f ${WORKSPACE}/onstart.sh ${WORKSPACE}/ports.log
 }
 
-# Move the venvs from /venv/* to $workspace volume
-sync_venv() {
+# Move the environments from /venv/* & /conda/* to $workspace volume
+sync_environment() {
     workspace=${WORKSPACE:-/workspace}
-    hash=$(cat /.env_hash)
-    venv_dir="${workspace}/.python_sync/${hash}/venv"
-    uv_dir="${workspace}/.python_sync/${hash}/uv"
+    sync_dir="${workspace}/.environment_sync"
+    env_id=${ENV_ID:-$(cat /.env_hash)}
+    venv_dir="${sync_dir}/${env_id}/venv"
+    uv_dir="${sync_dir}/${env_id}/uv"
     
     # Copy if not present
     if [[ ! -d "$venv_dir" ]]; then
-        mkdir -p "$venv_dir" "$uv_dir"
+        mkdir -p "$venv_dir" "$conda_dir" "$uv_dir"
+        touch "${venv_dir}/.syncing"
         sudo -u user bash -c "umask 002 && cp -rf --update=none /.uv/* '${uv_dir}'"
         cp -rf --update=none /.uv/* "$uv_dir" 
-        # Iterate through each directory in /venv and check if it's a virtual environment
+        
+        # Handle venv directories
         for dir in /venv/*/; do
-            # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
-            if [[ -d "$dir" && -f "${dir}pyvenv.cfg" ]]; then
+            # Check if directory exists and is a venv/conda env
+            if [[ -d "$dir" && (-f "${dir}pyvenv.cfg" || -d "${dir}conda-meta") ]]; then
                 venv_name=$(basename "$dir")
                 origin_path="/venv/${venv_name}"
                 target_path="${venv_dir}/${venv_name}"
 
-                mkdir -p "$(dirname $target_path)"
-                sudo -u user bash -c "umask 002 && cp -rf --update=none '/venv/${venv_name}' '${target_path}'"
+                # Basic venv
+                if [[ -f "${dir}pyvenv.cfg" ]]; then
+                    mkdir -p "$(dirname $target_path)"
+                    sudo -u user bash -c "umask 002 && cp -rf --update=none '/venv/${venv_name}' '${target_path}'"
+                else
+                # Conda
+                    mkdir -p "$target_path"
+                    if [[ -f "${origin_path}/bin/activate" ]]; then
+                        mv -f "${origin_path}/bin/activate" "${origin_path}/bin/activate.orig"
+                    fi
+                    conda-pack -j -1 -p "$origin_path" -d "$target_path" -o "${venv_name}.tar.gz"
+                    echo "moving ./${venv_name}.tar.gz to $target_path"
+                    mv "${venv_name}.tar.gz" "$target_path"
+                    tar -xvf "${target_path}/${venv_name}.tar.gz" -C "$target_path"
+                    rm -f "${target_path}/${venv_name}.tar.gz"
+                    if [[ -f "${target_path}/bin/activate.orig" ]]; then
+                        mv -f "${target_path}/bin/activate.orig" "${target_path}/bin/activate"
+                    fi
+                fi
 
                 cd "$target_path"
-
-                # Fix the activation script
-                sed -i 's|VIRTUAL_ENV_PROMPT=$(basename "$VIRTUAL_ENV")|VIRTUAL_ENV_PROMPT="vol->$(basename $VIRTUAL_ENV)"|g' bin/activate                
+            
             fi
         done
+        rm -f "${venv_dir}/.syncing"
     fi
 
-    # Delete and link always
+    # Wait until sync is complete, even if this instance is not syncing
+    echo "Waiting for environment to sync..."
+    until [ ! -f "${venv_dir}/.syncing" ]; do
+        sleep 10
+        echo "Waiting for environment to sync..."
+    done
+
+    # Delete and link venv directories
     for dir in /venv/*/; do
-        # Check if directory exists and contains pyvenv.cfg (indicating it's a venv)
-        if [[ -d "$dir" && -f "${dir}pyvenv.cfg" ]]; then
+        # Check if directory exists and is a venv/conda env
+        if [[ -d "$dir" && (-f "${dir}pyvenv.cfg" || -d "${dir}conda-meta") ]]; then
             venv_name=$(basename "$dir")
             origin_path="/venv/${venv_name}"
             target_path="${venv_dir}/${venv_name}"
