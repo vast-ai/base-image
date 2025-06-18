@@ -191,12 +191,11 @@ RUN \
 
     # Add support for uv, the excellent Python environment manager
     ENV UV_CACHE_DIR=/.uv/cache
-    # Symlink is generally a good option.  Some packages may require installation with copy mode
-    ENV UV_LINK_MODE=symlink
-    ENV UV_MANAGED_PYTHON=1
+    ENV UV_NO_CACHE=1
+    # We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
+    ENV UV_LINK_MODE=copy
     ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
     ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
-    ENV UV_COMPILE_BYTECODE=1
     RUN \
         set -euo pipefail && \
         mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
@@ -301,24 +300,87 @@ RUN \
     chown -R root:user /opt/syncthing && \
     chmod -R ug+rwX /opt/syncthing
 
+ARG BASE_IMAGE
 ARG PYTHON_VERSION=3.10
 ENV PYTHON_VERSION=${PYTHON_VERSION}
 
 RUN \
     set -euo pipefail && \
+    curl -L -o /tmp/miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" && \
+    bash /tmp/miniforge3.sh -b -p /opt/miniforge3 && \
+    /opt/miniforge3/bin/conda init && \
+    su -l user -c "/opt/miniforge3/bin/conda init" && \
     mkdir -p /venv && \
     chown 0:1001 /venv && \
     chmod g+rwxs /venv && \
     setfacl -R -d -m g:1001:rwX /venv && \
     setfacl -R -d -m u::rwX /venv && \
     setfacl -R -d -m o::r-X /venv && \
-    # Create a UV virtual env - This gives us portability without sacrificing any functionality
-    uv venv /venv/main --seed --relocatable -p ${PYTHON_VERSION} && \
+    /opt/miniforge3/bin/conda config --set auto_activate_base false && \
+    /opt/miniforge3/bin/conda config --set always_copy true && \
+    /opt/miniforge3/bin/conda config --set pip_interop_enabled true && \
+    /opt/miniforge3/bin/conda config --add envs_dirs /venv && \
+    /opt/miniforge3/bin/conda config --set env_prompt '({name}) ' && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set auto_activate_base false" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set always_copy true" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set pip_interop_enabled true" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --add envs_dirs /venv" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set env_prompt '({name}) '" && \
+    if [[ "$BASE_IMAGE" == *"nvidia"* ]]; then \
+        /opt/miniforge3/bin/conda config --add channels nvidia; \
+        su -l user -c "/opt/miniforge3/bin/conda config --add channels nvidia"; \
+    fi && \
+    # Main conda env mimics python venv
+    /opt/miniforge3/bin/conda create -p /venv/main python="${PYTHON_VERSION}" -y && \
+    mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
     printf '%s\n' \
-        'echo -e "\033[32mActivated uv virtual environment at \033[36m$(realpath $VIRTUAL_ENV)\033[0m"' \
-        'echo -e "\033[32mCache location: \033[36m$(realpath /.uv)\033[0m"' \
-        'echo -e "\033[32mLink mode: \033[33m${UV_LINK_MODE:-symlink}\033[0m"' \
-        'echo ""' >> /venv/main/bin/activate && \
+        'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
+            >> /venv/main/etc/conda/activate.d/environment.sh && \
+    printf '%s\n' \
+        'if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then' \
+        '    echo "This script must be sourced: source bin/activate"' \
+        '    exit 1' \
+        'fi' \
+        '' \
+        '# Define deactivate function' \
+        'deactivate() {' \
+        '    # Deactivate conda environment' \
+        '    if type conda &> /dev/null; then' \
+        '        conda deactivate' \
+        '    fi' \
+        '    ' \
+        '    # Unset the deactivate function itself' \
+        '    unset -f deactivate' \
+        '    ' \
+        '    # Return success' \
+        '    return 0' \
+        '}' \
+        '' \
+        '# Check if conda is available' \
+        'if ! type conda &> /dev/null; then' \
+        '    # Detect if this is an interactive shell environment' \
+        '    if [[ -n "${PS1:-}" ]] || [[ "$-" == *i* ]]; then' \
+        '        # Interactive shell - do full init via bashrc' \
+        '        if [[ -f ~/.bashrc ]]; then' \
+        '            source ~/.bashrc' \
+        '        fi' \
+        '    else' \
+        '        # Non-interactive (Docker, CI, etc.) - minimal init' \
+        '        if [[ "$PATH" != *"/opt/miniforge3/condabin"* ]]; then' \
+        '            export PATH="/opt/miniforge3/condabin:$PATH"' \
+        '        fi' \
+        '        if [[ -f /opt/miniforge3/etc/profile.d/conda.sh ]]; then' \
+        '            source /opt/miniforge3/etc/profile.d/conda.sh' \
+        '        fi' \
+        '    fi' \
+        'fi' \
+        '' \
+        'conda activate $(realpath /venv/main)' \
+            > /venv/main/bin/activate && \
+        /opt/miniforge3/bin/conda clean -ay
+
+RUN \
+    set -euo pipefail && \
     . /venv/main/bin/activate && \
     uv pip install \
         wheel \
@@ -333,7 +395,9 @@ RUN \
         --name="python3" \
         --display-name="Python3 (ipykernel)" && \
     deactivate && \
-    /usr/bin/pip install ipykernel && \
+    /usr/bin/pip install \
+        conda-pack \
+        ipykernel && \
     /usr/bin/python3 -m ipykernel install \
         --name="system-python" \
         --display-name="Python3 (System)" && \
@@ -346,7 +410,7 @@ ENV PATH=/opt/instance-tools/bin:${PATH}
 
 # Defend against environment clashes when syncing to volume
 RUN \
-    set -euo pipefail &&\
+    set -euo pipefail && \
     env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
