@@ -24,7 +24,9 @@ LABEL org.opencontainers.image.description="Base image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Support pipefail so we don't build broken images
-SHELL ["/bin/bash", "-c"]
+SHELL ["/bin/bash", "-c", "umask 002 && /bin/bash -c \"$@\"", "-"]
+# Use umask 002 to the power 'user' can easily share the root group.
+RUN sed -i '1i umask 002' /root/.bashrc
 
 # Add some useful scripts and config files
 COPY ./ROOT/ /
@@ -174,20 +176,15 @@ RUN \
     # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
     RUN \
         set -euo pipefail && \
-        groupadd -g 1001 user && \
-        useradd -ms /bin/bash user -u 1001 -g 1001 && \
+        useradd -ms /bin/bash user -u 1001 -g 0 && \
+        sed -i '1i umask 002' /home/user/.bashrc && \
         echo "PATH=${PATH}" >> /home/user/.bashrc && \
         echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
         sudo chmod 0440 /etc/sudoers.d/user && \
         mkdir -m 700 -p /run/user/1001 && \
-        chown 1001:1001 /run/user/1001 && \
+        chown 1001:0 /run/user/1001 && \
         mkdir -p /run/dbus && \
-        mkdir -p /opt/workspace-internal/ && \
-        chown 0:1001 /opt/workspace-internal && \
-        chmod g+rwxs /opt/workspace-internal && \
-        setfacl -R -d -m g:1001:rwX /opt/workspace-internal && \
-        setfacl -R -d -m u::rwX /opt/workspace-internal && \
-        setfacl -R -d -m o::r-X /opt/workspace-internal
+        mkdir -p /opt/workspace-internal/
 
     # Add support for uv, the excellent Python environment manager
     ENV UV_CACHE_DIR=/.uv/cache
@@ -199,11 +196,6 @@ RUN \
     RUN \
         set -euo pipefail && \
         mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        chown 0:1001 "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        chmod g+rwxs "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        setfacl -R -d -m g:1001:rwX "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        setfacl -R -d -m u::rwX "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        setfacl -R -d -m o::r-X "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
         pip install uv
 
     # Install Extra Nvidia packages (OpenCL)
@@ -260,10 +252,11 @@ COPY ./portal-aio /opt/portal-aio
 COPY --from=caddy_builder /go/caddy /opt/portal-aio/caddy_manager/caddy
 ARG TARGETARCH
 RUN \
+    chown -R 0:0 /opt/portal-aio && \
     set -euo pipefail && \
     uv venv --seed /opt/portal-aio/venv -p 3.11 && \
     mkdir -m 770 -p /var/log/portal && \
-    chown 0:1001 /var/log/portal/ && \
+    chown 0:0 /var/log/portal/ && \
     mkdir -p opt/instance-tools/bin/ && \
     . /opt/portal-aio/venv/bin/activate && \
     uv pip install -r /opt/portal-aio/requirements.txt && \
@@ -296,9 +289,7 @@ RUN \
     SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz" && \
     mkdir -p /opt/syncthing/config && \
     mkdir -p /opt/syncthing/data && \
-    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz && \
-    chown -R root:user /opt/syncthing && \
-    chmod -R ug+rwX /opt/syncthing
+    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz
 
 ARG BASE_IMAGE
 ARG PYTHON_VERSION=3.10
@@ -311,11 +302,6 @@ RUN \
     /opt/miniforge3/bin/conda init && \
     su -l user -c "/opt/miniforge3/bin/conda init" && \
     mkdir -p /venv && \
-    chown 0:1001 /venv && \
-    chmod g+rwxs /venv && \
-    setfacl -R -d -m g:1001:rwX /venv && \
-    setfacl -R -d -m u::rwX /venv && \
-    setfacl -R -d -m o::r-X /venv && \
     /opt/miniforge3/bin/conda config --set auto_activate_base false && \
     /opt/miniforge3/bin/conda config --set always_copy true && \
     /opt/miniforge3/bin/conda config --set pip_interop_enabled true && \
