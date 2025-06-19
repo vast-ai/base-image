@@ -1,5 +1,5 @@
 #!/bin/bash
-
+umask 002
 main() {
     local propagate_user_keys=true
     local export_env=true
@@ -63,6 +63,8 @@ main() {
 
     # First run...
     if [[ ! -f /.first_boot_complete ]]; then
+        export HF_HOME=${HF_HOME:-${WORKSPACE}/.hf_home}
+        mkdir -p "$HF_HOME"
         echo "Applying first boot optimizations..."
         # Ensure we have an up-to-date version of the CLI tool
         (cd /opt/vast-cli && git pull)
@@ -80,37 +82,37 @@ main() {
         [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
         # Initial venv backup - Also runs as a cron job every 30 minutes
         /opt/instance-tools/bin/venv-backup.sh
-        # Populate /etc/environment - Skip HOME directory and ensure values are enclosed in double quotes
-        env -0 | grep -zv "^HOME=" | while IFS= read -r -d '' line; do
+        # Populate /etc/environment - Skip user-specific keys and ensure values are enclosed in double quotes
+        env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
             name=${line%%=*}
             value=${line#*=}
             printf '%s="%s"\n' "$name" "$value"
         done > /etc/environment
-
-        if [[ "$sync_home_to_workspace" = "true" && -d "${WORKSPACE}/home" ]] && grep -q "/etc/environment" "${WORKSPACE}/home/user/.bashrc"; then
-            target_bashrc="/root/.bashrc"
-        else
+        
+        if ! grep -q "### Entrypoint setup ###" /root/.bashrc > /dev/null 2>&1; then
             target_bashrc="/root/.bashrc /home/user/.bashrc"
+            echo "### Entrypoint setup ###" | tee -a $target_bashrc
+            # Ensure /etc/environment is sourced on login
+            [[ "${export_env}" = "true" ]] && { echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; } | tee -a $target_bashrc
+            # Ensure node npm (nvm) are available on login
+            echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
+            # Activate the conda env
+            if [[ "${activate_conda_environment}" == "true" ]]; then
+                echo 'cd ${WORKSPACE} && /opt/miniforge3/condabin/conda activate /conda/${ACTIVE_CONDA:-main}' | tee -a $target_bashrc
+            fi
+            # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
+            if [[ "${activate_python_environment}" == "true" ]]; then
+                echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
+            fi
+            # Warn CLI users if the container provisioning is not yet complete. Red >>>
+            echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
+            echo "### End entrypoint setup ###" | tee -a $target_bashrc
         fi
-        # Ensure /etc/environment is sourced on login
-        [[ "${export_env}" = "true" ]] &&  echo '. /etc/environment' | tee -a $target_bashrc
-        # Ensure node npm (nvm) are available on login
-        echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
-        # Activate the conda env
-        if [[ "${activate_conda_environment}" == "true" ]]; then
-            echo 'cd ${WORKSPACE} && /opt/miniforge3/condabin/conda activate /conda/${ACTIVE_CONDA:-main}' | tee -a $target_bashrc
-        fi
-        # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
-        if [[ "${activate_python_environment}" == "true" ]]; then
-            echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
-        fi
-        # Warn CLI users if the container provisioning is not yet complete. Red >>>
-        echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
         touch /.first_boot_complete
     fi
 
     # Source the file at /etc/environment - We can now edit environment variables in a running instance
-    [[ "${export_env}" = "true" ]] && . /etc/environment
+    [[ "${export_env}" = "true" ]] && { . /etc/environment 2>/dev/null || true; . "${WORKSPACE}/.env" 2>/dev/null || true; }
 
     # We may be busy for a while.
     # Indicator for supervisor scripts to prevent launch during provisioning if necessary (if [[ -f /.provisioning ]] ...)
@@ -211,19 +213,48 @@ set_git_safe_dirs() {
     done
 }
 
-# Move /home into workspace
+# Move /home and /root into workspace
 sync_home() {
-    workspace=${WORKSPACE:-/workspace}
-    # Use lockfile to prevent multiple instances syncing to a volume
-    lockfile=${workspace}/.sync_home
-    if [[ ! -f $lockfile ]]; then
-        echo "Starting sync from C.${CONTAINER_ID}:/home" > $lockfile
-        mv -n /home "${workspace}"
-        echo "Complete!" >> $lockfile
+    workspace="${WORKSPACE:-/workspace}"
+    sync_home_dir="${workspace}/home"
+    if [[ ! -d "$sync_home_dir" ]]; then
+        mkdir -p "${sync_home_dir}"
+        touch "${sync_home_dir}/.syncing"
+        mv /home/* "${sync_home_dir}" 2>/dev/null
+        mv /root/onstart.sh /onstart.sh 2>/dev/null
+        ln -sf /onstart.sh /root/onstart.sh 2>/dev/null
+        mv /root/.vast_containerlabel /etc/.vast_containerlabel 2>/dev/null
+        ln -sf /etc/.vast_containerlabel /root/.vast_containerlabel 2>/dev/null
+        mv /root/.vast_api_key /etc/.vast_api_key 2>/dev/null
+        ln -sf /etc/.vast_api_key /root/.vast_api_key 2>/dev/null
+        mv /root "${sync_home_dir}" 2>/dev/null
+        rm -f "${sync_home_dir}/.syncing"
     fi
+
+    # Wait until sync is complete, even if this instance is not syncing
+    echo "Waiting for environment to sync..."
+    until [ ! -f "${sync_home_dir}/.syncing" ]; do
+        sleep 10
+        echo "Waiting for home to sync..."
+    done
+
     # Always symlink
-    rm -rf /home > /dev/null 2>&1
-    ln -s "${WORKSPACE}/home" /home
+    if [[ -d ${sync_home_dir}/root ]]; then
+        [[ -f /root/onstart.sh ]] && mv /root/onstart.sh /
+        [[ -f /root/.vast_containerlabel ]] && mv /root/.vast_containerlabel /etc
+        [[ -f /root/.vast_api_key ]] && mv /root/.vast_api_key /etc
+        rm -rf /root > /dev/null 2>&1
+        ln -sfn "${sync_home_dir}/root" /root
+    fi
+    # Symlink each dir in sync_home_dir to /home/dir but exclude root
+    for dir in "${sync_home_dir}"/*; do
+        if [[ -d "$dir" && "$(basename "$dir")" != "root" ]]; then
+            rm -rf "/home/$(basename "$dir")" > /dev/null 2>&1
+            ln -sfn "$dir" "/home/$(basename "$dir")"
+        fi
+    done
+    # Remove unnecessary entries from .bashrc
+    sed -i -E '/^(DIRECT_PORT_START|DIRECT_PORT_END|VAST_CONTAINERLABEL)=/d' /root/.bashrc
 }
 
 # Move workspace from image into container/volume only if the target does not exist
@@ -231,10 +262,6 @@ sync_workspace() {
     workspace=${WORKSPACE:-/workspace}
 
     mkdir -p "${workspace}/" > /dev/null 2>&1
-    chown -f 0:1001 "${workspace}/" > /dev/null 2>&1
-    chmod 2775 "${workspace}/" > /dev/null 2>&1
-    setfacl -d -m g:1001:rwX "${workspace}/" > /dev/null 2>&1
-
     # Copy each item in /opt/workspace-internal and avoid clobbering user generated files if volume
     find /opt/workspace-internal -mindepth 1 -maxdepth 1 -print0 | while IFS= read -r -d '' item; do
         basename_item=$(basename "$item")
@@ -242,17 +269,11 @@ sync_workspace() {
         
         if [[ -d "$item" && ! -e "$target" ]]; then
             # Copy directory recursively
-            sudo -u user bash -c "umask 002 && cp -rf --update=none '$item' '${workspace}/'"
+            cp -rf --update=none '$item' '${workspace}/'
             # Apply ownership and permissions to the copied directory and its contents
-            find "$target" -type d -exec chown 0:1001 {} \; -exec chmod 2775 {} \;
-            find "$target" -type f -exec chown 0:1001 {} \; -exec chmod u+rw,g+rw,o+r {} \;
-            setfacl -R -d -m g:1001:rwX "$target" > /dev/null
         elif [[ -f "$item" && ! -e "$target" ]]; then
             # Copy file
-            sudo -u user bash -c "umask 002 && cp --update=none '$item' '${workspace}/'"
-            # Apply ownership to the copied file
-            chown 0:1001 "$target"
-            chmod u+rw,g+rw,o+r "$target"
+            cp --update=none '$item' '${workspace}/'
         fi
     done
 
@@ -272,7 +293,7 @@ sync_environment() {
     if [[ ! -d "$venv_dir" ]]; then
         mkdir -p "$venv_dir" "$conda_dir" "$uv_dir"
         touch "${venv_dir}/.syncing"
-        sudo -u user bash -c "umask 002 && cp -rf --update=none /.uv/* '${uv_dir}'"
+        cp -rf --update=none /.uv/* '${uv_dir}'
         cp -rf --update=none /.uv/* "$uv_dir" 
         
         # Handle venv directories
@@ -286,7 +307,7 @@ sync_environment() {
                 # Basic venv
                 if [[ -f "${dir}pyvenv.cfg" ]]; then
                     mkdir -p "$(dirname $target_path)"
-                    sudo -u user bash -c "umask 002 && cp -rf --update=none '/venv/${venv_name}' '${target_path}'"
+                    cp -rf --update=none '/venv/${venv_name}' '${target_path}'
                 else
                 # Conda
                     mkdir -p "$target_path"
