@@ -78,8 +78,6 @@ main() {
         set_git_safe_dirs
         # Sync Python and conda environments if using volumes and not overridden
         [[ "${sync_environment}" = "true" ]] && sync_environment
-        # Let the 'user' account connect via SSH
-        [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
         # Initial venv backup - Also runs as a cron job every 30 minutes
         /opt/instance-tools/bin/venv-backup.sh
         # Populate /etc/environment - Skip user-specific keys and ensure values are enclosed in double quotes
@@ -110,6 +108,9 @@ main() {
         fi
         touch /.first_boot_complete
     fi
+
+    # Let the 'user' account connect via SSH
+    [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
 
     # Source the file at /etc/environment - We can now edit environment variables in a running instance
     [[ "${export_env}" = "true" ]] && { . /etc/environment 2>/dev/null || true; . "${WORKSPACE}/.env" 2>/dev/null || true; }
