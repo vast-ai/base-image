@@ -7,6 +7,28 @@
 # 3) We get unauthenticated access without TLS via SSH forwarding 
 # 4) it gives us a shell in Args runtype
 
+kill_subprocesses() {
+    local pid=$1
+    local subprocesses=$(pgrep -P "$pid")
+    
+    for process in $subprocesses; do
+        kill_subprocesses "$process"
+    done
+    
+    if [[ -n "$subprocesses" ]]; then
+        kill -TERM $subprocesses 2>/dev/null
+    fi
+}
+
+cleanup() {
+    kill_subprocesses $$
+    sleep 2
+    pkill -KILL -P $$ 2>/dev/null
+    exit 0
+}
+
+trap cleanup EXIT INT TERM
+
 [[ -f /.launch ]] && grep -qi jupyter /.launch &&  echo "Refusing to start ${PROC_NAME} (/.launch managing)" | tee -a "/var/log/portal/${PROC_NAME}.log" && exit
 
 # User can configure startup by removing the reference in /etc.portal.yaml - So wait for that file and check it

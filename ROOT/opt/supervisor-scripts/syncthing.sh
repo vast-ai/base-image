@@ -1,7 +1,26 @@
 #!/bin/bash
 
-# Syncthing daemonises and the new process is out-of-group.  Ensure it is fully killed on exit
-trap 'pgrep syncthing | grep -v "^$$\$" | xargs -r kill -9' EXIT
+kill_subprocesses() {
+    local pid=$1
+    local subprocesses=$(pgrep -P "$pid")
+    
+    for process in $subprocesses; do
+        kill_subprocesses "$process"
+    done
+    
+    if [[ -n "$subprocesses" ]]; then
+        kill -TERM $subprocesses 2>/dev/null
+    fi
+}
+
+cleanup() {
+    kill_subprocesses $$
+    sleep 2
+    pkill -KILL -P $$ 2>/dev/null
+    exit 0
+}
+
+trap cleanup EXIT INT TERM
 
 # User can configure startup by removing the reference in /etc.portal.yaml - So wait for that file and check it
 while [ ! -f "$(realpath -q /etc/portal.yaml 2>/dev/null)" ]; do
@@ -25,8 +44,10 @@ export STDATADIR=${STDATADIR:-/opt/syncthing/data}
 run_syncthing() {
     API_KEY=${OPEN_BUTTON_TOKEN:-$(openssl rand -hex 16)}
     /opt/syncthing/syncthing generate
-    sed -i '/^\s*<listenAddress>/d' "/home/user/.local/state/syncthing/config.xml"
-    /opt/syncthing/syncthing serve --no-browser --no-default-folder --gui-address="127.0.0.1:18384" --gui-apikey="${API_KEY}" --no-upgrade &
+    sed -i '/^\s*<listenAddress>/d' /opt/syncthing/config/config.xml
+    sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' /opt/syncthing/config/config.xml
+
+    /opt/syncthing/syncthing serve --no-restart --no-browser --no-default-folder --gui-address="127.0.0.1:18384" --gui-apikey="${API_KEY}" --no-upgrade &
     syncthing_pid=$!
     echo "Waiting on $syncthing_pid"
 
