@@ -131,6 +131,7 @@ RUN \
         iputils-ping \
         traceroute \
         # File management
+        dos2unix \
         rsync \
         rclone \
         zip \

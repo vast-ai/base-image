@@ -22,6 +22,11 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+set +a
+. /etc/environment 2>/dev/null
+. ${WORKSPACE}/.env 2>/dev/null
+set -a
+
 # User can configure startup by removing the reference in /etc.portal.yaml - So wait for that file and check it
 while [ ! -f "$(realpath -q /etc/portal.yaml 2>/dev/null)" ]; do
     echo "Waiting for /etc/portal.yaml before starting ${PROC_NAME}..." | tee -a "/var/log/portal/${PROC_NAME}.log"

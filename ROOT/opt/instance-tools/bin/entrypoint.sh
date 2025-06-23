@@ -4,10 +4,8 @@ main() {
     local propagate_user_keys=true
     local export_env=true
     local generate_tls_cert=true
-    local activate_conda_environment=false
     local activate_python_environment=true
-    # Default behavior is sync only if $WORKSPACE is a volume
-    local sync_environment=$(mountpoint "$WORKSPACE" > /dev/null 2>&1 && echo true || echo false)
+    local sync_environment=false
     local sync_home_to_workspace=false
 
     while [[ $# -gt 0 ]]; do
@@ -24,24 +22,20 @@ main() {
                 generate_tls_cert=false
                 shift
                 ;;
-            --activate-conda)
-                activate_conda_environment=true
-                shift
-                ;;
             --no-activate-pyenv)
                 activate_python_environment=false
                 shift
                 ;;
-            --no-sync-environment)
-                sync_environment=false
-                shift
-                ;;
-            --force-sync-environment)
+            --sync-environment)
                 sync_environment=true
                 shift
                 ;;
             --sync-home)
                 sync_home_to_workspace=true
+                shift
+                ;;
+            --jupyter-override)
+                export JUPYTER_OVERRIDE=true
                 shift
                 ;;
             *)
@@ -57,7 +51,7 @@ main() {
     fi
 
     # Ensure correct port mappings for Jupyter when running in Jupyter launch mode
-    if [[ -f /.launch ]] && grep -qi jupyter /.launch; then
+    if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
         PORTAL_CONFIG="$(echo "$PORTAL_CONFIG" | sed 's#localhost:8080:18080#localhost:8080:8080#g')"
     fi
 
@@ -91,13 +85,9 @@ main() {
             target_bashrc="/root/.bashrc /home/user/.bashrc"
             echo "### Entrypoint setup ###" | tee -a $target_bashrc
             # Ensure /etc/environment is sourced on login
-            [[ "${export_env}" = "true" ]] && { echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; } | tee -a $target_bashrc
+            [[ "${export_env}" = "true" ]] && { echo 'set +a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; set -a; } | tee -a $target_bashrc
             # Ensure node npm (nvm) are available on login
             echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
-            # Activate the conda env
-            if [[ "${activate_conda_environment}" == "true" ]]; then
-                echo 'cd ${WORKSPACE} && /opt/miniforge3/condabin/conda activate /conda/${ACTIVE_CONDA:-main}' | tee -a $target_bashrc
-            fi
             # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
             if [[ "${activate_python_environment}" == "true" ]]; then
                 echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
@@ -113,7 +103,7 @@ main() {
     [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
 
     # Source the file at /etc/environment - We can now edit environment variables in a running instance
-    [[ "${export_env}" = "true" ]] && { . /etc/environment 2>/dev/null || true; . "${WORKSPACE}/.env" 2>/dev/null || true; }
+    [[ "${export_env}" = "true" ]] && { set +a; . /etc/environment 2>/dev/null; . "${WORKSPACE}/.env" 2>/dev/null; set -a; }
 
     # We may be busy for a while.
     # Indicator for supervisor scripts to prevent launch during provisioning if necessary (if [[ -f /.provisioning ]] ...)
@@ -158,7 +148,11 @@ main() {
     # Use this to assist user in fixing broken container.  Add in env or /etc/environment
     # This will run on every boot.  Script must handle its own run conditions
     if [[ -n $HOTFIX_SCRIPT ]]; then
-        curl -LsSf "$HOTFIX_SCRIPT" | bash
+        curl -L -o /tmp/hotfix.sh "$HOTFIX_SCRIPT" && \
+        chmod +x /tmp/hotfix.sh && \
+        dos2unix /tmp/hotfix.sh && \
+        echo "Applying hotfix script" && \
+        /tmp/hotfix.sh
     fi
 
     # Now we run supervisord - Put it in the background so provisioning can be monitored in Instance Portal
@@ -188,6 +182,7 @@ main() {
         echo "*****"
         # Only download it if we don't already have it - Allows inplace modification & restart
         [[ ! -f /provisioning.sh ]] && curl -Lo /provisioning.sh "$PROVISIONING_SCRIPT"
+        dos2unix /provisioning.sh && \
         chmod +x /provisioning.sh && \
         (set -o pipefail; /provisioning.sh 2>&1 | tee -a /var/log/portal/provisioning.log) && \
         touch /.provisioning_complete && \

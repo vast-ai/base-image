@@ -22,6 +22,11 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+set +a
+. /etc/environment 2>/dev/null
+. ${WORKSPACE}/.env 2>/dev/null
+set -a
+
 # Run the caddy configurator
 cd /opt/portal-aio/caddy_manager
 /opt/portal-aio/venv/bin/python caddy_config_manager.py | tee -a "/var/log/portal/${PROC_NAME}.log"
