@@ -1,6 +1,6 @@
 #!/bin/bash
 set -m
-SCRIPT_PID=$
+SCRIPT_PID=$$
 
 cleanup() {
     kill -TERM -$SCRIPT_PID 2>/dev/null
