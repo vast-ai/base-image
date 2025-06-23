@@ -85,7 +85,7 @@ main() {
             target_bashrc="/root/.bashrc /home/user/.bashrc"
             echo "### Entrypoint setup ###" | tee -a $target_bashrc
             # Ensure /etc/environment is sourced on login
-            [[ "${export_env}" = "true" ]] && { echo 'set +a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; set -a; } | tee -a $target_bashrc
+            [[ "${export_env}" = "true" ]] && { echo 'set -a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; set +a; } | tee -a $target_bashrc
             # Ensure node npm (nvm) are available on login
             echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
             # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
@@ -103,7 +103,7 @@ main() {
     [[ "${propagate_user_keys}" = "true" ]] && /opt/instance-tools/bin/propagate_ssh_keys.sh
 
     # Source the file at /etc/environment - We can now edit environment variables in a running instance
-    [[ "${export_env}" = "true" ]] && { set +a; . /etc/environment 2>/dev/null; . "${WORKSPACE}/.env" 2>/dev/null; set -a; }
+    [[ "${export_env}" = "true" ]] && { set -a; . /etc/environment 2>/dev/null; . "${WORKSPACE}/.env" 2>/dev/null; set +a; }
 
     # We may be busy for a while.
     # Indicator for supervisor scripts to prevent launch during provisioning if necessary (if [[ -f /.provisioning ]] ...)

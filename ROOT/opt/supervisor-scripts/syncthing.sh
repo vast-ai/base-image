@@ -22,10 +22,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-set +a
+set -a
 . /etc/environment 2>/dev/null
 . ${WORKSPACE}/.env 2>/dev/null
-set -a
+set +a
 
 # User can configure startup by removing the reference in /etc.portal.yaml - So wait for that file and check it
 while [ ! -f "$(realpath -q /etc/portal.yaml 2>/dev/null)" ]; do
@@ -50,7 +50,7 @@ run_syncthing() {
     API_KEY=${OPEN_BUTTON_TOKEN:-$(openssl rand -hex 16)}
     /opt/syncthing/syncthing generate
     sed -i '/^\s*<listenAddress>/d' /opt/syncthing/config/config.xml
-    sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' /opt/syncthing/config/config.xml
+    sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' "${STCONFDIR}/config.xml"
 
     /opt/syncthing/syncthing serve --no-restart --no-browser --no-default-folder --gui-address="127.0.0.1:18384" --gui-apikey="${API_KEY}" --no-upgrade &
     syncthing_pid=$!

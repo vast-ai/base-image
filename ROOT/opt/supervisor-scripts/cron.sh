@@ -11,9 +11,9 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-set +a
+set -a
 . /etc/environment 2>/dev/null
 . ${WORKSPACE}/.env 2>/dev/null
-set -a
+set +a
 
 cron -f 2>&1 | tee -a /var/log/portal/cron.log

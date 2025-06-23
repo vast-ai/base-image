@@ -29,10 +29,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-set +a
+set -a
 . /etc/environment 2>/dev/null
 . ${WORKSPACE}/.env 2>/dev/null
-set -a
+set +a
 
 if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
     echo "Refusing to start ${PROC_NAME} (/.launch managing)" | tee -a "/var/log/portal/${PROC_NAME}.log" 
