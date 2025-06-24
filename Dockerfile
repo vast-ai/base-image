@@ -24,7 +24,9 @@ LABEL org.opencontainers.image.description="Base image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Support pipefail so we don't build broken images
-SHELL ["/bin/bash", "-c"]
+SHELL ["/bin/bash", "-c", "umask 002 && /bin/bash -c \"$@\"", "-"]
+# Use umask 002 to the power 'user' can easily share the root group.
+RUN sed -i '1i umask 002' /root/.bashrc
 
 # Add some useful scripts and config files
 COPY ./ROOT/ /
@@ -50,7 +52,7 @@ RUN \
         NCCL_VERSION=$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null | cut -d'-' -f1 || echo "0.0.0"); \
         if dpkg --compare-versions "$NCCL_VERSION" lt "2.26.2"; then \
             apt-get -y update; \
-            apt-get install -y --allow-change-held-packages libnccl2 libnccl-dev; \
+            apt-get install -y --allow-change-held-packages libnccl2=2.26.2-1+cuda12.8 libnccl-dev=2.26.2-1+cuda12.8; \
         fi; \
     fi && \
     apt-get clean && \
@@ -76,19 +78,11 @@ RUN \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install --no-install-recommends -y \
-        software-properties-common \
-        gpg-agent && \
-    # For alternative Python versions.  Nightly as fallback is helpful when building ARM images with recent Python versions
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    add-apt-repository -y ppa:deadsnakes/nightly && \
-    mkdir -p /etc/apt/preferences.d && \
-    echo $'Package: *\nPin: release o=LP-PPA-deadsnakes-ppa\nPin-Priority: 900\n\nPackage: *\nPin: release o=LP-PPA-deadsnakes-nightly\nPin-Priority: 50' \
-        > /etc/apt/preferences.d/deadsnakes-priority && \
-    apt-get update && \
-    apt-get install --no-install-recommends -y \
         # Base system utilities
         acl \
         ca-certificates \
+        gpg-agent \
+        software-properties-common \
         locales \
         lsb-release \
         curl \
@@ -124,6 +118,7 @@ RUN \
         cmake \
         ninja-build \
         gdb \
+        libssl-dev \
         # System Python
         python3-full \
         python3-dev \
@@ -136,6 +131,7 @@ RUN \
         iputils-ping \
         traceroute \
         # File management
+        dos2unix \
         rsync \
         rclone \
         zip \
@@ -178,6 +174,31 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+    # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
+    RUN \
+        set -euo pipefail && \
+        useradd -ms /bin/bash user -u 1001 -g 0 && \
+        sed -i '1i umask 002' /home/user/.bashrc && \
+        echo "PATH=${PATH}" >> /home/user/.bashrc && \
+        echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
+        sudo chmod 0440 /etc/sudoers.d/user && \
+        mkdir -m 700 -p /run/user/1001 && \
+        chown 1001:0 /run/user/1001 && \
+        mkdir -p /run/dbus && \
+        mkdir -p /opt/workspace-internal/
+
+    # Add support for uv, the excellent Python environment manager
+    ENV UV_CACHE_DIR=/.uv/cache
+    ENV UV_NO_CACHE=1
+    # We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
+    ENV UV_LINK_MODE=copy
+    ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
+    ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
+    RUN \
+        set -euo pipefail && \
+        mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+        pip install uv
+
     # Install Extra Nvidia packages (OpenCL)
     # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
     # We cannot know the runtime driver version so we aim for best compatibility 
@@ -201,6 +222,7 @@ RUN \
             "126") driver_version=560 ;; \
             "127") driver_version=565 ;; \
             "128") driver_version=570 ;; \
+            "129") driver_version=575 ;; \
         esac; \
         if [[ -n "$driver_version" ]]; then \
             if [[ "${TARGETARCH}" = "arm64" ]] && [[ "$driver_version" -lt 550 ]]; then \
@@ -216,24 +238,6 @@ RUN \
     fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-    
-
-# Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
-RUN \
-    set -euo pipefail && \
-    groupadd -g 1001 user && \
-    useradd -ms /bin/bash user -u 1001 -g 1001 && \
-    echo "PATH=${PATH}" >> /home/user/.bashrc && \
-    echo "user ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/user && \
-    sudo chmod 0440 /etc/sudoers.d/user && \
-    mkdir -m 700 -p /run/user/1001 && \
-    chown 1001:1001 /run/user/1001 && \
-    mkdir -p /run/dbus && \
-    mkdir -p /opt/workspace-internal/ && \
-    chown 1001:1001 /opt/workspace-internal/ && \
-    chmod g+s /opt/workspace-internal/ && \
-    chmod 775 /opt/workspace-internal/ && \
-    setfacl -d -m g:user:rw- /opt/workspace-internal/
 
 # Install NVM for node version management
 RUN \
@@ -249,15 +253,15 @@ COPY ./portal-aio /opt/portal-aio
 COPY --from=caddy_builder /go/caddy /opt/portal-aio/caddy_manager/caddy
 ARG TARGETARCH
 RUN \
+    chown -R 0:0 /opt/portal-aio && \
     set -euo pipefail && \
-    apt-get update && \
-    apt-get install --no-install-recommends -y \
-        python3.10-venv && \
-    python3.10 -m venv /opt/portal-aio/venv && \
+    uv venv --seed /opt/portal-aio/venv -p 3.11 && \
     mkdir -m 770 -p /var/log/portal && \
-    chown 0:1001 /var/log/portal/ && \
+    chown 0:0 /var/log/portal/ && \
     mkdir -p opt/instance-tools/bin/ && \
-    /opt/portal-aio/venv/bin/pip install -r /opt/portal-aio/requirements.txt && \
+    . /opt/portal-aio/venv/bin/activate && \
+    uv pip install -r /opt/portal-aio/requirements.txt && \
+    deactivate && \
     wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH} && \
     chmod +x /opt/portal-aio/tunnel_manager/cloudflared && \
     # Make these portal-provided tools easily reachable
@@ -286,48 +290,115 @@ RUN \
     SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz" && \
     mkdir -p /opt/syncthing/config && \
     mkdir -p /opt/syncthing/data && \
-    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz && \
-    chown -R root:user /opt/syncthing && \
-    chmod -R ug+rwX /opt/syncthing
+    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz
 
+ARG BASE_IMAGE
 ARG PYTHON_VERSION=3.10
 ENV PYTHON_VERSION=${PYTHON_VERSION}
+
 RUN \
     set -euo pipefail && \
-    apt-get update && \
-    # Supplementary Python
-    apt-get install --no-install-recommends -y \
-        python${PYTHON_VERSION} \
-        python${PYTHON_VERSION}-dev \
-        python${PYTHON_VERSION}-venv \
-        python${PYTHON_VERSION}-tk && \
+    curl -L -o /tmp/miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" && \
+    bash /tmp/miniforge3.sh -b -p /opt/miniforge3 && \
+    /opt/miniforge3/bin/conda init && \
+    su -l user -c "/opt/miniforge3/bin/conda init" && \
     mkdir -p /venv && \
-    chown 0:1001 /venv && \
-    chmod g+rwxs /venv && \
-    setfacl -R -d -m g:1001:rwX /venv && \
-    setfacl -R -d -m u::rwX /venv && \
-    setfacl -R -d -m o::r-X /venv && \
-    # Create a virtual env - This gives us portability without sacrificing any functionality
-    python${PYTHON_VERSION} -m venv /venv/main && \
-    /venv/main/bin/pip install --no-cache-dir \
+    /opt/miniforge3/bin/conda config --set auto_activate_base false && \
+    /opt/miniforge3/bin/conda config --set always_copy true && \
+    /opt/miniforge3/bin/conda config --set pip_interop_enabled true && \
+    /opt/miniforge3/bin/conda config --add envs_dirs /venv && \
+    /opt/miniforge3/bin/conda config --set env_prompt '({name}) ' && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set auto_activate_base false" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set always_copy true" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set pip_interop_enabled true" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --add envs_dirs /venv" && \
+    su -l user -c "/opt/miniforge3/bin/conda config --set env_prompt '({name}) '" && \
+    if [[ "$BASE_IMAGE" == *"nvidia"* ]]; then \
+        /opt/miniforge3/bin/conda config --add channels nvidia; \
+        su -l user -c "/opt/miniforge3/bin/conda config --add channels nvidia"; \
+    fi && \
+    # Main conda env mimics python venv
+    /opt/miniforge3/bin/conda create -p /venv/main python="${PYTHON_VERSION}" -y && \
+    mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
+    printf '%s\n' \
+        'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
+            >> /venv/main/etc/conda/activate.d/environment.sh && \
+    printf '%s\n' \
+        'if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then' \
+        '    echo "This script must be sourced: source bin/activate"' \
+        '    exit 1' \
+        'fi' \
+        '' \
+        '# Define deactivate function' \
+        'deactivate() {' \
+        '    # Deactivate conda environment' \
+        '    if type conda &> /dev/null; then' \
+        '        conda deactivate' \
+        '    fi' \
+        '    ' \
+        '    # Unset the deactivate function itself' \
+        '    unset -f deactivate' \
+        '    ' \
+        '    # Return success' \
+        '    return 0' \
+        '}' \
+        '' \
+        '# Check if conda is available' \
+        'if ! type conda &> /dev/null; then' \
+        '    # Detect if this is an interactive shell environment' \
+        '    if [[ -n "${PS1:-}" ]] || [[ "$-" == *i* ]]; then' \
+        '        # Interactive shell - do full init via bashrc' \
+        '        if [[ -f ~/.bashrc ]]; then' \
+        '            source ~/.bashrc' \
+        '        fi' \
+        '    else' \
+        '        # Non-interactive (Docker, CI, etc.) - minimal init' \
+        '        if [[ "$PATH" != *"/opt/miniforge3/condabin"* ]]; then' \
+        '            export PATH="/opt/miniforge3/condabin:$PATH"' \
+        '        fi' \
+        '        if [[ -f /opt/miniforge3/etc/profile.d/conda.sh ]]; then' \
+        '            source /opt/miniforge3/etc/profile.d/conda.sh' \
+        '        fi' \
+        '    fi' \
+        'fi' \
+        '' \
+        'conda activate $(realpath /venv/main)' \
+            > /venv/main/bin/activate && \
+        /opt/miniforge3/bin/conda clean -ay
+
+RUN \
+    set -euo pipefail && \
+    . /venv/main/bin/activate && \
+    uv pip install \
         wheel \
         huggingface_hub[cli] \
         ipykernel \
         ipywidgets && \
-    /venv/main/bin/python -m ipykernel install \
+    python -m ipykernel install \
         --name="main" \
         --display-name="Python3 (main venv)" && \
     # Re-add as default.  We don't want users accidentally installing packages in the system python
-    /venv/main/bin/python -m ipykernel install \
+    python -m ipykernel install \
         --name="python3" \
         --display-name="Python3 (ipykernel)" && \
+    deactivate && \
+    /usr/bin/pip install \
+        conda-pack \
+        ipykernel && \
+    /usr/bin/python3 -m ipykernel install \
+        --name="system-python" \
+        --display-name="Python3 (System)" && \
     # Add a cron job to regularly backup all venvs in /venv/*
     echo "*/30 * * * * /opt/instance-tools/bin/venv-backup.sh" | crontab - && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
-ENV IMAGE_ID=vastai-base-image
+
+# Defend against environment clashes when syncing to volume
+RUN \
+    set -euo pipefail && \
+    env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

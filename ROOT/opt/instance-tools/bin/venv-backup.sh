@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Configuration
-WORKSPACE_VENV_DIR="${WORKSPACE:-/workspace}/venv"
 SYSTEM_VENV_DIR="/venv"
 BACKUP_DIR="${WORKSPACE:-/workspace}/.venv-backups/${CONTAINER_ID}"
 TIMESTAMP=$(date +"%Y-%m-%d-%H%M")
@@ -40,23 +39,21 @@ process_venvs() {
             found_venvs=1
             venv_name=$(basename "$venv_path")
             backup_file="${BACKUP_DIR}/venv-${venv_name}-${TIMESTAMP}.txt"
-            if [ ! -f "${WORKSPACE_VENV_DIR}/${venv_name}/bin/activate" ] && [ ! -f "${WORKSPACE_VENV_DIR}/${venv_name}/bin/python" ]; then
-                log "Processing virtual environment: $venv_path"
+
+            log "Processing virtual environment: $venv_path"
                 
-                if source "$venv_path/bin/activate" 2>/dev/null; then
-                    if pip freeze > "$backup_file"; then
-                        log "SUCCESS: Created backup at $backup_file"
-                        ln -sf "$backup_file" "${BACKUP_DIR}/venv-${venv_name}-latest.txt"
-                    else
-                        log "ERROR: Failed to create requirements file for $venv_path"
-                    fi
-                    deactivate
+            if source "$venv_path/bin/activate" 2>/dev/null; then
+                if pip freeze > "$backup_file"; then
+                    log "SUCCESS: Created backup at $backup_file"
+                    ln -sf "$backup_file" "${BACKUP_DIR}/venv-${venv_name}-latest.txt"
                 else
-                    log "ERROR: Failed to activate virtual environment at $venv_path"
+                    log "ERROR: Failed to create requirements file for $venv_path"
                 fi
+                deactivate
             else
-                log "INFO: Skipping backup of $venv_path - Exists at ${WORKSPACE_VENV_DIR}/${venv_name}"
+                log "ERROR: Failed to activate virtual environment at $venv_path"
             fi
+
         fi
     done
     

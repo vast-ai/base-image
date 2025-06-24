@@ -7,7 +7,37 @@
 # 3) We get unauthenticated access without TLS via SSH forwarding 
 # 4) it gives us a shell in Args runtype
 
-[[ -f /.launch ]] && grep -qi jupyter /.launch &&  echo "Refusing to start ${PROC_NAME} (/.launch managing)" | tee -a "/var/log/portal/${PROC_NAME}.log" && exit
+kill_subprocesses() {
+    local pid=$1
+    local subprocesses=$(pgrep -P "$pid")
+    
+    for process in $subprocesses; do
+        kill_subprocesses "$process"
+    done
+    
+    if [[ -n "$subprocesses" ]]; then
+        kill -TERM $subprocesses 2>/dev/null
+    fi
+}
+
+cleanup() {
+    kill_subprocesses $$
+    sleep 2
+    pkill -KILL -P $$ 2>/dev/null
+    exit 0
+}
+
+trap cleanup EXIT INT TERM
+
+set -a
+. /etc/environment 2>/dev/null
+. ${WORKSPACE}/.env 2>/dev/null
+set +a
+
+if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
+    echo "Refusing to start ${PROC_NAME} (/.launch managing)" | tee -a "/var/log/portal/${PROC_NAME}.log" 
+    exit 0
+fi
 
 # User can configure startup by removing the reference in /etc.portal.yaml - So wait for that file and check it
 while [ ! -f "$(realpath -q /etc/portal.yaml 2>/dev/null)" ]; do
@@ -23,12 +53,15 @@ if ! grep -qiE "^[^#].*${search_pattern}" /etc/portal.yaml; then
     exit 0
 fi
 
+# Required for default jupyter override
+pgrep -f "jupyter-lab|jupyter-notebook|jupyter notebook" | xargs -r kill -9 > /dev/null 2>&1
+
 type="${JUPYTER_TYPE:-notebook}"
 
 # Ensure the default Python used by Jupyter is our venv
 # Token not specified because auth is handled through Caddy
-[[ -f "${WORKSPACE}/venv/main/bin/activate" ]] && . "${WORKSPACE}/venv/main/bin/activate" || . /venv/main/bin/activate
-jupyter "${type,,}" \
+
+/usr/local/bin/jupyter "${type,,}" \
         --allow-root \
         --ip=127.0.0.1 \
         --port=18080 \

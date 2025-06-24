@@ -44,6 +44,11 @@ if [[ ! -f "$ROOT_AUTH_KEYS" ]]; then
     exit 1
 fi
 
+# Ensure root keys have corect permissions (failsafe)
+chown -R 0:0 /root/.ssh/
+chmod $SSH_DIR_PERMISSIONS /root/.ssh
+chmod $AUTH_KEYS_PERMISSIONS /root/.ssh/authorized_keys
+
 # Iterate over users in /home
 for user_home in /home/*; do
     if [[ ! -d "$user_home" ]]; then
