@@ -85,7 +85,7 @@ main() {
             target_bashrc="/root/.bashrc /home/user/.bashrc"
             echo "### Entrypoint setup ###" | tee -a $target_bashrc
             # Ensure /etc/environment is sourced on login
-            [[ "${export_env}" = "true" ]] && { echo 'set -a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; set +a; } | tee -a $target_bashrc
+            [[ "${export_env}" = "true" ]] && { echo 'set -a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; echo 'set +a'; } | tee -a $target_bashrc
             # Ensure node npm (nvm) are available on login
             echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
             # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
