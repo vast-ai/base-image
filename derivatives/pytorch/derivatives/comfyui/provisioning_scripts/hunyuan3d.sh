@@ -21,7 +21,7 @@ NODES=(
 )
 
 WORKFLOWS=(
-    "https://raw.githubusercontent.com/vast-ai/base-image/comfyui-lora-provisioning/derivatives/pytorch/derivatives/comfyui/workflows/hunyuan3d.json"
+    "https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/hunyuan3d.json"
 )
 
 CHECKPOINT_MODELS=(
