@@ -8,7 +8,7 @@ PIP_PACKAGES=()
 NODES=()
 
 WORKFLOWS=(
-    "https://gist.githubusercontent.com/saeid93/c5febe8f277945553a336b8110e694ef/raw/c119e6feb941ebc5dd6598d630e0068aea516a45/text_to_video_wan.json"
+    "https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/text_to_video_wan.json"
 )
 
 VAE_MODELS=(
