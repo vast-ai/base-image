@@ -18,9 +18,9 @@ NODES=(
 )
 
 WORKFLOWS=(
-    "https://gist.githubusercontent.com/saeid93/66b3b5a6964adcc933ef8ac591767588/raw/f823c35f59238e75d16d2ae43fa8973b0c9062a4/gligen_textbox_example.json"
-    "https://gist.githubusercontent.com/saeid93/4dc7e5c23d5245af00a36f124f3379f5/raw/14c94e69117d00d8457ce8c7b6b6f3b2697fe777/image_generation.json"
-    "https://gist.githubusercontent.com/saeid93/6d5b3c697982765b800be058b73d8599/raw/68f3bfafb7272d26b1f6604903dc56d25f69328e/image2image.json"
+    "https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/gligen_textbox_example.json"
+    "https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/image_generation.json"
+    "https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/image2image.json"
 )
 
 CHECKPOINT_MODELS=(
