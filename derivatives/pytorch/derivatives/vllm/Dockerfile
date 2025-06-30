@@ -15,8 +15,6 @@ ARG VLLM_REF
 
 RUN \
     [[ -n "${VLLM_REF}" ]] || { echo "Must specify VLLM_REF" && exit 1; } && \
-    # Python dev package install will be moved to base-image
-    apt-get install -y --no-install-recommends python3.12-dev && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
