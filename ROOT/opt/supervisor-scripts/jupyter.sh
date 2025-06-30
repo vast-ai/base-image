@@ -60,7 +60,7 @@ type="${JUPYTER_TYPE:-notebook}"
 
 # Ensure the default Python used by Jupyter is our venv
 # Token not specified because auth is handled through Caddy
-
+cd ${WORKSPACE}
 /usr/local/bin/jupyter "${type,,}" \
         --allow-root \
         --ip=127.0.0.1 \
