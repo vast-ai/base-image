@@ -64,7 +64,7 @@ fi
 
 # Extract the archive to /opt
 echo "Extracting archive to /opt directory..."
-tar -xzf "$TEMP_DIR/$DOWNLOAD_FILE" -C /opt
+tar -xzf "$TEMP_DIR/$DOWNLOAD_FILE" -C /opt --no-same-owner
 
 # Install dependencies
 echo "Installing Python dependencies..."
