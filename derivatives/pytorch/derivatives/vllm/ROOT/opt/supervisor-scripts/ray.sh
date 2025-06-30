@@ -8,6 +8,11 @@ while [ ! -f "$(realpath -q /etc/portal.yaml 2>/dev/null)" ]; do
     sleep 1
 done
 
+if [[ -z "${VLLM_MODEL:-}" ]]; then
+    echo "Skipping startup for ${PROC_NAME} (\$VLLM_MODEL not specified)" | tee -a "/var/log/portal/${PROC_NAME}.log"
+    exit 0
+fi
+
 # Check for ray in the portal config
 search_term="ray dash"
 search_pattern=$(echo "$search_term" | sed 's/[ _-]/[ _-]/g')
@@ -28,7 +33,6 @@ done
 
 # Launch Ray
 cd ${WORKSPACE}
-
-ray start ${RAY_ARGS:---head --port 6379  --dashboard-host 127.0.0.1 --dashboard-port 28265} 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
+ray start ${RAY_ARGS:---head --dashboard-host 127.0.0.1 --dashboard-port 28265} 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
 
 sleep infinity
