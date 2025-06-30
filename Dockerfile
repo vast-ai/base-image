@@ -290,7 +290,9 @@ RUN \
     SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz" && \
     mkdir -p /opt/syncthing/config && \
     mkdir -p /opt/syncthing/data && \
-    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && rm -f /opt/syncthing.tar.gz
+    wget -O /opt/syncthing.tar.gz $SYNCTHING_URL && (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1) && \
+    chown -R user:root /opt/syncthing && \
+    rm -f /opt/syncthing.tar.gz
 
 ARG BASE_IMAGE
 ARG PYTHON_VERSION=3.10
@@ -402,5 +404,3 @@ RUN \
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
-
-WORKDIR /workspace/
