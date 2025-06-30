@@ -19,8 +19,8 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
-    pip install --no-cache-dir vllm=="${VLLM_REF}" && \
+    uv pip install --no-cache-dir xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
+    uv pip install --no-cache-dir vllm=="${VLLM_REF}" ray[default] && \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
