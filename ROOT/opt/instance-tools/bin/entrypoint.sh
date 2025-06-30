@@ -45,6 +45,9 @@ main() {
         esac
     done  
 
+    mkdir -p "${WORKSPACE}"
+    cd "${WORKSPACE}"
+
     # Remove Jupyter from the portal config if the external port 8080 isn't defined
     if [ -z "${VAST_TCP_PORT_8080}" ]; then
         PORTAL_CONFIG=$(echo "$PORTAL_CONFIG" | tr '|' '\n' | grep -vi jupyter | tr '\n' '|' | sed 's/|$//')
@@ -265,16 +268,16 @@ sync_workspace() {
         
         if [[ -d "$item" && ! -e "$target" ]]; then
             # Copy directory recursively
-            cp -rf --update=none '$item' '${workspace}/'
+            cp -ru "$item" "${workspace}/"
             # Apply ownership and permissions to the copied directory and its contents
         elif [[ -f "$item" && ! -e "$target" ]]; then
             # Copy file
-            cp --update=none '$item' '${workspace}/'
+            cp -f "$item" "${workspace}/"
         fi
     done
 
     # Remove default files that do not belong in the workspace
-    rm -f ${WORKSPACE}/onstart.sh ${WORKSPACE}/ports.log
+    rm -f "${WORKSPACE}/onstart.sh" "${WORKSPACE}/ports.log"
 }
 
 # Move the environments from /venv/* & /conda/* to $workspace volume
@@ -287,10 +290,9 @@ sync_environment() {
     
     # Copy if not present
     if [[ ! -d "$venv_dir" ]]; then
-        mkdir -p "$venv_dir" "$conda_dir" "$uv_dir"
+        mkdir -p "$venv_dir" "$uv_dir"
         touch "${venv_dir}/.syncing"
-        cp -rf --update=none /.uv/* '${uv_dir}'
-        cp -rf --update=none /.uv/* "$uv_dir" 
+        cp -ru /.uv/* "${uv_dir}"
         
         # Handle venv directories
         for dir in /venv/*/; do
@@ -303,14 +305,14 @@ sync_environment() {
                 # Basic venv
                 if [[ -f "${dir}pyvenv.cfg" ]]; then
                     mkdir -p "$(dirname $target_path)"
-                    cp -rf --update=none '/venv/${venv_name}' '${target_path}'
+                    cp -ru "/venv/${venv_name}" "${target_path}"
                 else
                 # Conda
                     mkdir -p "$target_path"
                     if [[ -f "${origin_path}/bin/activate" ]]; then
                         mv -f "${origin_path}/bin/activate" "${origin_path}/bin/activate.orig"
                     fi
-                    conda-pack -j -1 -p "$origin_path" -d "$target_path" -o "${venv_name}.tar.gz"
+                    conda-pack --ignore-missing-files -j -1 -p "$origin_path" -d "$target_path" -o "${venv_name}.tar.gz"
                     echo "moving ./${venv_name}.tar.gz to $target_path"
                     mv "${venv_name}.tar.gz" "$target_path"
                     tar -xvf "${target_path}/${venv_name}.tar.gz" -C "$target_path"

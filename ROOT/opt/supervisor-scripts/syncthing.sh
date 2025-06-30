@@ -54,10 +54,9 @@ run_syncthing() {
 
     /opt/syncthing/syncthing serve --no-restart --no-browser --no-default-folder --gui-address="127.0.0.1:18384" --gui-apikey="${API_KEY}" --no-upgrade &
     syncthing_pid=$!
-    echo "Waiting on $syncthing_pid"
 
     until curl --output /dev/null --silent --head --fail "http://127.0.0.1:18384"; do
-        echo "Waiting for syncthing server...\n"
+        echo "Waiting for syncthing server..."
         sleep 1
     done
 
@@ -70,7 +69,7 @@ run_syncthing() {
 
 run_with_retry() {
     until "$@"; do
-        printf "Command failed. Retrying...\n"
+        echo "Command failed. Retrying..."
         sleep 1
     done
 }

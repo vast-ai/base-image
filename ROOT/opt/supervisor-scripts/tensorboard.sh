@@ -41,4 +41,5 @@ if ! grep -qiE "^[^#].*${search_pattern}" /etc/portal.yaml; then
     exit 0
 fi
 
+cd "${WORKSPACE}"
 tensorboard --port 16006 --logdir "${TENSORBOARD_LOG_DIR:-${WORKSPACE:-/workspace}}" 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
