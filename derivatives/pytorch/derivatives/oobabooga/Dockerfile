@@ -25,8 +25,13 @@ RUN \
     git clone https://github.com/oobabooga/text-generation-webui && \
     cd /opt/workspace-internal/text-generation-webui && \
     git checkout "${OOBABOOGA_REF}" && \
-    pip install --no-cache-dir \
-        -r requirements.txt && \
+    cuda_int="$(echo "${CUDA_VERSION}" | cut -d. -f1,2 | tr -d '.')" && \
+    if (( cuda_int >= 128 )); then \
+        requirements_file=requirements/full/requirements.txt; \
+    else \
+        requirements_file=requirements/full/requirements_cuda128.txt; \
+    fi && \
+    uv pip install --no-cache-dir -r "$requirements_file" && \
     # Download custom models into the build if you want them - None included in default build
     # wget -O ${DATA_DIRECTORY}text-generation-webui/models/model https://url.to.files/model2 && \
     # wget -O ${DATA_DIRECTORY}text-generation-webui/models/Stable-diffusion/model2.safetensors https://url.to.files/model2 && \
