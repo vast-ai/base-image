@@ -90,6 +90,7 @@ fi
 COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv | tail -n1)
 if echo "$COMPUTE_CAP" | awk '$1 >= 10.0 {exit 0} {exit 1}'; then
     export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libnccl.so
+    export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-FLASHINFER}
 fi
 
 vllm serve ${VLLM_MODEL:-} ${VLLM_ARGS:---host 127.0.0.1 --port 18000} ${TENSOR_PARALLEL_SIZE} 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
