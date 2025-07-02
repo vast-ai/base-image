@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1-py312
+ARG PYTORCH_BASE=vastai/pytorch:2.7.0-cuda-12.6.3-py312
 
 FROM ${PYTORCH_BASE}
 
@@ -20,7 +20,18 @@ RUN \
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
     uv pip install --no-cache-dir xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
-    uv pip install --no-cache-dir vllm=="${VLLM_REF}" ray[default] && \
+    if [[ "${VLLM_REF},,}" = "nightly" ]]; then \
+      uv pip install vllm --extra-index-url https://wheels.vllm.ai/nightly; \
+    else \
+      uv pip install vllm=="${VLLM_REF}"; \
+    fi && \
+    cuda_int="$(echo "${CUDA_version}" | cut -d. -f1,2 | tr -d '.')" && \
+    if (( cuda_int >= 128 )); then \
+        uv pip install flashinfer-python --extra-index-url "${PYTORCH_INDEX_URL}"; \
+    else \
+        uv pip install flashinfer-python; \
+    fi && \
+    uv pip install ray[default] && \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
