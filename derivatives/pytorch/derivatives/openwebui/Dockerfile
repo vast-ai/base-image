@@ -38,10 +38,19 @@ RUN \
     # Get Llama.cpp
     mkdir -p /opt/llama.cpp/bin && \
     cd /tmp && \
+    apt-get update && \
     apt-get install libcurl4-openssl-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
     git clone https://github.com/ggerganov/llama.cpp && \
+    cuda_int="$(echo "${CUDA_VERSION}" | cut -d. -f1,2 | tr -d '.')" && \
+    if (( cuda_int >= 128 )); then \
+        CMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;100;120"; \
+    else \
+        CMAKE_CUDA_ARCHITECTURES="75;80;86;89;90"; \
+    fi && \
     cmake llama.cpp -B /tmp/llama.cpp/build \
-        -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON -DLLAMA_CURL=ON && \
+        -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON -DLLAMA_CURL=ON -DCMAKE_CUDA_ARCHITECTURES="$CMAKE_CUDA_ARCHITECTURES" && \
     cmake --build /tmp/llama.cpp/build --config Release -j --clean-first --target llama-quantize llama-cli llama-server llama-gguf-split && \
     cp /tmp/llama.cpp/build/bin/llama-* /opt/llama.cpp/bin && \
     rm -rf /tmp/llama.cpp && \
