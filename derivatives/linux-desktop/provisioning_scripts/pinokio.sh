@@ -28,7 +28,7 @@ Version=1.0
 Type=Application
 Name=Pinokio
 Comment=Pinokio Application
-Exec=env HOME=${WORKSPACE} APPDIR=/opt/pinokio vglrun -nodl /opt/pinokio/AppRun --no-sandbox %U
+Exec=env HOME=${WORKSPACE} APPDIR=/opt/pinokio /opt/pinokio/AppRun --no-sandbox %U
 Icon=/opt/pinokio/pinokio.png
 Terminal=false
 Categories=Utility;
