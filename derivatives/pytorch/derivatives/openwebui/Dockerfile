@@ -25,10 +25,12 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
-    pip install onnxruntime-gpu && \
+    uv pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
+    apt-get update && \
+    apt-get install -y curl libcurl4-openssl-dev && \
+    uv pip install onnxruntime-gpu && \
     # Get open-webui
-    pip install --no-cache-dir open-webui==${OPENWEBUI_REF} && \
+    uv pip install --no-cache-dir open-webui==${OPENWEBUI_REF} && \
     # Get Ollama
     wget -O /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/${OLLAMA_REF}/ollama-linux-${TARGETARCH:-amd64}.tgz && \
     tar -C /usr -xzf /tmp/ollama.tgz && \
@@ -38,7 +40,6 @@ RUN \
     # Get Llama.cpp
     mkdir -p /opt/llama.cpp/bin && \
     cd /tmp && \
-    apt-get install libcurl4-openssl-dev && \
     git clone https://github.com/ggerganov/llama.cpp && \
     cmake llama.cpp -B /tmp/llama.cpp/build \
         -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON -DLLAMA_CURL=ON && \
@@ -48,6 +49,8 @@ RUN \
     mkdir -p /opt/workspace-internal/llama.cpp/models/ && \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; } && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
     ENV PATH="${PATH}:/opt/llama.cpp/bin"
