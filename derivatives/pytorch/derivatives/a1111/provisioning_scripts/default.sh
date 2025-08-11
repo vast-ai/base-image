@@ -11,11 +11,13 @@ APT_PACKAGES=(
 )
 
 PIP_PACKAGES=(
+)
 
+EXTENSIONS=(
 )
 
 CHECKPOINT_MODELS=(
-    "https://civitai.com/api/download/models/798204?type=Model&format=SafeTensor&size=full&fp=fp16"
+    "https://civitai.com/api/download/models/1061268?type=Model&format=SafeTensor&size=pruned&fp=fp16"
 )
 
 UNET_MODELS=(
@@ -33,6 +35,9 @@ ESRGAN_MODELS=(
 CONTROLNET_MODELS=(
 )
 
+ADETAILER_MODELS=(
+)
+
 ### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
 
 function provisioning_start() {
@@ -43,6 +48,21 @@ function provisioning_start() {
     provisioning_get_files \
         "${A1111_DIR}/models/Stable-diffusion" \
         "${CHECKPOINT_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/Lora" \
+        "${LORA_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/controlnet" \
+        "${CONTROLNET_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/VAE" \
+        "${VAE_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/ESRGAN" \
+        "${ESRGAN_MODELS[@]}"
+    provisioning_get_files \
+        "${A1111_DIR}/models/adetailer" \
+        "${ADETAILER_MODELS[@]}"
 
     
     # Avoid git errors because we run as root but files are owned by 'user'
@@ -144,13 +164,13 @@ function provisioning_has_valid_civitai_token() {
 # Download from $1 URL to $2 file path
 function provisioning_download() {
     if [[ -n $HF_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?huggingface\.co(/|$|\?) ]]; then
-        auth_token="$HF_TOKEN"
-    elif 
-        [[ -n $CIVITAI_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?civitai\.com(/|$|\?) ]]; then
-        auth_token="$CIVITAI_TOKEN"
-    fi
-    if [[ -n $auth_token ]];then
-        wget --header="Authorization: Bearer $auth_token" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
+        wget --header="Authorization: Bearer $HF_TOKEN" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
+    elif [[ -n $CIVITAI_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?civitai\.com(/|$|\?) ]]; then
+        if [[ $1 == *\?* ]]; then
+            wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1&token=$CIVITAI_TOKEN"
+        else
+            wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1?token=$CIVITAI_TOKEN"
+        fi
     else
         wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
     fi
