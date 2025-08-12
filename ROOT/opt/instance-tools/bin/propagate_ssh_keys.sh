@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-ROOT_AUTH_KEYS="/root/.ssh/authorized_keys"
+ROOT_AUTH_KEYS="$(realpath /root/.ssh/authorized_keys)"
 SSH_DIR_PERMISSIONS="700"
 AUTH_KEYS_PERMISSIONS="600"
 
@@ -38,16 +38,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Check if root's authorized_keys file exists
-if [[ ! -f "$ROOT_AUTH_KEYS" ]]; then
-    echo "Root's authorized_keys file not found at $ROOT_AUTH_KEYS"
-    exit 1
-fi
+mkdir -p /root/.ssh
+touch "$ROOT_AUTH_KEYS"
 
 # Ensure root keys have corect permissions (failsafe)
-chown -R 0:0 /root/.ssh/
-chmod $SSH_DIR_PERMISSIONS /root/.ssh
-chmod $AUTH_KEYS_PERMISSIONS /root/.ssh/authorized_keys
+root_ssh_dir=$(realpath /root/.ssh)
+chown -R 0:0 "$root_ssh_dir"
+chmod $SSH_DIR_PERMISSIONS "$root_ssh_dir"
+chmod $AUTH_KEYS_PERMISSIONS "$ROOT_AUTH_KEYS"
 
 # Iterate over users in /home
 for user_home in /home/*; do
@@ -57,7 +55,7 @@ for user_home in /home/*; do
 
     username=$(basename "$user_home")
     user_group=$(get_primary_group "$username")
-    user_ssh_dir="$user_home/.ssh"
+    user_ssh_dir="$(realpath $user_home/.ssh)"
     user_auth_keys="$user_ssh_dir/authorized_keys"
 
     # Ensure .ssh directory exists with correct permissions
