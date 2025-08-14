@@ -639,9 +639,6 @@ async def tail_log_file(filepath):
                 # Update position and mtime
                 file_positions[filename] = await file.tell()
                 file_mtimes[filename] = current_mtime
-                
-                if new_lines:
-                    logger.info(f"Read {len(new_lines)} new lines from {filename}")
 
     except Exception as e:
         logger.error(f"Error tailing {filepath}: {e}")
