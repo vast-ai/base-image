@@ -8,6 +8,8 @@ main() {
     local activate_python_environment=true
     local sync_environment=false
     local sync_home_to_workspace=false
+    local update_portal=true
+    local update_vast_cli=true
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -21,6 +23,10 @@ main() {
                 ;;
             --no-cert-gen)
                 generate_tls_cert=false
+                shift
+                ;;
+            --no-update-portal)
+                update_portal=false
                 shift
                 ;;
             --no-activate-pyenv)
@@ -46,6 +52,12 @@ main() {
         esac
     done  
 
+    # Serverless optimizations
+    if [[ "${SERVERLESS,,}" = "true" ]]; then
+        update_portal=false
+        update_vast_cli=false
+    fi
+
     mkdir -p "${WORKSPACE}"
     cd "${WORKSPACE}"
 
@@ -65,9 +77,13 @@ main() {
         mkdir -p "$HF_HOME"
         echo "Applying first boot optimizations..."
         # Ensure we have an up-to-date version of the CLI tool
-        (cd /opt/vast-cli && git pull)
+        if [[ "$update_vast_cli" = "true" ]]; then
+            (cd /opt/vast-cli && git pull)
+        fi
         # Attempt to upgrade Instance Portal to latest or specified version
-        update-portal ${PORTAL_VERSION:+-v $PORTAL_VERSION}
+        if [[ "$update_portal" = "true" ]]; then
+            update-portal ${PORTAL_VERSION:+-v $PORTAL_VERSION}
+        fi
         # Move /home to ${WORKSPACE}
         [[ "${sync_home_to_workspace}" = "true" ]] && sync_home
         # Move files from /opt/workspace-internal to ${WORKSPACE}
@@ -256,6 +272,9 @@ sync_home() {
     [[ -f /root/.vast_containerlabel ]] && mv /root/.vast_containerlabel /etc/.vast_containerlabel 2>/dev/null
     ln -sf /etc/.vast_containerlabel /root/.vast_containerlabel 2>/dev/null
     
+    [[ -f /root/ports.log ]] && cp /root/ports.log /var/log/vast_ports.log 2>/dev/null
+    ln -sf /var/log/vast_ports.log /root/ports.log 2>/dev/null
+
     [[ -f /root/.vast_api_key ]] && mv /root/.vast_api_key /etc/.vast_api_key 2>/dev/null
     ln -sf /etc/.vast_api_key /root/.vast_api_key 2>/dev/null
 
