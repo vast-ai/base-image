@@ -280,7 +280,8 @@ RUN \
     update-ca-certificates && \
     pip install --no-cache-dir \
         jupyter \
-        tensorboard
+        tensorboard \
+        magic-wormhole
 
 # Install Syncthing
 ARG TARGETARCH
