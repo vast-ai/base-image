@@ -1,7 +1,7 @@
 #!/bin/bash
 
 utils=/opt/supervisor-scripts/utils
-. "${utils}/logging.sh"
+. "${utils}/logging.sh" "/var/log/${PROC_NAME}.log"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
 . "${utils}/exit_serverless.sh"
