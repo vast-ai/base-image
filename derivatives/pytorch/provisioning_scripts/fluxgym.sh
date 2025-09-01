@@ -12,7 +12,7 @@ export INSTALL_DIR="${WORKSPACE}/$(basename $APP_REPO_URL)"
 . /venv/main/bin/activate
 cd "${WORKSPACE}"
 
-[[ ! -d "$INSTALL_DIR"  ]] && git clone "$APP_REPO_URL"
+[[ ! -d "$INSTALL_DIR" ]] && git clone "$APP_REPO_URL"
 (cd "$INSTALL_DIR" && git checkout "$APP_REF")
 
 # Kohya Scripts requirements
