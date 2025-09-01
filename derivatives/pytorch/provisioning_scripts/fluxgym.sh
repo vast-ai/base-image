@@ -21,7 +21,7 @@ cd "${WORKSPACE}"
 
 # Flux Gym requirements
 (cd "${INSTALL_DIR}" && uv pip install -r requirements.txt)
-pip install -U bitsandbytes
+uv pip install -U bitsandbytes
 
 
 # Generate the launch script for supervisord
