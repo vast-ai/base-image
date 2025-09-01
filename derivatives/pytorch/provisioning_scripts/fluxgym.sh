@@ -20,9 +20,7 @@ cd "${WORKSPACE}"
 (cd "${INSTALL_DIR}/sd-scripts" && uv pip install -r requirements.txt)
 
 # Flux Gym requirements
-(cd "${INSTALL_DIR}" && uv pip install -r requirements.txt)
-uv pip install -U bitsandbytes
-
+(cd "${INSTALL_DIR}" && uv pip install torch torchvision torchaudio bitsandbytes -r requirements.txt --torch-backend=auto)
 
 # Generate the launch script for supervisord
 cat > /opt/supervisor-scripts/fluxgym.sh << 'EOL'
