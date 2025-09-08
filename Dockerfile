@@ -141,7 +141,7 @@ RUN \
         # Performance analysis
         linux-tools-common \
         # Process management
-        supervisor \
+        supervisor \    
         cron \
         # Required for cron logging
         rsyslog \
@@ -223,16 +223,22 @@ RUN \
             "127") driver_version=565 ;; \
             "128") driver_version=570 ;; \
             "129") driver_version=575 ;; \
+            "130") driver_version=580 ;; \
         esac; \
         if [[ -n "$driver_version" ]]; then \
-            if [[ "${TARGETARCH}" = "arm64" ]] && [[ "$driver_version" -lt 550 ]]; then \
-                echo "No suitable libnvidia-compute package is available for arm64 with driver ${driver_version}"; \
-            else \
-                compute_version=$(apt-cache madison "libnvidia-compute-${driver_version}" | awk '{print $3}' | sort -V | head -n1 || true); \
-                if [[ -n "$compute_version" ]]; then \
-                    apt-get install -y "libnvidia-compute-${driver_version}=$compute_version"; \
-                    apt-mark hold "libnvidia-compute-${driver_version}"; \
-                fi; \
+            # decode is available for all architectures
+            earliest_version=$(apt-cache madison "libnvidia-decode-${driver_version}" | awk '{print $3}' | sort -V | head -n1 || true); \
+            if [[ -n "${earliest_version:-}" ]] then \
+                echo "Package: libnvidia-*-${driver_version}" > /etc/apt/preferences.d/nvidia-pin; \
+                echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
+                echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
+                echo "" >> /etc/apt/preferences.d/nvidia-pin; \
+                echo "Package: nvidia-*-${driver_version}" >> /etc/apt/preferences.d/nvidia-pin; \
+                echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
+                echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
+                for pkg in nvidia-utils libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
+                    apt-get install -y "${pkg}-${driver_version}" 2>/dev/null || true; \
+                done; \
             fi; \
         fi; \
     fi && \
