@@ -8,4 +8,4 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/exit_portal.sh" "tensorboard"
 
 cd "${WORKSPACE}"
-tensorboard --port 16006 --logdir "${TENSORBOARD_LOG_DIR:-${WORKSPACE:-/workspace}}"
+tensorboard --port 16006 --logdir "${TENSORBOARD_LOG_DIR:-${WORKSPACE:-/workspace}}" 2>&1

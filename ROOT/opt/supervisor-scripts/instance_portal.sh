@@ -9,4 +9,4 @@ utils=/opt/supervisor-scripts/utils
 
 cd /opt/portal-aio/portal
 # Log outside of /var/log/portal
-/opt/portal-aio/venv/bin/fastapi run --host 127.0.0.1 --port 11111 portal.py
+/opt/portal-aio/venv/bin/fastapi run --host 127.0.0.1 --port 11111 portal.py 2>&1

@@ -18,7 +18,7 @@ run_syncthing() {
     sed -i '/^\s*<listenAddress>/d' /opt/syncthing/config/config.xml
     sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' "${STCONFDIR}/config.xml"
 
-    /opt/syncthing/syncthing serve --no-restart --no-browser --gui-address="127.0.0.1:18384" --gui-apikey="${API_KEY}" --no-upgrade &
+    /opt/syncthing/syncthing serve --no-restart --no-browser --gui-address="127.0.0.1:18384" --gui-apikey="${API_KEY}" --no-upgrade 2>&1 &
     syncthing_pid=$!
 
     until curl --output /dev/null --silent --head --fail "http://127.0.0.1:18384"; do

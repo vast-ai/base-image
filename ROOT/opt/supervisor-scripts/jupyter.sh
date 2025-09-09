@@ -46,4 +46,4 @@ cd ${WORKSPACE}
         --ServerApp.preferred_dir="$DATA_DIRECTORY" \
         --ServerApp.terminado_settings="{'shell_command': ['/bin/bash']}" \
         --ContentsManager.allow_hidden=True \
-        --KernelSpecManager.ensure_native_kernel=False
+        --KernelSpecManager.ensure_native_kernel=False 2>&1

@@ -12,4 +12,4 @@ export TUNNEL_TRANSPORT_PROTOCOL=${TUNNEL_TRANSPORT_PROTOCOL:-http2}
 
 cd /opt/portal-aio/tunnel_manager
 # Log outside of /var/log/portal
-/opt/portal-aio/venv/bin/fastapi run --host 127.0.0.1 --port 11112 tunnel_manager.py
+/opt/portal-aio/venv/bin/fastapi run --host 127.0.0.1 --port 11112 tunnel_manager.py 2>&1
