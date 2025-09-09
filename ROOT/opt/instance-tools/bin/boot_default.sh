@@ -77,9 +77,11 @@ main() {
 
     # Ensure environment contains instance ID (snapshot aware)
     instance_identifier=$(echo "${CONTAINER_ID:-${VAST_CONTAINERLABEL:-${CONTAINER_LABEL:-}}}")
-    if [[ -z "${instance_identifier:-}" ]] || ! grep -q "${instance_identifier}" /etc/environment; then
+    message="# Template controlled environment for C.${instance_identifier}"
+    if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment; then
+        echo "$message" > /etc/environment
         echo 'PATH="/opt/instance-tools/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
-            > /etc/environment
+            >> /etc/environment
         env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
                 name=${line%%=*}
                 value=${line#*=}
