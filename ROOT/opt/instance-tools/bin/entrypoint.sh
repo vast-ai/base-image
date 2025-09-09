@@ -10,6 +10,7 @@ if [[ -n "${BOOT_SCRIPT:-}" && ! -f "$custom_boot_script" ]]; then
     if curl -L -o /tmp/boot_custom.sh "$BOOT_SCRIPT"; then
         mv /tmp/boot_custom.sh "$custom_boot_script"
         chmod +x "$custom_boot_script"
+        dos2unix "$custom_boot_script"
     fi
 fi
 
