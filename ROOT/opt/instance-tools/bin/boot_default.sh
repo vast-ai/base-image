@@ -61,8 +61,8 @@ main() {
     mkdir -p "${WORKSPACE}"
     cd "${WORKSPACE}"
 
-    # Remove Jupyter from the portal config if the external port 8080 isn't defined
-    if [ -z "${VAST_TCP_PORT_8080}" ]; then
+    # Remove Jupyter from the portal config if no port or running in SSH only mode
+    if [[ -z "${VAST_TCP_PORT_8080}" ]] || { [[ -f /.launch ]] && ! grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]] }; then
         PORTAL_CONFIG=$(echo "$PORTAL_CONFIG" | tr '|' '\n' | grep -vi jupyter | tr '\n' '|' | sed 's/|$//')
     fi
 
@@ -71,10 +71,24 @@ main() {
         PORTAL_CONFIG="$(echo "$PORTAL_CONFIG" | sed 's#localhost:8080:18080#localhost:8080:8080#g')"
     fi
 
-    # First run...
-    if [[ ! -f /.first_boot_complete ]]; then
-        export HF_HOME=${HF_HOME:-${WORKSPACE}/.hf_home}
-        mkdir -p "$HF_HOME"
+    # Set HuggingFace home
+    export HF_HOME=${HF_HOME:-${WORKSPACE}/.hf_home}
+    mkdir -p "$HF_HOME"
+
+    # Ensure environment contains instance ID (snapshot aware)
+    instance_identifier=$(echo "${CONTAINER_ID:-${VAST_CONTAINERLABEL:-${CONTAINER_LABEL:-}}}")
+    if [[ -z "${instance_identifier:-}" ]] || ! grep -q "${instance_identifier}" /etc/environment; then
+        echo 'PATH="/opt/instance-tools/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+            > /etc/environment
+        env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
+                name=${line%%=*}
+                value=${line#*=}
+                printf '%s="%s"\n' "$name" "$value"
+            done >> /etc/environment
+    fi
+
+    # First run only...
+    if [[ "${SERVERLESS,,}" != "true"  && ! -f /.first_boot_complete ]]; then
         echo "Applying first boot optimizations..."
         # Ensure we have an up-to-date version of the CLI tool
         if [[ "$update_vast_cli" = "true" ]]; then
@@ -84,39 +98,40 @@ main() {
         if [[ "$update_portal" = "true" ]]; then
             update-portal ${PORTAL_VERSION:+-v $PORTAL_VERSION}
         fi
-        # Move /home to ${WORKSPACE}
-        [[ "${sync_home_to_workspace}" = "true" ]] && sync_home
-        # Move files from /opt/workspace-internal to ${WORKSPACE}
-        sync_workspace
-        # Prevent dubious ownership 
-        set_git_safe_dirs
-        # Sync Python and conda environments if using volumes and not overridden
-        [[ "${sync_environment}" = "true" ]] && sync_environment
-        # Initial venv backup - Also runs as a cron job every 30 minutes
-        /opt/instance-tools/bin/venv-backup.sh
-        # Populate /etc/environment - Skip user-specific keys and ensure values are enclosed in double quotes
-        env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
-            name=${line%%=*}
-            value=${line#*=}
-            printf '%s="%s"\n' "$name" "$value"
-        done > /etc/environment
-        
-        if ! grep -q "### Entrypoint setup ###" /root/.bashrc > /dev/null 2>&1; then
-            target_bashrc="/root/.bashrc /home/user/.bashrc"
-            echo "### Entrypoint setup ###" | tee -a $target_bashrc
-            # Ensure /etc/environment is sourced on login
-            [[ "${export_env}" = "true" ]] && { echo 'set -a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; echo 'set +a'; } | tee -a $target_bashrc
-            # Ensure node npm (nvm) are available on login
-            echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
-            # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
-            if [[ "${activate_python_environment}" == "true" ]]; then
-                echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
-            fi
-            # Warn CLI users if the container provisioning is not yet complete. Red >>>
-            echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
-            echo "### End entrypoint setup ###" | tee -a $target_bashrc
-        fi
         touch /.first_boot_complete
+    fi
+
+    # Move /home to ${WORKSPACE}
+    [[ "${sync_home_to_workspace}" = "true" ]] && sync_home
+    # Move files from /opt/workspace-internal to ${WORKSPACE}
+    sync_workspace
+    # Prevent dubious ownership 
+    set_git_safe_dirs
+
+    # Sync Python and conda environments if using volumes and not overridden
+    [[ "${sync_environment}" = "true" ]] && sync_environment
+    # Initial venv backup - Also runs as a cron job every 30 minutes
+    /opt/instance-tools/bin/venv-backup.sh
+        
+    if ! grep -q "### Entrypoint setup ###" /root/.bashrc > /dev/null 2>&1; then
+        target_bashrc="/root/.bashrc /home/user/.bashrc"
+        echo "### Entrypoint setup ###" | tee -a $target_bashrc
+        # Ensure /etc/environment is sourced on login
+        [[ "${export_env}" = "true" ]] && { echo 'set -a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; echo 'set +a'; } | tee -a $target_bashrc
+        # Ensure node npm (nvm) are available on login
+        echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
+        # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
+        if [[ "${activate_python_environment}" == "true" ]]; then
+            echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
+        fi
+        # Warn CLI users if the container provisioning is not yet complete. Red >>>
+        echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
+        echo "### End entrypoint setup ###" | tee -a $target_bashrc
+    fi
+    
+    # Avoid missing cuda libs error (affects 12.4)
+    if [[ ! -e /usr/lib/x86_64-linux-gnu/libcuda.so && -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]]; then \
+        ln -s /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so; \
     fi
 
     # Let the 'user' account connect via SSH
@@ -186,7 +201,6 @@ main() {
     # This is for configuration of existing images and will also allow for templates to be created without building docker images
     # Experienced users will be able to convert the script to Dockerfile RUN and build a self-contained image
     # NOTICE: If the provisioning script introduces new supervisor processes it must:
-    # - Remove the file /etc/portal.yaml
     # - run `supervisorctl reread && supervisorctl update`
 
     if [[ -n $PROVISIONING_SCRIPT && ! -f /.provisioning_complete ]]; then
@@ -337,25 +351,40 @@ sync_home() {
 # Move workspace from image into container/volume only if the target does not exist
 sync_workspace() {
     workspace=${WORKSPACE:-/workspace}
-
+    
     mkdir -p "${workspace}/" > /dev/null 2>&1
+    
     # Copy each item in /opt/workspace-internal and avoid clobbering user generated files if volume
     find /opt/workspace-internal -mindepth 1 -maxdepth 1 -print0 | while IFS= read -r -d '' item; do
         basename_item=$(basename "$item")
         target="${workspace}/${basename_item}"
         
-        if [[ -d "$item" && ! -e "$target" ]]; then
-            # Copy directory recursively
-            cp -ru "$item" "${workspace}/"
-            # Apply ownership and permissions to the copied directory and its contents
-        elif [[ -f "$item" && ! -e "$target" ]]; then
-            # Copy file
-            cp -f "$item" "${workspace}/"
-        fi
+        # Create item-specific lock file for fine-grained locking
+        lockfile="${workspace}/.sync_${basename_item}.lock"
+        
+        # Use flock for this specific item - wait indefinitely for the lock
+        (
+            # First try with timeout, then wait indefinitely if needed
+            if ! flock -x -w 10 9; then
+                echo "Lock busy for ${basename_item}, waiting for completion..." >&2
+                # Wait indefinitely for the lock (blocks until available)
+                flock -x 9
+            fi
+            
+            if [[ -d "$item" && ! -e "$target" ]]; then
+                # Copy directory recursively
+                cp -ru "$item" "${workspace}/"
+                # Apply ownership and permissions to the copied directory and its contents
+            elif [[ -f "$item" && ! -e "$target" ]]; then
+                # Copy file
+                cp -f "$item" "${workspace}/"
+            fi
+            
+        ) 9>"$lockfile"
     done
 
-    # Remove default files that do not belong in the workspace
-    rm -f "${WORKSPACE}/onstart.sh" "${WORKSPACE}/ports.log"
+    # Remove default files that do not belong in the workspace (no lock needed for removal)
+    rm -f "${workspace}/onstart.sh" "${workspace}/ports.log"
 }
 
 # Move the environments from /venv/* & /conda/* to $workspace volume
