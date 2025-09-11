@@ -79,7 +79,7 @@ if grep -q "PORTAL_VERSION" /etc/environment; then
     sed -i "s/PORTAL_VERSION=.*/PORTAL_VERSION=$TARGET_VERSION/" /etc/environment
 else
     # Add new entry
-    echo "PORTAL_VERSION=$TARGET_VERSION" >> /etc/environment
+    echo "PORTAL_VERSION=\"$TARGET_VERSION\"" >> /etc/environment
 fi
 
 echo "Update completed successfully!"
