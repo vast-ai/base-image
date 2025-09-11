@@ -517,8 +517,6 @@ stdout_logfile_maxbytes=0
 stdout_logfile_backups=0
 EOL
 
-python -c "import transformers; transformers.utils.move_cache()"
-
 # Update supervisor to start the new service
 supervisorctl reread
 supervisorctl update
