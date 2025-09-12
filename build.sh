@@ -130,7 +130,7 @@ BUILD_CONFIGS=(
 
 # Parse command line arguments
 DOCKERFILE="Dockerfile"
-TAG_REPO=" robatvastai/base-image"
+TAG_REPO="robatvastai/base-image"
 FROM_REPO="false"
 BUILD_FILTER=""
 
