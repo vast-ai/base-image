@@ -23,7 +23,7 @@ RUN \
     [[ -n "${PYTORCH_INDEX_URL}" ]] || { echo "Must specify PYTORCH_INDEX_URL" && exit 1; } && \
     # Activate the venv
     . /venv/main/bin/activate && \
-    pip install --no-cache-dir \
+    uv pip install \
         torch==${PYTORCH_VERSION} \
         torchvision \
         torchaudio \
@@ -48,3 +48,8 @@ RUN \
     python3 -c "import torch; x = torch.rand(2,3); y = torch.rand(2,3); z = torch.mm(x, y.t()); assert z.shape == (2,2), 'Basic tensor operations failed'" && \
     # Test 4: Simple neural network instantiation and forward pass
     python3 -c "import torch; model = torch.nn.Linear(10,2); x = torch.randn(5,10); y = model(x); assert y.shape == (5,2) and not torch.isnan(y).any(), 'Neural network test failed'"
+
+# Defend against environment clashes when syncing to volume
+RUN \
+    set -euo pipefail && \
+    env-hash > /.env_hash
