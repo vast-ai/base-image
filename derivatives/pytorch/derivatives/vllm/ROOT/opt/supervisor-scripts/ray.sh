@@ -5,6 +5,9 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/environment.sh"
 . "${utils}/exit_portal.sh" "ray dash"
 
+# Activate the venv
+. /venv/main/bin/activate
+
 trap 'ray stop' EXIT
 
 # Check we are actually trying to serve a model
@@ -13,9 +16,6 @@ if [[ -z "${VLLM_MODEL:-}" ]]; then
     sleep 6
     exit 0
 fi
-
-# Activate the venv
-. /venv/main/bin/activate
 
 # Wait for provisioning to complete
 
