@@ -4,7 +4,11 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "API Wrapper"
+
+# Serverless
+if [[ "${SERVERLESS:-false}" != "true" ]]; then
+    . "${utils}/exit_portal.sh" "API Wrapper"
+fi
 
 # Wait for provisioning to complete
 while [ -f "/.provisioning" ]; do
