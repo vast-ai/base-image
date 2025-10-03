@@ -18,6 +18,8 @@ if [[ "$available_space" -lt 512 ]]; then
         cutoff=$(awk "BEGIN {printf \"%.0f\", ${oldest}+86400}")
         # Only delete files
         find "${output_dir}" -mindepth 1 -type f ! -newermt "@${cutoff}" -delete
+        # Delete broken symlinks
+        find "${output_dir}" -mindepth 1 -xtype l -delete
         # Now delete *empty* directories separately
         find "${output_dir}" -mindepth 1 -type d -empty -delete
     fi
