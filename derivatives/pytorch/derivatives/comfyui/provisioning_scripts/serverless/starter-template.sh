@@ -11,8 +11,9 @@ set_cleanup_job() {
         cat > /opt/instance-tools/bin/clean-output.sh << 'CLEAN_OUTPUT'
 #!/bin/bash
 output_dir="${WORKSPACE:-/workspace}/ComfyUI/output/"
+min_free_mb=512
 available_space=$(df -m "${output_dir}" | awk 'NR==2 {print $4}')
-if [[ "$available_space" -lt 512 ]]; then
+if [[ "$available_space" -lt "$min_free_mb" ]]; then
     oldest=$(find "${output_dir}" -mindepth 1 -type f -printf "%T@\n" 2>/dev/null | sort -n | head -1 | awk '{printf "%.0f", $1}')
     if [[ -n "$oldest" ]]; then
         cutoff=$(awk "BEGIN {printf \"%.0f\", ${oldest}+86400}")
