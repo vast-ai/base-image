@@ -10,7 +10,11 @@ if [[ "${INVOKEAI_VERSION:-}" = "latest" ]]; then
 else
     VERSION="==$INVOKEAI_VERSION"
 fi
-uv pip install invokeai${VERSION:-}
+# Our pydantic version pinning patch may fail later - Catch that and install normally 
+uv pip install invokeai${VERSION:-} pydantic==2.11.7 || uv pip install invokeai${VERSION:-}
+# Patchmatch will likely fail to build if the python version is not 3.12 or 3.10, but it is non-fatal
+apt install --no-install-recommends -y python3-opencv libopencv-dev
+pip install pypatchmatch || true
 
 # Create InvokeAI startup  scripts
 cat > /opt/supervisor-scripts/invokeai.sh << 'EOL'
