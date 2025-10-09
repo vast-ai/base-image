@@ -10,6 +10,7 @@ export INSTALL_DIR="${WORKSPACE}/$(basename $APP_REPO_URL)"
 
 # Install the software into the default venv
 . /venv/main/bin/activate
+conda install -y python=3.10
 cd "${WORKSPACE}"
 
 [[ ! -d "$INSTALL_DIR" ]] && git clone "$APP_REPO_URL"
@@ -21,7 +22,7 @@ cd "${WORKSPACE}"
 
 # Flux Gym requirements
 (cd "${INSTALL_DIR}" && uv pip install torch torchvision torchaudio bitsandbytes -r requirements.txt --torch-backend=auto)
-
+uv pip install transformers==4.49.0
 # Generate the launch script for supervisord
 cat > /opt/supervisor-scripts/fluxgym.sh << 'EOL'
 #!/bin/bash
