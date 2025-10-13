@@ -51,11 +51,16 @@ if [[ -z "$RAY_ADDRESS" || "$RAY_ADDRESS" = "127.0.0.1"* ]]; then
     done
 fi
 
-# Automatically use all GPUs
-if [[ ! $VLLM_ARGS =~ "tensor-parallel-size" && "${USE_ALL_GPUS,,}" = "true" ]]; then
-    TENSOR_PARALLEL_SIZE="--tensor-parallel-size $GPU_COUNT"
-else
-    TENSOR_PARALLEL_SIZE=""
+## Automatically use all GPUs
+AUTO_PARALLEL_ARGS=""
+# Rewrite var name
+AUTO_PARALLEL=${AUTO_PARALLEL:-${USE_ALL_GPUS:-false}}
+if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-size || $VLLM_ARGS =~ data-parallel-size ]]; then
+    if [[ $VLLM_ARGS =~ enable-expert-parallel ]]; then
+        AUTO_PARALLEL_ARGS="--tensor-parallel-size 1 --data-parallel-size $GPU_COUNT"
+    else
+        AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"
+    fi
 fi
 
-vllm serve ${VLLM_MODEL:-} ${VLLM_ARGS:---host 127.0.0.1 --port 18000} ${TENSOR_PARALLEL_SIZE} 2>&1
+vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:---host 127.0.0.1 --port 18000} ${AUTO_PARALLEL_ARGS} 2>&1
