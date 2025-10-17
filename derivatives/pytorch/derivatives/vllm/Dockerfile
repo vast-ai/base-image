@@ -19,9 +19,7 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir vllm=="${VLLM_REF}" torch=="${PYTORCH_VERSION}" xformers blobfile && \
-    # Install flashinfer-python.  Some compilation but mainly JIT
-    uv pip install --no-cache-dir flashinfer-python && \
+    uv pip install --no-cache-dir vllm[flashinfer]=="${VLLM_REF}" torch=="${PYTORCH_VERSION}" xformers blobfile && \
     # Ensure we have the full version of ray
     uv pip install --no-cache-dir ray[default] && \
     # Test 1: Verify PyTorch version is unaltered
