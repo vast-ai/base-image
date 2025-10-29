@@ -14,7 +14,7 @@ COPY ./ROOT /
 ARG FOOOCUS_REF
 
 RUN \
-    set -eou pipefail && \
+    set -euo pipefail && \
     [[ -n "${FOOOCUS_REF}" ]] || { echo "Must specify FOOOCUS_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
