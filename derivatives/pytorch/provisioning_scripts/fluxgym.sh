@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Provisioning should not complete if there is an error. Retry on reboot if it failed
-set -eou pipefail
+set -euo pipefail
 
 # Allow user to fetch alternative repo, branch, tag, commit
 export APP_REPO_URL=${APP_REPO_URL:-https://github.com/cocktailpeanut/fluxgym}

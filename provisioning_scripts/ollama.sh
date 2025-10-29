@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -eou pipefail
+set -euo pipefail
 
 # Install Ollama if not present
 which ollama > /dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh

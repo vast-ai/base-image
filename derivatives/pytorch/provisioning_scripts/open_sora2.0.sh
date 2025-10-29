@@ -1,5 +1,5 @@
 #!/bin/bash 
-set -eou pipefail
+set -euo pipefail
 
 apt-get install -y libaio-dev
 
