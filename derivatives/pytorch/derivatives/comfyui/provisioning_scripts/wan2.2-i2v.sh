@@ -46,6 +46,7 @@ main() {
     mkdir -p "$HF_SEMAPHORE_DIR"
     write_workflow
     write_api_workflow
+    download_input
     pids=()
     # Download all models in parallel
     for model in "${HF_MODELS[@]}"; do
