@@ -1422,7 +1422,7 @@ write_workflow() {
   "version": 0.4
 }
 WORKFLOW_JSON
-    echo "$workflow_json" > "${WORKFLOW_DIR}/wan-2.2-Text-to-Video.json"
+    echo "$workflow_json" > "${WORKFLOW_DIR}/wan-2.2-Image-to-Video.json"
 }
 
 write_api_workflow() {
@@ -1477,7 +1477,7 @@ write_api_workflow() {
   "86": {
     "inputs": {
       "add_noise": "enable",
-      "noise_seed": 138073435077572,
+      "noise_seed": "__RANDOM_INT__",
       "steps": 4,
       "cfg": 1,
       "sampler_name": "euler",
