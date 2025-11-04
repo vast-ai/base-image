@@ -739,7 +739,7 @@ write_api_workflow() {
 {
   "3": {
     "inputs": {
-      "seed": "__RANDOM_INT__"",
+      "seed": "__RANDOM_INT__",
       "steps": 30,
       "cfg": 4.5,
       "sampler_name": "euler",
