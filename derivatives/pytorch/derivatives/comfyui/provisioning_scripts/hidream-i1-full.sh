@@ -12,7 +12,7 @@ HF_MAX_PARALLEL=3
 
 # Model declarations: "URL|OUTPUT_PATH"
 HF_MODELS=(
-  "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/diffusion_models/hidream_i1_full_fp8.safetensors
+  "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/diffusion_models/hidream_i1_full_fp16.safetensors
   |$MODELS_DIR/diffusion_models/hidream_i1_full_fp8.safetensors"
   "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/text_encoders/clip_l_hidream.safetensors
   |$MODELS_DIR/text_encoders/clip_l_hidream.safetensors"
@@ -659,8 +659,8 @@ write_workflow() {
         "Node name for S&R": "UNETLoader",
         "models": [
           {
-            "name": "hidream_i1_full_fp8.safetensors",
-            "url": "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/diffusion_models/hidream_i1_full_fp8.safetensors?download=true",
+            "name": "hidream_i1_full_fp16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/diffusion_models/hidream_i1_full_fp16.safetensors?download=true",
             "directory": "diffusion_models"
           }
         ]
@@ -925,7 +925,7 @@ write_api_workflow() {
   },
   "93": {
     "inputs": {
-      "seed": 548242654058770,
+      "seed": "__RANDOM_INT__",
       "steps": 50,
       "cfg": 5,
       "sampler_name": "uni_pc",
