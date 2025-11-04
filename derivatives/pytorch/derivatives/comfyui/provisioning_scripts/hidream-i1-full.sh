@@ -13,7 +13,7 @@ HF_MAX_PARALLEL=3
 # Model declarations: "URL|OUTPUT_PATH"
 HF_MODELS=(
   "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/diffusion_models/hidream_i1_full_fp16.safetensors
-  |$MODELS_DIR/diffusion_models/hidream_i1_full_fp8.safetensors"
+  |$MODELS_DIR/diffusion_models/hidream_i1_full_fp16.safetensors"
   "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/text_encoders/clip_l_hidream.safetensors
   |$MODELS_DIR/text_encoders/clip_l_hidream.safetensors"
   "https://huggingface.co/Comfy-Org/HiDream-I1_ComfyUI/resolve/main/split_files/text_encoders/clip_g_hidream.safetensors
