@@ -80,6 +80,7 @@ RUN \
     apt-get install --no-install-recommends -y \
         # Base system utilities
         acl \
+        bc \
         ca-certificates \
         gpg-agent \
         software-properties-common \
@@ -325,54 +326,50 @@ RUN \
         /opt/miniforge3/bin/conda config --add channels nvidia; \
         su -l user -c "/opt/miniforge3/bin/conda config --add channels nvidia"; \
     fi && \
-    # Main conda env mimics python venv
     /opt/miniforge3/bin/conda create -p /venv/main python="${PYTHON_VERSION}" -y && \
     mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
-    printf '%s\n' \
-        'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
-            >> /venv/main/etc/conda/activate.d/environment.sh && \
-    printf '%s\n' \
-        'if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then' \
-        '    echo "This script must be sourced: source bin/activate"' \
-        '    exit 1' \
-        'fi' \
-        '' \
-        '# Define deactivate function' \
-        'deactivate() {' \
-        '    # Deactivate conda environment' \
-        '    if type conda &> /dev/null; then' \
-        '        conda deactivate' \
-        '    fi' \
-        '    ' \
-        '    # Unset the deactivate function itself' \
-        '    unset -f deactivate' \
-        '    ' \
-        '    # Return success' \
-        '    return 0' \
-        '}' \
-        '' \
-        '# Check if conda is available' \
-        'if ! type conda &> /dev/null; then' \
-        '    # Detect if this is an interactive shell environment' \
-        '    if [[ -n "${PS1:-}" ]] || [[ "$-" == *i* ]]; then' \
-        '        # Interactive shell - do full init via bashrc' \
-        '        if [[ -f ~/.bashrc ]]; then' \
-        '            source ~/.bashrc' \
-        '        fi' \
-        '    else' \
-        '        # Non-interactive (Docker, CI, etc.) - minimal init' \
-        '        if [[ "$PATH" != *"/opt/miniforge3/condabin"* ]]; then' \
-        '            export PATH="/opt/miniforge3/condabin:$PATH"' \
-        '        fi' \
-        '        if [[ -f /opt/miniforge3/etc/profile.d/conda.sh ]]; then' \
-        '            source /opt/miniforge3/etc/profile.d/conda.sh' \
-        '        fi' \
-        '    fi' \
-        'fi' \
-        '' \
-        'conda activate $(realpath /venv/main)' \
-            > /venv/main/bin/activate && \
-        /opt/miniforge3/bin/conda clean -ay
+    echo 'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
+        > /venv/main/etc/conda/activate.d/environment.sh && \
+    /opt/miniforge3/bin/conda clean -ay
+
+# Add venv-like activation script for conda env
+RUN cat <<'CONDA_ACTIVATION_SCRIPT' > /venv/main/bin/activate
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "This script must be sourced: source bin/activate"
+    exit 1
+fi
+
+# Define deactivate function
+deactivate() {
+    # Deactivate conda environment
+    if type conda &> /dev/null; then
+        conda deactivate 2>/dev/null || true
+    fi
+
+    # Unset the deactivate function itself
+    unset -f deactivate
+
+    # Return success
+    return 0
+}
+
+# Check if conda is properly initialized by testing for the conda shell function
+# (not just the command existence)
+if ! type conda &> /dev/null || ! declare -F conda &> /dev/null; then
+    # Add condabin to PATH if not already there
+    if [[ "$PATH" != *"/opt/miniforge3/condabin"* ]]; then
+        export PATH="/opt/miniforge3/condabin:$PATH"
+    fi
+    
+    # Source the conda shell script to load shell functions
+    if [[ -f /opt/miniforge3/etc/profile.d/conda.sh ]]; then
+        source /opt/miniforge3/etc/profile.d/conda.sh
+    fi
+fi
+
+# Activate the conda environment
+conda activate "$(realpath /venv/main)"
+CONDA_ACTIVATION_SCRIPT
 
 RUN \
     set -euo pipefail && \
