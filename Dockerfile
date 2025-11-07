@@ -175,36 +175,36 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-    # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
-    RUN \
-        set -euo pipefail && \
-        useradd -ms /bin/bash user -u 1001 -g 0 && \
-        sed -i '1i umask 002' /home/user/.bashrc && \
-        echo "PATH=${PATH}" >> /home/user/.bashrc && \
-        echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
-        sudo chmod 0440 /etc/sudoers.d/user && \
-        mkdir -m 700 -p /run/user/1001 && \
-        chown 1001:0 /run/user/1001 && \
-        mkdir -p /run/dbus && \
-        mkdir -p /opt/workspace-internal/
+# Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
+RUN \
+    set -euo pipefail && \
+    useradd -ms /bin/bash user -u 1001 -g 0 && \
+    sed -i '1i umask 002' /home/user/.bashrc && \
+    echo "PATH=${PATH}" >> /home/user/.bashrc && \
+    echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
+    sudo chmod 0440 /etc/sudoers.d/user && \
+    mkdir -m 700 -p /run/user/1001 && \
+    chown 1001:0 /run/user/1001 && \
+    mkdir -p /run/dbus && \
+    mkdir -p /opt/workspace-internal/
 
-    # Add support for uv, the excellent Python environment manager
-    ENV UV_CACHE_DIR=/.uv/cache
-    ENV UV_NO_CACHE=1
-    # We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
-    ENV UV_LINK_MODE=copy
-    ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
-    ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
-    RUN \
-        set -euo pipefail && \
-        mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        pip install uv
+# Add support for uv, the excellent Python environment manager
+ENV UV_CACHE_DIR=/.uv/cache
+ENV UV_NO_CACHE=1
+# We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
+ENV UV_LINK_MODE=copy
+ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
+ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
+RUN \
+    set -euo pipefail && \
+    mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+    pip install uv
 
-    # Install Extra Nvidia packages (OpenCL)
-    # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
-    # We cannot know the runtime driver version so we aim for best compatibility 
-    ARG TARGETARCH
-    RUN \
+# Install Extra Nvidia packages (OpenCL)
+# When installing libnvidia packages always pick the earliest version to avoid mismatched libs
+# We cannot know the runtime driver version so we aim for best compatibility 
+ARG TARGETARCH
+RUN \
     set -euo pipefail && \
     apt-get update && \
     if command -v rocm-smi >/dev/null 2>&1; then \
