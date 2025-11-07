@@ -592,7 +592,7 @@ write_workflow() {
   "version": 0.4
 }
 WORKFLOW_JSON
-    echo "$workflow_json" > "${WORKFLOW_DIR}/realvizxl-v5.0.json"
+    echo "$workflow_json" > "${WORKFLOW_DIR}/realvisxl-v5.0.json"
 }
 
 write_api_workflow() {
@@ -722,7 +722,7 @@ write_api_workflow() {
 WORKFLOW_API_JSON
     payload_json=$(jq -n --argjson workflow "$workflow_json" '{input: {workflow_json: $workflow}}')
     rm /opt/comfyui-api-wrapper/payloads/*.json
-    echo "$payload_json" > /opt/comfyui-api-wrapper/payloads/realvizxl-v5.0.json
+    echo "$payload_json" > /opt/comfyui-api-wrapper/payloads/realvisxl-v5.0.json
 }
 
 main
