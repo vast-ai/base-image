@@ -200,7 +200,7 @@ RUN \
     mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
     pip install uv
 
-# Install Extra Nvidia packages (OpenCL)
+# Install Extra Nvidia packages (OpenCL, GL, Nvenc)
 # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
 # We cannot know the runtime driver version so we aim for best compatibility 
 ARG TARGETARCH
@@ -236,7 +236,7 @@ RUN \
                 echo "Package: nvidia-*-${driver_version}" >> /etc/apt/preferences.d/nvidia-pin; \
                 echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
                 echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
-                for pkg in nvidia-utils libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
+                for pkg in nvidia-utils libnvidia-gl libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
                     apt-get install -y "${pkg}-${driver_version}" 2>/dev/null || true; \
                 done; \
             fi; \
@@ -244,6 +244,9 @@ RUN \
     fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Add Vulkan
+
 
 # Install NVM for node version management
 RUN \
