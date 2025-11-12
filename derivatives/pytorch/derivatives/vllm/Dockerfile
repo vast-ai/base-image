@@ -15,11 +15,18 @@ ARG VLLM_REF
 
 RUN \
     [[ -n "${VLLM_REF}" ]] || { echo "Must specify VLLM_REF" && exit 1; } && \
+    # Enable building nightly versions (tag appropriately)
     . /venv/main/bin/activate && \
+    force_nightly="" && \
+    vllm_package="vllm[flashinfer]==${VLLM_REF}" && \
+    if [[ ${VLLM_REF} = "nightly" ]]; then \
+        vllm_package="vllm[flashinfer] --pre --extra-index-url https://wheels.vllm.ai/nightly"; \
+    fi && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir vllm[flashinfer]=="${VLLM_REF}" torch=="${PYTORCH_VERSION}" xformers blobfile && \
+    uv pip install --no-cache-dir $vllm_package \
+        torch=="${PYTORCH_VERSION}" xformers blobfile --index-strategy unsafe-best-match && \
     # Ensure we have the full version of ray
     uv pip install --no-cache-dir ray[default] && \
     # Test 1: Verify PyTorch version is unaltered
