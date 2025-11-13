@@ -126,6 +126,7 @@ ray start ${RAY_ARGS:---head --port 6379  --dashboard-host 127.0.0.1 --dashboard
 
 sleep infinity
 EOL
+chmod +x /opt/supervisor-scripts/ray.sh
 
 # Generate the supervisor config files
 cat > /etc/supervisor/conf.d/vllm.conf << 'EOL'
@@ -149,7 +150,7 @@ stdout_logfile_backups=0
 EOL
 
 cat > /etc/supervisor/conf.d/ray.conf << 'EOL'
-[program:vllm]
+[program:ray]
 environment=PROC_NAME="%(program_name)s"
 command=/opt/supervisor-scripts/ray.sh
 autostart=true
