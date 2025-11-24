@@ -27,6 +27,7 @@ RUN \
         torch==${PYTORCH_VERSION} \
         torchvision \
         torchaudio \
+        torchcodec \
         --index-url ${PYTORCH_INDEX_URL} && \
     # Numpy 2.x is only supported in PyTorch versions > 2.1
     major=$(echo "$PYTORCH_VERSION" | awk -F. '{print $1}') && \
