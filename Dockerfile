@@ -152,26 +152,6 @@ RUN \
         opencl-headers \
         ocl-icd-dev \
         ocl-icd-opencl-dev && \
-    # Ensure TensorRT where applicable
-    if [ -n "${CUDA_VERSION:-}" ]; then \
-        CUDA_MAJOR_MINOR=$(echo ${CUDA_VERSION} | cut -d. -f1,2) && \
-        nvinfer10_version=$(apt-cache madison libnvinfer10 | grep cuda${CUDA_MAJOR_MINOR} | awk '{print $3}' | sort -V | tail -n1 || true) && \
-        # Only CUDA 12.0 and 11.8 are available and we do not support < 11.8
-        nvinfer8_version=$(apt-cache madison libnvinfer8 | grep cuda${CUDA_MAJOR_MINOR%.*} | awk '{print $3}' | sort -V | tail -n1 || true) && \
-        if [[ -n "$nvinfer10_version" ]]; then \
-            apt-get install -y --no-install-recommends \
-                libnvinfer10=$nvinfer10_version \
-                libnvinfer-plugin10=$nvinfer10_version \
-                libnvonnxparsers10=$nvinfer10_version; \
-                apt-mark hold libnvinfer10 libnvinfer-plugin10 libnvonnxparsers10; \
-        elif [[ -n "$nvinfer8_version" ]]; then \
-            apt-get install -y --no-install-recommends \
-                libnvinfer8=$nvinfer8_version \
-                libnvinfer-plugin8=$nvinfer8_version \
-                libnvonnxparsers8=$nvinfer8_version; \
-                apt-mark hold libnvinfer8 libnvinfer-plugin8 libnvonnxparsers8; \
-        fi \
-    fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
