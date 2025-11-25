@@ -80,7 +80,23 @@ def generate_caddyfile(config):
 
     enable_auth = True if os.environ.get('ENABLE_AUTH', 'true').lower() != 'false' else False
     web_username = os.environ.get('WEB_USERNAME', 'vastai')
-    web_password = os.environ.get('WEB_PASSWORD') or os.environ.get('OPEN_BUTTON_TOKEN') or shortuuid.uuid()
+    
+    # Get both potential passwords - both can be valid simultaneously
+    web_password = os.environ.get('WEB_PASSWORD')
+    open_button_token = os.environ.get('OPEN_BUTTON_TOKEN')
+    
+    # If neither is set, generate one and use it for both
+    if not web_password and not open_button_token:
+        web_password = shortuuid.uuid()
+        open_button_token = web_password
+    elif not web_password:
+        # Only OPEN_BUTTON_TOKEN is set - use it as the web password too
+        web_password = open_button_token
+    elif not open_button_token:
+        # Only WEB_PASSWORD is set - use it as the open button token too
+        open_button_token = web_password
+    # else: both are set, keep them separate
+    
     caddy_identifier = os.environ.get('VAST_CONTAINERLABEL')
 
     caddyfile=''
@@ -89,6 +105,42 @@ def generate_caddyfile(config):
         servers_block = 'servers {\n    listener_wrappers {\n        http_redirect\n        tls\n    }\n}'
     else:
         servers_block = ''
+
+    # Build token matcher - if both tokens are the same, use simple query match
+    # If different, use expression to match either
+    if web_password == open_button_token:
+        token_auth_matcher = f'''(token_auth_matcher) {{
+        @token_auth {{
+            query token={web_password}
+        }}
+    }}'''
+        cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
+        @has_valid_auth_cookie {{
+            header_regexp Cookie {caddy_identifier}_auth_token={web_password}
+        }}
+    }}'''
+        bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
+        @has_valid_bearer_token {{
+            header Authorization "Bearer {web_password}"
+        }}
+    }}'''
+    else:
+        # Both tokens are different - need to match either one
+        token_auth_matcher = f'''(token_auth_matcher) {{
+        @token_auth {{
+            expression `{{http.request.uri.query.token}} == "{web_password}" || {{http.request.uri.query.token}} == "{open_button_token}"`
+        }}
+    }}'''
+        cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
+        @has_valid_auth_cookie {{
+            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={web_password}") || {{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={open_button_token}")`
+        }}
+    }}'''
+        bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
+        @has_valid_bearer_token {{
+            expression `{{http.request.header.Authorization}} == "Bearer {web_password}" || {{http.request.header.Authorization}} == "Bearer {open_button_token}"`
+        }}
+    }}'''
 
     caddyfile = fr'''
     {{
@@ -134,23 +186,11 @@ def generate_caddyfile(config):
         }}
     }}
 
-    (token_auth_matcher) {{
-        @token_auth {{
-            query token={web_password}
-        }}
-    }}
+    {token_auth_matcher}
 
-    (has_valid_auth_cookie_matcher) {{
-        @has_valid_auth_cookie {{
-            header_regexp Cookie {caddy_identifier}_auth_token={web_password}
-        }}
-    }}
+    {cookie_matcher}
 
-    (has_valid_bearer_token_matcher) {{
-        @has_valid_bearer_token {{
-            header Authorization "Bearer {web_password}"
-        }}
-    }}
+    {bearer_matcher}
     '''
 
     for app_name, app_config in config.items():
@@ -173,13 +213,13 @@ def generate_caddyfile(config):
         caddyfile += '    }\n\n'
 
         if enable_auth and not is_port_auth_excluded(external_port):
-            caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, hostname, internal_port)
+            caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, open_button_token, hostname, internal_port)
         else:
             caddyfile += generate_noauth_config(hostname, internal_port)
                                                                
         caddyfile += "}\n\n"
 
-    return caddyfile, web_username, web_password
+    return caddyfile, web_username, web_password, open_button_token
 
 # Helper function to generate reverse_proxy block with conditional headers
 def get_reverse_proxy_block(hostname, internal_port):    
@@ -217,7 +257,7 @@ def generate_noauth_config(hostname, internal_port):
     '''
     return no_auth_config
 
-def generate_auth_config(caddy_identifier, username, password, hostname, internal_port):
+def generate_auth_config(caddy_identifier, username, password, open_button_token, hostname, internal_port):
     hashed_password = subprocess.check_output([CADDY_BIN, 'hash-password', '-p', password]).decode().strip()
    
     auth_config = f'''    
@@ -240,7 +280,7 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
     import has_valid_bearer_token_matcher
 
     route @token_auth {{
-        header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
+        header Set-Cookie "{caddy_identifier}_auth_token={open_button_token}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
         uri query -token
         redir * {{uri}} 302
     }}
@@ -279,7 +319,7 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
 def main():
     try:
         config = load_config()
-        caddyfile_content, username, password = generate_caddyfile(config)
+        caddyfile_content, username, password, open_token = generate_caddyfile(config)
         
         with open('/etc/Caddyfile', 'w') as f:
             f.write(caddyfile_content)
@@ -290,9 +330,13 @@ def main():
         print("*")
         print("*")
         print("* Automatic login is enabled via the 'Open' button")
-        print(f"* Your web credentials are: {username} / {password}")
+        if password != open_token:
+            print(f"* Your web credentials are: {username} / {password}")
+            print(f"* Open button token is also valid: {open_token}")
+        else:
+            print(f"* Your web credentials are: {username} / {password}")
         print("*")
-        print(f"* To make API requests, pass an Authorization header (Authorization: Bearer {password})")
+        print(f"* To make API requests, pass an Authorization header (Authorization: Bearer <token>)")
         print("*")
         print("*")
         print("*****")
