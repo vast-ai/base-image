@@ -178,7 +178,10 @@ ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
 RUN \
     set -euo pipefail && \
     mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-    pip install uv
+    curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
+    chmod +x /tmp/uv-install.sh && \
+    UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh && \
+    rm -f /tmp/uv-install.sh
 
 # Install Extra Nvidia packages (OpenCL, GL, Nvenc)
 # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
