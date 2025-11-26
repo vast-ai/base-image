@@ -1487,7 +1487,7 @@ write_api_workflow() {
   },
   "25": {
     "inputs": {
-      "noise_seed": 1064877805904688
+      "noise_seed": "__RANDOM_INT__"
     },
     "class_type": "RandomNoise",
     "_meta": {
