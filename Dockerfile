@@ -151,7 +151,10 @@ RUN \
         pocl-opencl-icd \
         opencl-headers \
         ocl-icd-dev \
-        ocl-icd-opencl-dev && \
+        ocl-icd-opencl-dev \
+        # Vulkan
+        libvulkan1 \
+        vulkan-tools && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -228,8 +231,6 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Add Vulkan
-
 
 # Install NVM for node version management
 RUN \
@@ -270,7 +271,7 @@ RUN \
     git clone https://github.com/vast-ai/vast-cli && \
     wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
-    pip install --no-cache-dir \
+    pip install --no-cache-dir --ignore-installed \
         jupyter \
         tensorboard \
         magic-wormhole
