@@ -1,10 +1,10 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1
+ARG PYTORCH_BASE=vastai/pytorch:cuda-12.8.1-auto
 
 FROM ${PYTORCH_BASE}
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
-LABEL org.opencontainers.image.description="Stable Diffusion A1111 image suitable for Vast.ai."
+LABEL org.opencontainers.image.description="Stable Diffusion Kohyas GUI image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Copy Supervisor configuration and startup scripts
@@ -12,7 +12,7 @@ COPY ./ROOT /
 
 # Required or we will not build
 ARG KOHYA_REF
-
+ARG TORCH_BACKEND=cu128
 # Kohya's GUI provides some great install scripts for local use, but we will manually configure everything we need
 RUN \
     [[ -n "${KOHYA_REF}" ]] || { echo "Must specify KOHYA_REF" && exit 1; } && \
@@ -20,7 +20,7 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
+    uv pip install xformers torch==$PYTORCH_VERSION torchvision torchaudio torchcodec --torch-backend "${TORCH_BACKEND}" --index-strategy unsafe-best-match && \
     # Get Kohya and install dependencies (We will unpin torch & xformers)
     cd /opt/workspace-internal/ && \
     git clone --recursive https://github.com/bmaltais/kohya_ss.git && \
@@ -29,7 +29,7 @@ RUN \
     git submodule update --init --recursive && \
     # Allow installation with alternative torch versions and disable bundled tensorboard
     grep -v "^--extra-index-url\|^torch==\|^torchvision==\|^xformers==\|^tensorboard\|^tensorflow" requirements_linux.txt > requirements_linux_modified.txt && \
-    pip install --no-cache-dir \
+    uv pip install --no-cache-dir \
         torch==${PYTORCH_VERSION} \
         -r requirements_linux_modified.txt && \
     rm -f requirements_linux_modified.txt && \

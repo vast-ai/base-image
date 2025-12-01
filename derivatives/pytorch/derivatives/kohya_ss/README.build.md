@@ -7,7 +7,7 @@ See the example below for building instructions.
 ```bash
 docker buildx build \
     --platform linux/amd64 \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1 \
-    --build-arg KOHYA_REF=78c79e0 \
+    --build-arg TORCH_BACKEND=cu128 \
+    --build-arg KOHYA_REF=v25.2.1 \
     . -t repo/image:tag --push
 ```
