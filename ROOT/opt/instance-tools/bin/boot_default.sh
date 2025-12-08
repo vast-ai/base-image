@@ -118,13 +118,17 @@ main() {
     if ! grep -q "### Entrypoint setup ###" /root/.bashrc > /dev/null 2>&1; then
         target_bashrc="/root/.bashrc /home/user/.bashrc"
         echo "### Entrypoint setup ###" | tee -a $target_bashrc
+        # Put user into the workspace directory (Dynamic - Cannot rely on docker WORKDIR)
+        echo 'cd ${WORKSPACE}' | tee -a $target_bashrc
         # Ensure /etc/environment is sourced on login
-        [[ "${export_env}" = "true" ]] && { echo 'set -a'; echo '. /etc/environment'; echo '[[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; echo 'set +a'; } | tee -a $target_bashrc
+        [[ "${export_env}" = "true" ]] && { echo 'if [[ ! "$PATH" =~ /nix/store/ ]]; then'; echo '  set -a'; echo '  . /etc/environment'; echo '  [[ -f "${WORKSPACE}/.env" ]] && . "${WORKSPACE}/.env"'; echo '  set +a'; echo 'fi'; } | tee -a $target_bashrc
         # Ensure node npm (nvm) are available on login
-        echo '. /opt/nvm/nvm.sh' | tee -a $target_bashrc
+        echo '[[ ! "$PATH" =~ /nix/store/ ]] && . /opt/nvm/nvm.sh' | tee -a $target_bashrc
+        # Enable Nix
+        echo '. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh' | tee -a $target_bashrc
         # Ensure users are dropped into the venv on login.  Must be after /.launch has updated PS1
         if [[ "${activate_python_environment}" == "true" ]]; then
-            echo 'cd ${WORKSPACE} && source /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
+            echo '[[ ! "$PATH" =~ /nix/store/ ]] && [[ ${CONDA_SHLVL:-0} = 0 ]] && . /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
         fi
         # Warn CLI users if the container provisioning is not yet complete. Red >>>
         echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
@@ -398,6 +402,7 @@ sync_environment() {
     venv_dir="${env_dir}/venv"
     uv_dir="${env_dir}/uv"
     nvm_dir="${env_dir}/nvm"
+    #nix_dir="${env_dir}/nix"
     
     mkdir -p "${sync_dir}"
     # Copy if not present
@@ -405,7 +410,7 @@ sync_environment() {
         # Atomic lock
         if mkdir "$env_dir"; then
             touch "${env_dir}/.syncing"
-            mkdir -p "$venv_dir" "$uv_dir" "$nvm_dir"
+            mkdir -p "$venv_dir" "$uv_dir" "$nvm_dir" "$nix_dir"
             # Archive .uv directory if it exists
             if [[ -d "/.uv" ]]; then
                 echo "Archiving .uv to ${uv_dir}"
@@ -421,6 +426,14 @@ sync_environment() {
                 tar -xzf nvm.tar.gz -C "${nvm_dir}"
                 rm -f nvm.tar.gz
             fi
+
+            # Nix is not portable - TODO add sync support
+            # if [[ -d "/nix" ]]; then
+            #     echo "Archiving Nix to ${nix_dir}"
+            #     tar -czf nix.tar.gz -C /nix .
+            #     tar -xzf nix.tar.gz -C "${nix_dir}"
+            #     rm -f nix.tar.gz
+            # fi
             
             # Handle venv directories
             for dir in /venv/*/; do
@@ -488,6 +501,12 @@ sync_environment() {
         rm -rf /opt/nvm >/dev/null 2>&1
         ln -s "${nvm_dir}" /opt/nvm
     fi
+
+    # Handle Nix symlink
+    # if [[ -d "${nix_dir}" ]]; then
+    #     rm -rf /nix >/dev/null 2>&1
+    #     ln -s "${nix_dir}" /nix
+    # fi
 }
 
 main "$@"

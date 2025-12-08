@@ -240,6 +240,23 @@ RUN \
     source /opt/nvm/nvm.sh && \
     nvm install --lts
 
+# Install nix package manager - Not portable. No volume support
+RUN \
+    set -euo pipefail && \
+    groupadd nixbld && \
+    for n in $(seq 1 10); do useradd -c "Nix build user $n" \
+    -d /var/empty -g nixbld -G nixbld -M -N -r -s "$(which nologin)" \
+    nixbld$n; done && \
+    curl -L https://nixos.org/nix/install -o /tmp/nix-install.sh && \
+    sed -i 's/^umask/#umask/g' /tmp/nix-install.sh && \
+    bash /tmp/nix-install.sh --no-daemon --no-modify-profile && \
+    # Installer does not respect the umask
+    chmod -R g=u /nix && \
+    mkdir -p /etc/nix && \
+    echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
+    rm -f /tmp/nix-install.sh
+
+
 # Add the 'instance portal' web app into this container to avoid needing to specify in onstart.  
 # We will launch each component with supervisor - Not the standalone launch script.
 COPY ./portal-aio /opt/portal-aio
