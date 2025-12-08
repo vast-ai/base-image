@@ -196,6 +196,11 @@ main() {
         /tmp/hotfix.sh
     fi
 
+    # Source any additional pre-flight scripts prior to launching supervisor
+    for script in /etc/preflight.d/*.sh; do
+        [[ -f "$script" ]] && [[ -r "$script" ]] && . "$script"
+    done
+
     # Now we run supervisord - Put it in the background so provisioning can be monitored in Instance Portal
     supervisord \
         -n \
