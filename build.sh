@@ -124,8 +124,8 @@ BUILD_CONFIGS=(
     "cuda-12.8-24|nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04|cuda-12.8.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
     "cuda-12.9-22|nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04|cuda-12.9.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
     "cuda-12.9-24|nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04|cuda-12.9.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-13.0-22|nvidia/cuda:13.0.1-cudnn-devel-ubuntu22.04|cuda-13.0.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-13.0-24|nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04|cuda-13.0.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
+    "cuda-13.0-22|nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04|cuda-13.0.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
+    "cuda-13.0-24|nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04|cuda-13.0.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
 )
 
 # Parse command line arguments
