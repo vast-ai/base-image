@@ -114,6 +114,13 @@ RUN \
         procps \
         psmisc \
         nvtop \
+        # Infiniband support (if devices mounted)
+        rdma-core \
+        libibverbs1 \
+        ibverbs-providers \
+        libibumad3 \
+        librdmacm1 \
+        infiniband-diags \
         # Development essentials
         build-essential \
         cmake \
