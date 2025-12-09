@@ -387,8 +387,6 @@ RUN \
     /usr/bin/python3 -m ipykernel install \
         --name="system-python" \
         --display-name="Python3 (System)" && \
-    # Add a cron job to regularly backup all venvs in /venv/*
-    echo "*/30 * * * * /opt/instance-tools/bin/venv-backup.sh" | crontab - && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
