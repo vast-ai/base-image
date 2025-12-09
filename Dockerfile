@@ -158,9 +158,6 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Add a directory for custom scripts to be sourced before launching supervisor
-RUN mkdir -p /etc/preflight.d
-
 # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
 RUN \
     set -euo pipefail && \
@@ -213,6 +210,7 @@ RUN \
             "128") driver_version=570 ;; \
             "129") driver_version=575 ;; \
             "130") driver_version=580 ;; \
+            "131") driver_version=590 ;; \
         esac; \
         if [[ -n "${driver_version:-}" ]]; then \
             # decode is available for all architectures
