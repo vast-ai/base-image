@@ -148,8 +148,6 @@ RUN \
         zstd \
         # Performance analysis
         linux-tools-common \
-        # Process management
-        supervisor \    
         cron \
         # Required for cron logging
         rsyslog \
@@ -280,6 +278,7 @@ RUN \
     update-ca-certificates && \
     pip install --no-cache-dir --ignore-installed \
         jupyter \
+        supervisor \
         tensorboard \
         magic-wormhole
 
