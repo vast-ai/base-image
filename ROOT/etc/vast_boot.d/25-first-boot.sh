@@ -2,7 +2,7 @@
 
 # Source any scripts that should only run on first boot
 
-fi [[ ! -f /.first_boot_complete ]]; then
+if [[ ! -f /.first_boot_complete ]]; then
     for script in /etc/vast_boot.d/first_boot/*.sh; do
         [[ -f "$script" ]] && [[ -r "$script" ]] && . "$script"
     done
