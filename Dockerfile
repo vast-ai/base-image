@@ -280,7 +280,8 @@ RUN \
         jupyter \
         supervisor \
         tensorboard \
-        magic-wormhole
+        magic-wormhole && \
+    mkdir -p /var/log/supervisor
 
 # Install Syncthing
 ARG TARGETARCH
