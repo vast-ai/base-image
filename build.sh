@@ -246,7 +246,7 @@ for config_line in "${BUILD_CONFIGS[@]}"; do
     fi
     
     # Build for each Python version in range
-    ALL_PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13")
+    ALL_PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
     
     for py_version in "${ALL_PYTHON_VERSIONS[@]}"; do
         if version_in_range "$py_version" "$MIN_PYTHON" "$MAX_PYTHON"; then
