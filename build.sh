@@ -33,7 +33,7 @@ build_image() {
     local docker_cmd="docker buildx build --progress=plain"
     docker_cmd+=" --build-arg BASE_IMAGE=${actual_base_image}"
     docker_cmd+=" --build-arg PYTHON_VERSION=${python_version}"
-    docker_cmd+=" --platform "${arch}"
+    docker_cmd+=" --platform ${arch}"
     docker_cmd+=" -f ${dockerfile}"
     docker_cmd+=" --tag ${primary_tag}"
     
@@ -166,8 +166,8 @@ while [[ $# -gt 0 ]]; do
                 config_key="${CONFIG[0]}"
                 base_image="${CONFIG[1]}"
                 tag_template="${CONFIG[2]}"
-                min_python="${CONFIG[3]}"
-                max_python="${CONFIG[4]}"
+                min_python="${CONFIG[4]}"
+                max_python="${CONFIG[5]}"
                 echo "  $config_key: $base_image -> $tag_template (Python $min_python-$max_python)"
             done
             exit 0
