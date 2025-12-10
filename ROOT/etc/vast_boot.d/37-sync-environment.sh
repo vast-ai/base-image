@@ -23,7 +23,7 @@ _sync_environment() {
         # Atomic lock
         if mkdir "$env_dir"; then
             touch "${env_dir}/.syncing"
-            mkdir -p "$venv_dir" "$uv_dir" "$nvm_dir" "$nix_dir"
+            mkdir -p "$venv_dir" "$uv_dir" "$nvm_dir"
             # Archive .uv directory if it exists
             if [[ -d "/.uv" ]]; then
                 echo "Archiving .uv to ${uv_dir}"
