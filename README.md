@@ -15,15 +15,15 @@ Vast.ai host machines cache commonly-used Docker image layers. By building on to
 - When you start an instance, only the smaller top layers need to be downloaded
 - Result: Fast startup times despite having a comprehensive development environment
 
-### Automatic CUDA Version Matching
+### Automatic CUDA Version Selection
 
-Vast.ai's backend automatically selects the appropriate image variant based on your GPU's maximum supported CUDA version. When you rent a machine:
+Vast.ai's backend automatically selects the appropriate image variant based on the host machine's maximum supported CUDA version (determined by the installed NVIDIA driver). When you rent a machine:
 
-1. The system detects the GPU's maximum CUDA capability (e.g., CUDA 12.9)
-2. It examines available Docker tags for your template
-3. It selects the most suitable compatible version (matching or earlier CUDA)
+1. The system detects the host's maximum CUDA capability from its NVIDIA driver (e.g., supports up to CUDA 12.9)
+2. It finds the most recently pushed Docker image tag containing a compatible CUDA version
+3. It pulls that specific image variant
 
-This means you can use a single template, and the system ensures compatibility with any GPU you rent.
+**Example:** A machine with drivers supporting CUDA 12.8 will pull the `cuda-12.8.1-*` variant, while a newer machine supporting CUDA 12.9 will pull `cuda-12.9.1-*`. This ensures you always get the best compatible version without manual configuration.
 
 ## Available Image Variants
 
@@ -31,25 +31,21 @@ We build multiple variants to support different hardware and Python requirements
 
 ### Base Images
 
-| Type | Base Image | Ubuntu | CUDA/ROCm |
-|------|-----------|--------|-----------|
-| **Stock** | `ubuntu:22.04`, `ubuntu:24.04` | 22.04, 24.04 | None (CPU only) |
-| **NVIDIA CUDA** | `nvidia/cuda:*-cudnn-devel-ubuntu*` | 22.04, 24.04 | 11.8, 12.1, 12.4, 12.6, 12.8, 12.9, 13.0 |
-| **AMD ROCm** | `rocm/dev-ubuntu-*:6.2.4-complete` | 22.04, 24.04 | ROCm 6.2.4 |
+| Type | Base Image | Ubuntu | Notes |
+|------|-----------|--------|-------|
+| **Stock** | `ubuntu:22.04`, `ubuntu:24.04` | 22.04, 24.04 | No CUDA/ROCm libraries, but NVIDIA drivers are still loaded at runtime |
+| **NVIDIA CUDA** | `nvidia/cuda:*-cudnn-devel-ubuntu*` | 22.04, 24.04 | Full CUDA toolkit + cuDNN (11.8, 12.1, 12.4, 12.6, 12.8, 12.9, 13.0.1, 13.0.2) |
+| **AMD ROCm** | `rocm/dev-ubuntu-*:6.2.4-complete` | 22.04, 24.04 | Complete ROCm 6.2.4 development environment |
+
+**Note:** Stock images can still access NVIDIA GPUs—they simply don't include the heavier CUDA development libraries. Use these when you want a lighter image and will install specific CUDA components yourself.
 
 ### Python Versions
 
-Each base image variant is available with Python 3.7 through 3.13. The default Python version matches the Ubuntu release:
+Each base image variant is available with Python 3.7 through 3.14. The default Python version matches the Ubuntu release:
 - Ubuntu 22.04: Python 3.10
 - Ubuntu 24.04: Python 3.12
 
 ### Tag Format
-
-**Recommended: Use `-auto` tags** for the best defaults:
-```
-vastai/base-image:cuda-12.8.1-auto
-```
-The `-auto` suffix automatically selects the recommended Ubuntu and Python versions for that CUDA release.
 
 **Explicit tags** for specific configurations:
 ```
@@ -79,7 +75,7 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 
 | Feature | Description |
 |---------|-------------|
-| **CUDA** | Full development toolkit with cuDNN (NVIDIA variants) |
+| **CUDA** | Full development toolkit with cuDNN (NVIDIA CUDA variants) |
 | **ROCm** | Complete ROCm development environment (AMD variants) |
 | **OpenCL** | Headers, ICD loaders, and runtime for both NVIDIA and AMD |
 | **Vulkan** | Runtime and tools |
@@ -94,17 +90,6 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | **nvtop** | GPU process monitoring |
 | **iotop** | I/O usage monitoring |
 | **strace** | System call tracing |
-
-### Instance Portal & Security
-
-The Instance Portal provides a web-based dashboard for managing your instance:
-
-- **Caddy Reverse Proxy**: Automatic TLS for all web applications
-- **Authentication**: Bearer token and cookie-based auth via `OPEN_BUTTON_TOKEN`
-- **Cloudflare Tunnels**: Share applications without opening ports
-- **Centralized Logging**: View logs from `/var/log/portal/` in the web UI
-
-Access the portal by clicking "Open" on your instance card in the Vast.ai console.
 
 ### Pre-configured Applications
 
@@ -132,52 +117,119 @@ All applications are managed by [Supervisor](https://supervisord.readthedocs.io/
 - **Shared permissions**: umask 002 for collaborative file access
 - **SSH key propagation**: Keys automatically set up for both root and user accounts
 
-## Startup Process
+## Instance Portal
 
-When an instance starts, the boot sequence:
+The Instance Portal is a web-based dashboard for managing applications running on your instance. It provides secure access through TLS, authentication, and Cloudflare tunnels.
 
-1. **Environment Setup** (`10-prep-env.sh`)
-   - Exports environment variables to `/etc/environment`
-   - Configures runtime settings
+Access the portal by clicking "Open" on your instance card in the Vast.ai console. See the [Instance Portal documentation](https://docs.vast.ai/documentation/instances/connect/instance-portal) for complete details.
 
-2. **First Boot Tasks** (`25-first-boot.sh`)
-   - Updates Instance Portal and Vast CLI
-   - Runs only on initial startup
+### PORTAL_CONFIG
 
-3. **Workspace Sync** (`35-sync-home-dirs.sh`, `36-sync-workspace.sh`)
-   - Copies default workspace content
-   - Optionally syncs environments to persistent storage
+The `PORTAL_CONFIG` environment variable defines which applications appear in the Instance Portal. Format:
 
-4. **Environment Sync** (`37-sync-environment.sh`)
-   - Optionally moves Python/Conda environments to workspace volume
-   - Enables environment persistence across instance restarts
-
-5. **User Setup** (`45-47-*.sh`)
-   - Configures bashrc for both users
-   - Propagates SSH keys
-   - Sets up git safe directories
-
-6. **TLS Certificate Generation** (`55-tls-cert-gen.sh`)
-   - Creates self-signed certificates for secure connections
-
-7. **Supervisor Launch** (`65-supervisor-launch.sh`)
-   - Starts all configured services
-
-8. **Provisioning Script** (`75-provisioning-script.sh`)
-   - Downloads and executes custom `PROVISIONING_SCRIPT` if set
-   - Logs output to `/var/log/portal/provisioning.log`
-
-## Customization
-
-### Using a Provisioning Script
-
-For quick customizations without building a new image, set the `PROVISIONING_SCRIPT` environment variable to a URL:
-
-```bash
-PROVISIONING_SCRIPT=https://raw.githubusercontent.com/you/repo/main/setup.sh
+```
+hostname:external_port:internal_port:path:name|hostname:external_port:internal_port:path:name|...
 ```
 
-Example script:
+| Field | Description |
+|-------|-------------|
+| `hostname` | Usually `localhost` |
+| `external_port` | Port exposed via `-p` flag (must be open in template) |
+| `internal_port` | Port where your application listens |
+| `path` | URL path for access (usually `/`) |
+| `name` | Display name in the portal |
+
+**Example:**
+```bash
+PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:7860:17860:/:My App"
+```
+
+**Port behavior:**
+- When `external_port` ≠ `internal_port`: Caddy reverse proxy makes the app available on the external port with TLS and authentication
+- When `external_port` = `internal_port`: The application bypasses proxying (direct access), but tunnel links are still created
+
+The configuration is written to `/etc/portal.yaml` on first boot. You can edit this file at runtime and restart Caddy with `supervisorctl restart caddy`.
+
+### Enabling HTTPS
+
+To enable HTTPS for all proxied applications, set:
+
+```bash
+ENABLE_HTTPS=true
+```
+
+When enabled:
+- Caddy serves applications over HTTPS using certificates at `/etc/instance.crt` and `/etc/instance.key`
+- Self-signed certificates are generated automatically during boot
+- Install the [Vast.ai Jupyter certificate](https://vast.ai/docs/instance-setup/jupyter#installing-the-tls-certificate) locally to avoid browser warnings
+
+### Authentication
+
+Authentication is enabled by default for all proxied ports. Access methods:
+
+1. **Open Button**: Click "Open" on your instance card—automatically sets an auth cookie
+2. **Basic Auth**: Username `vastai`, password is your `OPEN_BUTTON_TOKEN`
+3. **Bearer Token**: Include `Authorization: Bearer ${OPEN_BUTTON_TOKEN}` header for API access
+
+**Related variables:**
+| Variable | Description |
+|----------|-------------|
+| `ENABLE_AUTH` | Set to `false` to disable authentication (default: `true`) |
+| `AUTH_EXCLUDE` | Comma-separated list of external ports to exclude from auth |
+| `WEB_USERNAME` | Custom username for basic auth (default: `vastai`) |
+| `WEB_PASSWORD` | Custom password (default: auto-generated or `OPEN_BUTTON_TOKEN`) |
+
+### Cloudflare Tunnels
+
+The Instance Portal automatically creates Cloudflare tunnels for your applications, providing URLs like:
+```
+https://four-random-words.trycloudflare.com
+```
+
+For persistent custom domains, set `CF_TUNNEL_TOKEN` to your Cloudflare tunnel token. Note: Each running instance requires a separate tunnel token.
+
+## Startup Configuration
+
+### Entrypoint Arguments
+
+The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts these arguments:
+
+| Argument | Description |
+|----------|-------------|
+| `--no-user-keys` | Skip SSH key propagation to the `user` account |
+| `--no-export-env` | Don't export environment variables to `/etc/environment` |
+| `--no-cert-gen` | Skip TLS certificate generation |
+| `--no-update-portal` | Don't check for Instance Portal updates |
+| `--no-update-vast` | Don't check for Vast CLI updates |
+| `--no-activate-pyenv` | Don't activate Python environment in shell |
+| `--sync-environment` | Sync Python/Conda environments to workspace volume for persistence |
+| `--sync-home` | Sync home directories to workspace |
+| `--jupyter-override` | Force Jupyter to start even in non-Jupyter launch modes |
+
+**Example** (in Docker run command or template):
+```bash
+/opt/instance-tools/bin/entrypoint.sh --sync-environment --no-update-portal
+```
+
+### Startup Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `BOOT_SCRIPT` | URL to a custom boot script that **replaces** the entire default startup routine |
+| `HOTFIX_SCRIPT` | URL to a script that runs very early in boot, before most initialization—use to patch broken containers |
+| `PROVISIONING_SCRIPT` | URL to a script that runs after Supervisor starts—use to install packages and configure applications |
+| `SERVERLESS` | Set to `true` to skip update checks for faster cold starts |
+
+**Execution order:**
+1. `BOOT_SCRIPT` (if set, replaces everything below)
+2. `HOTFIX_SCRIPT` (runs first, can modify any part of startup)
+3. Normal boot sequence (environment setup, workspace sync, TLS certs, Supervisor)
+4. `PROVISIONING_SCRIPT` (runs after Supervisor, installs your customizations)
+
+### Provisioning Script Example
+
+For quick customizations without building a new image:
+
 ```bash
 #!/bin/bash
 set -eo pipefail
@@ -190,30 +242,30 @@ pip install torch transformers
 
 # Download models or data
 huggingface-cli download meta-llama/Llama-2-7b-hf --local-dir /workspace/models
+
+# Add a new application to Supervisor
+cat > /etc/supervisor/conf.d/my-app.conf << 'EOF'
+[program:my-app]
+command=/opt/supervisor-scripts/my-app.sh
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/portal/my-app.log
+stdout_logfile=/var/log/portal/my-app.log
+EOF
+
+# Reload Supervisor to pick up new config
+supervisorctl reread && supervisorctl update
 ```
 
-### Building a Derived Image (Recommended)
+## Building a Derived Image (Recommended)
 
 The best way to create a custom image is to extend our pre-built images from DockerHub. This preserves the layer caching benefits—Vast.ai hosts already have our base layers cached, so only your custom layers need to be downloaded.
-
-**Use `-auto` tags for automatic Python/Ubuntu selection:**
-
-```
-vastai/base-image:cuda-12.9.1-auto    # Best config for CUDA 12.9
-vastai/base-image:cuda-12.8.1-auto    # Best config for CUDA 12.8
-vastai/base-image:cuda-12.6.3-auto    # Best config for CUDA 12.6
-vastai/base-image:cuda-12.4.1-auto    # Best config for CUDA 12.4
-vastai/base-image:cuda-12.1.1-auto    # Best config for CUDA 12.1
-vastai/base-image:cuda-11.8.0-auto    # Best config for CUDA 11.8
-```
-
-The `-auto` tags point to the recommended Ubuntu version and Python version for each CUDA release.
 
 **Example Dockerfile:**
 
 ```dockerfile
 # Extend the pre-built image to preserve layer caching benefits
-FROM vastai/base-image:cuda-12.8.1-auto
+FROM vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu22.04
 
 # Install Python packages into the main virtual environment
 RUN . /venv/main/bin/activate && \
@@ -230,8 +282,7 @@ COPY my-app.sh /opt/supervisor-scripts/
 RUN chmod +x /opt/supervisor-scripts/my-app.sh
 
 # Configure Instance Portal to include your app
-# Format: hostname:external_port:internal_port:path:name
-ENV PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8080:8080:/:Jupyter|localhost:7860:17860:/:My App"
+ENV PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:7860:17860:/:My App"
 ```
 
 **Example Supervisor config (`my-app.conf`):**
@@ -257,23 +308,42 @@ exec python /opt/my-app/main.py --host localhost --port 17860
 
 | Path | Purpose |
 |------|---------|
-| `/venv/main/` | Primary Python virtual environment |
+| `/venv/main/` | Primary Python virtual environment (Conda-managed) |
 | `/workspace/` | Persistent workspace directory |
 | `/etc/supervisor/conf.d/` | Supervisor service configurations |
 | `/opt/supervisor-scripts/` | Service wrapper scripts |
-| `/etc/portal.yaml` | Instance Portal configuration |
-| `/var/log/portal/` | Application logs |
+| `/etc/portal.yaml` | Instance Portal configuration (generated from `PORTAL_CONFIG`) |
+| `/var/log/portal/` | Application logs (viewable in Instance Portal) |
+| `/etc/instance.crt`, `/etc/instance.key` | TLS certificates |
 
-## Environment Variables
+## Environment Variables Reference
+
+### Instance Portal
 
 | Variable | Description |
 |----------|-------------|
-| `PROVISIONING_SCRIPT` | URL to download and execute on startup |
-| `PORTAL_CONFIG` | Configure Instance Portal applications |
-| `TENSORBOARD_LOG_DIR` | Custom Tensorboard log directory (default: `/workspace`) |
-| `CF_TUNNEL_TOKEN` | Enable custom Cloudflare tunnel domains |
-| `BOOT_SCRIPT` | URL to custom boot script (replaces default boot) |
-| `SERVERLESS` | Set to `true` to skip update checks for faster cold starts |
+| `PORTAL_CONFIG` | Application configuration (see [PORTAL_CONFIG](#portal_config)) |
+| `ENABLE_HTTPS` | Enable HTTPS for proxied applications (default: `false`) |
+| `ENABLE_AUTH` | Enable authentication (default: `true`) |
+| `AUTH_EXCLUDE` | Comma-separated ports to exclude from authentication |
+| `WEB_USERNAME` | Basic auth username (default: `vastai`) |
+| `WEB_PASSWORD` | Basic auth password (default: `OPEN_BUTTON_TOKEN`) |
+| `CF_TUNNEL_TOKEN` | Cloudflare tunnel token for custom domains |
+
+### Startup
+
+| Variable | Description |
+|----------|-------------|
+| `BOOT_SCRIPT` | URL to custom boot script (replaces default startup) |
+| `HOTFIX_SCRIPT` | URL to early-run patch script |
+| `PROVISIONING_SCRIPT` | URL to post-Supervisor setup script |
+| `SERVERLESS` | Set to `true` for faster cold starts |
+
+### Applications
+
+| Variable | Description |
+|----------|-------------|
+| `TENSORBOARD_LOG_DIR` | Tensorboard log directory (default: `/workspace`) |
 
 ## Building From Source (Not Recommended)
 
