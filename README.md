@@ -367,15 +367,6 @@ docker buildx build \
 ./build.sh --list                        # Show all available configurations
 ```
 
-## Template Links
-
-Try the image with these pre-configured templates:
-
-- [Jupyter Launch Mode](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Vast%20Base%20Image)
-- [SSH Launch Mode](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Vast%20Base%20Image%20-%20SSH)
-- [Args Launch Mode](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Vast%20Base%20Image%20-%20ARGS)
-- [ARM64 (Jupyter)](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Vast%20Base%20Image%20-%20ARM64)
-- [AMD ROCm (Jupyter)](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Vast%20Base%20Image%20-%20AMD%20ROCm)
 
 ## License
 
