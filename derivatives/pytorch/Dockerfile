@@ -21,7 +21,7 @@ RUN \
     set -euo pipefail && \
     [[ -n "${PYTORCH_VERSION}" ]] || { echo "Must specify PYTORCH_VERSION" && exit 1; } && \
     [[ -n "${PYTORCH_BACKEND}" ]] || { echo "Must specify PYTORCH_BACKEND" && exit 1; } && \
-    [[ "${PYTORCH_BACKEND}" = "auto" ]] && { echo "Must not use auto torch backend during build" && exit 1; } && \
+    [[ "${PYTORCH_BACKEND}" != "auto" ]] || { echo "Cannot use 'auto' as torch backend during build" && exit 1; } && \
     # Activate the venv
     . /venv/main/bin/activate && \
     uv pip install \
