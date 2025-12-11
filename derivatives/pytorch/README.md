@@ -35,7 +35,7 @@ RUN . /venv/main/bin/activate && \
 
 # Download models (store outside workspace-internal for large files)
 RUN . /venv/main/bin/activate && \
-    huggingface-cli download meta-llama/Llama-2-7b-hf --local-dir /models/llama-2-7b
+    hf download meta-llama/Llama-2-7b-hf --local-dir /models/llama-2-7b
 
 # Create symlink in workspace
 RUN mkdir -p /opt/workspace-internal/models && \
