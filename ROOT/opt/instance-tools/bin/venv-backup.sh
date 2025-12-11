@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# Deprecated.  no longer auto-enabled
+
 # Configuration
 SYSTEM_VENV_DIR="/venv"
 BACKUP_DIR="${WORKSPACE:-/workspace}/.venv-backups/${CONTAINER_ID}"
