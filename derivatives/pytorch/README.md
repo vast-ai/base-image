@@ -56,6 +56,25 @@ See [Building a Derived Image](../../README.md#building-a-derived-image-recommen
 - Instance Portal configuration
 - Key paths and environment variables
 
+## Building From Source (Not Recommended)
+
+> **Note:** Building from source creates new image layers that won't be cached on Vast.ai hosts. For most use cases, [extending the pre-built images](#extending-this-image) is faster and more efficient.
+
+If you need to modify the PyTorch image itself, you can build from source:
+
+```bash
+git clone https://github.com/vast-ai/base-image
+cd base-image/derivatives/pytorch
+
+docker buildx build \
+    --build-arg VAST_BASE=vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu22.04 \
+    --build-arg PYTORCH_VERSION=2.9.1 \
+    --build-arg PYTORCH_BACKEND=cu128 \
+    -t my-pytorch-image .
+```
+
+The `PYTORCH_BACKEND` argument should match your CUDA version (e.g., `cu118`, `cu121`, `cu124`, `cu128`) or use `rocm` for AMD GPUs.
+
 ## Useful Links
 
 - [PyTorch Documentation](https://pytorch.org/)
