@@ -225,6 +225,32 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 3. Normal boot sequence (environment setup, workspace sync, TLS certs, Supervisor)
 4. `PROVISIONING_SCRIPT` (runs after Supervisor, installs your customizations)
 
+### Custom Boot Scripts
+
+For derivative images, you can add custom scripts to `/etc/vast_boot.d/` to hook into the boot sequence. Scripts are sourced in alphabetical order by filename, so use numeric prefixes to control ordering:
+
+```
+/etc/vast_boot.d/
+├── 10-prep-env.sh
+├── 25-first-boot.sh
+├── 35-sync-home-dirs.sh
+├── ...
+├── 65-supervisor-launch.sh
+├── 75-provisioning-script.sh
+├── 80-my-custom-script.sh       # Runs every boot
+└── first_boot/
+    ├── 05-update-vast.sh        # Runs only on first boot
+    └── 20-my-first-boot.sh      # Your first-boot script
+```
+
+- **Every boot:** Add scripts directly to `/etc/vast_boot.d/`
+- **First boot only:** Add scripts to `/etc/vast_boot.d/first_boot/`
+
+Key ordering points:
+- Scripts before `65-*` run before Supervisor starts
+- Scripts at `75-*` or later run after Supervisor is running
+- First-boot scripts (in `first_boot/`) are sourced at position `25-*`
+
 ### Provisioning Script Example
 
 For quick customizations without building a new image:
