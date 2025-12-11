@@ -10,10 +10,11 @@ build_image() {
     local dockerfile="$1"
     local tag_repo="$2" 
     local base_image="$3"
-    local python_version="$4"
-    local tag_pattern="$5"
-    local additional_tags="$6"
-    local from_repo="$7"
+    local arch="$4"
+    local python_version="$5"
+    local tag_pattern="$6"
+    local additional_tags="$7"
+    local from_repo="$8"
     
     # Build the primary tag using the tag pattern
     local py_version_tag="${python_version//./}"
@@ -32,7 +33,7 @@ build_image() {
     local docker_cmd="docker buildx build --progress=plain"
     docker_cmd+=" --build-arg BASE_IMAGE=${actual_base_image}"
     docker_cmd+=" --build-arg PYTHON_VERSION=${python_version}"
-    docker_cmd+=" --platform linux/amd64,linux/arm64"
+    docker_cmd+=" --platform ${arch}"
     docker_cmd+=" -f ${dockerfile}"
     docker_cmd+=" --tag ${primary_tag}"
     
@@ -109,23 +110,25 @@ ubuntu_supported() {
     esac
 }
 
-# Build Configuration - format: key|base_image|tag_template|min_py|max_py
+# Build Configuration - format: key|base_image|tag_template|arch|min_py|max_py
 BUILD_CONFIGS=(
-    "stock-22|ubuntu:22.04|stock-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "stock-24|ubuntu:24.04|stock-ubuntu24.04-py\${py_version_tag}|3.9|3.13"
-    "rocm-22|rocm/dev-ubuntu-22.04:6.2.4-complete|rocm-dev-ubuntu-22.04-6.2.4-complete-py\${py_version_tag}|3.7|3.13"
-    "rocm-24|rocm/dev-ubuntu-24.04:6.2.4-complete|rocm-dev-ubuntu-24.04-6.2.4-complete-py\${py_version_tag}|3.7|3.13"
-    "cuda-11.8-22|nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04|cuda-11.8.0-cudnn8-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.1-22|nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04|cuda-12.1.1-cudnn8-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.4-22|nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04|cuda-12.4.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.6-22|nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04|cuda-12.6.3-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.6-24|nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04|cuda-12.6.3-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.8-22|nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04|cuda-12.8.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.8-24|nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04|cuda-12.8.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.9-22|nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04|cuda-12.9.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-12.9-24|nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04|cuda-12.9.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-13.0-22|nvidia/cuda:13.0.1-cudnn-devel-ubuntu22.04|cuda-13.0.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|3.7|3.13"
-    "cuda-13.0-24|nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04|cuda-13.0.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|3.7|3.13"
+    "stock-22|ubuntu:22.04|stock-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "stock-24|ubuntu:24.04|stock-ubuntu24.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "rocm-22|rocm/dev-ubuntu-22.04:6.2.4-complete|rocm-dev-ubuntu-22.04-6.2.4-complete-py\${py_version_tag}|linux/amd64|3.7|3.14"
+    "rocm-24|rocm/dev-ubuntu-24.04:6.2.4-complete|rocm-dev-ubuntu-24.04-6.2.4-complete-py\${py_version_tag}|linux/amd64|3.7|3.14"
+    "cuda-11.8-22|nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04|cuda-11.8.0-cudnn8-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.1-22|nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04|cuda-12.1.1-cudnn8-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.4-22|nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04|cuda-12.4.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.6-22|nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04|cuda-12.6.3-cudnn-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.6-24|nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04|cuda-12.6.3-cudnn-devel-ubuntu24.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.8-22|nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04|cuda-12.8.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.8-24|nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04|cuda-12.8.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.9-22|nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04|cuda-12.9.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-12.9-24|nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04|cuda-12.9.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-13.0.1-22|nvidia/cuda:13.0.1-cudnn-devel-ubuntu22.04|cuda-13.0.1-cudnn-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-13.0.1-24|nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04|cuda-13.0.1-cudnn-devel-ubuntu24.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-13.0.2-22|nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04|cuda-13.0.2-cudnn-devel-ubuntu22.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
+    "cuda-13.0.2-24|nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04|cuda-13.0.2-cudnn-devel-ubuntu24.04-py\${py_version_tag}|linux/amd64,linux/arm64|3.7|3.14"
 )
 
 # Parse command line arguments
@@ -163,8 +166,8 @@ while [[ $# -gt 0 ]]; do
                 config_key="${CONFIG[0]}"
                 base_image="${CONFIG[1]}"
                 tag_template="${CONFIG[2]}"
-                min_python="${CONFIG[3]}"
-                max_python="${CONFIG[4]}"
+                min_python="${CONFIG[4]}"
+                max_python="${CONFIG[5]}"
                 echo "  $config_key: $base_image -> $tag_template (Python $min_python-$max_python)"
             done
             exit 0
@@ -214,8 +217,9 @@ for config_line in "${BUILD_CONFIGS[@]}"; do
     config_key="${CONFIG[0]}"
     BASE_IMAGE="${CONFIG[1]}"
     TAG_PATTERN="\${TAG_REPO}:${CONFIG[2]}"
-    MIN_PYTHON="${CONFIG[3]}"
-    MAX_PYTHON="${CONFIG[4]}"
+    ARCH="${CONFIG[3]}"
+    MIN_PYTHON="${CONFIG[4]}"
+    MAX_PYTHON="${CONFIG[5]}"
     
     # Apply filter if specified
     if [[ -n "$BUILD_FILTER" && "$config_key" != *"$BUILD_FILTER"* ]]; then
@@ -242,7 +246,7 @@ for config_line in "${BUILD_CONFIGS[@]}"; do
     fi
     
     # Build for each Python version in range
-    ALL_PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13")
+    ALL_PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
     
     for py_version in "${ALL_PYTHON_VERSIONS[@]}"; do
         if version_in_range "$py_version" "$MIN_PYTHON" "$MAX_PYTHON"; then
@@ -259,7 +263,7 @@ for config_line in "${BUILD_CONFIGS[@]}"; do
                 echo "Adding default Python tag for Ubuntu $ubuntu_version: $(eval echo "$additional_tags")"
             fi
             
-            build_image "$DOCKERFILE" "$TAG_REPO" "$BASE_IMAGE" "$py_version" "$TAG_PATTERN" "$additional_tags" "$FROM_REPO"
+            build_image "$DOCKERFILE" "$TAG_REPO" "$BASE_IMAGE" "$ARCH" "$py_version" "$TAG_PATTERN" "$additional_tags" "$FROM_REPO"
             echo ""
         fi
     done

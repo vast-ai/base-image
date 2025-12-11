@@ -80,6 +80,7 @@ RUN \
     apt-get install --no-install-recommends -y \
         # Base system utilities
         acl \
+        bc \
         ca-certificates \
         gpg-agent \
         software-properties-common \
@@ -113,6 +114,13 @@ RUN \
         procps \
         psmisc \
         nvtop \
+        # Infiniband support (if devices mounted)
+        rdma-core \
+        libibverbs1 \
+        ibverbs-providers \
+        libibumad3 \
+        librdmacm1 \
+        infiniband-diags \
         # Development essentials
         build-essential \
         cmake \
@@ -140,8 +148,6 @@ RUN \
         zstd \
         # Performance analysis
         linux-tools-common \
-        # Process management
-        supervisor \    
         cron \
         # Required for cron logging
         rsyslog \
@@ -150,60 +156,46 @@ RUN \
         pocl-opencl-icd \
         opencl-headers \
         ocl-icd-dev \
-        ocl-icd-opencl-dev && \
-    # Ensure TensorRT where applicable
-    if [ -n "${CUDA_VERSION:-}" ]; then \
-        CUDA_MAJOR_MINOR=$(echo ${CUDA_VERSION} | cut -d. -f1,2) && \
-        nvinfer10_version=$(apt-cache madison libnvinfer10 | grep cuda${CUDA_MAJOR_MINOR} | awk '{print $3}' | sort -V | tail -n1 || true) && \
-        # Only CUDA 12.0 and 11.8 are available and we do not support < 11.8
-        nvinfer8_version=$(apt-cache madison libnvinfer8 | grep cuda${CUDA_MAJOR_MINOR%.*} | awk '{print $3}' | sort -V | tail -n1 || true) && \
-        if [[ -n "$nvinfer10_version" ]]; then \
-            apt-get install -y --no-install-recommends \
-                libnvinfer10=$nvinfer10_version \
-                libnvinfer-plugin10=$nvinfer10_version \
-                libnvonnxparsers10=$nvinfer10_version; \
-                apt-mark hold libnvinfer10 libnvinfer-plugin10 libnvonnxparsers10; \
-        elif [[ -n "$nvinfer8_version" ]]; then \
-            apt-get install -y --no-install-recommends \
-                libnvinfer8=$nvinfer8_version \
-                libnvinfer-plugin8=$nvinfer8_version \
-                libnvonnxparsers8=$nvinfer8_version; \
-                apt-mark hold libnvinfer8 libnvinfer-plugin8 libnvonnxparsers8; \
-        fi \
-    fi && \
+        ocl-icd-opencl-dev \
+        # Vulkan
+        libvulkan1 \
+        vulkan-tools && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-    # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
-    RUN \
-        set -euo pipefail && \
-        useradd -ms /bin/bash user -u 1001 -g 0 && \
-        sed -i '1i umask 002' /home/user/.bashrc && \
-        echo "PATH=${PATH}" >> /home/user/.bashrc && \
-        echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
-        sudo chmod 0440 /etc/sudoers.d/user && \
-        mkdir -m 700 -p /run/user/1001 && \
-        chown 1001:0 /run/user/1001 && \
-        mkdir -p /run/dbus && \
-        mkdir -p /opt/workspace-internal/
+# Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
+RUN \
+    set -euo pipefail && \
+    useradd -ms /bin/bash user -u 1001 -g 0 && \
+    sed -i '1i umask 002' /home/user/.bashrc && \
+    echo "PATH=${PATH}" >> /home/user/.bashrc && \
+    echo "user ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/user && \
+    sudo chmod 0440 /etc/sudoers.d/user && \
+    mkdir -m 700 -p /run/user/1001 && \
+    chown 1001:0 /run/user/1001 && \
+    mkdir -p /run/dbus && \
+    mkdir -p /opt/workspace-internal/
 
-    # Add support for uv, the excellent Python environment manager
-    ENV UV_CACHE_DIR=/.uv/cache
-    ENV UV_NO_CACHE=1
-    # We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
-    ENV UV_LINK_MODE=copy
-    ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
-    ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
-    RUN \
-        set -euo pipefail && \
-        mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
-        pip install uv
+# Add support for uv, the excellent Python environment manager
+ENV UV_CACHE_DIR=/.uv/cache
+ENV UV_NO_CACHE=1
+# We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
+ENV UV_LINK_MODE=copy
+ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
+ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
+RUN \
+    set -euo pipefail && \
+    mkdir -p "${UV_CACHE_DIR}" "${UV_PYTHON_BIN_DIR}" "${UV_PYTHON_INSTALL_DIR}" && \
+    curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
+    chmod +x /tmp/uv-install.sh && \
+    UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh && \
+    rm -f /tmp/uv-install.sh
 
-    # Install Extra Nvidia packages (OpenCL)
-    # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
-    # We cannot know the runtime driver version so we aim for best compatibility 
-    ARG TARGETARCH
-    RUN \
+# Install Extra Nvidia packages (OpenCL, GL, Nvenc)
+# When installing libnvidia packages always pick the earliest version to avoid mismatched libs
+# We cannot know the runtime driver version so we aim for best compatibility 
+ARG TARGETARCH
+RUN \
     set -euo pipefail && \
     apt-get update && \
     if command -v rocm-smi >/dev/null 2>&1; then \
@@ -223,6 +215,7 @@ RUN \
             "128") driver_version=570 ;; \
             "129") driver_version=575 ;; \
             "130") driver_version=580 ;; \
+            "131") driver_version=590 ;; \
         esac; \
         if [[ -n "${driver_version:-}" ]]; then \
             # decode is available for all architectures
@@ -235,7 +228,7 @@ RUN \
                 echo "Package: nvidia-*-${driver_version}" >> /etc/apt/preferences.d/nvidia-pin; \
                 echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
                 echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
-                for pkg in nvidia-utils libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
+                for pkg in nvidia-utils libnvidia-gl libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
                     apt-get install -y "${pkg}-${driver_version}" 2>/dev/null || true; \
                 done; \
             fi; \
@@ -283,10 +276,12 @@ RUN \
     git clone https://github.com/vast-ai/vast-cli && \
     wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
-    pip install --no-cache-dir \
+    pip install --no-cache-dir --ignore-installed \
         jupyter \
+        supervisor \
         tensorboard \
-        magic-wormhole
+        magic-wormhole && \
+    mkdir -p /var/log/supervisor
 
 # Install Syncthing
 ARG TARGETARCH
@@ -325,54 +320,50 @@ RUN \
         /opt/miniforge3/bin/conda config --add channels nvidia; \
         su -l user -c "/opt/miniforge3/bin/conda config --add channels nvidia"; \
     fi && \
-    # Main conda env mimics python venv
     /opt/miniforge3/bin/conda create -p /venv/main python="${PYTHON_VERSION}" -y && \
     mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
-    printf '%s\n' \
-        'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
-            >> /venv/main/etc/conda/activate.d/environment.sh && \
-    printf '%s\n' \
-        'if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then' \
-        '    echo "This script must be sourced: source bin/activate"' \
-        '    exit 1' \
-        'fi' \
-        '' \
-        '# Define deactivate function' \
-        'deactivate() {' \
-        '    # Deactivate conda environment' \
-        '    if type conda &> /dev/null; then' \
-        '        conda deactivate' \
-        '    fi' \
-        '    ' \
-        '    # Unset the deactivate function itself' \
-        '    unset -f deactivate' \
-        '    ' \
-        '    # Return success' \
-        '    return 0' \
-        '}' \
-        '' \
-        '# Check if conda is available' \
-        'if ! type conda &> /dev/null; then' \
-        '    # Detect if this is an interactive shell environment' \
-        '    if [[ -n "${PS1:-}" ]] || [[ "$-" == *i* ]]; then' \
-        '        # Interactive shell - do full init via bashrc' \
-        '        if [[ -f ~/.bashrc ]]; then' \
-        '            source ~/.bashrc' \
-        '        fi' \
-        '    else' \
-        '        # Non-interactive (Docker, CI, etc.) - minimal init' \
-        '        if [[ "$PATH" != *"/opt/miniforge3/condabin"* ]]; then' \
-        '            export PATH="/opt/miniforge3/condabin:$PATH"' \
-        '        fi' \
-        '        if [[ -f /opt/miniforge3/etc/profile.d/conda.sh ]]; then' \
-        '            source /opt/miniforge3/etc/profile.d/conda.sh' \
-        '        fi' \
-        '    fi' \
-        'fi' \
-        '' \
-        'conda activate $(realpath /venv/main)' \
-            > /venv/main/bin/activate && \
-        /opt/miniforge3/bin/conda clean -ay
+    echo 'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
+        > /venv/main/etc/conda/activate.d/environment.sh && \
+    /opt/miniforge3/bin/conda clean -ay
+
+# Add venv-like activation script for conda env
+RUN cat <<'CONDA_ACTIVATION_SCRIPT' > /venv/main/bin/activate
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "This script must be sourced: source bin/activate"
+    exit 1
+fi
+
+# Define deactivate function
+deactivate() {
+    # Deactivate conda environment
+    if type conda &> /dev/null; then
+        conda deactivate 2>/dev/null || true
+    fi
+
+    # Unset the deactivate function itself
+    unset -f deactivate
+
+    # Return success
+    return 0
+}
+
+# Check if conda is properly initialized by testing for the conda shell function
+# (not just the command existence)
+if ! type conda &> /dev/null || ! declare -F conda &> /dev/null; then
+    # Add condabin to PATH if not already there
+    if [[ "$PATH" != *"/opt/miniforge3/condabin"* ]]; then
+        export PATH="/opt/miniforge3/condabin:$PATH"
+    fi
+    
+    # Source the conda shell script to load shell functions
+    if [[ -f /opt/miniforge3/etc/profile.d/conda.sh ]]; then
+        source /opt/miniforge3/etc/profile.d/conda.sh
+    fi
+fi
+
+# Activate the conda environment
+conda activate "$(realpath /venv/main)"
+CONDA_ACTIVATION_SCRIPT
 
 RUN \
     set -euo pipefail && \
@@ -396,8 +387,6 @@ RUN \
     /usr/bin/python3 -m ipykernel install \
         --name="system-python" \
         --display-name="Python3 (System)" && \
-    # Add a cron job to regularly backup all venvs in /venv/*
-    echo "*/30 * * * * /opt/instance-tools/bin/venv-backup.sh" | crontab - && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

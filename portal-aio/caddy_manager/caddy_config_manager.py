@@ -10,6 +10,7 @@ CERT_PATH = "/etc/instance.crt"
 KEY_PATH = "/etc/instance.key"
 MAX_RETRIES = 5
 
+
 def load_config():
     yaml_path = '/etc/portal.yaml'
     if os.path.exists(yaml_path):
@@ -32,12 +33,12 @@ def load_config():
             'name': name
         }
     
-    # Save to file so user can edit before restarting container to pick up changes
     yaml_data = {"applications": apps}
     with open(yaml_path, "w") as file:
         yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
     
     return apps
+
 
 def validate_cert_and_key():
     try:
@@ -46,6 +47,7 @@ def validate_cert_and_key():
         return True
     except subprocess.CalledProcessError:
         return False
+
 
 def wait_for_valid_certs():
     attempts = 0
@@ -62,15 +64,12 @@ def wait_for_valid_certs():
         time.sleep(5)
     return False
 
+
 def is_port_auth_excluded(external_port):
-    # Get the environment variable, default to empty string if not set
     auth_exclude = os.getenv('AUTH_EXCLUDE', '')
-    
-    # Convert the comma-separated string to a list of integers
     excluded_ports = [int(port.strip()) for port in auth_exclude.split(',') if port.strip()]
-    
-    # Check if the external port is not in the excluded list
     return external_port in excluded_ports
+
 
 def generate_caddyfile(config):
     if os.environ.get('ENABLE_HTTPS', 'false').lower() != 'true' or not wait_for_valid_certs():
@@ -80,15 +79,70 @@ def generate_caddyfile(config):
 
     enable_auth = True if os.environ.get('ENABLE_AUTH', 'true').lower() != 'false' else False
     web_username = os.environ.get('WEB_USERNAME', 'vastai')
-    web_password = os.environ.get('WEB_PASSWORD') or os.environ.get('OPEN_BUTTON_TOKEN') or shortuuid.uuid()
+    
+    # Dual token support - both WEB_PASSWORD and OPEN_BUTTON_TOKEN can work simultaneously
+    web_password = os.environ.get('WEB_PASSWORD')
+    open_button_token = os.environ.get('OPEN_BUTTON_TOKEN')
+    
+    if not web_password and not open_button_token:
+        web_password = shortuuid.uuid()
+        open_button_token = web_password
+    elif not web_password:
+        web_password = open_button_token
+    elif not open_button_token:
+        open_button_token = web_password
+    
     caddy_identifier = os.environ.get('VAST_CONTAINERLABEL')
-
-    caddyfile=''
+    
+    # Configurable options
+    enable_compression = os.environ.get('CADDY_ENABLE_COMPRESSION', 'true').lower() == 'true'
+    flush_interval = os.environ.get('CADDY_FLUSH_INTERVAL', '-1')  # -1 = immediate (good for SSE)
 
     if enable_https:
         servers_block = 'servers {\n    listener_wrappers {\n        http_redirect\n        tls\n    }\n}'
     else:
         servers_block = ''
+
+    # Build token matchers - if both tokens are the same, use simple query match
+    if web_password == open_button_token:
+        token_auth_matcher = f'''(token_auth_matcher) {{
+        @token_auth {{
+            query token={web_password}
+        }}
+    }}'''
+        cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
+        @has_valid_auth_cookie {{
+            header_regexp Cookie {caddy_identifier}_auth_token={web_password}
+        }}
+    }}'''
+        bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
+        @has_valid_bearer_token {{
+            header Authorization "Bearer {web_password}"
+        }}
+    }}'''
+    else:
+        token_auth_matcher = f'''(token_auth_matcher) {{
+        @token_auth {{
+            expression `{{http.request.uri.query.token}} == "{web_password}" || {{http.request.uri.query.token}} == "{open_button_token}"`
+        }}
+    }}'''
+        cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
+        @has_valid_auth_cookie {{
+            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={web_password}") || {{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={open_button_token}")`
+        }}
+    }}'''
+        bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
+        @has_valid_bearer_token {{
+            expression `{{http.request.header.Authorization}} == "Bearer {web_password}" || {{http.request.header.Authorization}} == "Bearer {open_button_token}"`
+        }}
+    }}'''
+
+    # Compression snippet
+    compression_snippet = '''
+    (compression) {
+        encode zstd gzip
+    }
+    ''' if enable_compression else ''
 
     caddyfile = fr'''
     {{
@@ -134,23 +188,12 @@ def generate_caddyfile(config):
         }}
     }}
 
-    (token_auth_matcher) {{
-        @token_auth {{
-            query token={web_password}
-        }}
-    }}
+    {token_auth_matcher}
 
-    (has_valid_auth_cookie_matcher) {{
-        @has_valid_auth_cookie {{
-            header_regexp Cookie {caddy_identifier}_auth_token={web_password}
-        }}
-    }}
+    {cookie_matcher}
 
-    (has_valid_bearer_token_matcher) {{
-        @has_valid_bearer_token {{
-            header Authorization "Bearer {web_password}"
-        }}
-    }}
+    {bearer_matcher}
+    {compression_snippet}
     '''
 
     for app_name, app_config in config.items():
@@ -158,13 +201,15 @@ def generate_caddyfile(config):
         internal_port = app_config['internal_port']
         hostname = app_config['hostname']
 
-        # If the internal and external are the same or user has not exposed port, we cannot proxy (but we still need the config for Portal - For Jupyter)
         if external_port == internal_port or not os.environ.get(f"VAST_TCP_PORT_{external_port}"):
             continue
 
         caddyfile += f":{external_port} {{\n"
         if enable_https:
             caddyfile += f'    tls {CERT_PATH} {KEY_PATH}\n'
+        
+        if enable_compression:
+            caddyfile += '    import compression\n'
         
         caddyfile += '    root * /opt/portal-aio/caddy_manager/public\n\n'
         caddyfile += '    handle_errors 502 {\n'
@@ -173,54 +218,51 @@ def generate_caddyfile(config):
         caddyfile += '    }\n\n'
 
         if enable_auth and not is_port_auth_excluded(external_port):
-            caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, hostname, internal_port)
+            caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, open_button_token, hostname, internal_port, flush_interval)
         else:
-            caddyfile += generate_noauth_config(hostname, internal_port)
+            caddyfile += generate_noauth_config(hostname, internal_port, flush_interval)
                                                                
         caddyfile += "}\n\n"
 
-    return caddyfile, web_username, web_password
+    return caddyfile, web_username, web_password, open_button_token
 
-# Helper function to generate reverse_proxy block with conditional headers
-def get_reverse_proxy_block(hostname, internal_port):    
-    def headers_get_host(hostname, internal_port):
-        # Check if the current port is in the list OR CADDY_HEADER_UP_LOCALHOST is 'true'
-        use_localhost = False
-        header_up_localhost = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '')
-        if header_up_localhost:
-            ports_list = [p.strip() for p in header_up_localhost.split(',')]
-            use_localhost = header_up_localhost.lower() == "true" or str(internal_port) in ports_list
-        
-        # Set the appropriate Host header
-        if use_localhost:
-            return f"header_up Host localhost:{internal_port}"
-        else:
-            return f"header_up Host {{upstream_hostport}}"
+
+def get_reverse_proxy_block(hostname, internal_port, flush_interval):
+    use_localhost = False
+    header_up_localhost = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '')
+    if header_up_localhost:
+        ports_list = [p.strip() for p in header_up_localhost.split(',')]
+        use_localhost = header_up_localhost.lower() == "true" or str(internal_port) in ports_list
     
+    if use_localhost:
+        host_header = f"header_up Host localhost:{internal_port}"
+    else:
+        host_header = f"header_up Host {{upstream_hostport}}"
+    
+    return f'''reverse_proxy {hostname}:{internal_port} {{
+            {host_header}
+            header_up X-Forwarded-Proto {{forwarded_protocol}}
+            header_up X-Real-IP {{real_ip}}
+            flush_interval {flush_interval}
+        }}'''
+
+
+def generate_noauth_config(hostname, internal_port, flush_interval):
     return f'''
-        {headers_get_host(hostname, internal_port)}
-        header_up X-Forwarded-Proto {{forwarded_protocol}}
-        header_up X-Real-IP {{real_ip}}
-    '''
-
-
-def generate_noauth_config(hostname, internal_port):
-    no_auth_config = f'''
     import real_ip_map
     import forwarded_protocol_map
 
     handle {{
-        reverse_proxy {hostname}:{internal_port} {{
-            {get_reverse_proxy_block(hostname, internal_port)}
-        }}
+        {get_reverse_proxy_block(hostname, internal_port, flush_interval)}
     }}
     '''
-    return no_auth_config
 
-def generate_auth_config(caddy_identifier, username, password, hostname, internal_port):
+
+def generate_auth_config(caddy_identifier, username, password, open_button_token, hostname, internal_port, flush_interval):
     hashed_password = subprocess.check_output([CADDY_BIN, 'hash-password', '-p', password]).decode().strip()
+    proxy_block = get_reverse_proxy_block(hostname, internal_port, flush_interval)
    
-    auth_config = f'''    
+    return f'''    
     import noauth_matcher
     import real_ip_map
     import forwarded_protocol_map
@@ -229,9 +271,7 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
         import healthicon
 
         handle {{
-            reverse_proxy {hostname}:{internal_port} {{
-                {get_reverse_proxy_block(hostname, internal_port)}
-            }}
+            {proxy_block}
         }}
     }}
 
@@ -240,24 +280,20 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
     import has_valid_bearer_token_matcher
 
     route @token_auth {{
-        header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
+        header Set-Cookie "{caddy_identifier}_auth_token={open_button_token}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
         uri query -token
         redir * {{uri}} 302
     }}
 
     route @has_valid_auth_cookie {{
         handle {{
-            reverse_proxy {hostname}:{internal_port} {{
-                {get_reverse_proxy_block(hostname, internal_port)}
-            }}
+            {proxy_block}
         }}
     }}
 
     route @has_valid_bearer_token {{
         handle {{
-            reverse_proxy {hostname}:{internal_port} {{
-                {get_reverse_proxy_block(hostname, internal_port)}
-            }}
+            {proxy_block}
         }}
     }}
 
@@ -268,18 +304,16 @@ def generate_auth_config(caddy_identifier, username, password, hostname, interna
         header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
 
         handle {{
-            reverse_proxy {hostname}:{internal_port} {{
-                {get_reverse_proxy_block(hostname, internal_port)}
-            }}
+            {proxy_block}
         }}
     }}
 '''
-    return auth_config
+
 
 def main():
     try:
         config = load_config()
-        caddyfile_content, username, password = generate_caddyfile(config)
+        caddyfile_content, username, password, open_token = generate_caddyfile(config)
         
         with open('/etc/Caddyfile', 'w') as f:
             f.write(caddyfile_content)
@@ -290,7 +324,11 @@ def main():
         print("*")
         print("*")
         print("* Automatic login is enabled via the 'Open' button")
-        print(f"* Your web credentials are: {username} / {password}")
+        if password != open_token:
+            print(f"* Your web credentials are: {username} / {password}")
+            print(f"* Open button token is also valid: {open_token}")
+        else:
+            print(f"* Your web credentials are: {username} / {password}")
         print("*")
         print(f"* To make API requests, pass an Authorization header (Authorization: Bearer {password})")
         print("*")

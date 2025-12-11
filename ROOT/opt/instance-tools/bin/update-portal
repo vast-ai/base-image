@@ -70,6 +70,9 @@ tar -xzf "$TEMP_DIR/$DOWNLOAD_FILE" -C /opt --no-same-owner
 
 # Install dependencies
 echo "Installing Python dependencies..."
+if [[ ! -d /opt/portal-aio/venv/ ]]; then
+    uv venv --seed /opt/portal-aio/venv -p 3.11
+fi
 /opt/portal-aio/venv/bin/pip install -r /opt/portal-aio/requirements.txt
 
 # Update version environment variable
