@@ -113,7 +113,7 @@ build_image() {
     # Validate required parameters
     if [[ -z "$torch_ver" ]] || [[ -z "$python_ver" ]] || [[ -z "$cuda_ver" ]] || [[ -z "$torch_backend" ]]; then
         echo "Error: Missing required parameters"
-        echo "Usage: build-many.sh --torch_ver=<ver> --python_ver=<ver> --cuda_ver=<ver> --torch_backend=<version> [--multi_arch]"
+        echo "Usage: build-many.sh --torch_ver=<ver> --python_ver=<ver> --cuda_ver=<ver> --torch_backend=<backend> [--multi_arch]"
         return 1
     fi
 
