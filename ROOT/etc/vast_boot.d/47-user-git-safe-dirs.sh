@@ -8,7 +8,7 @@ set_git_safe_dirs() {
             git config --global --add safe.directory "$parent_dir"
         fi
         if ! grep -q "$parent_dir" /home/user/.gitconfig > /dev/null 2>&1; then
-            sudo -u user bash -c "HOME=/home/user git config --global --add safe.directory $parent_dir"
+            sudo -u user HOME=/home/user git config --global --add safe.directory "$parent_dir"
         fi
     done
 }
