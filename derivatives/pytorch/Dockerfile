@@ -17,6 +17,7 @@ ARG PYTORCH_BACKEND
 ENV PYTORCH_BACKEND=${PYTORCH_BACKEND}
 
 ARG VAST_BASE
+ARG TARGETARCH
 RUN \
     set -euo pipefail && \
     [[ -n "${PYTORCH_VERSION}" ]] || { echo "Must specify PYTORCH_VERSION" && exit 1; } && \
@@ -26,7 +27,7 @@ RUN \
     . /venv/main/bin/activate && \
     # Build package list - torchcodec unavailable via pip for arm64
     PACKAGES="torch==${PYTORCH_VERSION} torchvision torchaudio torchtext torchdata" && \
-    [[ "${TARGETARCH}" == "arm64" ]] && PACKAGES="${PACKAGES} torchcodec" || true && \
+    [[ "${TARGETARCH}" == "amd64" ]] && PACKAGES="${PACKAGES} torchcodec" || true && \
     uv pip install ${PACKAGES} --torch-backend ${PYTORCH_BACKEND} && \
     # Pin numpy<2 for PyTorch <=2.1 to prevent compatibility issues.
     # NumPy 2.0 introduced breaking ABI changes that cause crashes with older PyTorch.
