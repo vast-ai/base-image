@@ -36,5 +36,5 @@ if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment;
         done >> /etc/environment
 fi
 
- # Source the file at /etc/environment - We can now edit environment variables in a running instance
+# Source the file at /etc/environment - We can now edit environment variables in a running instance
 [[ "${export_env}" = "true" ]] && { set -a; . /etc/environment 2>/dev/null; . "${WORKSPACE}/.env" 2>/dev/null; set +a; }
