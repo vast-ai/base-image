@@ -89,7 +89,6 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | **htop** | Interactive process viewer |
 | **nvtop** | GPU process monitoring |
 | **iotop** | I/O usage monitoring |
-| **strace** | System call tracing |
 
 ### Pre-configured Applications
 
@@ -240,17 +239,19 @@ set -eo pipefail
 # Install packages
 pip install torch transformers
 
-# Download models or data
-huggingface-cli download meta-llama/Llama-2-7b-hf --local-dir /workspace/models
+# Download models
+hf download meta-llama/Llama-2-7b-hf --local-dir /workspace/models
 
-# Add a new application to Supervisor
+# Add a new application to Supervisor (see "Adding Custom Applications" for details)
 cat > /etc/supervisor/conf.d/my-app.conf << 'EOF'
 [program:my-app]
+environment=PROC_NAME="%(program_name)s"
 command=/opt/supervisor-scripts/my-app.sh
 autostart=true
 autorestart=true
-stderr_logfile=/var/log/portal/my-app.log
-stdout_logfile=/var/log/portal/my-app.log
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+redirect_stderr=true
 EOF
 
 # Reload Supervisor to pick up new config
@@ -261,7 +262,26 @@ supervisorctl reread && supervisorctl update
 
 The best way to create a custom image is to extend our pre-built images from DockerHub. This preserves the layer caching benefits—Vast.ai hosts already have our base layers cached, so only your custom layers need to be downloaded.
 
-**Example Dockerfile:**
+### Workspace Directory
+
+The contents of `/opt/workspace-internal/` are copied to `$WORKSPACE` (default `/workspace`) on first boot. This happens because:
+- `/workspace` may be a volume mount
+- Even if not mounted, copying moves content to the uppermost OverlayFS layer, enabling effective use of Vast's copy tools
+
+**For large models:** Don't place large files directly in `/opt/workspace-internal/`. Instead, store them elsewhere (e.g., `/models/`) and create symlinks:
+
+```dockerfile
+# Store large model outside workspace-internal
+RUN hf download stabilityai/stable-diffusion-xl-base-1.0 --local-dir /models/sdxl-base
+
+# Create symlink in workspace-internal
+RUN mkdir -p /opt/workspace-internal/ComfyUI/models/checkpoints && \
+    ln -s /models/sdxl-base /opt/workspace-internal/ComfyUI/models/checkpoints/sdxl-base
+```
+
+This avoids duplicating large files when they're copied to the workspace volume.
+
+### Example Dockerfile
 
 ```dockerfile
 # Extend the pre-built image to preserve layer caching benefits
@@ -271,10 +291,13 @@ FROM vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu22.04
 RUN . /venv/main/bin/activate && \
     pip install torch torchvision torchaudio transformers accelerate
 
-# Pre-download a model (optional - can also be done via PROVISIONING_SCRIPT)
+# Download a large model to a location outside workspace-internal
 RUN . /venv/main/bin/activate && \
-    huggingface-cli download stabilityai/stable-diffusion-xl-base-1.0 \
-        --local-dir /opt/models/sdxl-base
+    hf download stabilityai/stable-diffusion-xl-base-1.0 --local-dir /models/sdxl-base
+
+# Create symlink so it appears in workspace
+RUN mkdir -p /opt/workspace-internal/models && \
+    ln -s /models/sdxl-base /opt/workspace-internal/models/sdxl-base
 
 # Add a custom application managed by Supervisor
 COPY my-app.conf /etc/supervisor/conf.d/
@@ -285,24 +308,47 @@ RUN chmod +x /opt/supervisor-scripts/my-app.sh
 ENV PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:7860:17860:/:My App"
 ```
 
-**Example Supervisor config (`my-app.conf`):**
+### Adding Custom Applications
+
+Supervisor manages all long-running applications. To add your own:
+
+**1. Create a Supervisor config (`my-app.conf`):**
 
 ```ini
 [program:my-app]
+environment=PROC_NAME="%(program_name)s"
 command=/opt/supervisor-scripts/my-app.sh
 autostart=true
 autorestart=true
-stderr_logfile=/var/log/portal/my-app.log
-stdout_logfile=/var/log/portal/my-app.log
+# IMPORTANT: Log to stdout for Vast.ai logging integration
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+redirect_stderr=true
 ```
 
-**Example wrapper script (`my-app.sh`):**
+> **Note:** Always configure `stdout_logfile=/dev/stdout` and `redirect_stderr=true`. If you log directly to files, output won't appear in Vast.ai's logging system.
+
+**2. Create a wrapper script (`my-app.sh`):**
 
 ```bash
 #!/bin/bash
+
+# Import logging utilities for Portal log viewer
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/environment.sh"
+
+# Activate the virtual environment
 source /venv/main/bin/activate
+
+# Run your application (bind to localhost, Caddy handles external access)
 exec python /opt/my-app/main.py --host localhost --port 17860
 ```
+
+The logging utilities in `/opt/supervisor-scripts/utils/` handle:
+- `logging.sh` - Tees output to `/var/log/portal/${PROC_NAME}.log` for the Portal log viewer
+- `environment.sh` - Sets up common environment variables
+- `exit_portal.sh` - Checks if the app is configured in portal.yaml before starting
 
 ### Key Paths
 
@@ -310,8 +356,10 @@ exec python /opt/my-app/main.py --host localhost --port 17860
 |------|---------|
 | `/venv/main/` | Primary Python virtual environment (Conda-managed) |
 | `/workspace/` | Persistent workspace directory |
+| `/opt/workspace-internal/` | Contents copied to `/workspace` on first boot |
 | `/etc/supervisor/conf.d/` | Supervisor service configurations |
 | `/opt/supervisor-scripts/` | Service wrapper scripts |
+| `/opt/supervisor-scripts/utils/` | Shared utilities for logging, environment setup |
 | `/etc/portal.yaml` | Instance Portal configuration (generated from `PORTAL_CONFIG`) |
 | `/var/log/portal/` | Application logs (viewable in Instance Portal) |
 | `/etc/instance.crt`, `/etc/instance.key` | TLS certificates |
@@ -366,7 +414,6 @@ docker buildx build \
 ./build.sh --filter cuda-12.8            # Build CUDA 12.8 variants
 ./build.sh --list                        # Show all available configurations
 ```
-
 
 ## License
 
