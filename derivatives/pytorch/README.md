@@ -33,7 +33,8 @@ FROM vastai/pytorch:cuda-12.8.1-auto
 RUN . /venv/main/bin/activate && \
     pip install transformers accelerate diffusers
 
-# Download models (store outside workspace-internal for large files)
+# Download models to a location outside workspace-internal (e.g., /models) for large files,
+# then symlink them into /opt/workspace-internal/models for workspace access
 RUN . /venv/main/bin/activate && \
     hf download meta-llama/Llama-2-7b-hf --local-dir /models/llama-2-7b
 
