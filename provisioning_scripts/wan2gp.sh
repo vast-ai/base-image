@@ -28,7 +28,6 @@ if (( cuda_version_int < threshold_version_int )); then
     torch_backend=cu126
 fi
 
-
 uv pip install torch==${TORCH_VERSION:-2.7.1} torchvision torchaudio --torch-backend="${TORCH_BACKEND:-$torch_backend}"
 uv pip install -r requirements.txt
 
