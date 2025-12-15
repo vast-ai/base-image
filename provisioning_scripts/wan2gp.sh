@@ -22,7 +22,7 @@ fi
 cuda_version=$(echo "$CUDA_VERSION" | cut -d. -f1,2)
 torch_backend=cu128
 # Convert versions like "12.7" and "12.8" to integers "127" and "128" for comparison
-cuda_version_int=$(echo "$cuda_version" | awk -F. '{printf "%d%02d", $1, $2}')
+cuda_version_int=$(echo "$cuda_version" | awk -F. '{printf "%d%d", $1, $2}')
 threshold_version_int=128
 if (( cuda_version_int < threshold_version_int )); then
     torch_backend=cu126
