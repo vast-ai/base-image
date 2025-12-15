@@ -15,6 +15,10 @@ cd Wan2GP
 [[ -n "{WAN2GP_VERSION:-}" ]] && git checkout "$WAN2GP_VERSION"
 
 # Find the most appropriate backend given W2GP's torch version restrictions
+if [[ -z "${CUDA_VERSION:-}" ]]; then
+    echo "Error: CUDA_VERSION is not set or is empty." >&2
+    exit 1
+fi
 cuda_version=$(echo "$CUDA_VERSION" | cut -d. -f1,2)
 torch_backend=cu128
 # Convert versions like "12.7" and "12.8" to integers "127" and "128" for comparison
