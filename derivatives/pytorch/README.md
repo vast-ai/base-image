@@ -32,7 +32,7 @@ Starting with PyTorch 2.9.0, we provide Minor Version Compatibility (MVC) images
 
 MVC images include `mvc` in the tag (e.g., `2.9.1-cuda-12.1.1-mvc-cu126-py312-22.04`).
 
-**When to use MVC images:** These images are automatically selected as the default for machines with CUDA drivers >12.1 and <12.6. They provide compatibility for systems that cannot run the latest CUDA toolkit.
+**When to use MVC images:** These images are automatically selected as the default for machines with CUDA drivers >=12.1 and <12.6. They provide compatibility for systems that cannot run the latest CUDA toolkit.
 
 **Important:** For best performance and full compatibility, use machines with newer CUDA drivers (12.6+) when possible. MVC images provide broad compatibility, but machines with native CUDA 12.6+ drivers will have optimal performance. Most features work as expected on MVC images, but some advanced CUDA features may require a matching driver version.
 
