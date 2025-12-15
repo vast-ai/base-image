@@ -14,7 +14,15 @@ cd "$WORKSPACE"
 cd Wan2GP
 [[ -n "{WAN2GP_VERSION:-}" ]] && git checkout "$WAN2GP_VERSION"
 
-uv pip install torch==${TORCH_VERSION:-2.8.0} torchvision torchaudio --torch-backend=auto
+# Find the most appropriate backend given W2GP's torch version restrictions
+cuda_version=$(echo "$CUDA_VERSION" | cut -d. -f1,2)
+torch_backend=cu128
+if (( $(echo "$cuda_version < 12.8" | bc -l) )); then
+    torch_backend=cu126
+fi
+
+
+uv pip install torch==${TORCH_VERSION:-2.7.1} torchvision torchaudio --torch-backend="${TORCH_BACKEND:-$torch_backend}"
 uv pip install -r requirements.txt
 
 # Create Wan2GP startup scripts
