@@ -3,7 +3,7 @@
 set -e
 
 BASE_REPO=${BASE_REPO:-vastai/base-image}
-TAG_REPO=${TAG_REPO:-vastai/pytorch}
+TAG_REPO=${TAG_REPO:-<staging>/pytorch}
 DOCKERFILE=${DOCKERFILE:-Dockerfile}
 
 main() {
@@ -59,6 +59,7 @@ main() {
     build_image --torch_ver=2.8.0 --python_ver=311 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
     build_image --torch_ver=2.8.0 --python_ver=312 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
     build_image --torch_ver=2.8.0 --python_ver=313 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
+    # Todo add minor version compat images here (12.1.1 + cu126)
 }
 
 log_error() {
@@ -133,12 +134,12 @@ build_image() {
         --progress=plain \
         --platform ${platform} \
         -f ${DOCKERFILE:-Dockerfile} \
-        --build-arg VAST_BASE="${BASE_REPO}:${torch_ver_override:-$torch_ver}-cuda-${cuda_ver%%-*}-py${python_ver}-22.04" \
+        --build-arg VAST_BASE="${BASE_REPO}:cuda-${cuda_ver}-ubuntu22.04-py${python_ver}" \
         --build-arg PYTORCH_VERSION="${torch_ver}" \
         --build-arg PYTORCH_BACKEND="${torch_backend}" . \
         ${tags} \
         --push || {
-            log_error "Failed building for CUDA ${cuda_ver%%-*} Torch ${torch_ver} with Python ${python_ver}"
+            log_error "Failed building for CUDA ${cuda_ver} Torch ${torch_ver} with Python ${python_ver}"
             return 1
         }
 }
