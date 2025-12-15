@@ -17,7 +17,10 @@ cd Wan2GP
 # Find the most appropriate backend given W2GP's torch version restrictions
 cuda_version=$(echo "$CUDA_VERSION" | cut -d. -f1,2)
 torch_backend=cu128
-if (( $(echo "$cuda_version < 12.8" | bc -l) )); then
+# Convert versions like "12.7" and "12.8" to integers "127" and "128" for comparison
+cuda_version_int=$(echo "$cuda_version" | awk -F. '{printf "%d%02d", $1, $2}')
+threshold_version_int=128
+if (( cuda_version_int < threshold_version_int )); then
     torch_backend=cu126
 fi
 
