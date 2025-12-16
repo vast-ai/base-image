@@ -50,12 +50,6 @@ curl -H "Authorization: Bearer ${OPEN_BUTTON_TOKEN}" \
      https://your-instance:8000/v1/models
 ```
 
-**Upgrade vLLM:**
-```bash
-pip install -U vllm
-supervisorctl restart vllm
-```
-
 ## Building From Source
 
 This image uses a `--build-context` to access files from the base-image repository:
@@ -64,9 +58,9 @@ This image uses a `--build-context` to access files from the base-image reposito
 cd base-image/external/vllm
 
 docker buildx build \
+    --platform linux/amd64,linux/arm64 \
     --build-context base_image_source=../.. \
     --build-arg VLLM_BASE=vllm/vllm-openai:v0.12.0 \
-    --build-arg VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312 \
     -t my-vllm-image .
 ```
 
