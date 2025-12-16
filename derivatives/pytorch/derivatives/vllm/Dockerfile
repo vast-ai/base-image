@@ -1,27 +1,51 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cuda-11.8.0-py312-22.04
+ARG VLLM_BASE=vllm/vllm-openai:v0.12.0
+ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312
 
-FROM ${PYTORCH_BASE}
+FROM ${VAST_BASE} AS vast_base_image
+FROM ${VLLM_BASE} AS vllm_build
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="vLLM image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
+### Convert non-Vast image to more closely resemble images derrived from vastai/base-image ###
+SHELL ["/bin/bash", "-c"]
+ENV DATA_DIRECTORY=/workspace
+ENV WORKSPACE=/workspace
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PATH=/opt/instance-tools/bin:${PATH}
+WORKDIR /
+
+COPY --from=base_image_source /ROOT /
+COPY --from=base_image_source /portal-aio /opt/portal-aio
+COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
+
+ARG TARGETARCH
+RUN \
+    set -euo pipefail && \
+    chmod +x /tmp/convert-non-vast-image.sh && \
+    /tmp/convert-non-vast-image.sh && \
+    rm /tmp/convert-non-vast-image.sh
+
+### vLLM specific setup ###
+ENV UV_SYSTEM_PYTHON=1
+
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Required or we will not build
-ARG VLLM_REF
-
+# Use familiar workspace
 RUN \
-    [[ -n "${VLLM_REF}" ]] || { echo "Must specify VLLM_REF" && exit 1; } && \
-    . /venv/main/bin/activate && \
-    # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
-    # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir vllm[flashinfer]=="${VLLM_REF}" torch=="${PYTORCH_VERSION}" xformers blobfile && \
-    # Ensure we have the full version of ray
-    uv pip install --no-cache-dir ray[default] && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    set -euo pipefail && \
+    mv /vllm-workspace /opt/workspace-internal
+
+# Add Ray dashboard
+RUN \
+    set -euo pipefail && \
+    uv pip install --system --no-cache-dir ray[default]
+
+ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
+CMD []

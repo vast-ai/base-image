@@ -5,9 +5,6 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/environment.sh"
 . "${utils}/exit_portal.sh" "ray dash"
 
-# Activate the venv
-. /venv/main/bin/activate
-
 trap 'ray stop' EXIT
 
 # Check we are actually trying to serve a model

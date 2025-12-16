@@ -6,9 +6,6 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/environment.sh"
 . "${utils}/exit_portal.sh" "vllm"
 
-# Activate the venv
-. /venv/main/bin/activate
-
 # Check we are actually trying to serve a model
 if [[ -z "${VLLM_MODEL:-}" ]]; then
     echo "Refusing to start ${PROC_NAME} (VLLM_MODEL not set)"
@@ -63,4 +60,4 @@ if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-siz
     fi
 fi
 
-vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:---host 127.0.0.1 --port 18000} ${AUTO_PARALLEL_ARGS} 2>&1
+eval "vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
