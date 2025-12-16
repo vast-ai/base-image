@@ -76,7 +76,6 @@ fi
 
 # Install Instance Portal
 chown -R 0:0 /opt/portal-aio
-set -euo pipefail
 uv venv --seed /opt/portal-aio/venv -p 3.11
 mkdir -m 770 -p /var/log/portal
 chown 0:0 /var/log/portal/
@@ -101,7 +100,7 @@ pip install --no-cache-dir --ignore-installed \
 mkdir -p /var/log/supervisor
 
 # Remove redundant base image files
-[[ -d /venv/main ]] || rm -f /etc/vast_boot.d/37-sync-environment.sh
+[[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh
 
 if [[ ! -d /home/user ]]; then
     rm -f /etc/vast_boot.d/46-user-propagate-ssh-keys.sh
