@@ -67,7 +67,7 @@ apt-get install --no-install-recommends -y \
     rsyslog
 
 # Ensure uv python is available
-if ! which uv 2>&1; then
+if ! which uv > /dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
     chmod +x /tmp/uv-install.sh
     UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
