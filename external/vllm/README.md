@@ -24,9 +24,20 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VLLM_MODEL` | `deepseek-ai/DeepSeek-R1-Distill-Llama-8B` | Model to serve at startup |
-| `VLLM_ARGS` | `--max-model-len 32768 --enforce-eager --download-dir /workspace/models --host 127.0.0.1 --port 18000` | Arguments passed to `vllm serve` |
+| `VLLM_ARGS` | `--max-model-len 32768 --enforce-eager --download-dir /workspace/models --host 127.0.0.1 --port 18000` | Arguments passed to `vllm serve` (see also `/etc/vllm-args.conf` below) |
 | `USE_ALL_GPUS` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` to `VLLM_ARGS` |
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
+| `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
+| `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
+
+### Complex Arguments
+
+For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/vllm-args.conf`. The contents of this file are appended to `$VLLM_ARGS` when launching vLLM.
+
+Example:
+```bash
+echo '--guided-decoding-backend lm-format-enforcer --chat-template-content-format string' > /etc/vllm-args.conf
+```
 
 ### Port Reference
 
