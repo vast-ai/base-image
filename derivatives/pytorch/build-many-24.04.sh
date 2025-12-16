@@ -3,7 +3,7 @@
 set -e
 
 BASE_REPO=${BASE_REPO:-vastai/base-image}
-TAG_REPO=${TAG_REPO:-vastai/pytorch}
+TAG_REPO=${TAG_REPO:-<staging>/pytorch}
 DOCKERFILE=${DOCKERFILE:-Dockerfile}
 
 main() {
@@ -27,25 +27,42 @@ main() {
     build_image --torch_ver=2.8.0 --python_ver=311 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
     build_image --torch_ver=2.8.0 --python_ver=312 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
     build_image --torch_ver=2.8.0 --python_ver=313 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
-    build_image --torch_ver=2.8.0 --python_ver=310 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
-    build_image --torch_ver=2.8.0 --python_ver=311 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
-    build_image --torch_ver=2.8.0 --python_ver=312 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
-    build_image --torch_ver=2.8.0 --python_ver=313 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129 --multi_arch
+    build_image --torch_ver=2.8.0 --python_ver=310 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129
+    build_image --torch_ver=2.8.0 --python_ver=311 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129
+    build_image --torch_ver=2.8.0 --python_ver=312 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129
+    build_image --torch_ver=2.8.0 --python_ver=313 --cuda_ver=12.9.1-cudnn-devel --torch_backend=cu129
+    build_image --torch_ver=2.9.0 --python_ver=310 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
+    build_image --torch_ver=2.9.0 --python_ver=311 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
+    build_image --torch_ver=2.9.0 --python_ver=312 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
+    build_image --torch_ver=2.9.0 --python_ver=313 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
+    build_image --torch_ver=2.9.0 --python_ver=314 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
+    # PyTorch now build multi-arch for 126+ but we need only 128+
+    build_image --torch_ver=2.9.0 --python_ver=310 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=311 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=312 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=313 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=314 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=310 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=311 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=312 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=313 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
+    build_image --torch_ver=2.9.0 --python_ver=314 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
     build_image --torch_ver=2.9.1 --python_ver=310 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
     build_image --torch_ver=2.9.1 --python_ver=311 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
     build_image --torch_ver=2.9.1 --python_ver=312 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
     build_image --torch_ver=2.9.1 --python_ver=313 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
     build_image --torch_ver=2.9.1 --python_ver=314 --cuda_ver=12.6.3-cudnn-devel --torch_backend=cu126
-    build_image --torch_ver=2.9.1 --python_ver=310 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
-    build_image --torch_ver=2.9.1 --python_ver=311 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
-    build_image --torch_ver=2.9.1 --python_ver=312 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
-    build_image --torch_ver=2.9.1 --python_ver=313 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
-    build_image --torch_ver=2.9.1 --python_ver=314 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128
+    build_image --torch_ver=2.9.1 --python_ver=310 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.1 --python_ver=311 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.1 --python_ver=312 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.1 --python_ver=313 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
+    build_image --torch_ver=2.9.1 --python_ver=314 --cuda_ver=12.8.1-cudnn-devel --torch_backend=cu128 --multi_arch
     build_image --torch_ver=2.9.1 --python_ver=310 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
     build_image --torch_ver=2.9.1 --python_ver=311 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
     build_image --torch_ver=2.9.1 --python_ver=312 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
     build_image --torch_ver=2.9.1 --python_ver=313 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
     build_image --torch_ver=2.9.1 --python_ver=314 --cuda_ver=13.0.2-cudnn-devel --torch_backend=cu130 --multi_arch
+
     }
 
 log_error() {
@@ -120,7 +137,7 @@ build_image() {
         --progress=plain \
         --platform ${platform} \
         -f ${DOCKERFILE:-Dockerfile} \
-        --build-arg VAST_BASE="${BASE_REPO}:${torch_ver_override:-$torch_ver}-cuda-${cuda_ver%%-*}-py${python_ver}-24.04" \
+        --build-arg VAST_BASE="${BASE_REPO}:cuda-${cuda_ver}-ubuntu24.04-py${python_ver}" \
         --build-arg PYTORCH_VERSION="${torch_ver}" \
         --build-arg PYTORCH_BACKEND="${torch_backend}" . \
         ${tags} \

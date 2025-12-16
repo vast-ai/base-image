@@ -22,6 +22,22 @@ For CUDA 12.4 and newer, images support both AMD64 and ARM64 (Grace) architectur
 
 Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/pytorch/tags).
 
+## Minor Version Compatibility (MVC) Images
+
+Starting with PyTorch 2.9.0, we provide Minor Version Compatibility (MVC) images for broader CUDA driver support. These images:
+
+- Are built on the CUDA 12.1.1 base image
+- Include PyTorch compiled against CUDA 12.6
+- Work with CUDA drivers from 12.1 through 12.6 using NVIDIA's [minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/index.html#minor-version-compatibility) feature
+
+MVC images include `mvc` in the tag (e.g., `2.9.1-cuda-12.1.1-mvc-cu126-py312-22.04`).
+
+**When to use MVC images:** These images are automatically selected as the default for machines with CUDA drivers >=12.1 and <12.6. They provide compatibility for systems that cannot run the latest CUDA toolkit.
+
+**Important:** For best performance and full compatibility, use machines with newer CUDA drivers (12.6+) when possible. MVC images provide broad compatibility, but machines with native CUDA 12.6+ drivers will have optimal performance. Most features work as expected on MVC images, but some advanced CUDA features may require a matching driver version.
+
+**Alternative:** If you prefer, you can use an older PyTorch version that was built for your specific CUDA driver version instead of using MVC images.
+
 ## Extending This Image
 
 Build your own image on top of the PyTorch image to add custom packages, models, or applications:
