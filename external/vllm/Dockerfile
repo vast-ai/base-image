@@ -31,9 +31,6 @@ RUN \
     /tmp/convert-non-vast-image.sh && \
     rm /tmp/convert-non-vast-image.sh
 
-### vLLM specific setup ###
-ENV UV_SYSTEM_PYTHON=1
-
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
