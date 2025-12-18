@@ -114,7 +114,7 @@ VIRTUAL_ENV=/opt/sys-venv uv pip install --no-cache-dir \
     supervisor \
     magic-wormhole
 mkdir -p /var/log/supervisor
-
+# Entrypoint will reset this after launch
 mv "$(which pip)" "$(dirname $(which pip))/pip-v-real"
 mv "$(which pip3)" "$(dirname $(which pip3))/pip3-v-real"
 
