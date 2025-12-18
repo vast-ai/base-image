@@ -48,11 +48,6 @@ if [[ -z "$RAY_ADDRESS" || "$RAY_ADDRESS" = "127.0.0.1"* ]]; then
     done
 fi
 
-VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${WORKSPACE:-/workspace/.vllm_cache}}
-mkdir -p ${VLLM_CACHE_ROOT}
-VLLM_ASSETS_CACHE=${VLLM_ASSETS_CACHE:-${WORKSPACE:-/workspace/.vllm_assets}}
-mkdir -p ${VLLM_ASSETS_CACHE}
-
 ## Automatically use all GPUs
 AUTO_PARALLEL_ARGS=""
 # Rewrite var name
