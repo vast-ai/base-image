@@ -66,6 +66,11 @@ apt-get install --no-install-recommends -y \
     cron \
     rsyslog
 
+# Ensure system pip
+if ! which pip > /dev/null 2>&1 || ! which pip3 > /dev/null 2>&1; then
+    apt-get install --no-install-recommends -y python3-pip
+fi
+
 # Ensure uv python is available
 if ! which uv > /dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
@@ -93,11 +98,29 @@ cd /opt
 git clone https://github.com/vast-ai/vast-cli
 wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer
 update-ca-certificates
-pip install --no-cache-dir --ignore-installed \
+
+# Protect the system python directory when Vast boostrapping adds jupyter
+uv venv -p 3.12 --seed /opt/sys-venv
+VIRTUAL_ENV=/opt/sys-venv uv pip install --no-cache-dir \
     jupyter \
+    tornado \
+    notebook \
+    jupyterlab \
+    bash_kernel \
+    ipython \
+    ipywidgets \
+    jupyter_http_over_ws \
+    widgetsnbextension \
     supervisor \
     magic-wormhole
 mkdir -p /var/log/supervisor
+
+mv "$(which pip)" "$(dirname $(which pip))/pip-v-real"
+mv "$(which pip3)" "$(dirname $(which pip3))/pip3-v-real"
+
+for bin in /opt/sys-venv/bin/*; do \
+    ln -sf "$bin" /usr/local/bin/$(basename "$bin"); \
+done
 
 # Remove redundant base image files
 [[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh

@@ -31,8 +31,16 @@ RUN \
     /tmp/convert-non-vast-image.sh && \
     rm /tmp/convert-non-vast-image.sh
 
+### Begin vLLM specific configuration ###
+
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
+
+# Ensure we have a Jupyter kernel for vLLM
+RUN \
+    uv pip install --system ipykernel && \
+    python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
+    python3 -m ipykernel install --name "vllm" --display-name "vLLM"
 
 # Use familiar workspace
 RUN \
