@@ -2,7 +2,7 @@
 
 # Environment variables to be used by vllm serve and for terminal operation
 
-# Do not reqire this to be set in the template unles user wants an override
+# Do not require this to be set in the template unless user wants an override
 if [[ -z $PORTAL_CONFIG ]]; then
     export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:vLLM API|localhost:8265:28265:/:Ray Dashboard|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
 fi
