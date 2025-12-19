@@ -25,7 +25,7 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VLLM_MODEL` | `deepseek-ai/DeepSeek-R1-Distill-Llama-8B` | Model to serve at startup |
-| `VLLM_ARGS` | `--max-model-len 32768 --download-dir /workspace/models --host 127.0.0.1 --port 18000` | Arguments passed to `vllm serve` (see also `/etc/vllm-args.conf` below) |
+| `VLLM_ARGS` | (none) | Arguments passed to `vllm serve`. Must be set by the user, for example: `--max-model-len 32768 --download-dir /workspace/models --host 127.0.0.1 --port 18000` (see also `/etc/vllm-args.conf` below). |
 | `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` to `VLLM_ARGS` |
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
