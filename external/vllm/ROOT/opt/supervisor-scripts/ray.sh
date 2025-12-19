@@ -3,7 +3,7 @@
 utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "ray dash"
+[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "ray dash"
 
 trap 'ray stop' EXIT
 

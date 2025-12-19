@@ -4,7 +4,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "vllm"
+[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "vllm"
 
 # Check we are actually trying to serve a model
 if [[ -z "${VLLM_MODEL:-}" ]]; then
@@ -51,7 +51,7 @@ fi
 ## Automatically use all GPUs
 AUTO_PARALLEL_ARGS=""
 # Rewrite var name
-AUTO_PARALLEL=${AUTO_PARALLEL:-${USE_ALL_GPUS:-false}}
+AUTO_PARALLEL="${AUTO_PARALLEL:-true}"
 if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-size || $VLLM_ARGS =~ data-parallel-size ]]; then
     if [[ $VLLM_ARGS =~ enable-expert-parallel ]]; then
         AUTO_PARALLEL_ARGS="--tensor-parallel-size 1 --data-parallel-size $GPU_COUNT"
@@ -60,4 +60,5 @@ if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-siz
     fi
 fi
 
+# Read complex args from /etc/vllm-args.conf if env vars were unsuitable
 eval "vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
