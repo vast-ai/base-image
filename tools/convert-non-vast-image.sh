@@ -119,7 +119,7 @@ mv "$(which pip)" "$(dirname "$(which pip)")/pip-v-real"
 mv "$(which pip3)" "$(dirname "$(which pip3)")/pip3-v-real"
 
 for bin in /opt/sys-venv/bin/*; do \
-    ln -sf "$bin" /usr/local/bin/$(basename "$bin"); \
+    ln -sf "$bin" "/usr/local/bin/$(basename "$bin")"; \
 done
 
 # Remove redundant base image files
