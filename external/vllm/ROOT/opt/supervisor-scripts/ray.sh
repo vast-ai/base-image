@@ -3,10 +3,7 @@
 utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "ray dash"
-
-# Activate the venv
-. /venv/main/bin/activate
+[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "ray dash"
 
 trap 'ray stop' EXIT
 
