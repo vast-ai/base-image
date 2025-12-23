@@ -168,7 +168,7 @@ For simpler setups, use these environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VLLM_MODEL` | (none) | Model to serve (e.g., `meta-llama/Llama-3.1-8B-Instruct`) |
-| `VLLM_ARGS` | `--max-model-len 32768 --download-dir /workspace/models --host 127.0.0.1 --port 18000` | Arguments passed to `vllm serve` |
+| `VLLM_ARGS` | (none) | Arguments passed to `vllm serve` |
 | `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` |
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
