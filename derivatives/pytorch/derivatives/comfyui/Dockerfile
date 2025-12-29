@@ -62,6 +62,8 @@ ENV COMFYUI_ARGS="--disable-auto-launch --enable-cors-header --port 18188"
 # Install API wrapper
 RUN \
     set -euo pipefail && \
+    # Temporary fix for pytorch image issue
+    chmod 1777 /tmp && \
     apt-get update && \
     apt-get install -y --no-install-recommends libmagic1 && \
     cd /opt && \
