@@ -26,7 +26,7 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir torch==$PYTORCH_VERSION xformers sageattention==1.0.6 --extra-index-url "${PYTORCH_INDEX_URL}" && \
+    uv pip install --no-cache-dir torch=="${PYTORCH_VERSION}" xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
     # Get ComfyUI and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
     git clone https://github.com/comfyanonymous/ComfyUI && \
@@ -61,6 +61,7 @@ ENV COMFYUI_ARGS="--disable-auto-launch --enable-cors-header --port 18188"
 
 # Install API wrapper
 RUN \
+    set -euo pipefail && \
     apt-get update && \
     apt-get install -y --no-install-recommends libmagic1 && \
     cd /opt && \
@@ -76,6 +77,7 @@ RUN \
 # Generally we do not ship with models, but this is used for benchmarking the comfyui-json pyworker
 # Always use a new RUN or COPY for each model added to keep layers to a reasonable size
 RUN \
+    set -euo pipefail && \
     mkdir /opt/model_store && \
     . /venv/main/bin/activate && \
     hf download Comfy-Org/stable-diffusion-v1-5-archive v1-5-pruned-emaonly-fp16.safetensors \
