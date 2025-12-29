@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2..1-cuda-12.1.1
+ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cuda-12.8.1-24.04
 
 FROM ${PYTORCH_BASE}
 
