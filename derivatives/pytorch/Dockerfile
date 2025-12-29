@@ -7,9 +7,6 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="PyTorch image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
-# Copy Supervisor configuration and startup scripts
-COPY ./ROOT /
-
 # Required or we will not build - Store for use in derivative images
 ARG PYTORCH_VERSION
 ENV PYTORCH_VERSION=${PYTORCH_VERSION}
