@@ -194,52 +194,6 @@ RUN \
     UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh && \
     rm -rf /tmp/*
 
-# Install Extra Nvidia packages (OpenCL, GL, Nvenc)
-# When installing libnvidia packages always pick the earliest version to avoid mismatched libs
-# We cannot know the runtime driver version so we aim for best compatibility 
-ARG TARGETARCH
-RUN \
-    set -euo pipefail && \
-    apt-get update && \
-    if command -v rocm-smi >/dev/null 2>&1; then \
-        apt-get install -y rocm-opencl-runtime; \
-    elif [[ -n "${CUDA_VERSION:-}" ]]; then \
-        CUDA_MAJOR_MINOR=$(echo "${CUDA_VERSION}" | cut -d. -f1,2 | tr -d ".") && \
-        case "${CUDA_MAJOR_MINOR}" in \
-            "118") driver_version=450 ;; \
-            "120") driver_version=525 ;; \
-            "121") driver_version=530 ;; \
-            "122") driver_version=535 ;; \
-            "123") driver_version=545 ;; \
-            "124") driver_version=550 ;; \
-            "125") driver_version=555 ;; \
-            "126") driver_version=560 ;; \
-            "127") driver_version=565 ;; \
-            "128") driver_version=570 ;; \
-            "129") driver_version=575 ;; \
-            "130") driver_version=580 ;; \
-            "131") driver_version=590 ;; \
-        esac; \
-        if [[ -n "${driver_version:-}" ]]; then \
-            # decode is available for all architectures
-            earliest_version=$(apt-cache madison "libnvidia-decode-${driver_version}" | awk '{print $3}' | sort -V | head -n1 || true); \
-            if [[ -n "${earliest_version:-}" ]]; then \
-                echo "Package: libnvidia-*-${driver_version}" > /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Package: nvidia-*-${driver_version}" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
-                for pkg in nvidia-utils libnvidia-gl libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
-                    apt-get install -y "${pkg}-${driver_version}" 2>/dev/null || true; \
-                done; \
-            fi; \
-        fi; \
-    fi && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
 # Install NVM for node version management
 RUN \
     set -euo pipefail && \
