@@ -42,6 +42,8 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
+# Expose all toolklit features
+ENV NVIDIA_DRIVER_CAPABILITIES=all
 
 # Blackwell fix
 ARG BASE_IMAGE
@@ -103,8 +105,7 @@ RUN \
         fonts-freefont-ttf \
         fonts-ubuntu \
         ffmpeg \
-        libgl1 \
-        libglx-mesa0 \
+        mesa-utils-extra \
         # System monitoring & debugging
         htop \
         iotop \
@@ -155,11 +156,13 @@ RUN \
         clinfo \
         pocl-opencl-icd \
         opencl-headers \
+        ocl-icd-libopencl1 \
         ocl-icd-dev \
         ocl-icd-opencl-dev \
         # Vulkan
-        libvulkan1 \
         vulkan-tools && \
+    mkdir -p /etc/OpenCL/vendors && \
+    echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -189,7 +192,7 @@ RUN \
     curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
     chmod +x /tmp/uv-install.sh && \
     UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh && \
-    rm -f /tmp/uv-install.sh
+    rm -rf /tmp/*
 
 # Install Extra Nvidia packages (OpenCL, GL, Nvenc)
 # When installing libnvidia packages always pick the earliest version to avoid mismatched libs
@@ -324,7 +327,8 @@ RUN \
     mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
     echo 'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
         > /venv/main/etc/conda/activate.d/environment.sh && \
-    /opt/miniforge3/bin/conda clean -ay
+    /opt/miniforge3/bin/conda clean -ay && \
+    rm -rf /tmp/*
 
 # Add venv-like activation script for conda env
 RUN cat <<'CONDA_ACTIVATION_SCRIPT' > /venv/main/bin/activate
@@ -370,7 +374,7 @@ RUN \
     . /venv/main/bin/activate && \
     uv pip install \
         wheel \
-        huggingface_hub[cli] \
+        huggingface-hub[cli] \
         ipykernel \
         ipywidgets && \
     python -m ipykernel install \
