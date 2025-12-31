@@ -40,7 +40,7 @@ if command -v nvidia-smi &> /dev/null; then
     if [[ -n "$COMPAT_DIR" ]] &&
        [[ ! "$GPU_NAME" =~ (RTX|GeForce|Quadro|Titan) ]] &&
        [[ "$GPU_NAME" =~ (V100|T4|A[0-9]+|H[0-9]+|L[0-9]+|B[0-9]+) ]] &&
-       awk "BEGIN {exit !($CC >= 7.0)}"; then
+       awk "BEGIN {exit !(${CC:-0} >= 7.0)}"; then
 
         # Ensure the compat lib symlink/file exists and can be resolved before using readlink
         if [[ -e "$COMPAT_DIR/libcuda.so.1" ]] && COMPAT_REALPATH=$(readlink -f "$COMPAT_DIR/libcuda.so.1"); then
@@ -52,7 +52,7 @@ if command -v nvidia-smi &> /dev/null; then
             if [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
                 COMPAT_MAJOR=${BASH_REMATCH[1]}
             elif [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)$ ]]; then
-                # libcuda.so.1 without full X.Y.Z version: treat as unknown compat version
+                # libcuda.so.1 without full X.Y[.Z] version: treat as unknown compat version
                 COMPAT_MAJOR=""
             fi
 
