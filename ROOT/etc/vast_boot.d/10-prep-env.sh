@@ -38,17 +38,20 @@ if command -v nvidia-smi &> /dev/null; then
        [[ "$GPU_NAME" =~ (V100|T4|A[0-9]+|H[0-9]+|L[0-9]+|B[0-9]+) ]] &&
        awk "BEGIN {exit !($CC >= 7.0)}"; then
 
-        COMPAT_LIB=$(basename "$(readlink -f "$COMPAT_DIR/libcuda.so.1")")
-        COMPAT_MAJOR=${COMPAT_LIB#libcuda.so.}
-        COMPAT_MAJOR=${COMPAT_MAJOR%%.*}
+        # Ensure the compat lib symlink/file exists and can be resolved before using readlink
+        if [[ -e "$COMPAT_DIR/libcuda.so.1" ]] && COMPAT_REALPATH=$(readlink -f "$COMPAT_DIR/libcuda.so.1"); then
+            COMPAT_LIB=$(basename "$COMPAT_REALPATH")
+            COMPAT_MAJOR=${COMPAT_LIB#libcuda.so.}
+            COMPAT_MAJOR=${COMPAT_MAJOR%%.*}
 
-        DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
-        DRIVER_MAJOR=${DRIVER_MAJOR%%.*}
+            DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
+            DRIVER_MAJOR=${DRIVER_MAJOR%%.*}
 
-        if [[ -n "$COMPAT_MAJOR" && -n "$DRIVER_MAJOR" ]] &&
-           (( DRIVER_MAJOR < COMPAT_MAJOR )); then
-            echo "CUDA forward compatibility enabled (driver: $DRIVER_MAJOR, compat: $COMPAT_MAJOR)"
-            echo "$COMPAT_DIR" > /etc/ld.so.conf.d/00-cuda-compat.conf
+            if [[ -n "$COMPAT_MAJOR" && -n "$DRIVER_MAJOR" ]] &&
+               (( DRIVER_MAJOR < COMPAT_MAJOR )); then
+                echo "CUDA forward compatibility enabled (driver: $DRIVER_MAJOR, compat: $COMPAT_MAJOR)"
+                echo "$COMPAT_DIR" > /etc/ld.so.conf.d/00-cuda-compat.conf
+            fi
         fi
     fi
     ldconfig
