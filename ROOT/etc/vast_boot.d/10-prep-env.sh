@@ -30,9 +30,12 @@ if command -v nvidia-smi &> /dev/null; then
         fi
     done
 
+    # Datacenter GPU detection:
+    # Match NVIDIA V100, T4, and A/H/L/B-series datacenter GPUs
+    # (e.g., V100, T4, A2, A30, A40, A100, A800, H100, H200, L4, L40, B100).
     if [[ -n "$COMPAT_DIR" ]] &&
        [[ ! "$GPU_NAME" =~ (RTX|GeForce|Quadro|Titan) ]] &&
-       [[ "$GPU_NAME" =~ (V100|T4|A[0-9]{1,3}|H[0-9]{2,3}|L[0-9]{1,2}|B[0-9]{2,3}) ]] &&
+       [[ "$GPU_NAME" =~ (V100|T4|A[0-9]+|H[0-9]+|L[0-9]+|B[0-9]+) ]] &&
        awk "BEGIN {exit !($CC >= 7.0)}"; then
 
         COMPAT_LIB=$(basename "$(readlink -f "$COMPAT_DIR/libcuda.so.1")")
