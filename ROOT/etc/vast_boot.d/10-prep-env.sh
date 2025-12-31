@@ -9,9 +9,9 @@ cd "${WORKSPACE}"
 if command -v nvidia-smi &> /dev/null; then
     # Remove any baked-in compat lib references first
     grep -l -r "cuda.*/compat" /etc/ld.so.conf.d/ 2>/dev/null | while read -r file; do
-        sed -i '/cuda.*\/compat/d' "$file"
+        sed -i '\#cuda.*/compat#d' "$file"
     done
-    sed -i '/cuda.*\/compat/d' /etc/ld.so.conf 2>/dev/null
+    sed -i '\#cuda.*/compat#d' /etc/ld.so.conf 2>/dev/null
 
     if [[ -n "$LD_LIBRARY_PATH" ]]; then
         LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda.*/compat" | paste -sd ':')
