@@ -3,25 +3,54 @@
 mkdir -p "${WORKSPACE}"
 cd "${WORKSPACE}"
 
-# Forward compatibility for datacenter GPUs
+# CUDA Forward Compatibility: datacenter GPUs with Volta+ and compat libs present
+# Consumer class GPUs can rely on minor version compatibility, but forward compatibility must be removed first
+
 if command -v nvidia-smi &> /dev/null; then
+    # Remove any baked-in compat lib references first
+    grep -l -r "cuda.*/compat" /etc/ld.so.conf.d/ 2>/dev/null | while read -r file; do
+        sed -i '/cuda.*\/compat/d' "$file"
+    done
+    sed -i '/cuda.*\/compat/d' /etc/ld.so.conf 2>/dev/null
+
+    if [[ -n "$LD_LIBRARY_PATH" ]]; then
+        LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda.*/compat" | paste -sd ':')
+        export LD_LIBRARY_PATH
+    fi
+
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
     CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1)
 
-    # Exclude known non-datacenter branding (consumer / workstation)
-    if [[ ! "$GPU_NAME" =~ (RTX|GeForce|Quadro|Titan) ]]; then
+    # Find compat directory - check common locations
+    COMPAT_DIR=""
+    for dir in /usr/local/cuda/compat /usr/local/cuda-*/compat /usr/local/cuda-*/compat/lib; do
+        if [[ -d $dir ]] && compgen -G "$dir/libcuda.so.*" > /dev/null; then
+            COMPAT_DIR="$dir"
+            break
+        fi
+    done
 
-        # Forward compatibility requires Volta+ (SM >= 7.0)
-        if awk "BEGIN {exit !($CC >= 7.0)}"; then
+    if [[ -n "$COMPAT_DIR" ]] &&
+       [[ ! "$GPU_NAME" =~ (RTX|GeForce|Quadro|Titan) ]] &&
+       [[ "$GPU_NAME" =~ (V100|T4|A[0-9]{1,3}|H[0-9]{2,3}|L[0-9]{1,2}|B[0-9]{2,3}) ]] &&
+       awk "BEGIN {exit !($CC >= 7.0)}"; then
 
-            # Datacenter GPU families eligible for CUDA Forward Compatibility
-            if [[ "$GPU_NAME" =~ (V100|T4|A[0-9]{1,3}|H[0-9]{2,3}|L[0-9]{1,2}|B[0-9]{2,3}) ]]; then
-                echo "CUDA forward-compatible datacenter GPU detected"
-                export LD_LIBRARY_PATH=/usr/local/cuda/compat${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
-            fi
+        COMPAT_LIB=$(basename "$(readlink -f "$COMPAT_DIR/libcuda.so.1")")
+        COMPAT_MAJOR=${COMPAT_LIB#libcuda.so.}
+        COMPAT_MAJOR=${COMPAT_MAJOR%%.*}
+
+        DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
+        DRIVER_MAJOR=${DRIVER_MAJOR%%.*}
+
+        if [[ -n "$COMPAT_MAJOR" && -n "$DRIVER_MAJOR" ]] &&
+           (( DRIVER_MAJOR < COMPAT_MAJOR )); then
+            echo "CUDA forward compatibility enabled (driver: $DRIVER_MAJOR, compat: $COMPAT_MAJOR)"
+            echo "$COMPAT_DIR" > /etc/ld.so.conf.d/00-cuda-compat.conf
         fi
     fi
+    ldconfig
 fi
+
 
 # Avoid missing cuda libs error (affects 12.4)
 if [[ ! -e /usr/lib/x86_64-linux-gnu/libcuda.so && -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]]; then \
