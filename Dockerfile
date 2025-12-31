@@ -166,17 +166,23 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Ensure Nvidia repos are available - Useful in 'stock' images
+# Ensure Nvidia repos are available if using stock images
 ARG TARGETARCH
 RUN \
     set -euo pipefail && \
-    UBUNTU_VERSION=$(. /etc/os-release && echo "$VERSION_ID" | tr -d '.') && \
-    if [ "$TARGETARCH" = "amd64" ]; then ARCH="x86_64"; elif [ "$TARGETARCH" = "arm64" ]; then ARCH="sbsa"; fi && \
-    curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/3bf863cc.pub | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH} /" > /etc/apt/sources.list.d/cuda.list && \
-    apt-get update && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    if ! compgen -G "/etc/apt/sources.list.d/cuda*" > /dev/null && ! compgen -G "/etc/apt/sources.list.d/rocm*" > /dev/null; then \
+        UBUNTU_VERSION=$(. /etc/os-release && echo "$VERSION_ID" | tr -d '.') && \
+        if [[ "$TARGETARCH" = "amd64" ]]; then \
+            ARCH="x86_64"; \
+        elif [[ "$TARGETARCH" = "arm64" ]]; then \
+            ARCH="sbsa"; \
+        fi && \
+        curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/3bf863cc.pub | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda.gpg && \
+        echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH} /" > /etc/apt/sources.list.d/cuda.list && \
+        apt-get update && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
 RUN \
