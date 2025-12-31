@@ -176,6 +176,9 @@ RUN \
             ARCH="x86_64"; \
         elif [[ "$TARGETARCH" = "arm64" ]]; then \
             ARCH="sbsa"; \
+        else \
+            echo "Unsupported TARGETARCH: ${TARGETARCH}. Cannot configure Nvidia CUDA repository." >&2; \
+            exit 1; \
         fi && \
         curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/3bf863cc.pub | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda.gpg && \
         echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH} /" > /etc/apt/sources.list.d/cuda.list && \
