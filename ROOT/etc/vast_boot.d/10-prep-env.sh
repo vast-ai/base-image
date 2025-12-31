@@ -45,8 +45,16 @@ if command -v nvidia-smi &> /dev/null; then
         # Ensure the compat lib symlink/file exists and can be resolved before using readlink
         if [[ -e "$COMPAT_DIR/libcuda.so.1" ]] && COMPAT_REALPATH=$(readlink -f "$COMPAT_DIR/libcuda.so.1"); then
             COMPAT_LIB=$(basename "$COMPAT_REALPATH")
-            COMPAT_MAJOR=${COMPAT_LIB#libcuda.so.}
-            COMPAT_MAJOR=${COMPAT_MAJOR%%.*}
+            COMPAT_SUFFIX=${COMPAT_LIB#libcuda.so.}
+            COMPAT_MAJOR=""
+            # Expect compat library names like libcuda.so.<driverMajor>.<minor>.<patch>.
+            # If we only see libcuda.so.1 (generic soname), we cannot infer a driver version.
+            if [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+                COMPAT_MAJOR=${BASH_REMATCH[1]}
+            elif [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)$ ]]; then
+                # libcuda.so.1 without full X.Y.Z version: treat as unknown compat version
+                COMPAT_MAJOR=""
+            fi
 
             DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
             DRIVER_MAJOR=${DRIVER_MAJOR%%.*}
