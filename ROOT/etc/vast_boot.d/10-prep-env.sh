@@ -49,7 +49,7 @@ if command -v nvidia-smi &> /dev/null; then
             COMPAT_MAJOR=""
             # Expect compat library names like libcuda.so.<driverMajor>.<minor>.<patch>.
             # If we only see libcuda.so.1 (generic soname), we cannot infer a driver version.
-            if [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            if [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
                 COMPAT_MAJOR=${BASH_REMATCH[1]}
             elif [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)$ ]]; then
                 # libcuda.so.1 without full X.Y.Z version: treat as unknown compat version
@@ -68,7 +68,6 @@ if command -v nvidia-smi &> /dev/null; then
     fi
     ldconfig
 fi
-
 
 # Avoid missing cuda libs error (affects 12.4)
 if [[ ! -e /usr/lib/x86_64-linux-gnu/libcuda.so && -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]]; then \
