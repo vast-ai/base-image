@@ -15,7 +15,11 @@ if command -v nvidia-smi &> /dev/null; then
 
     if [[ -n "$LD_LIBRARY_PATH" ]]; then
         LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda.*/compat" | paste -sd ':')
-        export LD_LIBRARY_PATH
+        if [[ -n "$LD_LIBRARY_PATH" ]]; then
+            export LD_LIBRARY_PATH
+        else
+            unset LD_LIBRARY_PATH
+        fi
     fi
 
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
