@@ -11,6 +11,7 @@ APP_REPO_URL=${APP_REPO_URL:-https://github.com/jhj0517/Whisper-WebUI}
 APP_DIR="${APP_DIR:-${WORKSPACE}/$(basename $APP_REPO_URL)}"
 APP_REF=${APP_REF:-master}
 TORCH_VERSION=${TORCH_VERSION:-2.8.0}
+TORCH_BACKEND=${TORCH_BACKEND:-cu128}
 
 # Install the software into the default venv
 . /venv/main/bin/activate
@@ -20,7 +21,7 @@ TORCH_VERSION=${TORCH_VERSION:-2.8.0}
 cd "$APP_DIR"
 git checkout "$APP_REF"
 
-uv pip install torch=="${TORCH_VERSION}" torchaudio --torch-backend auto
+uv pip install torch=="${TORCH_VERSION}" torchaudio --torch-backend "$TORCH_BACKEND"
 
 uv pip install -r requirements.txt -r backend/requirements-backend.txt
 

@@ -11,6 +11,7 @@ APP_REPO_URL=${APP_REPO_URL:-https://github.com/nari-labs/dia}
 APP_DIR="${WORKSPACE}/$(basename $APP_REPO_URL)"
 APP_REF=${APP_REF:-main}
 TORCH_VERSION=${TORCH_VERSION:-2.8.0}
+TORCH_BACKEND=${TORCH_BACKEND:-cu128}
 
 # Install the software into the default venv
 . /venv/main/bin/activate
@@ -28,7 +29,7 @@ sed -i \
   -e '/^\[\[tool\.uv\.index\]\]/,+4d' \
   pyproject.toml
 
-uv pip install torch==${TORCH_VERSION} torchaudio --torch-backend auto
+uv pip install torch==${TORCH_VERSION} torchaudio --torch-backend "$TORCH_BACKEND"
 
 uv pip install -e .
 
