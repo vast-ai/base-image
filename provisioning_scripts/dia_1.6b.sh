@@ -16,6 +16,8 @@ TORCH_BACKEND=${TORCH_BACKEND:-cu128}
 # Install the software into the default venv
 . /venv/main/bin/activate
 
+conda install -y python=3.10
+
 [[ -d "$APP_DIR" ]] || git clone "$APP_REPO_URL" "$APP_DIR"
 
 cd "$APP_DIR"
