@@ -10,7 +10,7 @@ cd ACE-Step
 [[ -n "${ACE_STEP_VERSION:-}" ]] && git checkout "$ACE_STEP_VERSION"
 
 uv pip install torch"${TORCH_VERSION:+==$TORCH_VERSION}" torchaudio torchvision torchcodec
-uv pip install -r requirements.txt peft'<0.18' --torch-backend "${TORCH_BACKEND:-cu128}"
+uv pip install -r requirements.txt gradio'<6' peft'<0.18' --torch-backend "${TORCH_BACKEND:-cu128}"
 uv pip install -e .
 
 # Create ACE Step startup script
