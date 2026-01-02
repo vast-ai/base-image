@@ -41,6 +41,11 @@ configure_cuda() {
     local DRIVER_MAJOR=${DRIVER_VER%%.*}
     local MAX_CUDA=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
 
+    if [[ -z "$MAX_CUDA" ]]; then
+        echo "Error: Could not determine driver CUDA version"
+        return 1
+    fi
+
     # Find all installed CUDA versions, sorted descending
     local CUDA_VERSIONS=()
     for dir in /usr/local/cuda-*/; do
