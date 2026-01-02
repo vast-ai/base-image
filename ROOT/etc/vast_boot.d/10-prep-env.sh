@@ -115,14 +115,14 @@ configure_cuda() {
         rm -f /usr/local/cuda
         ln -sf "cuda-${SELECTED_CUDA}" /usr/local/cuda
 
+        # Compat libs - processed first (00 prefix)
+        echo "$COMPAT_DIR" > /etc/ld.so.conf.d/00-cuda-compat.conf
+        
         # Register only the selected CUDA's libraries
         {
-            if $ENABLE_COMPAT && [[ -d "$COMPAT_DIR" ]]; then
-                echo "$COMPAT_DIR"
-            fi
             echo "${CUDA_HOME}/targets/x86_64-linux/lib"
             echo "${CUDA_HOME}/lib64"
-        } > /etc/ld.so.conf.d/cuda.conf
+        } > /etc/ld.so.conf.d/50-cuda.conf
 
         echo "CUDA $SELECTED_CUDA selected (GPU: $GPU_NAME, CC: $CC, Driver: $DRIVER_VER, Max CUDA: $MAX_CUDA, Datacenter: $IS_DATACENTER)"
     fi
