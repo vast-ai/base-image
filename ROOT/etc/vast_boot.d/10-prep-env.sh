@@ -70,7 +70,7 @@ configure_cuda() {
 import sys, ctypes
 
 r = ctypes.CDLL('libcuda.so.1').cuInit(0)
-sys.exit(r)
+sys.exit(0 if r == 0 else 1)
 " 2>/dev/null; then
                 # Forward compat works - use it
                 SELECTED_CUDA="$LATEST_CUDA"
