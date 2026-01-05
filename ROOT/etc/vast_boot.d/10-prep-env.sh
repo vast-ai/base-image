@@ -24,7 +24,7 @@ configure_cuda() {
     ldconfig
 
     if [[ -n "$LD_LIBRARY_PATH" ]]; then
-        LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda" | paste -sd ':')
+        LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -vE '/cuda(/|-)' | paste -sd ':')
     fi
     LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export LD_LIBRARY_PATH
