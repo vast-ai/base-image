@@ -24,7 +24,7 @@ configure_cuda() {
     ldconfig
 
     if [[ -n "$LD_LIBRARY_PATH" ]]; then
-    LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda" | paste -sd ':')
+        LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda" | paste -sd ':')
     fi
     LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export LD_LIBRARY_PATH
@@ -52,40 +52,37 @@ configure_cuda() {
 
     [[ ${#CUDA_VERSIONS[@]} -eq 0 ]] && return 0
 
-    # Detect datacenter GPU (supports forward compatibility)
-    local IS_DATACENTER=false
-    if [[ ! "$GPU_NAME" =~ (RTX|GeForce|Quadro|Titan) ]] &&
-       [[ "$GPU_NAME" =~ (V100|T4|A[0-9]+|H[0-9]+|L[0-9]+|B[0-9]+|GH[0-9]+|GB[0-9]+) ]] &&
-       awk "BEGIN {exit !(${CC:-0} >= 7.0)}"; then
-        IS_DATACENTER=true
-    fi
-
     local SELECTED_CUDA=""
+    local FORWARD_COMPAT_ENABLED=false
 
-    if $IS_DATACENTER; then
-        # Datacenter: use latest CUDA, enable forward compat if needed
-        SELECTED_CUDA="${CUDA_VERSIONS[0]}"
-        local COMPAT_DIR="/usr/local/cuda-${SELECTED_CUDA}/compat"
+    # Try forward compatibility with latest CUDA (unless disabled)
+    if [[ "${DISABLE_FORWARD_COMPAT:-false}" != "true" ]]; then
+        local LATEST_CUDA="${CUDA_VERSIONS[0]}"
+        local COMPAT_DIR="/usr/local/cuda-${LATEST_CUDA}/compat"
         
+        # Only attempt if compat directory exists with libcuda
         if [[ -d "$COMPAT_DIR" ]] && compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null; then
-            if [[ -e "$COMPAT_DIR/libcuda.so.1" ]]; then
-                local COMPAT_REALPATH=$(readlink -f "$COMPAT_DIR/libcuda.so.1")
-                local COMPAT_LIB=$(basename "$COMPAT_REALPATH")
-                local COMPAT_SUFFIX=${COMPAT_LIB#libcuda.so.}
-                
-                if [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)\.[0-9]+ ]]; then
-                    local COMPAT_MAJOR=${BASH_REMATCH[1]}
-                    
-                    if [[ -n "$COMPAT_MAJOR" && -n "$DRIVER_MAJOR" ]] &&
-                       (( DRIVER_MAJOR < COMPAT_MAJOR )); then
-                        echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
-                        echo "CUDA forward compatibility enabled (driver: $DRIVER_MAJOR, compat: $COMPAT_MAJOR)"
-                    fi
-                fi
+            # Test forward compat by calling cuInit with compat libs
+            # Exit 0 = works, Exit 1 = not supported (error 803/804)
+            local TEST_LD_PATH="$COMPAT_DIR"
+            
+            if LD_LIBRARY_PATH="$TEST_LD_PATH" python3 -c "
+import sys, ctypes
+
+r = ctypes.CDLL('libcuda.so.1').cuInit(0)
+sys.exit(r)
+" 2>/dev/null; then
+                # Forward compat works - use it
+                SELECTED_CUDA="$LATEST_CUDA"
+                FORWARD_COMPAT_ENABLED=true
+                echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
+                echo "CUDA forward compatibility enabled"
             fi
         fi
-    else
-        # Consumer: highest installed CUDA that doesn't exceed driver support
+    fi
+
+    # Fallback: find highest compatible CUDA version
+    if [[ -z "$SELECTED_CUDA" ]]; then
         for ver in "${CUDA_VERSIONS[@]}"; do
             if awk "BEGIN {exit !($ver <= $MAX_CUDA)}"; then
                 SELECTED_CUDA="$ver"
@@ -93,7 +90,7 @@ configure_cuda() {
             fi
         done
 
-        # Fallback to lowest available if nothing matches
+        # Final fallback to lowest available
         if [[ -z "$SELECTED_CUDA" ]]; then
             SELECTED_CUDA="${CUDA_VERSIONS[-1]}"
             echo "Warning: Driver reports CUDA $MAX_CUDA but no compatible toolkit found; falling back to CUDA $SELECTED_CUDA"
@@ -107,10 +104,9 @@ configure_cuda() {
         rm -f /usr/local/cuda
         ln -sf "/usr/local/cuda-${SELECTED_CUDA}" /usr/local/cuda
 
-        # Register only the selected CUDA's libraries
         echo "${CUDA_HOME}/lib64" > /etc/ld.so.conf.d/10-cuda.conf
 
-        echo "CUDA $SELECTED_CUDA selected (GPU: $GPU_NAME, CC: $CC, Driver: $DRIVER_VER, Max CUDA: $MAX_CUDA, Datacenter: $IS_DATACENTER)"
+        echo "CUDA $SELECTED_CUDA selected (GPU: $GPU_NAME, CC: $CC, Driver: $DRIVER_VER, Max CUDA: $MAX_CUDA, Forward Compat: $FORWARD_COMPAT_ENABLED)"
     fi
 
     ldconfig
