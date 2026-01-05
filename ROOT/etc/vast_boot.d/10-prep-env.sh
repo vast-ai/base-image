@@ -10,29 +10,24 @@ configure_cuda() {
     command -v nvidia-smi &> /dev/null || return 0
 
     # Clean up ALL cuda ldconfig entries - we'll add back only what we need
-    # Remove cuda-specific conf files
     rm -f /etc/ld.so.conf.d/*cuda*.conf
 
-    # Remove any cuda references from ALL remaining conf files
     for conf in /etc/ld.so.conf.d/*.conf; do
         [[ -f "$conf" ]] || continue
         if grep -q "cuda" "$conf" 2>/dev/null; then
             sed -i '\#cuda#d' "$conf"
-            # Remove file if now empty
             [[ ! -s "$conf" ]] && rm -f "$conf"
         fi
     done
 
-    # Also clean main ld.so.conf
     sed -i '\#cuda#d' /etc/ld.so.conf 2>/dev/null
-
-    # Refresh ldconfig BEFORE querying nvidia-smi
     ldconfig
 
     if [[ -n "$LD_LIBRARY_PATH" ]]; then
-        LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda" | paste -sd ':')
-        [[ -n "$LD_LIBRARY_PATH" ]] && export LD_LIBRARY_PATH || unset LD_LIBRARY_PATH
+    LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "cuda" | paste -sd ':')
     fi
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH
 
     # Gather GPU info
     local GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
@@ -53,41 +48,39 @@ configure_cuda() {
         local ver=$(basename "$dir" | sed 's/cuda-//')
         [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] && CUDA_VERSIONS+=("$ver")
     done
-    IFS=$'\n' CUDA_VERSIONS=($(sort -t. -k1,1nr -k2,2nr <<<"${CUDA_VERSIONS[*]}")); unset IFS
+    readarray -t CUDA_VERSIONS < <(printf '%s\n' "${CUDA_VERSIONS[@]}" | sort -t. -k1,1nr -k2,2nr)
 
     [[ ${#CUDA_VERSIONS[@]} -eq 0 ]] && return 0
 
+    # Detect datacenter GPU (supports forward compatibility)
     local IS_DATACENTER=false
     if [[ ! "$GPU_NAME" =~ (RTX|GeForce|Quadro|Titan) ]] &&
-       [[ "$GPU_NAME" =~ (V100|T4|A[0-9]+|H[0-9]+|L[0-9]+|B[0-9]+) ]] &&
+       [[ "$GPU_NAME" =~ (V100|T4|A[0-9]+|H[0-9]+|L[0-9]+|B[0-9]+|GH[0-9]+|GB[0-9]+) ]] &&
        awk "BEGIN {exit !(${CC:-0} >= 7.0)}"; then
         IS_DATACENTER=true
     fi
 
     local SELECTED_CUDA=""
-    local ENABLE_COMPAT=false
-    local COMPAT_DIR=""
 
     if $IS_DATACENTER; then
         # Datacenter: use latest CUDA, enable forward compat if needed
         SELECTED_CUDA="${CUDA_VERSIONS[0]}"
-        COMPAT_DIR="/usr/local/cuda-${SELECTED_CUDA}/compat"
+        local COMPAT_DIR="/usr/local/cuda-${SELECTED_CUDA}/compat"
         
         if [[ -d "$COMPAT_DIR" ]] && compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null; then
             if [[ -e "$COMPAT_DIR/libcuda.so.1" ]]; then
                 local COMPAT_REALPATH=$(readlink -f "$COMPAT_DIR/libcuda.so.1")
                 local COMPAT_LIB=$(basename "$COMPAT_REALPATH")
                 local COMPAT_SUFFIX=${COMPAT_LIB#libcuda.so.}
-                local COMPAT_MAJOR=""
                 
                 if [[ "$COMPAT_SUFFIX" =~ ^([0-9]+)\.[0-9]+ ]]; then
-                    COMPAT_MAJOR=${BASH_REMATCH[1]}
-                fi
-
-                if [[ -n "$COMPAT_MAJOR" && -n "$DRIVER_MAJOR" ]] &&
-                   (( DRIVER_MAJOR < COMPAT_MAJOR )); then
-                    ENABLE_COMPAT=true
-                    echo "CUDA forward compatibility enabled (driver: $DRIVER_MAJOR, compat: $COMPAT_MAJOR)"
+                    local COMPAT_MAJOR=${BASH_REMATCH[1]}
+                    
+                    if [[ -n "$COMPAT_MAJOR" && -n "$DRIVER_MAJOR" ]] &&
+                       (( DRIVER_MAJOR < COMPAT_MAJOR )); then
+                        echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
+                        echo "CUDA forward compatibility enabled (driver: $DRIVER_MAJOR, compat: $COMPAT_MAJOR)"
+                    fi
                 fi
             fi
         fi
@@ -108,21 +101,14 @@ configure_cuda() {
     fi
 
     if [[ -n "$SELECTED_CUDA" ]]; then
-        export CUDA_HOME="/usr/local/cuda-${SELECTED_CUDA}"
-        export PATH="${CUDA_HOME}/bin:${PATH}"
+        export CUDA_HOME="/usr/local/cuda"
+        [[ "$PATH" != *"${CUDA_HOME}/bin"* ]] && export PATH="${CUDA_HOME}/bin:${PATH}"
         
-        # Update /usr/local/cuda symlink
         rm -f /usr/local/cuda
-        ln -sf "cuda-${SELECTED_CUDA}" /usr/local/cuda
+        ln -sf "/usr/local/cuda-${SELECTED_CUDA}" /usr/local/cuda
 
-        # Compat libs - processed first (00 prefix)
-        echo "$COMPAT_DIR" > /etc/ld.so.conf.d/00-cuda-compat.conf
-        
         # Register only the selected CUDA's libraries
-        {
-            echo "${CUDA_HOME}/targets/x86_64-linux/lib"
-            echo "${CUDA_HOME}/lib64"
-        } > /etc/ld.so.conf.d/50-cuda.conf
+        echo "${CUDA_HOME}/lib64" > /etc/ld.so.conf.d/10-cuda.conf
 
         echo "CUDA $SELECTED_CUDA selected (GPU: $GPU_NAME, CC: $CC, Driver: $DRIVER_VER, Max CUDA: $MAX_CUDA, Datacenter: $IS_DATACENTER)"
     fi
@@ -132,7 +118,7 @@ configure_cuda() {
 
 configure_cuda
 
-# Avoid missing cuda libs error (affects 12.4)
+# Avoid missing cuda libs error (affects 12.4 amd64)
 if [[ ! -e /usr/lib/x86_64-linux-gnu/libcuda.so && -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]]; then \
     ln -s /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so; \
 fi
