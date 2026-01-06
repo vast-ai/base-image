@@ -1,4 +1,5 @@
-FROM robatvastai/base-image:stock-ubuntu24.04
+ARG BASE_IMAGE=robatvastai/base-image:stock-ubuntu24.04-py312
+FROM ${BASE_IMAGE}
 
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
