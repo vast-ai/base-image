@@ -6,6 +6,27 @@ cd "${WORKSPACE}"
 # CUDA Forward Compatibility: datacenter GPUs with Volta+ and compat libs present
 # Consumer class GPUs can rely on minor version compatibility, but forward compatibility must be removed first
 
+try_forward_compat() {
+    local LATEST_CUDA="$1" MAX_CUDA="$2"
+
+    [[ -z "$LATEST_CUDA" || -z "$MAX_CUDA" ]] && return 1
+    
+    [[ "${DISABLE_FORWARD_COMPAT:-false}" == "true" ]] && return 1
+    awk "BEGIN {exit !($LATEST_CUDA > $MAX_CUDA)}" || return 1
+    
+    local COMPAT_DIR="/usr/local/cuda-${LATEST_CUDA}/compat"
+    [[ -d "$COMPAT_DIR" ]] || return 1
+    compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null || return 1
+    
+    LD_LIBRARY_PATH="$COMPAT_DIR" python3 -c "
+import sys, ctypes
+sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
+" 2>/dev/null || return 1
+    
+    echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
+    return 0
+}
+
 configure_cuda() {
     command -v nvidia-smi &> /dev/null || return 0
 
@@ -24,16 +45,14 @@ configure_cuda() {
     ldconfig
 
     if [[ -n "$LD_LIBRARY_PATH" ]]; then
-        LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -vE '/cuda(/|-)' | paste -sd ':')
+        export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -vE '/cuda(/|-)' | paste -sd ':')
     fi
-    LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    export LD_LIBRARY_PATH
+    [[ -z "$LD_LIBRARY_PATH" ]] && unset LD_LIBRARY_PATH
 
-    # Gather GPU info
+    # Gather host GPU info
     local GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
     local CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1)
     local DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
-    local DRIVER_MAJOR=${DRIVER_VER%%.*}
     local MAX_CUDA=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
 
     if [[ -z "$MAX_CUDA" ]]; then
@@ -55,30 +74,10 @@ configure_cuda() {
     local SELECTED_CUDA=""
     local FORWARD_COMPAT_ENABLED=false
 
-    # Try forward compatibility with latest CUDA (unless disabled)
-    if [[ "${DISABLE_FORWARD_COMPAT:-false}" != "true" ]]; then
-        local LATEST_CUDA="${CUDA_VERSIONS[0]}"
-        local COMPAT_DIR="/usr/local/cuda-${LATEST_CUDA}/compat"
-        
-        # Only attempt if compat directory exists with libcuda
-        if [[ -d "$COMPAT_DIR" ]] && compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null; then
-            # Test forward compat by calling cuInit with compat libs
-            # Exit 0 = works, Exit 1 = not supported (error 803/804)
-            local TEST_LD_PATH="$COMPAT_DIR"
-            
-            if LD_LIBRARY_PATH="$TEST_LD_PATH" python3 -c "
-import sys, ctypes
-
-r = ctypes.CDLL('libcuda.so.1').cuInit(0)
-sys.exit(0 if r == 0 else 1)
-" 2>/dev/null; then
-                # Forward compat works - use it
-                SELECTED_CUDA="$LATEST_CUDA"
-                FORWARD_COMPAT_ENABLED=true
-                echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
-                echo "CUDA forward compatibility enabled"
-            fi
-        fi
+    if try_forward_compat "${CUDA_VERSIONS[0]}" "$MAX_CUDA"; then
+        SELECTED_CUDA="${CUDA_VERSIONS[0]}"
+        FORWARD_COMPAT_ENABLED=true
+        echo "CUDA forward compatibility enabled"
     fi
 
     # Fallback: find highest compatible CUDA version
