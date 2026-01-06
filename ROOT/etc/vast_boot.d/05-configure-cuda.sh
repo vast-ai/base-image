@@ -80,6 +80,7 @@ configure_cuda() {
     # Fallback: find highest compatible CUDA version
     if [[ -z "$SELECTED_CUDA" ]]; then
         for ver in "${CUDA_VERSIONS[@]}"; do
+            [[ -z $ver ]] && continue
             if awk "BEGIN {exit !($ver <= $MAX_CUDA)}"; then
                 SELECTED_CUDA="$ver"
                 break
@@ -89,7 +90,7 @@ configure_cuda() {
         # Final fallback to lowest available
         if [[ -z "$SELECTED_CUDA" ]]; then
             SELECTED_CUDA="${CUDA_VERSIONS[-1]}"
-            echo "Warning: Driver reports CUDA $MAX_CUDA but no compatible toolkit found; falling back to CUDA $SELECTED_CUDA"
+            echo "Warning: Driver reports CUDA $MAX_CUDA but no compatible toolkit found; using ${SELECTED_CUDA:-image default}"
         fi
     fi
 
