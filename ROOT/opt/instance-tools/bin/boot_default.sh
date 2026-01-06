@@ -37,6 +37,10 @@ main() {
                 activate_python_environment=false
                 shift
                 ;;
+            --no-forward-compat)
+                export DISABLE_FORWARD_COMPAT=true
+                shift
+                ;;
             --sync-environment)
                 sync_environment=true
                 shift

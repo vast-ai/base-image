@@ -42,6 +42,8 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
+# Expose all toolklit features
+ENV NVIDIA_DRIVER_CAPABILITIES=all
 
 # Blackwell fix
 ARG BASE_IMAGE
@@ -103,8 +105,7 @@ RUN \
         fonts-freefont-ttf \
         fonts-ubuntu \
         ffmpeg \
-        libgl1 \
-        libglx-mesa0 \
+        mesa-utils-extra \
         # System monitoring & debugging
         htop \
         iotop \
@@ -155,13 +156,36 @@ RUN \
         clinfo \
         pocl-opencl-icd \
         opencl-headers \
+        ocl-icd-libopencl1 \
         ocl-icd-dev \
         ocl-icd-opencl-dev \
         # Vulkan
-        libvulkan1 \
         vulkan-tools && \
+    mkdir -p /etc/OpenCL/vendors && \
+    echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Ensure Nvidia repos are available if using stock images
+ARG TARGETARCH
+RUN \
+    set -euo pipefail && \
+    if ! compgen -G "/etc/apt/sources.list.d/cuda*" > /dev/null && ! compgen -G "/etc/apt/sources.list.d/rocm*" > /dev/null; then \
+        UBUNTU_VERSION=$(. /etc/os-release && echo "$VERSION_ID" | tr -d '.') && \
+        if [[ "$TARGETARCH" = "amd64" ]]; then \
+            ARCH="x86_64"; \
+        elif [[ "$TARGETARCH" = "arm64" ]]; then \
+            ARCH="sbsa"; \
+        else \
+            echo "Unsupported TARGETARCH: ${TARGETARCH}. Cannot configure Nvidia CUDA repository." >&2; \
+            exit 1; \
+        fi && \
+        curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/3bf863cc.pub | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda.gpg && \
+        echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH} /" > /etc/apt/sources.list.d/cuda.list && \
+        apt-get update && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Add a normal user account - Some applications don't like to run as root so we should save our users some time.  Give it unfettered access to sudo
 RUN \
@@ -189,53 +213,7 @@ RUN \
     curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
     chmod +x /tmp/uv-install.sh && \
     UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh && \
-    rm -f /tmp/uv-install.sh
-
-# Install Extra Nvidia packages (OpenCL, GL, Nvenc)
-# When installing libnvidia packages always pick the earliest version to avoid mismatched libs
-# We cannot know the runtime driver version so we aim for best compatibility 
-ARG TARGETARCH
-RUN \
-    set -euo pipefail && \
-    apt-get update && \
-    if command -v rocm-smi >/dev/null 2>&1; then \
-        apt-get install -y rocm-opencl-runtime; \
-    elif [[ -n "${CUDA_VERSION:-}" ]]; then \
-        CUDA_MAJOR_MINOR=$(echo "${CUDA_VERSION}" | cut -d. -f1,2 | tr -d ".") && \
-        case "${CUDA_MAJOR_MINOR}" in \
-            "118") driver_version=450 ;; \
-            "120") driver_version=525 ;; \
-            "121") driver_version=530 ;; \
-            "122") driver_version=535 ;; \
-            "123") driver_version=545 ;; \
-            "124") driver_version=550 ;; \
-            "125") driver_version=555 ;; \
-            "126") driver_version=560 ;; \
-            "127") driver_version=565 ;; \
-            "128") driver_version=570 ;; \
-            "129") driver_version=575 ;; \
-            "130") driver_version=580 ;; \
-            "131") driver_version=590 ;; \
-        esac; \
-        if [[ -n "${driver_version:-}" ]]; then \
-            # decode is available for all architectures
-            earliest_version=$(apt-cache madison "libnvidia-decode-${driver_version}" | awk '{print $3}' | sort -V | head -n1 || true); \
-            if [[ -n "${earliest_version:-}" ]]; then \
-                echo "Package: libnvidia-*-${driver_version}" > /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Package: nvidia-*-${driver_version}" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin: version $earliest_version" >> /etc/apt/preferences.d/nvidia-pin; \
-                echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/nvidia-pin; \
-                for pkg in nvidia-utils libnvidia-gl libnvidia-cfg1 libnvidia-compute libnvidia-decode libnvidia-encode; do \
-                    apt-get install -y "${pkg}-${driver_version}" 2>/dev/null || true; \
-                done; \
-            fi; \
-        fi; \
-    fi && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /tmp/*
 
 # Install NVM for node version management
 RUN \
@@ -324,7 +302,8 @@ RUN \
     mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
     echo 'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
         > /venv/main/etc/conda/activate.d/environment.sh && \
-    /opt/miniforge3/bin/conda clean -ay
+    /opt/miniforge3/bin/conda clean -ay && \
+    rm -rf /tmp/*
 
 # Add venv-like activation script for conda env
 RUN cat <<'CONDA_ACTIVATION_SCRIPT' > /venv/main/bin/activate
@@ -370,7 +349,7 @@ RUN \
     . /venv/main/bin/activate && \
     uv pip install \
         wheel \
-        huggingface_hub[cli] \
+        huggingface-hub[cli] \
         ipykernel \
         ipywidgets && \
     python -m ipykernel install \

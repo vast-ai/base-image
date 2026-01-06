@@ -3,11 +3,6 @@
 mkdir -p "${WORKSPACE}"
 cd "${WORKSPACE}"
 
-# Avoid missing cuda libs error (affects 12.4)
-if [[ ! -e /usr/lib/x86_64-linux-gnu/libcuda.so && -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]]; then \
-    ln -s /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so; \
-fi
-
 # Fix pip resolution if we moved it in the build to protect system python
 [ -x "$(command -v pip-v-real)" ] && mv "$(which pip-v-real)" "$(dirname "$(which pip-v-real)")/pip"
 [ -x "$(command -v pip3-v-real)" ] && mv "$(which pip3-v-real)" "$(dirname "$(which pip3-v-real)")/pip3"
