@@ -1,0 +1,15 @@
+FROM robatvastai/base-image:stock-ubuntu24.04
+
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+
+RUN \
+    apt update && \
+    apt install -y --no-install-recommends \
+        cuda-nvcc-12-9 \
+        cuda-cccl-12-9 \
+        cuda-nvrtc-12-9 \
+        cuda-nvcc-13-1 \
+        cuda-cccl-13-1 \
+        cuda-nvrtc-13-1 \
+        cuda-compat-13-1 \
+        libnccl2
