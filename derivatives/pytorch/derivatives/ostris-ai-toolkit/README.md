@@ -76,7 +76,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/2.8.0-cu129-cuda-runtime-12-13-py312` | PyTorch multi-CUDA runtime base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.8.0-cu129-cuda-runtime-12-13-py312` | PyTorch multi-CUDA runtime base image |
 | `AI_TOOLKIT_REPO` | `https://github.com/ostris/ai-toolkit` | Git repository URL for the AI Toolkit |
 | `AI_TOOLKIT_REF` | `6870ab4` | Git commit, tag, or branch to build from |
 
