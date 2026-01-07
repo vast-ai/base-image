@@ -23,6 +23,7 @@ RUN \
     cd /opt/workspace-internal && \
     git clone "${AI_TOOLKIT_REPO}" && \
     cd $(basename ${AI_TOOLKIT_REPO}) && \
+    git checkout "${AI_TOOLKIT_REF}" && \
     # Fixes known issue with toolkit 6870ab4
     uv pip install timm==1.0.22 && \
     uv pip install -r requirements.txt && \
