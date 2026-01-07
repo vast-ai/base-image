@@ -1,0 +1,26 @@
+# All base-image functionality is inherited from our non-nvidia base image.
+ARG BASE_IMAGE=robatvastai/base-image:stock-ubuntu24.04-py312
+FROM ${BASE_IMAGE}
+
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+
+RUN \
+    set -euo pipefail && \
+    apt-get update && \
+    # Add only a small subset of the toolkit packages.
+    # Add multiple for best-match auto enablement at runtime
+    apt-get install -y --no-install-recommends \
+        cuda-nvcc-12-9 \
+        cuda-cccl-12-9 \
+        cuda-nvrtc-12-9 \
+        cuda-nvcc-13-1 \
+        cuda-cccl-13-1 \
+        cuda-nvrtc-13-1 \
+        cuda-compat-13-1 \
+        libnccl2 && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Defend against environment clashes when syncing to volume
+RUN \
+    set -euo pipefail && \
+    env-hash > /.env_hash
