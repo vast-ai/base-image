@@ -15,4 +15,5 @@ RUN \
         cuda-nvcc-13-1 \
         cuda-cccl-13-1 \
         cuda-nvrtc-13-1 \
+        cuda-compat-13-1 \
         libnccl2
