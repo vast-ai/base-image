@@ -32,8 +32,6 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Directory for training data, models, and configurations |
 | `AI_TOOLKIT_START_CMD` | `npm run start` | Command to start the AI Toolkit UI |
-| `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
-| `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
 ### Port Reference

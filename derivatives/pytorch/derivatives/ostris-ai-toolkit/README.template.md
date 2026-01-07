@@ -164,8 +164,6 @@ Optimizer: AdamW or Lion
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Training workspace directory |
 | `PROVISIONING_SCRIPT` | (none) | Auto-setup script URL |
-| `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
-| `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
 | `ENABLE_HTTPS` | `false` | Enable HTTPS connections (set in Vast.ai account settings) |
 
 ### **Dataset Preparation Tips**
