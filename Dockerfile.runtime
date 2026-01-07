@@ -1,3 +1,4 @@
+# All base-image functionality isa inherited from our non-nvidia base image.
 ARG BASE_IMAGE=robatvastai/base-image:stock-ubuntu24.04-py312
 FROM ${BASE_IMAGE}
 
@@ -5,6 +6,8 @@ ENV NVIDIA_DRIVER_CAPABILITIES=all
 
 RUN \
     apt update && \
+    # Add only a small subset of the toolkit packages.
+    # Add multiple for best-match auto enablement at runtime
     apt install -y --no-install-recommends \
         cuda-nvcc-12-9 \
         cuda-cccl-12-9 \
@@ -12,5 +15,4 @@ RUN \
         cuda-nvcc-13-1 \
         cuda-cccl-13-1 \
         cuda-nvrtc-13-1 \
-        cuda-compat-13-1 \
         libnccl2
