@@ -19,3 +19,8 @@ RUN \
         cuda-compat-13-1 \
         libnccl2 && \
         apt clean && rm -rf /var/lib/apt/lists/*
+
+# Defend against environment clashes when syncing to volume
+RUN \
+    set -euo pipefail && \
+    env-hash > /.env_hash
