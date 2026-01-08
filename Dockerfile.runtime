@@ -6,17 +6,15 @@ ENV NVIDIA_DRIVER_CAPABILITIES=all
 
 RUN \
     set -euo pipefail && \
+    cuda_version="${CUDA_VERSION/./-}" && \
     apt-get update && \
     # Add only a small subset of the toolkit packages.
     # Add multiple for best-match auto enablement at runtime
     apt-get install -y --no-install-recommends \
-        cuda-nvcc-12-9 \
-        cuda-cccl-12-9 \
-        cuda-nvrtc-12-9 \
-        cuda-nvcc-13-1 \
-        cuda-cccl-13-1 \
-        cuda-nvrtc-13-1 \
-        cuda-compat-13-1 \
+        "cuda-nvcc-${cuda_version}" \
+        "cuda-cccl-${cuda_version}" \
+        "cuda-nvrtc-${cuda_version}" \
+        "cuda-compat-${cuda_version}" \
         libnccl2 && \
         apt-get clean && rm -rf /var/lib/apt/lists/*
 
