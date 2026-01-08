@@ -1,0 +1,39 @@
+#!/bin/bash
+
+mkdir -p "${WORKSPACE}"
+cd "${WORKSPACE}"
+
+# Fix pip resolution if we moved it in the build to protect system python
+[ -x "$(command -v pip-v-real)" ] && mv "$(which pip-v-real)" "$(dirname "$(which pip-v-real)")/pip"
+[ -x "$(command -v pip3-v-real)" ] && mv "$(which pip3-v-real)" "$(dirname "$(which pip3-v-real)")/pip3"
+
+# Remove Jupyter from the portal config if no port or running in SSH only mode
+if [[ -z "${VAST_TCP_PORT_8080}" ]] || { [[ -f /.launch ]] && ! grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; }; then
+    PORTAL_CONFIG=$(echo "$PORTAL_CONFIG" | tr '|' '\n' | grep -vi jupyter | tr '\n' '|' | sed 's/|$//')
+fi
+
+# Ensure correct port mappings for Jupyter when running in Jupyter launch mode
+if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
+    PORTAL_CONFIG="$(echo "$PORTAL_CONFIG" | sed 's#localhost:8080:18080#localhost:8080:8080#g')"
+fi
+
+# Set HuggingFace home
+export HF_HOME=${HF_HOME:-${WORKSPACE}/.hf_home}
+mkdir -p "$HF_HOME"
+
+# Ensure environment contains instance ID (snapshot aware)
+instance_identifier=$(echo "${CONTAINER_ID:-${VAST_CONTAINERLABEL:-${CONTAINER_LABEL:-}}}")
+message="# Template controlled environment for C.${instance_identifier}"
+if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment; then
+    echo "$message" > /etc/environment
+    echo 'PATH="/opt/instance-tools/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+        >> /etc/environment
+    env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
+            name=${line%%=*}
+            value=${line#*=}
+            printf '%s="%s"\n' "$name" "$value"
+        done >> /etc/environment
+fi
+
+# Source the file at /etc/environment - We can now edit environment variables in a running instance
+[[ "${export_env}" = "true" ]] && { set -a; . /etc/environment 2>/dev/null; . "${WORKSPACE}/.env" 2>/dev/null; set +a; }

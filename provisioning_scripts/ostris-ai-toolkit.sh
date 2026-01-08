@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -eou pipefail
+set -euo pipefail
 
 . /venv/main/bin/activate
 
@@ -9,7 +9,8 @@ cd "$WORKSPACE"
 cd ai-toolkit
 [[ -n "${AI_TOOLKIT_VERSION:-}" ]] && git checkout "$AI_TOOLKIT_VERSION"
 
-uv pip install torch==${TORCH_VERSION:-2.7.0} torchvision torchaudio --torch-backend=auto
+uv pip install torch==${TORCH_VERSION:-2.7.0} torchvision torchaudio --torch-backend="${TORCH_BACKEND:-cu128}"
+uv pip install timm==1.0.22
 uv pip install -r requirements.txt
 
 # Create AI Toolkit startup script

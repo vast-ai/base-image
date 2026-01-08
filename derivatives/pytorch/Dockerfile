@@ -7,32 +7,32 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="PyTorch image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
-# Copy Supervisor configuration and startup scripts
-COPY ./ROOT /
-
 # Required or we will not build - Store for use in derivative images
 ARG PYTORCH_VERSION
 ENV PYTORCH_VERSION=${PYTORCH_VERSION}
-ARG PYTORCH_INDEX_URL
-ENV PYTORCH_INDEX_URL=${PYTORCH_INDEX_URL}
+ARG PYTORCH_BACKEND
+ENV PYTORCH_BACKEND=${PYTORCH_BACKEND}
 
 ARG VAST_BASE
+ARG TARGETARCH
 RUN \
     set -euo pipefail && \
     [[ -n "${PYTORCH_VERSION}" ]] || { echo "Must specify PYTORCH_VERSION" && exit 1; } && \
-    [[ -n "${PYTORCH_INDEX_URL}" ]] || { echo "Must specify PYTORCH_INDEX_URL" && exit 1; } && \
+    [[ -n "${PYTORCH_BACKEND}" ]] || { echo "Must specify PYTORCH_BACKEND" && exit 1; } && \
+    [[ "${PYTORCH_BACKEND}" != "auto" ]] || { echo "Cannot use 'auto' as torch backend during build" && exit 1; } && \
     # Activate the venv
     . /venv/main/bin/activate && \
-    uv pip install \
-        torch==${PYTORCH_VERSION} \
-        torchvision \
-        torchaudio \
-        --index-url ${PYTORCH_INDEX_URL} && \
-    # Numpy 2.x is only supported in PyTorch versions > 2.1
+    # Build package list - torchcodec unavailable via pip for arm64
+    PACKAGES="torch==${PYTORCH_VERSION} torchvision torchaudio torchtext torchdata" && \
+    [[ "${TARGETARCH}" == "amd64" ]] && PACKAGES="${PACKAGES} torchcodec" || true && \
+    uv pip install ${PACKAGES} --torch-backend ${PYTORCH_BACKEND} && \
+    # Pin numpy<2 for PyTorch <=2.1 to prevent compatibility issues.
+    # NumPy 2.0 introduced breaking ABI changes that cause crashes with older PyTorch.
+    # Without this pin, users could accidentally upgrade numpy and break their environment.
     major=$(echo "$PYTORCH_VERSION" | awk -F. '{print $1}') && \
     minor=$(echo "$PYTORCH_VERSION" | awk -F. '{print $2}') && \
     if (( major < 2 || (major == 2 && minor <= 1) )); then \
-        pip install numpy'<'2; \
+        pip install 'numpy<2'; \
     fi && \
     # Test 1: Verify PyTorch version (using startswith to handle CUDA/ROCm suffixes)
     python3 -c "import torch; assert torch.__version__.startswith('${PYTORCH_VERSION}'), f'Version mismatch: expected version starting with ${PYTORCH_VERSION}, got {torch.__version__}'" && \

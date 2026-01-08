@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Provisioning should not complete if there is an error. Retry on reboot if it failed
-set -eou pipefail
+set -euo pipefail
 
 # Ensure downloaded models are in the workspace
 export HF_HOME="${DATA_DIRECTORY}/huggingface"
