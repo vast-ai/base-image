@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1
+ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312
 
 FROM ${PYTORCH_BASE}
 
@@ -19,26 +19,22 @@ RUN \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
-    # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
+    # Fail build on dependency resolution if matching version is unavailable
+    uv pip install --no-cache-dir torch=="${PYTORCH_VERSION}" xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
     # Get ComfyUI and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
-    git clone https://github.com/comfyanonymous/ComfyUI && \
+    git clone https://github.com/Comfy-Org/ComfyUI && \
     cd /opt/workspace-internal/ComfyUI && \
     git checkout "${COMFYUI_REF}" && \
     uv pip install --no-cache-dir \
         -r requirements.txt && \
     # Avoid Jupyter directory display bug
-    ln -s /opt/workspace-internal/ComfyUI/models/checkpoints /opt/workspace-internal/ComfyUI/models/ckpt && \
+    cd /opt/workspace-internal/ComfyUI/models/ && \
+    ln -s checkpoints ckpt && \
     # Install critical custom nodes
     cd /opt/workspace-internal/ComfyUI/custom_nodes && \
-    git clone https://github.com/ltdrdata/ComfyUI-Manager && \
-    uv pip install -r ComfyUI-Manager/requirements.txt && \
-    git clone https://github.com/cubiq/ComfyUI_essentials && \
-    uv pip install -r ComfyUI_essentials/requirements.txt && \
-    # Download custom models into the build if you want them - None included in default build
-    # wget -O /opt/workspace-internal/ComfyUI/models/checkpoints/model1.safetensors https://url.to.files/model1.safetensors && \
-    # wget -O /opt/workspace-internal/ComfyUI/models/checkpoints/model2.safetensors https://url.to.files/model2.safetensors && \
+    git clone https://github.com/Comfy-Org/ComfyUI-Manager && \
+    uv pip install --no-cache-dir -r ComfyUI-Manager/requirements.txt && \
     # Quick startup test in CPU mode to ensure requirements ready and startup succeeds
     cd /opt/workspace-internal/ComfyUI && \
     LD_PRELOAD=libtcmalloc_minimal.so.4 \
@@ -53,4 +49,38 @@ RUN \
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
 
-    ENV COMFYUI_ARGS="--disable-auto-launch --port 18188"
+ENV COMFYUI_ARGS="--disable-auto-launch --enable-cors-header --port 18188"
+
+# Install API wrapper
+RUN \
+    set -euo pipefail && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libmagic1 && \
+    cd /opt && \
+    git clone https://github.com/ai-dock/comfyui-api-wrapper && \
+    cd comfyui-api-wrapper && \
+    uv venv -p 3.12 && \
+    . .venv/bin/activate && \
+    uv pip install -r requirements.txt && \
+    deactivate && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Generally we do not ship with models, but this is used for benchmarking the comfyui-json pyworker
+# Always use a new RUN or COPY for each model added to keep layers to a reasonable size
+RUN \
+    set -euo pipefail && \
+    mkdir /opt/model_store && \
+    . /venv/main/bin/activate && \
+    hf download Comfy-Org/stable-diffusion-v1-5-archive v1-5-pruned-emaonly-fp16.safetensors \
+        --local-dir "/opt/model_store" && \
+    # Symlink stored models to avoid moving large file to overlay/volume 
+    ln -s /opt/model_store/v1-5-pruned-emaonly-fp16.safetensors \
+        /opt/workspace-internal/ComfyUI/models/checkpoints/v1-5-pruned-emaonly-fp16.safetensors && \
+    rm -rf /opt/model_store/.cache && \
+    rm -rf /root/.cache/huggingface
+
+# Defend against environment clashes when syncing to volume
+RUN \
+    set -euo pipefail && \
+    env-hash > /.env_hash
