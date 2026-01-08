@@ -1,5 +1,4 @@
-# Default to multi-cuda runtime base
-ARG PYTORCH_BASE=robatvastai/pytorch:2.9.1-cu128-cuda-runtime-12-13-py312
+ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312
 
 FROM ${PYTORCH_BASE}
 
@@ -10,24 +9,6 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
-
-# Enable CUDA kitchecn backend when running on 13+
-RUN \
-    set -euo pipefail && \
-    if [[ -e /usr/local/cuda-13 ]]; then \
-        # Find the most recent cuda-13.x directory and extract version
-        latest=$(ls -d /usr/local/cuda-13.* 2>/dev/null | sort -V | tail -n1) && \
-        if [[ -n "$latest" ]]; then \
-            # Extract version (e.g., "13.1" from "/usr/local/cuda-13.1")
-            version=$(basename "$latest" | sed 's/cuda-//') && \
-            # Convert to package format (e.g., "13.1" -> "13-1")
-            pkg_version=$(echo "$version" | tr '.' '-') && \
-            apt-get update && \
-            apt-get install -y "libcublas-${pkg_version}" && \
-            apt-get clean && \
-            rm -rf /var/lib/apt/lists/*; \
-        fi; \
-    fi
 
 # Required or we will not build
 ARG COMFYUI_REF
