@@ -4,6 +4,7 @@ FROM ${BASE_IMAGE}
 
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
+ARG CUDA_VERSION=12.9
 RUN \
     set -euo pipefail && \
     cuda_version="${CUDA_VERSION/./-}" && \
