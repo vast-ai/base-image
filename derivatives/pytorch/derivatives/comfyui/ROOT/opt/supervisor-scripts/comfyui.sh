@@ -29,14 +29,6 @@ done
 
 COMFYUI_ARGS=${COMFYUI_ARGS:---disable-auto-launch --port 18188 --enable-cors-header}
 
-# Currently xformers will not work on Blackwell so forcefully disable it on that architecture
-if [[ "${BLACKWELL_ALLOW_XFORMERS:-false}" != "true" ]]; then
-    if nvidia-smi -q | grep -qi blackwell && ! echo "$COMFYUI_ARGS" | grep -qe --disable-xformers; then
-        COMFYUI_ARGS="$COMFYUI_ARGS --disable-xformers"
-    fi
-fi
-
-
 # Launch ComfyUI
 cd "${COMFYUI_DIR}"
 LD_PRELOAD=libtcmalloc_minimal.so.4 \
