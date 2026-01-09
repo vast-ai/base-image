@@ -290,6 +290,9 @@ main() {
     write_api_workflow
     write_ui_workflow
 
+    # Set serverless cleanup jup
+    [[ "${SERVERLESS:-false}" = "true" ]] && set_cleanup_job
+
     # Collect all background job PIDs
     local pids=()
 
@@ -4567,6 +4570,48 @@ write_ui_workflow() {
 }
 WORKFLOW_JSON
     echo "$workflow_json" > "${WORKFLOWS_DIR}/ltxv2_t2v.json"
+}
+
+# Add a cron job to remove older (oldest +24 hours) output files if disk space is low
+set_cleanup_job() {
+    local script_dir="/opt/instance-tools/bin"
+    local script_path="${script_dir}/clean-output.sh"
+    
+    # Ensure directory exists
+    mkdir -p "$script_dir"
+    
+    if [[ ! -f "$script_path" ]]; then
+        cat > "$script_path" << 'CLEAN_OUTPUT'
+#!/bin/bash
+output_dir="${WORKSPACE:-/workspace}/ComfyUI/output/"
+min_free_mb=512
+available_space=$(df -m "${output_dir}" | awk 'NR==2 {print $4}')
+if [[ "$available_space" -lt "$min_free_mb" ]]; then
+    oldest=$(find "${output_dir}" -mindepth 1 -type f -printf "%T@\n" 2>/dev/null | sort -n | head -1 | awk '{printf "%.0f", $1}')
+    if [[ -n "$oldest" ]]; then
+        cutoff=$(awk "BEGIN {printf \"%.0f\", ${oldest}+86400}")
+        # Only delete files
+        find "${output_dir}" -mindepth 1 -type f ! -newermt "@${cutoff}" -delete
+        # Delete broken symlinks
+        find "${output_dir}" -mindepth 1 -xtype l -delete
+        # Now delete *empty* directories separately
+        find "${output_dir}" -mindepth 1 -type d -empty -delete
+    fi
+fi
+CLEAN_OUTPUT
+        chmod +x "$script_path"
+    fi
+
+    # Check if cron job already exists (avoiding pipefail issues)
+    local cron_exists=0
+    if crontab -l 2>/dev/null | grep -qF 'clean-output.sh'; then
+        cron_exists=1
+    fi
+    
+    if [[ "$cron_exists" -eq 0 ]]; then
+        # Add the cron job
+        (crontab -l 2>/dev/null || true; echo "*/10 * * * * ${script_path}") | crontab -
+    fi
 }
 
 main
