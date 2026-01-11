@@ -13,7 +13,6 @@ sed -i '/^torch/d; /^torchvision/d' /workspace/Open-Sora/requirements.txt
 
 pip install -vv /workspace/Open-Sora/
 
-pip install torch=="${PYTORCH_VERSION}" xformers --index-url "${PYTORCH_INDEX_URL}"
 pip install flash-attn --no-build-isolation
 
 cd /tmp
