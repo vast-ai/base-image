@@ -18,7 +18,7 @@ pip install flash-attn --no-build-isolation
 cd /tmp
 git clone https://github.com/hpcaitech/TensorNVMe.git && cd TensorNVMe
 pip install -r requirements.txt
-pip install -v --no-cache-dir .
+pip install -v --no-cache-dir . --no-build-isolation
 
 cd /workspace/Open-Sora
 
