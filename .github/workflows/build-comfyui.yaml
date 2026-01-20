@@ -62,13 +62,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Clone base-image repo
-        run: |
-          set -e
-          git clone -b "${{ github.ref_name }}" https://github.com/${{ github.repository }}
-          echo "BASE_REPO_SOURCE=${{ github.repository }}" >> $GITHUB_ENV
-          echo "Building from https://github.com/${{ github.repository }} (ref: ${{ github.ref_name }})"
       
       - name: Resolve ComfyUI ref
         id: comfyui-ref
