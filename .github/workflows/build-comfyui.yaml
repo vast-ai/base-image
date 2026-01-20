@@ -91,9 +91,14 @@ jobs:
             exit 1
           fi
 
-          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
-          [[ -n "$IMAGE_TAG" ]] || IMAGE_TAG="${{ env.COMFYUI_REF_RESOLVED }}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          # If no custom tag is provided, fall back to the resolved ComfyUI ref
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            IMAGE_TAG_BASE="${{ env.COMFYUI_REF_RESOLVED }}"
+          fi
 
+          # Always append CUDA and Python versions to distinguish matrix builds
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
           echo "PYTORCH_BASE=$PYTORCH_BASE" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
