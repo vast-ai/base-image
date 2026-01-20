@@ -87,21 +87,21 @@ jobs:
       - name: Derive CUDA & Python versions
         id: meta
         run: |
-          BASE_IMAGE="${{ matrix.base_image }}"
-          TAG="${BASE_IMAGE##*:}"
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
 
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
           PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
 
           if [ -z "$CUDA_VERSION" ] || [ -z "$PYTHON_VERSION" ]; then
-            echo "Failed to parse base image: $BASE_IMAGE"
+            echo "Failed to parse base image: $PYTORCH_BASE"
             exit 1
           fi
 
           IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
           [[ -n "$IMAGE_TAG" ]] || IMAGE_TAG="${{ env.COMFYUI_REF_RESOLVED }}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
 
-          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
+          echo "PYTORCH_BASE=$PYTORCH_BASE" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
           echo "Derived image tag: $IMAGE_TAG"
@@ -114,7 +114,7 @@ jobs:
           cd "$(basename "${{ env.BASE_REPO_SOURCE }}")/derivatives/pytorch/derivatives/comfyui"
           docker buildx build \
             --platform "$platforms" \
-            --build-arg BASE_IMAGE=${{ env.BASE_IMAGE }} \
+            --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
             --build-arg COMFYUI_REF=${{ env.COMFYUI_REF_RESOLVED }} \
             -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }} \
             . --push
