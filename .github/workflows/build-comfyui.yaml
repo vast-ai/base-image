@@ -1,0 +1,120 @@
+# Build this image using a fork of the base-image repo
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+
+
+name: Build ComfyUI Image (Forks Only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      COMFYUI_REF:
+        description: "ComfyUI git ref (tag, branch, or commit)"
+        required: true
+        default: "master"
+      DOCKERHUB_REPO:
+        description: "Push to username/<repo>"
+        required: true
+        default: "comfyui"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: true
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # Ensure this is being run from a fork (personal push credentials)
+    if: github.repository_owner != 'vast-ai'
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          # ComfyUI is optimized for CUDA 13+, but it is not compatible with 12.X machines, so build two images
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312
+          - vastai/pytorch:2.9.1-cu130-cuda-13.1-mini-py312
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Clone base-image repo
+        run: |
+          set -e
+          git clone -b "${{ github.ref_name }}" https://github.com/${{ github.repository }}
+          echo "BASE_REPO_SOURCE=${{ github.repository }}" >> $GITHUB_ENV
+          echo "Building from https://github.com/${{ github.repository }} (ref: ${{ github.ref_name }})"
+      
+      - name: Resolve ComfyUI ref
+        id: comfyui-ref
+        run: |
+          REF="${{ inputs.COMFYUI_REF }}"
+
+          if [[ -z "$REF" ]] || [[ "$REF" = "master" ]]; then
+            echo "Resolving ComfyUI master → HEAD commit"
+            REF=$(git ls-remote https://github.com/Comfy-Org/ComfyUI.git refs/heads/master | cut -f1 | cut -c1-7)
+            [[ -n $REF ]] || REF="$(date -u +%Y%m%d-%H%M)"
+          fi
+
+          echo "COMFYUI_REF_RESOLVED=$REF" >> $GITHUB_ENV
+          echo "Using COMFYUI_REF=$REF"
+
+      - name: Derive CUDA & Python versions
+        id: meta
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+          PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
+
+          if [ -z "$CUDA_VERSION" ] || [ -z "$PYTHON_VERSION" ]; then
+            echo "Failed to parse base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          [[ -n "$IMAGE_TAG" ]] || IMAGE_TAG="${{ env.COMFYUI_REF_RESOLVED }}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+
+          echo "PYTORCH_BASE=$PYTORCH_BASE" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+          echo "Derived image tag: $IMAGE_TAG"
+
+      - name: Build and push
+        run: |
+          platforms="linux/amd64"
+          [[ "${{ inputs.MULTI_ARCH }}" == "true" ]] && platforms+=",linux/arm64"
+
+          cd "$(basename "${{ env.BASE_REPO_SOURCE }}")/derivatives/pytorch/derivatives/comfyui"
+          docker buildx build \
+            --platform "$platforms" \
+            --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
+            --build-arg COMFYUI_REF=${{ env.COMFYUI_REF_RESOLVED }} \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }} \
+            . --push
