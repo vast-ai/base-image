@@ -104,7 +104,7 @@ jobs:
           platforms="linux/amd64"
           [[ "${{ inputs.MULTI_ARCH }}" == "true" ]] && platforms+=",linux/arm64"
 
-          cd "$(basename "${{ env.BASE_REPO_SOURCE }}")/derivatives/pytorch/derivatives/comfyui"
+          cd derivatives/pytorch/derivatives/comfyui
           docker buildx build \
             --platform "$platforms" \
             --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
