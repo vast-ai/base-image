@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-cuda_ver="${CUDA_VERSION%.*}"
+cuda_ver="12.8"
 
 llama_dir="${WORKSPACE}/llama.cpp"
 llama_ver_dir="${WORKSPACE}/llama.cpp/cuda-${cuda_ver}"
