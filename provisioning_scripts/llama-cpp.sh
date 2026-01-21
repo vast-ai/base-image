@@ -3,6 +3,7 @@
 set -euo pipefail
 
 apt-get install -y --no-install-recommends libcublas-12-9
+ldconfig
 
 cuda_ver="12.8"
 
