@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+apt-get install -y --no-install-recommends libcublas-12-9
+
 cuda_ver="12.8"
 
 llama_dir="${WORKSPACE}/llama.cpp"
