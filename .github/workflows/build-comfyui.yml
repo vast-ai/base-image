@@ -162,6 +162,7 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
 
     permissions:
       contents: read
