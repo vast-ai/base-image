@@ -90,7 +90,7 @@ For automated multi-architecture builds pushed directly to DockerHub, use the in
 | `MULTI_ARCH` | `true` | Build for both `amd64` and `arm64` architectures |
 | `CUSTOM_IMAGE_TAG` | (auto) | Override the auto-generated image tag |
 
-The workflow builds two images per run: one for CUDA 12.9 and one for CUDA 13.1. To customize which base images are used, modify the `matrix.base_image` array in `.github/workflows/build-comfyui.yaml` at the repository root.
+The workflow builds two images per run: one for CUDA 12.9 and one for CUDA 13.1. To customize which base images are used, modify the `matrix.base_image` array in `.github/workflows/build-comfyui.yml` at the repository root.
 
 ## Useful Links
 
