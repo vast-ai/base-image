@@ -86,7 +86,7 @@ For automated multi-architecture builds pushed directly to DockerHub, use the in
 | Input | Default | Description |
 |-------|---------|-------------|
 | `COMFYUI_REF` | `master` | Git ref to build (tag like `v0.8.2`, branch, or commit) |
-| `DOCKERHUB_REPO` | `comfyui` | Repository name (pushes to `username/<repo>`) |
+| `DOCKERHUB_REPO` | `comfy` | Repository name (pushes to `username/<repo>`) |
 | `MULTI_ARCH` | `true` | Build for both `amd64` and `arm64` architectures |
 | `CUSTOM_IMAGE_TAG` | (auto) | Override the auto-generated image tag |
 
