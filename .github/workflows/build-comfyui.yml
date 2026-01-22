@@ -260,6 +260,7 @@ jobs:
         if: steps.slack-check.outputs.available == 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           # Determine build status
           if [[ "${{ needs.build.result }}" == "success" ]]; then
@@ -276,81 +277,92 @@ jobs:
           COMFYUI_REF="${{ needs.preflight.outputs.comfyui-ref }}"
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
           
-          TAG_CUDA_12="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-12.9-py312"
-          TAG_CUDA_13="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-13.1-py312"
+          TAG_CUDA_12="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-12.9-py312"
+          TAG_CUDA_13="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-13.1-py312"
           
-          # Build blocks array conditionally
+          # Build base blocks
+          BLOCKS=$(jq -n \
+            --arg emoji "$STATUS_EMOJI" \
+            --arg status "$STATUS_TEXT" \
+            --arg trigger "${{ github.event_name }}" \
+            --arg ref "$COMFYUI_REF" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '[
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": ($emoji + " ComfyUI Image Build " + $status),
+                  "emoji": true
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": ("*Trigger:*\n`" + $trigger + "`")
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": ("*ComfyUI Ref:*\n`" + $ref + "`")
+                  }
+                ]
+              }
+            ]')
+          
+          # Add success-only blocks
           if [[ "${{ needs.build.result }}" == "success" ]]; then
-            SUCCESS_BLOCKS=$(cat <<'BLOCKS'
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*Image Tags:*\n\`TAG_CUDA_12_PLACEHOLDER\`\n\`TAG_CUDA_13_PLACEHOLDER\`"
-                    }
-                  },
-                  {
-                    "type": "divider"
-                  },
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "⚠️ *Recommended Template has not been modified.* Test new images before setting the default tag."
-                    }
-                  },
-          BLOCKS
-          )
-            # Replace placeholders with actual values
-            SUCCESS_BLOCKS="${SUCCESS_BLOCKS//TAG_CUDA_12_PLACEHOLDER/$TAG_CUDA_12}"
-            SUCCESS_BLOCKS="${SUCCESS_BLOCKS//TAG_CUDA_13_PLACEHOLDER/$TAG_CUDA_13}"
-          else
-            SUCCESS_BLOCKS=""
+            SUCCESS_BLOCKS=$(jq -n \
+              --arg tag12 "$TAG_CUDA_12" \
+              --arg tag13 "$TAG_CUDA_13" \
+              '[
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ("*Image Tags:*\n`" + $tag12 + "`\n`" + $tag13 + "`")
+                  }
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "⚠️ *Recommended Template has not been modified.* Test new images before setting the default tag."
+                  }
+                }
+              ]')
+            BLOCKS=$(echo "$BLOCKS" | jq --argjson success "$SUCCESS_BLOCKS" '. + $success')
           fi
+          
+          # Add context block (always last)
+          CONTEXT_BLOCK=$(jq -n \
+            --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '[{
+              "type": "context",
+              "elements": [{
+                "type": "mrkdwn",
+                "text": ("<" + $url + "|View workflow run>")
+              }]
+            }]')
+          BLOCKS=$(echo "$BLOCKS" | jq --argjson ctx "$CONTEXT_BLOCK" '. + $ctx')
+          
+          # Build final payload
+          PAYLOAD=$(jq -n \
+            --arg color "$COLOR" \
+            --argjson blocks "$BLOCKS" \
+            '{
+              "attachments": [{
+                "color": $color,
+                "blocks": $blocks
+              }]
+            }')
           
           # Send notification
           curl -sfS -X POST "$SLACK_WEBHOOK_URL" \
             -H 'Content-type: application/json' \
-            --data @- <<EOF
-          {
-            "attachments": [
-              {
-                "color": "${COLOR}",
-                "blocks": [
-                  {
-                    "type": "header",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "${STATUS_EMOJI} ComfyUI Image Build ${STATUS_TEXT}",
-                      "emoji": true
-                    }
-                  },
-                  {
-                    "type": "section",
-                    "fields": [
-                      {
-                        "type": "mrkdwn",
-                        "text": "*Trigger:*\n\`${{ github.event_name }}\`"
-                      },
-                      {
-                        "type": "mrkdwn",
-                        "text": "*ComfyUI Ref:*\n\`${COMFYUI_REF}\`"
-                      }
-                    ]
-                  },
-                  ${SUCCESS_BLOCKS}
-                  {
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>"
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          }
-          EOF
+            --data "$PAYLOAD"
 
