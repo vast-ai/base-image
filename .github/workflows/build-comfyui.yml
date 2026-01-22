@@ -35,8 +35,8 @@ env:
   DEFAULT_COMFYUI_REF: "master"
   DEFAULT_DOCKERHUB_REPO: "comfy"
   DEFAULT_MULTI_ARCH: "true"
-  # 1 day + 1 hour buffer (in seconds)
-  RELEASE_AGE_THRESHOLD: 90000
+  # 1 day
+  RELEASE_AGE_THRESHOLD: 86400
 
 jobs:
   preflight:
@@ -90,7 +90,7 @@ jobs:
           RELEASE_EPOCH=$(date -d "$PUBLISHED_AT" +%s)
           NOW_EPOCH=$(date +%s)
           AGE=$((NOW_EPOCH - RELEASE_EPOCH))
-          AGE_DAYS=$((AGE / 86400))
+          AGE_DAYS=$((AGE / ${{ env.RELEASE_AGE_THRESHOLD }}))
           
           echo "Latest release: $TAG (published $AGE_DAYS days ago)"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
@@ -117,6 +117,7 @@ jobs:
           echo "comfyui-ref=$REF" >> $GITHUB_OUTPUT
           echo "Using COMFYUI_REF=$REF"
 
+      # Build stage must not be called if conditions not satisfied
       - name: Determine if build should run
         id: decision
         run: |
@@ -136,7 +137,26 @@ jobs:
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "Build will be skipped"
+
+            # Set reason for cancellation message
+            if [[ "$SECRETS" != "true" ]]; then
+              echo "reason=Required secrets not configured" >> $GITHUB_OUTPUT
+            else
+              echo "reason=No new ComfyUI release detected" >> $GITHUB_OUTPUT
+            fi
           fi
+
+      # Avoid marking non-build runs as successful
+      - name: Cancel workflow if not needed
+        if: steps.decision.outputs.should-run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::notice::Cancelling workflow - ${{ steps.decision.outputs.reason }}"
+          gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
+          
+          # Give GitHub time to process the cancellation
+          sleep 5
 
   build:
     needs: preflight
@@ -149,6 +169,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Update these over time - Should generally be latest release for ComfyUI
+        # CUDA 13 has optimizations but many hosts still running 12.x drivers
         base_image:
           - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312
           - vastai/pytorch:2.9.1-cu130-cuda-13.1-mini-py312
@@ -199,8 +221,6 @@ jobs:
 
       - name: Build and push
         run: |
-          # Avoid `inputs.MULTI_ARCH || default` pattern - GitHub's || operator
-          # treats boolean false as falsy, which would ignore explicit false input
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
           else
@@ -237,7 +257,8 @@ jobs:
 
       - name: Notify Slack
         if: steps.slack-check.outputs.available == 'true'
-
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           # Determine build status
           if [[ "${{ needs.build.result }}" == "success" ]]; then
@@ -253,13 +274,41 @@ jobs:
           # Build image tag info
           COMFYUI_REF="${{ needs.preflight.outputs.comfyui-ref }}"
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
-          DOCKERHUB_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
           
-          TAG_CUDA_12="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-12.9-py312"
-          TAG_CUDA_13="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-13.1-py312"
+          TAG_CUDA_12="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-12.9-py312"
+          TAG_CUDA_13="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-13.1-py312"
+          
+          # Build blocks array conditionally
+          if [[ "${{ needs.build.result }}" == "success" ]]; then
+            SUCCESS_BLOCKS=$(cat <<'BLOCKS'
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*Image Tags:*\n\`TAG_CUDA_12_PLACEHOLDER\`\n\`TAG_CUDA_13_PLACEHOLDER\`"
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "⚠️ *Recommended Template has not been modified.* Test new images before setting the default tag."
+                    }
+                  },
+          BLOCKS
+          )
+            # Replace placeholders with actual values
+            SUCCESS_BLOCKS="${SUCCESS_BLOCKS//TAG_CUDA_12_PLACEHOLDER/$TAG_CUDA_12}"
+            SUCCESS_BLOCKS="${SUCCESS_BLOCKS//TAG_CUDA_13_PLACEHOLDER/$TAG_CUDA_13}"
+          else
+            SUCCESS_BLOCKS=""
+          fi
           
           # Send notification
-          curl -sfS -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+          curl -sfS -X POST "$SLACK_WEBHOOK_URL" \
             -H 'Content-type: application/json' \
             --data @- <<EOF
           {
@@ -288,13 +337,7 @@ jobs:
                       }
                     ]
                   },
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*Image Tags:*\n\`${TAG_CUDA_12}\`\n\`${TAG_CUDA_13}\`"
-                    }
-                  },
+                  ${SUCCESS_BLOCKS}
                   {
                     "type": "context",
                     "elements": [
@@ -309,3 +352,4 @@ jobs:
             ]
           }
           EOF
+
