@@ -71,7 +71,7 @@ For automated multi-architecture builds pushed directly to DockerHub, use the in
 
 ### Setup
 
-1. **Fork the repository** - The workflow is configured to run only from forks, not the upstream `vast-ai/base-image` repository. This ensures builds use your personal DockerHub credentials and push to your own repository.
+1. **Fork the repository** - While the workflow can run in the upstream `vast-ai/base-image` repository, you should fork it so builds use your personal DockerHub credentials and push to your own repository.
 
 2. **Configure repository secrets** - In your fork, go to Settings → Secrets and variables → Actions, then add:
    - `DOCKERHUB_USERNAME` - Your DockerHub username
