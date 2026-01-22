@@ -1,7 +1,9 @@
-# Build ComfyUI image - Scheduled at 0600UTC daily
+# Build ComfyUI image - works on main repo (scheduled + manual) and forks (manual)
 # Required repository secrets:
 # DOCKERHUB_USERNAME
 # DOCKERHUB_TOKEN
+# Optional:
+# SLACK_WEBHOOK_URL
 
 name: Build ComfyUI Image
 
@@ -19,7 +21,7 @@ on:
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
         required: true
-        default: "comfy"
+        default: "comfyui"
       MULTI_ARCH:
         description: 'multi-arch build'
         required: false
@@ -31,10 +33,10 @@ on:
 
 env:
   DEFAULT_COMFYUI_REF: "master"
-  DEFAULT_DOCKERHUB_REPO: "comfy"
+  DEFAULT_DOCKERHUB_REPO: "comfyui"
   DEFAULT_MULTI_ARCH: "true"
-  # 1 day
-  RELEASE_AGE_THRESHOLD: 86400
+  # 1 day + 1 hour buffer (in seconds)
+  RELEASE_AGE_THRESHOLD: 90000
 
 jobs:
   preflight:
@@ -42,6 +44,7 @@ jobs:
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
       latest-release-tag: ${{ steps.release-check.outputs.tag }}
+      comfyui-ref: ${{ steps.resolve-ref.outputs.comfyui-ref }}
     steps:
       - name: Check for required secrets
         id: secrets
@@ -100,6 +103,20 @@ jobs:
             echo "::notice::No new release in the last day - skipping build"
           fi
 
+      - name: Resolve ComfyUI ref
+        id: resolve-ref
+        run: |
+          REF="${{ inputs.COMFYUI_REF || env.DEFAULT_COMFYUI_REF }}"
+
+          if [[ -z "$REF" ]] || [[ "$REF" = "master" ]]; then
+            echo "Resolving ComfyUI master → HEAD commit"
+            REF=$(git ls-remote https://github.com/Comfy-Org/ComfyUI.git refs/heads/master | cut -f1 | cut -c1-7)
+            [[ -n $REF ]] || REF="$(date -u +%Y%m%d-%H%M)"
+          fi
+
+          echo "comfyui-ref=$REF" >> $GITHUB_OUTPUT
+          echo "Using COMFYUI_REF=$REF"
+
       - name: Determine if build should run
         id: decision
         run: |
@@ -154,20 +171,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      
-      - name: Resolve ComfyUI ref
-        id: comfyui-ref
-        run: |
-          REF="${{ inputs.COMFYUI_REF || env.DEFAULT_COMFYUI_REF }}"
-
-          if [[ -z "$REF" ]] || [[ "$REF" = "master" ]]; then
-            echo "Resolving ComfyUI master → HEAD commit"
-            REF=$(git ls-remote https://github.com/Comfy-Org/ComfyUI.git refs/heads/master | cut -f1 | cut -c1-7)
-            [[ -n $REF ]] || REF="$(date -u +%Y%m%d-%H%M)"
-          fi
-
-          echo "COMFYUI_REF_RESOLVED=$REF" >> $GITHUB_ENV
-          echo "Using COMFYUI_REF=$REF"
 
       - name: Derive CUDA & Python versions
         id: meta
@@ -185,7 +188,7 @@ jobs:
 
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [ -z "$IMAGE_TAG_BASE" ]; then
-            IMAGE_TAG_BASE="${{ env.COMFYUI_REF_RESOLVED }}"
+            IMAGE_TAG_BASE="${{ needs.preflight.outputs.comfyui-ref }}"
           fi
 
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
@@ -196,6 +199,8 @@ jobs:
 
       - name: Build and push
         run: |
+          # Avoid `inputs.MULTI_ARCH || default` pattern - GitHub's || operator
+          # treats boolean false as falsy, which would ignore explicit false input
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
           else
@@ -211,6 +216,96 @@ jobs:
           docker buildx build \
             --platform "$platforms" \
             --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
-            --build-arg COMFYUI_REF=${{ env.COMFYUI_REF_RESOLVED }} \
+            --build-arg COMFYUI_REF=${{ needs.preflight.outputs.comfyui-ref }} \
             -t ${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${{ env.IMAGE_TAG }} \
             . --push
+
+  notify:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for Slack webhook
+        id: slack-check
+        run: |
+          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Slack webhook not configured - skipping notification"
+          fi
+
+      - name: Notify Slack
+        if: steps.slack-check.outputs.available == 'true'
+
+        run: |
+          # Determine build status
+          if [[ "${{ needs.build.result }}" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="Successful"
+            COLOR="good"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="Failed"
+            COLOR="danger"
+          fi
+          
+          # Build image tag info
+          COMFYUI_REF="${{ needs.preflight.outputs.comfyui-ref }}"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          DOCKERHUB_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
+          
+          TAG_CUDA_12="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-12.9-py312"
+          TAG_CUDA_13="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${COMFYUI_REF}-cuda-13.1-py312"
+          
+          # Send notification
+          curl -sfS -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H 'Content-type: application/json' \
+            --data @- <<EOF
+          {
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${STATUS_EMOJI} ComfyUI Image Build ${STATUS_TEXT}",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Trigger:*\n\`${{ github.event_name }}\`"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*ComfyUI Ref:*\n\`${COMFYUI_REF}\`"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*Image Tags:*\n\`${TAG_CUDA_12}\`\n\`${TAG_CUDA_13}\`"
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
