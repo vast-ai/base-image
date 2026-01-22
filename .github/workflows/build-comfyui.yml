@@ -338,7 +338,7 @@ jobs:
                       }
                     ]
                   },
-                  $(if [ -n "${SUCCESS_BLOCKS}" ]; then echo "${SUCCESS_BLOCKS}"; fi)
+                  ${SUCCESS_BLOCKS}
                   {
                     "type": "context",
                     "elements": [
