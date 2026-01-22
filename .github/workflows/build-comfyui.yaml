@@ -1,12 +1,15 @@
-# Build this image using a fork of the base-image repo
+# Build ComfyUI image - Scheduled at 0600UTC daily
 # Required repository secrets:
 # DOCKERHUB_USERNAME
 # DOCKERHUB_TOKEN
 
-
-name: Build ComfyUI Image (Forks Only)
+name: Build ComfyUI Image
 
 on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: '0 6 * * *'
+  
   workflow_dispatch:
     inputs:
       COMFYUI_REF:
@@ -16,7 +19,7 @@ on:
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
         required: true
-        default: "comfyui"
+        default: "comfy"
       MULTI_ARCH:
         description: 'multi-arch build'
         required: false
@@ -26,12 +29,102 @@ on:
         description: "Custom tag (Auto default)"
         required: false
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+env:
+  DEFAULT_COMFYUI_REF: "master"
+  DEFAULT_DOCKERHUB_REPO: "comfy"
+  DEFAULT_MULTI_ARCH: "true"
+  # 1 day
+  RELEASE_AGE_THRESHOLD: 86400
 
-    # Ensure this is being run from a fork (personal push credentials)
-    if: github.repository_owner != 'vast-ai'
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      latest-release-tag: ${{ steps.release-check.outputs.tag }}
+    steps:
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets are configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping build - DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN secrets not configured"
+          fi
+
+      - name: Check for new ComfyUI release
+        id: release-check
+        if: github.event_name == 'schedule'
+        run: |
+          echo "Checking for new ComfyUI releases..."
+          
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest)
+          
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          
+          # Handle API errors gracefully - skip build
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "::warning::GitHub API returned $HTTP_CODE - skipping build"
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          PUBLISHED_AT=$(echo "$BODY" | jq -r '.published_at // empty')
+          TAG=$(echo "$BODY" | jq -r '.tag_name // empty')
+          
+          if [[ -z "$PUBLISHED_AT" || -z "$TAG" ]]; then
+            echo "::warning::Could not parse release data - skipping build"
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Calculate release age
+          RELEASE_EPOCH=$(date -d "$PUBLISHED_AT" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - RELEASE_EPOCH))
+          AGE_DAYS=$((AGE / 86400))
+          
+          echo "Latest release: $TAG (published $AGE_DAYS days ago)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          
+          if [[ $AGE -lt ${{ env.RELEASE_AGE_THRESHOLD }} ]]; then
+            echo "new-release=true" >> $GITHUB_OUTPUT
+            echo "✓ New release detected - will build"
+          else
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            echo "::notice::No new release in the last day - skipping build"
+          fi
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          
+          # For manual dispatch, always build (skip release check)
+          # For schedule, require new release
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            NEW_RELEASE="true"
+          else
+            NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
+          fi
+          
+          if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Build will proceed"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "Build will be skipped"
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
@@ -40,7 +133,6 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          # ComfyUI is optimized for CUDA 13+, but we also need to support hosts with CUDA 12.X drivers, so build both CUDA 12.9 and 13.1 images
           - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312
           - vastai/pytorch:2.9.1-cu130-cuda-13.1-mini-py312
 
@@ -66,7 +158,7 @@ jobs:
       - name: Resolve ComfyUI ref
         id: comfyui-ref
         run: |
-          REF="${{ inputs.COMFYUI_REF }}"
+          REF="${{ inputs.COMFYUI_REF || env.DEFAULT_COMFYUI_REF }}"
 
           if [[ -z "$REF" ]] || [[ "$REF" = "master" ]]; then
             echo "Resolving ComfyUI master → HEAD commit"
@@ -92,12 +184,10 @@ jobs:
           fi
 
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
-          # If no custom tag is provided, fall back to the resolved ComfyUI ref
           if [ -z "$IMAGE_TAG_BASE" ]; then
             IMAGE_TAG_BASE="${{ env.COMFYUI_REF_RESOLVED }}"
           fi
 
-          # Always append CUDA and Python versions to distinguish matrix builds
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
           echo "PYTORCH_BASE=$PYTORCH_BASE" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
@@ -106,13 +196,21 @@ jobs:
 
       - name: Build and push
         run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+          
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          
           platforms="linux/amd64"
-          [[ "${{ inputs.MULTI_ARCH }}" == "true" ]] && platforms+=",linux/arm64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
 
           cd derivatives/pytorch/derivatives/comfyui
           docker buildx build \
             --platform "$platforms" \
             --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
             --build-arg COMFYUI_REF=${{ env.COMFYUI_REF_RESOLVED }} \
-            -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }} \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${{ env.IMAGE_TAG }} \
             . --push
