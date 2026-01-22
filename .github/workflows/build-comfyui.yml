@@ -21,7 +21,7 @@ on:
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
         required: true
-        default: "comfyui"
+        default: "comfy"
       MULTI_ARCH:
         description: 'multi-arch build'
         required: false
@@ -33,7 +33,7 @@ on:
 
 env:
   DEFAULT_COMFYUI_REF: "master"
-  DEFAULT_DOCKERHUB_REPO: "comfyui"
+  DEFAULT_DOCKERHUB_REPO: "comfy"
   DEFAULT_MULTI_ARCH: "true"
   # 1 day + 1 hour buffer (in seconds)
   RELEASE_AGE_THRESHOLD: 90000
