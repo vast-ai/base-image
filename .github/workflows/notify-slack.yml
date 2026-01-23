@@ -95,8 +95,7 @@ jobs:
           # Add image tags on success
           if [[ "${{ inputs.build-result }}" == "success" ]]; then
             # Format tags as code blocks
-            TAGS_TEXT=$(echo '${{ inputs.image-tags }}' | jq -r '.[] | "`" + . + "`"' | tr '\n' ' ' | sed 's/ $/\n/')
-            
+            TAGS_TEXT=$(echo '${{ inputs.image-tags }}' | jq -r '[.[] | "`" + . + "`"] | join("\n")')
             SUCCESS_BLOCKS=$(jq -n \
               --arg tags "$TAGS_TEXT" \
               '[
