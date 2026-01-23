@@ -1,0 +1,13 @@
+# Placeholder to enable workflow_dispatch from feature branches
+# This file will be replaced when the feature branch is merged
+
+name: Build vLLM Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "This is a placeholder. Select a feature branch to test the real workflow."
