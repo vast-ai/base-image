@@ -154,18 +154,6 @@ jobs:
             fi
           fi
 
-      # Avoid marking non-build runs as successful
-      - name: Cancel workflow if not needed
-        if: steps.decision.outputs.should-run == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "::notice::Cancelling workflow - ${{ steps.decision.outputs.reason }}"
-          gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
-          
-          # Give GitHub time to process the cancellation
-          sleep 5
-
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
