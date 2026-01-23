@@ -106,12 +106,19 @@ jobs:
       - name: Resolve ComfyUI ref
         id: resolve-ref
         run: |
-          REF="${{ inputs.COMFYUI_REF || env.DEFAULT_COMFYUI_REF }}"
-
-          if [[ -z "$REF" ]] || [[ "$REF" = "master" ]]; then
-            echo "Resolving ComfyUI master → HEAD commit"
-            REF=$(git ls-remote https://github.com/Comfy-Org/ComfyUI.git refs/heads/master | cut -f1 | cut -c1-7)
-            [[ -n $REF ]] || REF="$(date -u +%Y%m%d-%H%M)"
+          # For scheduled runs with a new release, use the release tag
+          if [[ "${{ github.event_name }}" == "schedule" && -n "${{ steps.release-check.outputs.tag }}" ]]; then
+            REF="${{ steps.release-check.outputs.tag }}"
+            echo "Using latest release tag: $REF"
+          else
+            REF="${{ inputs.COMFYUI_REF || env.DEFAULT_COMFYUI_REF }}"
+            
+            # Only resolve master to commit hash for manual triggers
+            if [[ -z "$REF" ]] || [[ "$REF" == "master" ]]; then
+              echo "Resolving ComfyUI master → HEAD commit"
+              REF=$(git ls-remote https://github.com/Comfy-Org/ComfyUI.git refs/heads/master | cut -f1 | cut -c1-7)
+              [[ -n $REF ]] || REF="$(date -u +%Y%m%d-%H%M)"
+            fi
           fi
 
           echo "comfyui-ref=$REF" >> $GITHUB_OUTPUT
