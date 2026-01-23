@@ -44,114 +44,41 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      latest-release-tag: ${{ steps.release-check.outputs.tag }}
-      comfyui-ref: ${{ steps.resolve-ref.outputs.comfyui-ref }}
+      comfyui-ref: ${{ steps.release-check.outputs.resolved-ref }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Check for required secrets
         id: secrets
         run: |
           if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets are configured"
+            echo "✓ Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping build - DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN secrets not configured"
+            echo "::notice::Skipping - secrets not configured"
           fi
 
-      - name: Check for new ComfyUI release
+      - name: Check release and resolve ref
         id: release-check
-        if: github.event_name == 'schedule'
-        run: |
-          echo "Checking for new ComfyUI releases..."
-          
-          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest)
-          
-          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
-          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
-          
-          # Handle API errors gracefully - skip build
-          if [[ "$HTTP_CODE" != "200" ]]; then
-            echo "::warning::GitHub API returned $HTTP_CODE - skipping build"
-            echo "new-release=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          PUBLISHED_AT=$(echo "$BODY" | jq -r '.published_at // empty')
-          TAG=$(echo "$BODY" | jq -r '.tag_name // empty')
-          
-          if [[ -z "$PUBLISHED_AT" || -z "$TAG" ]]; then
-            echo "::warning::Could not parse release data - skipping build"
-            echo "new-release=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Calculate release age
-          RELEASE_EPOCH=$(date -d "$PUBLISHED_AT" +%s)
-          NOW_EPOCH=$(date +%s)
-          AGE=$((NOW_EPOCH - RELEASE_EPOCH))
-          AGE_DAYS=$((AGE / ${{ env.RELEASE_AGE_THRESHOLD }}))
-          
-          echo "Latest release: $TAG (published $AGE_DAYS days ago)"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          
-          if [[ $AGE -lt ${{ env.RELEASE_AGE_THRESHOLD }} ]]; then
-            echo "new-release=true" >> $GITHUB_OUTPUT
-            echo "✓ New release detected - will build"
-          else
-            echo "new-release=false" >> $GITHUB_OUTPUT
-            echo "::notice::No new release in the last day - skipping build"
-          fi
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: Comfy-Org/ComfyUI
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trigger: ${{ github.event_name }}
+          manual-ref: ${{ inputs.COMFYUI_REF }}
+          default-ref: master
 
-      - name: Resolve ComfyUI ref
-        id: resolve-ref
-        run: |
-          # For scheduled runs with a new release, use the release tag
-          if [[ "${{ github.event_name }}" == "schedule" && -n "${{ steps.release-check.outputs.tag }}" ]]; then
-            REF="${{ steps.release-check.outputs.tag }}"
-            echo "Using latest release tag: $REF"
-          else
-            REF="${{ inputs.COMFYUI_REF || env.DEFAULT_COMFYUI_REF }}"
-            
-            # Only resolve master to commit hash for manual triggers
-            if [[ -z "$REF" ]] || [[ "$REF" == "master" ]]; then
-              echo "Resolving ComfyUI master → HEAD commit"
-              REF=$(git ls-remote https://github.com/Comfy-Org/ComfyUI.git refs/heads/master | cut -f1 | cut -c1-7)
-              [[ -n $REF ]] || REF="$(date -u +%Y%m%d-%H%M)"
-            fi
-          fi
-
-          echo "comfyui-ref=$REF" >> $GITHUB_OUTPUT
-          echo "Using COMFYUI_REF=$REF"
-
-      # Build stage must not be called if conditions not satisfied
       - name: Determine if build should run
         id: decision
         run: |
-          SECRETS="${{ steps.secrets.outputs.available }}"
-          
-          # For manual dispatch, always build (skip release check)
-          # For schedule, require new release
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            NEW_RELEASE="true"
-          else
-            NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
-          fi
-          
-          if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" ]]; then
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Build will proceed"
+            echo "✓ Building ref: ${{ steps.release-check.outputs.resolved-ref }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
-            echo "Build will be skipped"
-
-            # Set reason for cancellation message
-            if [[ "$SECRETS" != "true" ]]; then
-              echo "reason=Required secrets not configured" >> $GITHUB_OUTPUT
-            else
-              echo "reason=No new ComfyUI release detected" >> $GITHUB_OUTPUT
-            fi
           fi
 
   build:
