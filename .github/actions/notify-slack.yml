@@ -1,0 +1,148 @@
+# .github/workflows/notify-slack.yml
+name: Slack Build Notification
+
+on:
+  workflow_call:
+    inputs:
+      build-result:
+        description: "Result of the build job"
+        required: true
+        type: string
+      image-name:
+        description: "Name of the image being built (e.g., ComfyUI, vLLM)"
+        required: true
+        type: string
+      image-ref:
+        description: "Version/ref being built"
+        required: true
+        type: string
+      image-tags:
+        description: "JSON array of image tags that were built"
+        required: true
+        type: string
+      trigger:
+        description: "What triggered the build"
+        required: true
+        type: string
+      run-url:
+        description: "URL to the workflow run"
+        required: true
+        type: string
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for Slack webhook
+        id: slack-check
+        run: |
+          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Slack webhook not configured - skipping notification"
+          fi
+
+      - name: Notify Slack
+        if: steps.slack-check.outputs.available == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ "${{ inputs.build-result }}" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="Successful"
+            COLOR="good"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="Failed"
+            COLOR="danger"
+          fi
+          
+          # Build base blocks
+          BLOCKS=$(jq -n \
+            --arg emoji "$STATUS_EMOJI" \
+            --arg status "$STATUS_TEXT" \
+            --arg name "${{ inputs.image-name }}" \
+            --arg trigger "${{ inputs.trigger }}" \
+            --arg ref "${{ inputs.image-ref }}" \
+            '[
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": ($emoji + " " + $name + " Image Build " + $status),
+                  "emoji": true
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": ("*Trigger:*\n`" + $trigger + "`")
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": ("*Ref:*\n`" + $ref + "`")
+                  }
+                ]
+              }
+            ]')
+          
+          # Add image tags on success
+          if [[ "${{ inputs.build-result }}" == "success" ]]; then
+            # Format tags as code blocks
+            TAGS_TEXT=$(echo '${{ inputs.image-tags }}' | jq -r '.[] | "`" + . + "`"' | tr '\n' ' ' | sed 's/ $/\n/')
+            
+            SUCCESS_BLOCKS=$(jq -n \
+              --arg tags "$TAGS_TEXT" \
+              '[
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ("*Image Tags:*\n" + $tags)
+                  }
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "⚠️ *Recommended Template has not been modified.* Test new images before setting the default tag."
+                  }
+                }
+              ]')
+            BLOCKS=$(echo "$BLOCKS" | jq --argjson success "$SUCCESS_BLOCKS" '. + $success')
+          fi
+          
+          # Add context block
+          CONTEXT_BLOCK=$(jq -n \
+            --arg url "${{ inputs.run-url }}" \
+            '[{
+              "type": "context",
+              "elements": [{
+                "type": "mrkdwn",
+                "text": ("<" + $url + "|View workflow run>")
+              }]
+            }]')
+          BLOCKS=$(echo "$BLOCKS" | jq --argjson ctx "$CONTEXT_BLOCK" '. + $ctx')
+          
+          PAYLOAD=$(jq -n \
+            --arg color "$COLOR" \
+            --argjson blocks "$BLOCKS" \
+            '{
+              "attachments": [{
+                "color": $color,
+                "blocks": $blocks
+              }]
+            }')
+          
+          curl -sfS -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "$PAYLOAD"
