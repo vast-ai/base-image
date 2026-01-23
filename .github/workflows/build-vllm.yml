@@ -1,0 +1,257 @@
+# .github/workflows/build-vllm.yml
+name: Build vLLM Image
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  
+  workflow_dispatch:
+    inputs:
+      VLLM_VERSION:
+        description: "vLLM version tag (e.g., v0.14.0)"
+        required: false
+        default: ""
+      DOCKERHUB_REPO:
+        description: "Push to username/<repo>"
+        required: true
+        default: "vllm"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: true
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "vllm"
+  DEFAULT_MULTI_ARCH: "true"
+  RELEASE_AGE_THRESHOLD: 86400
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      vllm-version: ${{ steps.release-check.outputs.resolved-version }}
+      base-images: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Check release and resolve version
+        id: release-check
+        uses: ./.github/actions/check-dockerhub-release
+        with:
+          repository: vllm/vllm-openai
+          version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ github.event_name }}
+          manual-version: ${{ inputs.VLLM_VERSION }}
+
+      - name: Build matrix from variant tags
+        id: build-matrix
+        if: steps.release-check.outputs.new-release == 'true'
+        run: |
+          VERSION="${{ steps.release-check.outputs.resolved-version }}"
+          VARIANTS='${{ steps.release-check.outputs.variant-tags }}'
+          
+          echo "Building matrix for version: $VERSION"
+          echo "Available variants: $VARIANTS"
+          
+          # Convert variant tags to build matrix
+          # Input:  ["v0.14.0", "v0.14.0-cu130"]
+          # Output: [{"tag": "v0.14.0", "cuda": "12"}, {"tag": "v0.14.0-cu130", "cuda": "13"}]
+          MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
+            map(
+              if . == $ver then
+                # Base tag = default CUDA 12.x
+                {tag: ., cuda: "12"}
+              elif endswith("-cu130") then
+                {tag: ., cuda: "13"}
+              elif endswith("-cu128") then
+                {tag: ., cuda: "12"}
+              else
+                # Unknown variant - skip
+                empty
+              end
+            )
+          ')
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Build matrix: $MATRIX"
+          
+          # Validate we have at least one image
+          MATRIX_SIZE=$(echo "$MATRIX" | jq 'length')
+          if [[ "$MATRIX_SIZE" -eq 0 ]]; then
+            echo "::error::No valid image variants found for $VERSION"
+            exit 1
+          fi
+          
+          echo "✓ Will build $MATRIX_SIZE image(s)"
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
+          MATRIX='${{ steps.build-matrix.outputs.matrix }}'
+          MATRIX_SIZE=$(echo "$MATRIX" | jq 'length // 0')
+          
+          if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && "$MATRIX_SIZE" -gt 0 ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Building $MATRIX_SIZE image(s) for ${{ steps.release-check.outputs.resolved-version }}"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            
+            if [[ "$SECRETS" != "true" ]]; then
+              echo "::notice::Skipping - Required secrets not configured"
+            elif [[ "$NEW_RELEASE" != "true" ]]; then
+              echo "::notice::Skipping - No new release detected"
+            else
+              echo "::notice::Skipping - No valid image variants found"
+            fi
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.base-images) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          VERSION="${{ needs.preflight.outputs.vllm-version }}"
+          VLLM_BASE="vllm/vllm-openai:${{ matrix.tag }}"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="$VERSION"
+          fi
+          
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda${{ matrix.cuda }}"
+          FULL_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          
+          # Create safe ID from matrix entry
+          MATRIX_ID=$(echo "${{ matrix.tag }}" | md5sum | cut -c1-8)
+          
+          echo "VLLM_BASE=$VLLM_BASE" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          
+          echo "Building from: $VLLM_BASE"
+          echo "Output tag: $FULL_IMAGE"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+          
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd external/vllm
+          docker buildx build \
+            --platform "$platforms" \
+            --build-context base_image_source=../.. \
+            --build-arg VLLM_BASE=${{ env.VLLM_BASE }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [[ -d all-tags ]] && [[ "$(ls -A all-tags 2>/dev/null)" ]]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+          
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "vLLM"
+      image-ref: ${{ needs.preflight.outputs.vllm-version }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
