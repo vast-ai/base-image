@@ -78,6 +78,7 @@ jobs:
           echo "Available variants: $VARIANTS"
           
           # Convert variant tags to build matrix
+          # Base tag (v0.14.0) is CUDA 12.9, -cu130 is CUDA 13.0
           MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
             map(
               # Skip arch-specific tags (we use multi-arch builds)
@@ -85,11 +86,11 @@ jobs:
             )
             | map(
               if . == $ver then
-                {tag: ., cuda: "12"}
+                {tag: ., cuda: "12.9"}
               elif endswith("-cu130") then
-                {tag: ., cuda: "13"}
+                {tag: ., cuda: "13.0"}
               elif endswith("-cu128") then
-                {tag: ., cuda: "12"}
+                {tag: ., cuda: "12.8"}
               else
                 empty
               end
@@ -175,7 +176,8 @@ jobs:
             IMAGE_TAG_BASE="$VERSION"
           fi
           
-          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda${{ matrix.cuda }}"
+          # Format: v0.14.0-cuda-12.9
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${{ matrix.cuda }}"
           FULL_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
           
           # Create safe ID from matrix entry
