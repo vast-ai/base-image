@@ -160,17 +160,3 @@ runs:
           echo "$VARIANTS" >> $GITHUB_OUTPUT
           echo "$EOF" >> $GITHUB_OUTPUT
         fi
-
-    - name: Set outputs
-      id: result
-      shell: bash
-      run: |
-        if [[ "${{ steps.fetch.outputs.success }}" != "true" ]]; then
-          echo "new-release=false" >> $GITHUB_OUTPUT
-          echo "resolved-version=" >> $GITHUB_OUTPUT
-          echo "variant-tags=[]" >> $GITHUB_OUTPUT
-        else
-          echo "new-release=${{ steps.check.outputs.new-release }}" >> $GITHUB_OUTPUT
-          echo "resolved-version=${{ steps.check.outputs.version }}" >> $GITHUB_OUTPUT
-          echo "variant-tags=${{ steps.variants.outputs.variant-tags }}" >> $GITHUB_OUTPUT
-        fi
