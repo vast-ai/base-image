@@ -283,7 +283,7 @@ jobs:
   notify:
     needs: [preflight, build, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
-    uses: ./.github/actions/notify-slack.yml
+    uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.build.result }}
       image-name: "ComfyUI"
