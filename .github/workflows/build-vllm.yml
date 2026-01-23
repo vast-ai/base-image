@@ -18,7 +18,7 @@ on:
       MULTI_ARCH:
         description: 'multi-arch build'
         required: false
-        default: true
+        default: false
         type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
@@ -26,7 +26,7 @@ on:
 
 env:
   DEFAULT_DOCKERHUB_REPO: "vllm"
-  DEFAULT_MULTI_ARCH: "true"
+  DEFAULT_MULTI_ARCH: "false"
   RELEASE_AGE_THRESHOLD: 86400
 
 jobs:
