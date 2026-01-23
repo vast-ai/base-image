@@ -1,0 +1,153 @@
+# .github/actions/check-dockerhub-release/action.yml
+name: Check DockerHub Release
+description: Check for new releases on DockerHub
+
+inputs:
+  repository:
+    description: "DockerHub repository (e.g., vllm/vllm-openai)"
+    required: true
+  version-pattern:
+    description: "Regex for base version tags (e.g., ^v[0-9]+\\.[0-9]+\\.[0-9]+$)"
+    required: false
+    default: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+  age-threshold-seconds:
+    description: "Max age in seconds to consider a release 'new'"
+    required: false
+    default: "86400"
+  trigger:
+    description: "What triggered the workflow (github.event_name)"
+    required: true
+  manual-version:
+    description: "Version provided via manual trigger (if any)"
+    required: false
+    default: ""
+
+outputs:
+  new-release:
+    description: "Whether a new release was found (always true for manual triggers)"
+    value: ${{ steps.result.outputs.new-release }}
+  resolved-version:
+    description: "The version to use for building"
+    value: ${{ steps.result.outputs.resolved-version }}
+  variant-tags:
+    description: "JSON array of all tags for this version"
+    value: ${{ steps.result.outputs.variant-tags }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch tags from DockerHub
+      id: fetch
+      shell: bash
+      run: |
+        echo "Fetching tags from DockerHub for ${{ inputs.repository }}..."
+        
+        RESPONSE=$(curl -sfS "https://hub.docker.com/v2/repositories/${{ inputs.repository }}/tags?page_size=100&ordering=last_updated" || echo "")
+        
+        if [[ -z "$RESPONSE" ]]; then
+          echo "::warning::Failed to fetch tags from DockerHub"
+          echo "success=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        echo "success=true" >> $GITHUB_OUTPUT
+        
+        # Store response for subsequent steps
+        echo "$RESPONSE" > /tmp/dockerhub_tags.json
+
+    - name: Determine version and check age
+      id: check
+      if: steps.fetch.outputs.success == 'true'
+      shell: bash
+      run: |
+        RESPONSE=$(cat /tmp/dockerhub_tags.json)
+        
+        # For manual triggers, use provided version or find latest
+        if [[ "${{ inputs.trigger }}" != "schedule" ]]; then
+          if [[ -n "${{ inputs.manual-version }}" ]]; then
+            VERSION="${{ inputs.manual-version }}"
+            echo "Using manual version: $VERSION"
+          else
+            # Find latest version
+            VERSION=$(echo "$RESPONSE" | jq -r --arg pattern '${{ inputs.version-pattern }}' '
+              .results
+              | map(select(.name | test($pattern)))
+              | sort_by(.last_updated)
+              | reverse
+              | .[0].name // empty
+            ')
+            echo "Using latest version: $VERSION"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "new-release=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # For scheduled runs, find latest and check age
+        VERSION=$(echo "$RESPONSE" | jq -r --arg pattern '${{ inputs.version-pattern }}' '
+          .results
+          | map(select(.name | test($pattern)))
+          | sort_by(.last_updated)
+          | reverse
+          | .[0].name // empty
+        ')
+        
+        if [[ -z "$VERSION" ]]; then
+          echo "::warning::No version tags matching pattern found"
+          echo "new-release=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Latest version: $VERSION"
+        
+        # Check age
+        LAST_UPDATED=$(echo "$RESPONSE" | jq -r --arg ver "$VERSION" '
+          .results[] | select(.name == $ver) | .last_updated
+        ')
+        
+        RELEASE_EPOCH=$(date -d "$LAST_UPDATED" +%s)
+        NOW_EPOCH=$(date +%s)
+        AGE=$((NOW_EPOCH - RELEASE_EPOCH))
+        AGE_HOURS=$((AGE / 3600))
+        
+        echo "Version $VERSION is $AGE_HOURS hours old"
+        
+        if [[ $AGE -lt ${{ inputs.age-threshold-seconds }} ]]; then
+          echo "new-release=true" >> $GITHUB_OUTPUT
+          echo "✓ New release detected"
+        else
+          echo "new-release=false" >> $GITHUB_OUTPUT
+          echo "::notice::Release is older than threshold"
+        fi
+
+    - name: Find variant tags
+      id: variants
+      if: steps.fetch.outputs.success == 'true' && steps.check.outputs.version != ''
+      shell: bash
+      run: |
+        RESPONSE=$(cat /tmp/dockerhub_tags.json)
+        VERSION="${{ steps.check.outputs.version }}"
+        
+        # Find all tags starting with this version
+        VARIANT_TAGS=$(echo "$RESPONSE" | jq -c --arg ver "$VERSION" '
+          [.results[].name | select(startswith($ver))]
+        ')
+        
+        echo "variant-tags=$VARIANT_TAGS" >> $GITHUB_OUTPUT
+        echo "Found variants: $VARIANT_TAGS"
+
+    - name: Set outputs
+      id: result
+      shell: bash
+      run: |
+        if [[ "${{ steps.fetch.outputs.success }}" != "true" ]]; then
+          echo "new-release=false" >> $GITHUB_OUTPUT
+          echo "resolved-version=" >> $GITHUB_OUTPUT
+          echo "variant-tags=[]" >> $GITHUB_OUTPUT
+        else
+          echo "new-release=${{ steps.check.outputs.new-release }}" >> $GITHUB_OUTPUT
+          echo "resolved-version=${{ steps.check.outputs.version }}" >> $GITHUB_OUTPUT
+          echo "variant-tags=${{ steps.variants.outputs.variant-tags }}" >> $GITHUB_OUTPUT
+        fi
