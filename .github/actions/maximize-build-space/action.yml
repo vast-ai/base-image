@@ -1,0 +1,38 @@
+# .github/actions/maximize-build-space/action.yml
+name: 'Maximize Build Space'
+description: 'Removes unnecessary packages and directories to free up disk space for building'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Maximize build space
+      shell: bash
+      run: |
+        echo "=== Initial Disk Space ==="
+        df -h
+        
+        echo "=== Removing unnecessary packages ==="
+        sudo apt-get remove -y '^aspnetcore-.*' || true
+        sudo apt-get remove -y '^dotnet-.*' --fix-missing || true
+        sudo apt-get remove -y '^llvm-.*' --fix-missing || true
+        sudo apt-get remove -y 'php.*' --fix-missing || true
+        sudo apt-get remove -y '^mongodb-.*' --fix-missing || true
+        sudo apt-get remove -y '^mysql-.*' --fix-missing || true
+        sudo apt-get remove -y azure-cli google-chrome-stable firefox powershell mono-devel libgl1-mesa-dri --fix-missing || true
+        sudo apt-get autoremove -y || true
+        sudo apt-get clean || true
+        
+        echo "=== Removing large directories ==="
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/share/swift
+        sudo rm -rf /usr/local/.ghcup
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        
+        docker system prune -af || true
+        
+        echo "=== After Cleanup ==="
+        df -h
