@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1
+ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py310
 
 FROM ${PYTORCH_BASE}
 
@@ -10,25 +10,35 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libcairo2-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Required or we will not build
+ARG FORGE_REPO
 ARG FORGE_REF
 
 RUN \
     set -euo pipefail && \
-    [[ -n "${FORGE_REF}" ]] || { echo "Must specify FORGE_REF" && exit 1; } && \
+    [[ -n "${FORGE_REPO}" && -n "${FORGE_REF}" ]] || { echo "Must specify FORGE_REPO and FORGE_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
-    pip install onnxruntime-gpu insightface && \
+    uv pip install --no-cache-dir xformers torch==$PYTORCH_VERSION --torch-backend "${PYTORCH_BACKEND}" && \
+    uv pip install --no-cache-dir onnxruntime-gpu insightface && \
     # Get Forge and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
-    git clone https://github.com/lllyasviel/stable-diffusion-webui-forge && \
+    git clone "${FORGE_REPO}" /opt/workspace-internal/stable-diffusion-webui-forge && \
     cd /opt/workspace-internal/stable-diffusion-webui-forge && \
     git checkout "${FORGE_REF}" && \
-    pip install --no-cache-dir \
-        -r requirements_versions.txt && \
+    # Patch neo's interactive version check
+    sed -i 's/    launch_utils.verify_version()/#    launch_utils.verify_version()  # bypassed for Docker/'  launch.py && \
+    uv pip install --no-cache-dir \
+        -r $([[ -f requirements_versions.txt ]] && echo "requirements_versions.txt" || echo "requirements.txt") && \
     # Download custom models into the build if you want them - None included in default build
     # wget -O /opt/workspace-internal/stable-diffusion-webui-forge/models/Stable-diffusion/model1.safetensors https://url.to.files/model1.safetensors && \
     # wget -O /opt/workspace-internal/stable-diffusion-webui-forge/models/Stable-diffusion/model2.safetensors https://url.to.files/model2.safetensors && \
