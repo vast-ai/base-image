@@ -85,8 +85,18 @@ script_error() {
 trap script_cleanup EXIT
 trap 'script_error $LINENO' ERR
 
+# Normalize a URL|PATH entry: collapse whitespace, trim, return single line
+# Handles multi-line entries from array definitions
+normalize_entry() {
+    local entry="$1"
+    # Replace newlines and multiple spaces with single space, then trim
+    entry=$(echo "$entry" | tr '\n' ' ' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+    echo "$entry"
+}
+
 # Parse semicolon-separated string into array, filtering out comments and empty entries
 # Usage: parse_env_array "ENV_VAR_NAME"
+# Output: null-terminated entries (use read -r -d '' to consume)
 parse_env_array() {
     local env_var_name="$1"
     local env_value="${!env_var_name:-}"
@@ -95,41 +105,42 @@ parse_env_array() {
         local -a result=()
         IFS=';' read -ra entries <<< "$env_value"
         for entry in "${entries[@]}"; do
-            # Trim whitespace
-            entry="${entry#"${entry%%[![:space:]]*}"}"
-            entry="${entry%"${entry##*[![:space:]]}"}"
+            entry=$(normalize_entry "$entry")
             # Skip empty entries and comments
             [[ -z "$entry" || "$entry" == \#* ]] && continue
             result+=("$entry")
         done
-        # Return array elements, one per line
+        # Return array elements, null-terminated
         if [[ ${#result[@]} -gt 0 ]]; then
-            printf '%s\n' "${result[@]}"
+            printf '%s\0' "${result[@]}"
         fi
     fi
 }
 
-# Merge default array with environment variable overrides, filtering comments
-# Usage: merged_array=($(merge_with_env "ENV_VAR" default_array))
+# Merge default array with environment variable additions, filtering comments
+# Output: null-terminated entries (use read -r -d '' to consume)
+# Returns via stdout, logs to stderr to avoid mixing with data
+# Defaults are always included, env var entries are ADDED to defaults
 merge_with_env() {
     local env_var_name="$1"
     shift
     local -a default_array=("$@")
     local env_value="${!env_var_name:-}"
 
-    if [[ -n "$env_value" ]]; then
-        # Environment variable takes precedence - parse it
-        parse_env_array "$env_var_name"
-    else
-        # Use defaults, filtering out comments and empty entries
+    # First, output all defaults (filtered)
+    if [[ ${#default_array[@]} -gt 0 ]]; then
         for entry in "${default_array[@]}"; do
-            # Trim whitespace
-            entry="${entry#"${entry%%[![:space:]]*}"}"
-            entry="${entry%"${entry##*[![:space:]]}"}"
+            entry=$(normalize_entry "$entry")
             # Skip empty entries and comments
             [[ -z "$entry" || "$entry" == \#* ]] && continue
-            printf '%s\n' "$entry"
+            printf '%s\0' "$entry"
         done
+    fi
+
+    # Then, add any entries from environment variable
+    if [[ -n "$env_value" ]]; then
+        echo "[merge_with_env] Adding entries from $env_var_name environment variable" >&2
+        parse_env_array "$env_var_name"
     fi
 }
 
@@ -181,6 +192,95 @@ has_valid_civitai_token() {
         -H "Authorization: Bearer $CIVITAI_TOKEN" \
         -H "Content-Type: application/json")
     [[ "$response" -eq 200 ]]
+}
+
+# Download a HuggingFace file using the hf CLI
+# Args: URL OUTPUT_PATH
+# Uses HF_TOKEN automatically if set in environment
+download_hf_file() {
+    local url="$1"
+    local output_path="$2"
+    local max_retries=5
+    local retry_delay=2
+
+    # Acquire slot for parallel download limiting
+    local slot
+    slot=$(acquire_slot "$SEMAPHORE_DIR/hf" "$MAX_PARALLEL")
+
+    # Ensure slot is released on any exit from this function
+    trap 'release_slot "$slot"' RETURN
+
+    # Ensure parent directory exists
+    mkdir -p "$(dirname "$output_path")"
+
+    # Create lockfile based on output path
+    local lockfile="${output_path}.lock"
+
+    (
+        # Acquire exclusive lock (wait up to 300 seconds)
+        if ! flock -x -w 300 200; then
+            log "[ERROR] Could not acquire lock for $output_path after 300s"
+            exit 1
+        fi
+
+        # Check if file already exists (inside lock to avoid race)
+        if [[ -f "$output_path" ]]; then
+            log "File already exists: $output_path (skipping)"
+            exit 0
+        fi
+
+        # Extract repo and file path from HuggingFace URL
+        local repo file_path
+        repo=$(echo "$url" | sed -n 's|https://huggingface.co/\([^/]*/[^/]*\)/resolve/.*|\1|p')
+        file_path=$(echo "$url" | sed -n 's|https://huggingface.co/[^/]*/[^/]*/resolve/[^/]*/\(.*\)|\1|p')
+
+        if [[ -z "$repo" ]] || [[ -z "$file_path" ]]; then
+            log "[ERROR] Invalid HuggingFace URL: $url"
+            exit 1
+        fi
+
+        local temp_dir
+        temp_dir=$(mktemp -d)
+        local attempt=1
+        local current_delay=$retry_delay
+
+        # Retry loop for rate limits and transient failures
+        while [[ $attempt -le $max_retries ]]; do
+            log "Downloading $repo/$file_path (attempt $attempt/$max_retries)..."
+
+            if hf download "$repo" \
+                "$file_path" \
+                --local-dir "$temp_dir" \
+                --cache-dir "$temp_dir/.cache" 2>&1 | tee -a "$PROVISIONING_LOG"; then
+
+                # Verify the file was actually downloaded
+                if [[ -f "$temp_dir/$file_path" ]]; then
+                    # Success - move file and clean up
+                    mv "$temp_dir/$file_path" "$output_path"
+                    rm -rf "$temp_dir"
+                    log "Successfully downloaded: $output_path"
+                    exit 0
+                else
+                    log "Download command succeeded but file not found at $temp_dir/$file_path"
+                fi
+            fi
+
+            log "Download failed (attempt $attempt/$max_retries), retrying in ${current_delay}s..."
+            sleep $current_delay
+            current_delay=$((current_delay * 2))
+            attempt=$((attempt + 1))
+        done
+
+        # All retries failed
+        log "[ERROR] Failed to download $output_path after $max_retries attempts"
+        rm -rf "$temp_dir"
+        exit 1
+
+    ) 200>"$lockfile"
+
+    local result=$?
+    rm -f "$lockfile"
+    return $result
 }
 
 # Extract filename from content-disposition header via HEAD request
@@ -335,8 +435,8 @@ install_pip_packages() {
 install_extensions() {
     # Merge defaults with env var (comments already filtered)
     local -a extensions=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && extensions+=("$line")
+    while IFS= read -r -d '' entry; do
+        [[ -n "$entry" ]] && extensions+=("$entry")
     done < <(merge_with_env "EXTENSIONS" "${EXTENSIONS[@]}")
 
     if [[ ${#extensions[@]} -eq 0 ]]; then
@@ -369,6 +469,9 @@ install_extensions() {
 
 # Download models from an array with specified auth type
 # Args: array_name auth_type
+# Download models from an array with specified auth type
+# Args: array_name auth_type
+# auth_type: "hf" uses hf CLI, "civitai" or "" uses wget
 download_models() {
     local -n model_array=$1
     local auth_type="$2"
@@ -388,7 +491,13 @@ download_models() {
         output_path="${output_path%"${output_path##*[![:space:]]}"}"
 
         log "Queuing download: $url -> $output_path"
-        download_file "$url" "$output_path" "$auth_type" &
+
+        # Use appropriate downloader based on auth type
+        if [[ "$auth_type" == "hf" ]]; then
+            download_hf_file "$url" "$output_path" &
+        else
+            download_file "$url" "$output_path" "$auth_type" &
+        fi
         pids+=($!)
     done
 
@@ -483,26 +592,27 @@ main() {
     # Must be done before merging with env vars
     configure_flux_models
 
-    # Build model arrays from defaults + env vars
-    local -a HF_MODELS=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && HF_MODELS+=("$line")
+    # Build model arrays from defaults + env vars (null-terminated for multi-line entries)
+    # Use lowercase names to avoid shadowing the environment variables
+    local -a hf_models=()
+    while IFS= read -r -d '' entry; do
+        [[ -n "$entry" ]] && hf_models+=("$entry")
     done < <(merge_with_env "HF_MODELS" "${HF_MODELS_DEFAULT[@]}")
 
-    local -a CIVITAI_MODELS=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && CIVITAI_MODELS+=("$line")
+    local -a civitai_models=()
+    while IFS= read -r -d '' entry; do
+        [[ -n "$entry" ]] && civitai_models+=("$entry")
     done < <(merge_with_env "CIVITAI_MODELS" "${CIVITAI_MODELS_DEFAULT[@]}")
 
-    local -a WGET_DOWNLOADS=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && WGET_DOWNLOADS+=("$line")
+    local -a wget_downloads=()
+    while IFS= read -r -d '' entry; do
+        [[ -n "$entry" ]] && wget_downloads+=("$entry")
     done < <(merge_with_env "WGET_DOWNLOADS" "${WGET_DOWNLOADS_DEFAULT[@]}")
 
     # Log what we're going to download
-    log "HF_MODELS: ${#HF_MODELS[@]} entries"
-    log "CIVITAI_MODELS: ${#CIVITAI_MODELS[@]} entries"
-    log "WGET_DOWNLOADS: ${#WGET_DOWNLOADS[@]} entries"
+    log "HF_MODELS: ${#hf_models[@]} entries"
+    log "CIVITAI_MODELS: ${#civitai_models[@]} entries"
+    log "WGET_DOWNLOADS: ${#wget_downloads[@]} entries"
 
     # Clean up any leftover semaphores and create fresh directory
     rm -rf "$SEMAPHORE_DIR"
@@ -520,16 +630,16 @@ main() {
 
     log "Starting model downloads..."
 
-    if [[ ${#HF_MODELS[@]} -gt 0 ]]; then
-        download_models HF_MODELS "hf" || download_failed=1
+    if [[ ${#hf_models[@]} -gt 0 ]]; then
+        download_models hf_models "hf" || download_failed=1
     fi
 
-    if [[ ${#CIVITAI_MODELS[@]} -gt 0 ]]; then
-        download_models CIVITAI_MODELS "civitai" || download_failed=1
+    if [[ ${#civitai_models[@]} -gt 0 ]]; then
+        download_models civitai_models "civitai" || download_failed=1
     fi
 
-    if [[ ${#WGET_DOWNLOADS[@]} -gt 0 ]]; then
-        download_models WGET_DOWNLOADS "" || download_failed=1
+    if [[ ${#wget_downloads[@]} -gt 0 ]]; then
+        download_models wget_downloads "" || download_failed=1
     fi
 
     if [[ $download_failed -eq 1 ]]; then
