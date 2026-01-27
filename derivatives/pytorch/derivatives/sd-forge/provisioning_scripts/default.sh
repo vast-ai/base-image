@@ -47,8 +47,8 @@ HF_MODELS_DEFAULT=(
 # CivitAI models (requires CIVITAI_TOKEN for some models)
 # Use trailing / for output path to use content-disposition filename
 CIVITAI_MODELS_DEFAULT=(
-    "https://civitai.com/api/download/models/798204?type=Model&format=SafeTensor&size=full&fp=fp16
-    |$MODELS_DIR/Stable-diffusion/"
+    #"https://civitai.com/api/download/models/798204?type=Model&format=SafeTensor&size=full&fp=fp16
+    #|$MODELS_DIR/Stable-diffusion/"
 )
 
 # Generic wget downloads (no auth)
@@ -83,8 +83,8 @@ script_error() {
 trap script_cleanup EXIT
 trap 'script_error $LINENO' ERR
 
-# Parse semicolon-separated string into array
-# Usage: parse_env_array "ENV_VAR_NAME" "default_array_name"
+# Parse semicolon-separated string into array, filtering out comments and empty entries
+# Usage: parse_env_array "ENV_VAR_NAME"
 parse_env_array() {
     local env_var_name="$1"
     local env_value="${!env_var_name:-}"
@@ -94,15 +94,20 @@ parse_env_array() {
         IFS=';' read -ra entries <<< "$env_value"
         for entry in "${entries[@]}"; do
             # Trim whitespace
-            entry=$(echo "$entry" | xargs)
-            [[ -n "$entry" ]] && result+=("$entry")
+            entry="${entry#"${entry%%[![:space:]]*}"}"
+            entry="${entry%"${entry##*[![:space:]]}"}"
+            # Skip empty entries and comments
+            [[ -z "$entry" || "$entry" == \#* ]] && continue
+            result+=("$entry")
         done
         # Return array elements, one per line
-        printf '%s\n' "${result[@]}"
+        if [[ ${#result[@]} -gt 0 ]]; then
+            printf '%s\n' "${result[@]}"
+        fi
     fi
 }
 
-# Merge default array with environment variable overrides
+# Merge default array with environment variable overrides, filtering comments
 # Usage: merged_array=($(merge_with_env "ENV_VAR" default_array))
 merge_with_env() {
     local env_var_name="$1"
@@ -114,23 +119,37 @@ merge_with_env() {
         # Environment variable takes precedence - parse it
         parse_env_array "$env_var_name"
     else
-        # Use defaults
-        printf '%s\n' "${default_array[@]}"
+        # Use defaults, filtering out comments and empty entries
+        for entry in "${default_array[@]}"; do
+            # Trim whitespace
+            entry="${entry#"${entry%%[![:space:]]*}"}"
+            entry="${entry%"${entry##*[![:space:]]}"}"
+            # Skip empty entries and comments
+            [[ -z "$entry" || "$entry" == \#* ]] && continue
+            printf '%s\n' "$entry"
+        done
     fi
 }
 
 acquire_slot() {
     local prefix="$1"
     local max_slots="$2"
+    local slot_dir
+    slot_dir="$(dirname "$prefix")"
+    local slot_prefix
+    slot_prefix="$(basename "$prefix")"
 
     while true; do
         local count
-        count=$(find "$(dirname "$prefix")" -name "$(basename "$prefix")_*" 2>/dev/null | wc -l)
+        count=$(find "$slot_dir" -maxdepth 1 -name "${slot_prefix}_*" 2>/dev/null | wc -l)
         if [ "$count" -lt "$max_slots" ]; then
-            local slot="${prefix}_$$_$RANDOM"
-            touch "$slot"
-            echo "$slot"
-            return 0
+            # Use atomic file creation with O_EXCL via bash noclobber
+            local slot="${prefix}_$$_${RANDOM}_${RANDOM}"
+            if (set -o noclobber; : > "$slot") 2>/dev/null; then
+                echo "$slot"
+                return 0
+            fi
+            # File creation failed (race), retry
         fi
         sleep 0.5
     done
@@ -162,6 +181,31 @@ has_valid_civitai_token() {
     [[ "$response" -eq 200 ]]
 }
 
+# Extract filename from content-disposition header via HEAD request
+# Args: URL [AUTH_HEADER]
+get_content_disposition_filename() {
+    local url="$1"
+    local auth_header="${2:-}"
+    local curl_args=(-sI -L --max-time 30)
+
+    if [[ -n "$auth_header" ]]; then
+        curl_args+=(-H "$auth_header")
+    fi
+
+    local headers
+    headers=$(curl "${curl_args[@]}" "$url" 2>/dev/null)
+
+    # Try to extract filename from content-disposition header
+    local filename
+    filename=$(echo "$headers" | grep -i 'content-disposition:' | \
+        sed -n 's/.*filename="\?\([^"]*\)"\?.*/\1/p' | \
+        tail -1 | tr -d '\r')
+
+    # Clean up the filename
+    filename="${filename##*/}"
+    echo "$filename"
+}
+
 # Download a file with retry logic and proper locking
 # Args: URL OUTPUT_PATH [AUTH_TYPE]
 # AUTH_TYPE: "hf", "civitai", or empty for no auth
@@ -176,6 +220,9 @@ download_file() {
     # Acquire slot for parallel download limiting
     local slot
     slot=$(acquire_slot "$SEMAPHORE_DIR/dl" "$MAX_PARALLEL")
+
+    # Ensure slot is released on any exit from this function
+    trap 'release_slot "$slot"' RETURN
 
     # Determine if output is a directory (use content-disposition) or full path
     local output_dir output_file use_content_disposition=false
@@ -197,13 +244,15 @@ download_file() {
         auth_header="Authorization: Bearer $CIVITAI_TOKEN"
     fi
 
-    local lockfile="${output_dir}/.download_${RANDOM}.lock"
+    # Create lockfile based on URL hash to prevent concurrent downloads of the same resource
+    local url_hash
+    url_hash=$(printf '%s' "$url" | md5sum | cut -d' ' -f1)
+    local lockfile="${output_dir}/.download_${url_hash}.lock"
 
     (
         # Acquire exclusive lock (wait up to 300 seconds)
         if ! flock -x -w 300 200; then
-            log "[ERROR] Could not acquire lock for download after 300s"
-            release_slot "$slot"
+            log "[ERROR] Could not acquire lock for download after 300s: $url"
             exit 1
         fi
 
@@ -216,6 +265,7 @@ download_file() {
             local wget_args=(
                 --timeout=60
                 --tries=1
+                --continue
                 --progress=dot:giga
             )
 
@@ -224,19 +274,24 @@ download_file() {
             fi
 
             if [[ "$use_content_disposition" == true ]]; then
+                # For content-disposition, check if we can determine filename from headers
+                local remote_filename
+                remote_filename=$(get_content_disposition_filename "$url" "$auth_header")
+                if [[ -n "$remote_filename" && -f "$output_dir/$remote_filename" ]]; then
+                    log "File already exists: $output_dir/$remote_filename (skipping)"
+                    exit 0
+                fi
                 wget_args+=(--content-disposition -P "$output_dir")
             else
                 # Check if file already exists
                 if [[ -f "$output_dir/$output_file" ]]; then
                     log "File already exists: $output_dir/$output_file (skipping)"
-                    release_slot "$slot"
                     exit 0
                 fi
                 wget_args+=(-O "$output_dir/$output_file")
             fi
 
             if wget "${wget_args[@]}" "$url" 2>&1 | tee -a "$PROVISIONING_LOG"; then
-                release_slot "$slot"
                 log "Successfully downloaded to: $output_dir"
                 exit 0
             fi
@@ -248,7 +303,6 @@ download_file() {
         done
 
         log "[ERROR] Failed to download $url after $max_retries attempts"
-        release_slot "$slot"
         exit 1
 
     ) 200>"$lockfile"
@@ -277,22 +331,26 @@ install_pip_packages() {
 
 # Install extensions
 install_extensions() {
-    # Merge defaults with env var
+    # Merge defaults with env var (comments already filtered)
     local -a extensions=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && extensions+=("$line")
     done < <(merge_with_env "EXTENSIONS" "${EXTENSIONS[@]}")
 
     if [[ ${#extensions[@]} -eq 0 ]]; then
+        log "No extensions to install"
         return 0
     fi
+
+    log "Installing ${#extensions[@]} extension(s)..."
 
     # Avoid git errors because we run as root but files are owned by 'user'
     export GIT_CONFIG_GLOBAL=/tmp/temporary-git-config
     git config --file "$GIT_CONFIG_GLOBAL" --add safe.directory '*'
 
     for repo in "${extensions[@]}"; do
-        [[ -z "$repo" || "$repo" == \#* ]] && continue
+        # Skip empty entries (comments already filtered)
+        [[ -z "$repo" ]] && continue
 
         local dir="${repo##*/}"
         dir="${dir%.git}"
@@ -315,15 +373,17 @@ download_models() {
     local pids=()
 
     for entry in "${model_array[@]}"; do
-        # Skip empty or commented entries
-        [[ -z "${entry// }" || "$entry" == \#* ]] && continue
+        # Skip empty entries (comments already filtered during array construction)
+        [[ -z "${entry// }" ]] && continue
 
         local url="${entry%%|*}"
         local output_path="${entry##*|}"
 
-        # Trim whitespace
-        url=$(echo "$url" | xargs)
-        output_path=$(echo "$output_path" | xargs)
+        # Trim whitespace using parameter expansion (safer than xargs)
+        url="${url#"${url%%[![:space:]]*}"}"
+        url="${url%"${url##*[![:space:]]}"}"
+        output_path="${output_path#"${output_path%%[![:space:]]*}"}"
+        output_path="${output_path%"${output_path##*[![:space:]]}"}"
 
         log "Queuing download: $url -> $output_path"
         download_file "$url" "$output_path" "$auth_type" &
