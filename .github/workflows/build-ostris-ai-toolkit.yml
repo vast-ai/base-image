@@ -19,11 +19,8 @@ on:
 
   workflow_dispatch:
     inputs:
-      AI_TOOLKIT_VERSION:
-        description: "DockerHub version (e.g. 0.7.22) - leave empty to simulate scheduled build"
-        required: false
       AI_TOOLKIT_REF:
-        description: "Git ref override (commit/branch) - leave empty to resolve HEAD of main"
+        description: "Git ref (commit/branch) - leave empty to simulate scheduled build"
         required: false
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
@@ -50,7 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      aitoolkit-version: ${{ steps.release-check.outputs.resolved-version }}
       ai-toolkit-ref: ${{ steps.resolve-ref.outputs.ref }}
     steps:
       - name: Checkout
@@ -69,18 +65,18 @@ jobs:
 
       - name: Check DockerHub for new release
         id: release-check
+        if: ${{ !inputs.AI_TOOLKIT_REF }}
         uses: ./.github/actions/check-dockerhub-release
         with:
           repository: ostris/aitoolkit
           version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ inputs.AI_TOOLKIT_VERSION && github.event_name || 'schedule' }}
-          manual-version: ${{ inputs.AI_TOOLKIT_VERSION }}
+          trigger: schedule
 
       - name: Resolve AI Toolkit git ref
         id: resolve-ref
         run: |
-          if [[ -n "${{ inputs.AI_TOOLKIT_REF }}" && "${{ github.event_name }}" != "schedule" ]]; then
+          if [[ -n "${{ inputs.AI_TOOLKIT_REF }}" ]]; then
             REF="${{ inputs.AI_TOOLKIT_REF }}"
             echo "Using manual ref: $REF"
           else
@@ -100,17 +96,22 @@ jobs:
       - name: Determine if build should run
         id: decision
         run: |
-          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          MANUAL_REF="${{ inputs.AI_TOOLKIT_REF }}"
+          NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ -n "$MANUAL_REF" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building AI Toolkit ref: ${{ steps.resolve-ref.outputs.ref }} (DockerHub version: ${{ steps.release-check.outputs.resolved-version }})"
+            echo "✓ Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
+          elif [[ "$NEW_RELEASE" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ New DockerHub release detected, building ref: ${{ steps.resolve-ref.outputs.ref }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
-
-            if [[ "${{ steps.secrets.outputs.available }}" != "true" ]]; then
-              echo "::notice::Skipping - Required secrets not configured"
-            else
-              echo "::notice::Skipping - No new release detected on DockerHub"
-            fi
+            echo "::notice::Skipping - No new release detected on DockerHub"
           fi
 
   build:

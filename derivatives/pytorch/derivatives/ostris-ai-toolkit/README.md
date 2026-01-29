@@ -108,8 +108,7 @@ Go to **Actions > Build Ostris AI Toolkit Image > Run workflow** and fill in the
 
 | Input | Description |
 |-------|-------------|
-| `AI_TOOLKIT_VERSION` | A DockerHub version (e.g. `0.7.22`), or leave empty to auto-detect the latest release |
-| `AI_TOOLKIT_REF` | Git ref override (commit SHA or branch) — leave empty to resolve HEAD of main |
+| `AI_TOOLKIT_REF` | Git ref (commit SHA or branch) — leave empty to simulate a scheduled build |
 | `DOCKERHUB_REPO` | Repository name under your namespace (default: `ostris-ai-toolkit`) |
 | `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
 | `CUSTOM_IMAGE_TAG` | Override the version portion of the tag (e.g. `my-custom-build`) |
