@@ -11,8 +11,8 @@ name: Build ComfyUI Image
 
 on:
   schedule:
-    # Run daily at 06:00 UTC
-    - cron: '0 6 * * *'
+    # Run every 12 hours
+    - cron: '0 0,12 * * *'
   
   workflow_dispatch:
     inputs:
@@ -36,8 +36,8 @@ env:
   DEFAULT_COMFYUI_REF: "master"
   DEFAULT_DOCKERHUB_REPO: "comfy"
   DEFAULT_MULTI_ARCH: "false"
-  # 1 day
-  RELEASE_AGE_THRESHOLD: 86400
+  # 12 hours
+  RELEASE_AGE_THRESHOLD: 43200
 
 jobs:
   preflight:

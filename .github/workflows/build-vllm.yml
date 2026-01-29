@@ -5,7 +5,8 @@ name: Build vLLM Image
 
 on:
   schedule:
-    - cron: '0 7 * * *'
+    # Run every 12 hours
+    - cron: '0 0,12 * * *'
   
   workflow_dispatch:
     inputs:
@@ -28,7 +29,8 @@ on:
 env:
   DEFAULT_DOCKERHUB_REPO: "vllm"
   DEFAULT_MULTI_ARCH: "false"
-  RELEASE_AGE_THRESHOLD: 86400
+  # 12 hours
+  RELEASE_AGE_THRESHOLD: 43200
 
 jobs:
   preflight:
