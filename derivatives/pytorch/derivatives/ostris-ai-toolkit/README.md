@@ -10,7 +10,7 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 
 ## CUDA Compatibility
 
-Images are tagged with the CUDA version they were built against (e.g. `ea912d2-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
+Images are tagged with the CUDA version they were built against (e.g. `ea912d2-2026-01-29-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
 
 ### Minor Version Compatibility
 

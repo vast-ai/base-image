@@ -164,9 +164,11 @@ jobs:
 
           AI_TOOLKIT_REF="${{ needs.preflight.outputs.ai-toolkit-ref }}"
 
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [[ -z "$IMAGE_TAG_BASE" ]]; then
-            IMAGE_TAG_BASE="${AI_TOOLKIT_REF}-cuda-${CUDA_VERSION}"
+            IMAGE_TAG_BASE="${AI_TOOLKIT_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"

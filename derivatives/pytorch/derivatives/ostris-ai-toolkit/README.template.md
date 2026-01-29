@@ -162,7 +162,7 @@ For best training results:
 
 ## CUDA Compatibility
 
-Images are tagged with the CUDA version they were built against (e.g. `ea912d2-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
+Images are tagged with the CUDA version they were built against (e.g. `ea912d2-2026-01-29-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
 
 **Minor version compatibility:** NVIDIA guarantees that an application built with any CUDA toolkit within a major version family will run on a driver from the same family. A `cuda-12.9` image runs on any CUDA 12.x driver (driver >= 525), and a `cuda-13.1` image runs on any CUDA 13.x driver (driver >= 580). The 12.x and 13.x families are separate.
 
