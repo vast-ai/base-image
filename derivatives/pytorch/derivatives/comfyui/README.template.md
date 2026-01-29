@@ -108,11 +108,6 @@ Your authentication token is available as `OPEN_BUTTON_TOKEN` in your instance e
 ### **Dynamic Provisioning**
 Need specific software installed automatically? Set the `PROVISIONING_SCRIPT` environment variable to a plain-text script URL (GitHub, Gist, etc.), and we'll run your setup script on first boot!
 
-### **Quick Package Installation**
-For simpler setups, use these environment variables:
-- `APT_PACKAGES`: Space-separated list of apt packages to install on first boot
-- `PIP_PACKAGES`: Space-separated list of Python packages to install on first boot
-
 ### **Multiple Access Methods**
 | Method | Best For | What You Get |
 |--------|----------|--------------|
@@ -162,8 +157,6 @@ ComfyUI organizes models in the following directories:
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | ComfyUI workspace directory |
 | `COMFYUI_ARGS` | `--disable-auto-launch --enable-cors-header --port 18188` | ComfyUI startup arguments |
-| `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
-| `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
 ### **Recommended GPU Memory**
