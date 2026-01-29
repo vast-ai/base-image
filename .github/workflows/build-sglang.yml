@@ -139,7 +139,7 @@ jobs:
 
           NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
           MATRIX='${{ steps.build-matrix.outputs.matrix }}'
-          MATRIX_SIZE=$(echo "$MATRIX" | jq 'length // 0')
+          MATRIX_SIZE=$(echo "${MATRIX:-[]}" | jq 'length // 0')
 
           if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && "$MATRIX_SIZE" -gt 0 ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
