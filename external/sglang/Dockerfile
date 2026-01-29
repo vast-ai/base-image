@@ -1,4 +1,4 @@
-ARG SGLANG_BASE=lmsysorg/sglang:v0.5.6.post2
+ARG SGLANG_BASE=lmsysorg/sglang:v0.5.8
 ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312
 
 FROM ${VAST_BASE} AS vast_base_image
