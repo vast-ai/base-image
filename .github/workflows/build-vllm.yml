@@ -1,4 +1,6 @@
 # .github/workflows/build-vllm.yml
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Optional: SLACK_WEBHOOK_URL
 name: Build vLLM Image
 
 on:
@@ -8,9 +10,8 @@ on:
   workflow_dispatch:
     inputs:
       VLLM_VERSION:
-        description: "vLLM version tag (e.g., v0.14.0)"
+        description: "vLLM version (e.g. v0.14.0, or 'nightly') - leave empty to simulate scheduled build"
         required: false
-        default: ""
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
         required: true
@@ -34,8 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      vllm-version: ${{ steps.release-check.outputs.resolved-version }}
-      base-images: ${{ steps.build-matrix.outputs.matrix }}
+      vllm-version: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.version || steps.release-check.outputs.resolved-version }}
+      base-images: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,7 +44,7 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
             echo "✓ Required secrets configured"
           else
@@ -51,19 +52,29 @@ jobs:
             echo "::notice::Skipping - secrets not configured"
           fi
 
+      - name: Handle nightly build
+        id: nightly-check
+        if: inputs.VLLM_VERSION == 'nightly'
+        run: |
+          echo "is-nightly=true" >> $GITHUB_OUTPUT
+          echo "version=nightly-$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          echo 'matrix=[{"tag":"nightly","cuda":"12.9"}]' >> $GITHUB_OUTPUT
+          echo "✓ Nightly build requested - skipping version matching"
+
       - name: Check release and resolve version
         id: release-check
+        if: inputs.VLLM_VERSION != 'nightly'
         uses: ./.github/actions/check-dockerhub-release
         with:
           repository: vllm/vllm-openai
           version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ github.event_name }}
+          trigger: ${{ inputs.VLLM_VERSION && github.event_name || 'schedule' }}
           manual-version: ${{ inputs.VLLM_VERSION }}
 
       - name: Build matrix from variant tags
         id: build-matrix
-        if: steps.release-check.outputs.new-release == 'true'
+        if: inputs.VLLM_VERSION != 'nightly' && steps.release-check.outputs.new-release == 'true'
         run: |
           VERSION="${{ steps.release-check.outputs.resolved-version }}"
           
@@ -112,16 +123,28 @@ jobs:
         id: decision
         run: |
           SECRETS="${{ steps.secrets.outputs.available }}"
+
+          if [[ "${{ steps.nightly-check.outputs.is-nightly }}" == "true" ]]; then
+            if [[ "$SECRETS" == "true" ]]; then
+              echo "should-run=true" >> $GITHUB_OUTPUT
+              echo "✓ Building nightly"
+            else
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              echo "::notice::Skipping - Required secrets not configured"
+            fi
+            exit 0
+          fi
+
           NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
           MATRIX='${{ steps.build-matrix.outputs.matrix }}'
           MATRIX_SIZE=$(echo "$MATRIX" | jq 'length // 0')
-          
+
           if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && "$MATRIX_SIZE" -gt 0 ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
             echo "✓ Building $MATRIX_SIZE image(s) for ${{ steps.release-check.outputs.resolved-version }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
-            
+
             if [[ "$SECRETS" != "true" ]]; then
               echo "::notice::Skipping - Required secrets not configured"
             elif [[ "$NEW_RELEASE" != "true" ]]; then
@@ -178,7 +201,7 @@ jobs:
           
           # Format: v0.14.0-cuda-12.9
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${{ matrix.cuda }}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
           
           # Create safe ID from matrix entry
           MATRIX_ID=$(echo "${{ matrix.tag }}" | md5sum | cut -c1-8)
