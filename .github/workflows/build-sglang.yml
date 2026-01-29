@@ -1,0 +1,5 @@
+# Stub to allow running build-sglang.yml from a feature branch before merge
+name: Build SGLang Image
+
+on:
+  workflow_dispatch:
