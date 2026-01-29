@@ -1,0 +1,4 @@
+name: Build Ostris AI Toolkit Image
+
+on:
+  workflow_dispatch:
