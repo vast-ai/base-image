@@ -16,9 +16,8 @@ on:
   workflow_dispatch:
     inputs:
       COMFYUI_REF:
-        description: "ComfyUI git ref (tag, branch, or commit)"
-        required: true
-        default: "master"
+        description: "ComfyUI git ref - leave empty to simulate scheduled build"
+        required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
         required: true
@@ -67,7 +66,7 @@ jobs:
           repository: Comfy-Org/ComfyUI
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ github.event_name }}
+          trigger: ${{ inputs.COMFYUI_REF && github.event_name || 'schedule' }}
           manual-ref: ${{ inputs.COMFYUI_REF }}
           default-ref: master
 
