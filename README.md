@@ -15,15 +15,23 @@ Vast.ai host machines cache commonly-used Docker image layers. By building on to
 - When you start an instance, only the smaller top layers need to be downloaded
 - Result: Fast startup times despite having a comprehensive development environment
 
-### Automatic CUDA Version Selection
+### CUDA Compatibility
 
-Vast.ai's backend automatically selects the appropriate image variant based on the host machine's maximum supported CUDA version (determined by the installed NVIDIA driver). When you rent a machine:
+#### Minor Version Compatibility
 
-1. The system detects the host's maximum CUDA capability from its NVIDIA driver (e.g., supports up to CUDA 12.9)
-2. It finds the most recently pushed Docker image tag containing a compatible CUDA version
-3. It pulls that specific image variant
+NVIDIA's [minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html) guarantees that an application built with any CUDA toolkit release within a major version family will run on a system with a driver from the same major family. In practice:
 
-**Example:** A machine with drivers supporting CUDA 12.8 will pull the `cuda-12.8.1-*` variant, while a newer machine supporting CUDA 12.9 will pull `cuda-12.9.1-*`. This ensures you always get the best compatible version without manual configuration.
+- A `cuda-12.9` image will run on any machine with a CUDA 12.x driver (driver >= 525).
+- A `cuda-13.0` image will run on any machine with a CUDA 13.x driver (driver >= 580).
+- The 12.x and 13.x families are separate — a `cuda-13.0` image will not work with a 12.x driver under minor version compatibility alone.
+
+**PTX caveat:** Applications that compile device code to PTX rather than pre-compiled SASS for the target architecture will not work on older drivers within the same major family.
+
+#### Forward Compatibility
+
+[Forward compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html) is a separate mechanism that allows newer CUDA toolkit versions to run on older drivers across major version boundaries. It is only available on **datacenter GPUs** (and select NGC Server Ready RTX cards). Our images include the CUDA Compatibility Package (`cuda-compat`) to support this.
+
+For example, with forward compatibility a `cuda-13.0` image could run on a machine with a CUDA 12.x datacenter driver. Consumer GPUs do not support this.
 
 ## Available Image Variants
 
