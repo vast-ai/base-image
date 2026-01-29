@@ -116,7 +116,7 @@ Go to **Actions > Build Ostris AI Toolkit Image > Run workflow** and fill in the
 The workflow builds one image per run:
 
 ```
-yourusername/ostris-ai-toolkit:ea912d2-cuda-12.9
+yourusername/ostris-ai-toolkit:ea912d2-2026-01-29-cuda-12.9
 ```
 
 To customize which PyTorch base images are used, modify the `matrix.base_image` array in `.github/workflows/build-ostris-ai-toolkit.yml`.
