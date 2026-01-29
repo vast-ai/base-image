@@ -7,6 +7,8 @@ This template gives you a **hosted SGLang API server** running in a Docker conta
 
 **Think:** *"Your own private, high-performance ChatGPT API with structured generation capabilities that you control completely."*
 
+> **Latest builds:** Docker images are automatically rebuilt when new SGLang releases are detected. The default template tag is updated less frequently to allow for QA testing. To use a newly built image before it becomes the template default, select a specific version from the **version tag dropdown** on the template configuration page.
+
 ---
 
 ## What can I do with this?
@@ -171,6 +173,16 @@ Example template on start:
 echo '--chat-template chatml' > /etc/sglang-args.conf;
 entrypoint.sh
 ```
+
+---
+
+## CUDA Compatibility
+
+Images are tagged with the CUDA version they were built against (e.g. `v0.5.7-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
+
+**Minor version compatibility:** NVIDIA guarantees that an application built with any CUDA toolkit within a major version family will run on a driver from the same family. A `cuda-12.9` image runs on any CUDA 12.x driver (driver >= 525), and a `cuda-13.0` image runs on any CUDA 13.x driver (driver >= 580). The 12.x and 13.x families are separate.
+
+**Forward compatibility:** All images include the [CUDA Compatibility Package](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html), which allows newer CUDA toolkit versions to run on older drivers. This is only available on **datacenter GPUs** (e.g., H100, A100, L40S, RTX Pro series) — for example, a `cuda-12.9` image can run on a datacenter host with a CUDA 12.1 driver. Consumer GPUs do not support forward compatibility and require a driver that natively supports the CUDA version.
 
 ---
 
