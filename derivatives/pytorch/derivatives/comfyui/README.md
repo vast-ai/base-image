@@ -65,6 +65,33 @@ docker buildx build \
 | `PYTORCH_BASE` | `vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312` | PyTorch mini base image |
 | `COMFYUI_REF` | (required) | Git commit, tag, or branch to build from |
 
+## Building with GitHub Actions
+
+For automated multi-architecture builds pushed directly to DockerHub, use the included GitHub Actions workflow.
+
+### Setup
+
+1. **Fork the repository** - While the workflow can run in the upstream `vast-ai/base-image` repository, you should fork it so builds use your personal DockerHub credentials and push to your own repository.
+
+2. **Configure repository secrets** - In your fork, go to Settings → Secrets and variables → Actions, then add:
+   - `DOCKERHUB_USERNAME` - Your DockerHub username
+   - `DOCKERHUB_TOKEN` - A DockerHub access token (create one at https://hub.docker.com/settings/security)
+
+### Running the Workflow
+
+1. Go to the **Actions** tab in your fork
+2. Select **Build ComfyUI Image (Forks Only)**
+3. Click **Run workflow** and configure:
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `COMFYUI_REF` | `master` | Git ref to build (tag like `v0.8.2`, branch, or commit) |
+| `DOCKERHUB_REPO` | `comfy` | Repository name (pushes to `username/<repo>`) |
+| `MULTI_ARCH` | `true` | Build for both `amd64` and `arm64` architectures |
+| `CUSTOM_IMAGE_TAG` | (auto) | Override the auto-generated image tag |
+
+The workflow builds two images per run: one for CUDA 12.9 and one for CUDA 13.1. To customize which base images are used, modify the `matrix.base_image` array in `.github/workflows/build-comfyui.yml` at the repository root.
+
 ## Useful Links
 
 - [ComfyUI Documentation](https://github.com/Comfy-Org/ComfyUI)
