@@ -9,7 +9,7 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="SGLang image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
-### Convert non-Vast image to more closely resemble images derrived from vastai/base-image ###
+### Convert non-Vast image to more closely resemble images derived from vastai/base-image ###
 SHELL ["/bin/bash", "-c"]
 ENV DATA_DIRECTORY=/workspace
 ENV WORKSPACE=/workspace
