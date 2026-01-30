@@ -22,6 +22,7 @@ COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
+ARG TARGETARCH
 RUN \
     set -euo pipefail && \
     chmod +x /tmp/convert-non-vast-image.sh && \
