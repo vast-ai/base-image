@@ -36,7 +36,7 @@ COPY ./ROOT /
 
 # Ensure we have a Jupyter kernel for Ollamas system python environment
 RUN \
-    uv pip install --system ipykernel && \
+    uv pip install --system --break-system-packages ipykernel && \
     python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
