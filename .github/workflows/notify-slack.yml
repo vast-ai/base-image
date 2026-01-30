@@ -132,12 +132,16 @@ jobs:
             }]')
           BLOCKS=$(echo "$BLOCKS" | jq --argjson ctx "$CONTEXT_BLOCK" '. + $ctx')
           
+          FALLBACK="${STATUS_EMOJI} ${{ inputs.image-name }} Image Build ${STATUS_TEXT} (${{ inputs.image-ref }})"
+
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
+            --arg fallback "$FALLBACK" \
             --argjson blocks "$BLOCKS" \
             '{
               "attachments": [{
                 "color": $color,
+                "fallback": $fallback,
                 "blocks": $blocks
               }]
             }')
