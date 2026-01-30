@@ -1,0 +1,168 @@
+# .github/workflows/build-ollama.yml
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Optional: SLACK_WEBHOOK_URL
+name: Build Ollama Image
+
+on:
+  schedule:
+    # Run every 12 hours
+    - cron: '0 0,12 * * *'
+
+  workflow_dispatch:
+    inputs:
+      OLLAMA_VERSION:
+        description: "Ollama version (e.g. 0.6.2) - leave empty to simulate scheduled build"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to username/<repo>"
+        required: true
+        default: "ollama"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: false
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "ollama"
+  DEFAULT_MULTI_ARCH: "false"
+  # 12 hours
+  RELEASE_AGE_THRESHOLD: 43200
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      ollama-version: ${{ steps.release-check.outputs.resolved-version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Check release and resolve version
+        id: release-check
+        uses: ./.github/actions/check-dockerhub-release
+        with:
+          repository: ollama/ollama
+          version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ inputs.OLLAMA_VERSION && github.event_name || 'schedule' }}
+          manual-version: ${{ inputs.OLLAMA_VERSION }}
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
+          VERSION="${{ steps.release-check.outputs.resolved-version }}"
+
+          if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && -n "$VERSION" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Building Ollama $VERSION"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+
+            if [[ "$SECRETS" != "true" ]]; then
+              echo "::notice::Skipping - Required secrets not configured"
+            elif [[ "$NEW_RELEASE" != "true" ]]; then
+              echo "::notice::Skipping - No new release detected"
+            else
+              echo "::notice::Skipping - No version resolved"
+            fi
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          VERSION="${{ needs.preflight.outputs.ollama-version }}"
+          OLLAMA_BASE="ollama/ollama:${VERSION}"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG" ]]; then
+            IMAGE_TAG="$VERSION"
+          fi
+
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          echo "OLLAMA_BASE=$OLLAMA_BASE" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+
+          echo "Building from: $OLLAMA_BASE"
+          echo "Output tag: $FULL_IMAGE"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd external/ollama
+          docker buildx build \
+            --platform "$platforms" \
+            --build-context base_image_source=../.. \
+            --build-arg OLLAMA_BASE=${{ env.OLLAMA_BASE }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+  notify:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "Ollama"
+      image-ref: ${{ needs.preflight.outputs.ollama-version }}
+      image-tags: ${{ format('["{0}"]', needs.preflight.outputs.ollama-version) }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
