@@ -34,7 +34,7 @@ RUN \
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Ensure we have a Jupyter kernel for Ollamas system python environment
+# Ensure we have a Jupyter kernel for Ollama's system python environment
 RUN \
     uv pip install --system --break-system-packages ipykernel && \
     python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
