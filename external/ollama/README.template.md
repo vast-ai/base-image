@@ -42,7 +42,7 @@ Set the `OLLAMA_MODEL` environment variable with your desired model:
 
 **Optional configuration:**
 - `OLLAMA_ARGS`: Additional arguments to pass to `ollama serve`
-- `OLLAMA_EXTRA_MODELS`: Space-separated list of additional models to pull via provisioning
+- `OLLAMA_EXTRA_MODELS`: (Reserved for future use in this template; currently has no effect and does not trigger additional model pulls.)
 
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
