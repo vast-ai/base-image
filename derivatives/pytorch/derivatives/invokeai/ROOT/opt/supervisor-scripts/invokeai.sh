@@ -17,4 +17,4 @@ while [ -f "/.provisioning" ]; do
 done
 
 # Launch InvokeAI
-invokeai-web --root "${WORKSPACE}/invokeai" ${INVOKEAI_ARGS:---port 19000} 2>&1
+invokeai-web --root "${WORKSPACE}/invokeai" 2>&1
