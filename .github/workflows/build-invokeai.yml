@@ -1,0 +1,4 @@
+name: Build InvokeAI Image
+
+on:
+  workflow_dispatch:
