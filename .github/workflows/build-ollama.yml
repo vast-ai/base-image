@@ -153,15 +153,54 @@ jobs:
             -t ${{ env.FULL_IMAGE }} \
             . --push
 
-  notify:
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-ollama
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
     needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [[ -d all-tags ]] && [[ "$(ls -A all-tags 2>/dev/null)" ]]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.build.result }}
       image-name: "Ollama"
       image-ref: ${{ needs.preflight.outputs.ollama-version }}
-      image-tags: ${{ format('["{0}"]', needs.preflight.outputs.ollama-version) }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:
