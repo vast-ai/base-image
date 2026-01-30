@@ -13,8 +13,10 @@ COPY ./ROOT /
 # Install CUDA runtime libraries required by llama.cpp
 RUN \
     set -euo pipefail && \
+    CUDA_RUNTIME_VERSION="$(echo "${BASE_IMAGE}" | sed -n 's/.*cuda-\([0-9]\+\.[0-9]\+\).*/\1/p')" && \
+    CUDA_MAJOR_MINOR="$(echo "${CUDA_RUNTIME_VERSION}" | tr '.' '-')" && \
     apt-get update && \
-    apt-get install -y --no-install-recommends libcublas-12-9 && \
+    apt-get install -y --no-install-recommends "libcublas-${CUDA_MAJOR_MINOR}" && \
     ldconfig && \
     rm -rf /var/lib/apt/lists/*
 
