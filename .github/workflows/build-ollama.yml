@@ -94,6 +94,12 @@ jobs:
     permissions:
       contents: read
 
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - ollama/ollama
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,7 +123,7 @@ jobs:
         id: meta
         run: |
           VERSION="${{ needs.preflight.outputs.ollama-version }}"
-          OLLAMA_BASE="ollama/ollama:${VERSION}"
+          OLLAMA_BASE="${{ matrix.base_image }}:${VERSION}"
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
 
           IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
@@ -127,9 +133,13 @@ jobs:
 
           FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
+          # Create a safe filename from the matrix value
+          MATRIX_ID=$(echo "${{ matrix.base_image }}" | md5sum | cut -c1-8)
+
           echo "OLLAMA_BASE=$OLLAMA_BASE" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
 
           echo "Building from: $OLLAMA_BASE"
           echo "Output tag: $FULL_IMAGE"
@@ -156,12 +166,12 @@ jobs:
       - name: Record built tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag.txt
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
       - name: Upload built tag
         uses: actions/upload-artifact@v4
         with:
-          name: built-tag-ollama
+          name: built-tag-${{ env.MATRIX_ID }}
           path: built-tags/
           retention-days: 1
 

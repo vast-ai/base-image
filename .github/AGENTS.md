@@ -73,7 +73,9 @@ Decides whether the build should run and resolves version info.
 
 ### 2. `build`
 
-Builds and pushes the Docker image(s). **Must record the full image reference as an artifact.**
+Builds and pushes the Docker image(s). **Must use a matrix strategy and record the full image reference as an artifact.**
+
+**Always use a matrix strategy**, even for images with a single variant. This keeps every workflow structurally identical, makes `collect-tags` work uniformly, and makes it trivial to add variants later without restructuring.
 
 ```yaml
 build:
@@ -83,29 +85,19 @@ build:
   environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
   permissions:
     contents: read
-```
 
-**Critical steps after "Build and push":**
-
-```yaml
-    # For matrix builds, use MATRIX_ID derived from matrix value:
-    #   MATRIX_ID=$(echo "${{ matrix.tag }}" | md5sum | cut -c1-8)
-    # For single builds, use a static identifier (e.g., the image name).
-
-    - name: Record built tag
-      run: |
-        mkdir -p built-tags
-        echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
-
-    - name: Upload built tag
-      uses: actions/upload-artifact@v4
-      with:
-        name: built-tag-${{ env.MATRIX_ID }}
-        path: built-tags/
-        retention-days: 1
+  strategy:
+    fail-fast: false
+    matrix:
+      base_image:                       # Always define a matrix, even with one entry
+        - upstream/image                # Single-variant example
+        # - upstream/image-variant-b    # Add more entries to build additional variants
 ```
 
 **FULL_IMAGE derivation** (must account for all overridable inputs):
+
+The `Derive image tag` step must set `FULL_IMAGE` and `MATRIX_ID` as env vars.
+`MATRIX_ID` is **always** derived from the matrix value via md5, never a static string.
 
 ```yaml
     - name: Derive image tag
@@ -120,8 +112,28 @@ build:
 
         FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
+        # Create a safe filename from the matrix value
+        MATRIX_ID=$(echo "${{ matrix.base_image }}" | md5sum | cut -c1-8)
+
         echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
         echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+        echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+```
+
+**Critical steps after "Build and push":**
+
+```yaml
+    - name: Record built tag
+      run: |
+        mkdir -p built-tags
+        echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+    - name: Upload built tag
+      uses: actions/upload-artifact@v4
+      with:
+        name: built-tag-${{ env.MATRIX_ID }}
+        path: built-tags/
+        retention-days: 1
 ```
 
 The artifact name **must** match the glob pattern `built-tag-*` so `collect-tags` can find it.
@@ -190,6 +202,12 @@ This ensures the Slack notification shows the full `namespace/repo:tag` referenc
 All build jobs share this setup sequence:
 
 ```yaml
+strategy:
+  fail-fast: false
+  matrix:
+    base_image:
+      - upstream/image
+
 steps:
   - name: Checkout
     uses: actions/checkout@v4
@@ -261,8 +279,10 @@ Frees ~30GB on the GitHub runner. **Always include this** — ML Docker images a
 - [ ] `workflow_dispatch` inputs include VERSION/REF, DOCKERHUB_REPO, MULTI_ARCH, CUSTOM_IMAGE_TAG
 - [ ] `env` block sets DEFAULT_DOCKERHUB_REPO, DEFAULT_MULTI_ARCH, RELEASE_AGE_THRESHOLD
 - [ ] 4 jobs defined: `preflight` -> `build` -> `collect-tags` -> `notify`
+- [ ] `build` job uses `strategy.matrix` (even for single-variant images)
+- [ ] `build` job derives `MATRIX_ID` from matrix value via `md5sum | cut -c1-8`
 - [ ] `build` job derives `FULL_IMAGE` from `DOCKERHUB_NAMESPACE/DOCKERHUB_REPO:IMAGE_TAG`
-- [ ] `build` job records `FULL_IMAGE` to artifact file and uploads with `built-tag-*` name pattern
+- [ ] `build` job records `FULL_IMAGE` to `built-tags/tag-$MATRIX_ID.txt` and uploads as `built-tag-$MATRIX_ID`
 - [ ] `collect-tags` job is copied verbatim from existing workflow
 - [ ] `notify` job passes `image-tags: ${{ needs.collect-tags.outputs.all-tags }}`
 - [ ] `notify` job `needs` includes `collect-tags`
