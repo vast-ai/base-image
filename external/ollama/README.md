@@ -83,7 +83,7 @@ cd base-image/external/ollama
 docker buildx build \
     --platform linux/amd64,linux/arm64 \
     --build-context base_image_source=../.. \
-    --build-arg OLLAMA_BASE=ollama/ollama:0.6.2 \
+    --build-arg OLLAMA_BASE=ollama/ollama:0.15.2 \
     -t yournamespace/ollama . --push
 ```
 
@@ -91,7 +91,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_BASE` | `ollama/ollama:0.6.2` | Official Ollama image to use as the base |
+| `OLLAMA_BASE` | `ollama/ollama:0.15.2` | Official Ollama image to use as the base |
 | `VAST_BASE` | `vastai/base-image:stock-ubuntu24.04-py312` | Vast base image (used to copy Caddy binary) |
 
 ## Building with GitHub Actions
@@ -118,7 +118,7 @@ Go to **Actions > Build Ollama Image > Run workflow** and fill in the inputs:
 
 | Input | Description |
 |-------|-------------|
-| `OLLAMA_VERSION` | A release tag (e.g. `0.6.2`) or leave empty to auto-detect the latest release |
+| `OLLAMA_VERSION` | A release tag (e.g. `0.15.2`) or leave empty to auto-detect the latest release |
 | `DOCKERHUB_REPO` | Repository name under your namespace (default: `ollama`) |
 | `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
 | `CUSTOM_IMAGE_TAG` | Override the version portion of the tag (e.g. `my-custom-build`) |
@@ -126,7 +126,7 @@ Go to **Actions > Build Ollama Image > Run workflow** and fill in the inputs:
 The workflow pushes images tagged as `<namespace>/<repo>:<version>`:
 
 ```
-yourusername/ollama:0.6.2
+yourusername/ollama:0.15.2
 ```
 
 ### Automatic Builds
