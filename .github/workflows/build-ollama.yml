@@ -1,0 +1,4 @@
+name: Build Ollama Image
+
+on:
+  workflow_dispatch:
