@@ -13,7 +13,7 @@ while [ -f "/.provisioning" ]; do
     sleep 10
 done
 
-# Launch Ollama in the background so we can pull the model before exposing the API
+# Launch Ollama in the background, wait for readiness, then pull the model if configured
 ollama serve ${OLLAMA_ARGS:-} 2>&1 &
 OLLAMA_PID=$!
 
