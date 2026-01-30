@@ -1,2 +1,240 @@
+# Build Llama.cpp image - works on main repo (scheduled + manual) and forks (manual)
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+# DOCKERHUB_NAMESPACE
+# Optional:
+# SLACK_WEBHOOK_URL
+#
+# Release detection: Polls GitHub (ai-dock/llama.cpp-cuda) for new release tags.
+
+name: Build Llama.cpp Image
+
 on:
+  schedule:
+    # Run weekly on Monday
+    - cron: '0 0 * * 1'
+
   workflow_dispatch:
+    inputs:
+      LLAMA_CPP_VERSION:
+        description: "Release tag (e.g. b5460) - leave empty to simulate scheduled build"
+        required: false
+      CUDA_VERSION:
+        description: "CUDA version for binary package"
+        required: false
+        default: "12.8"
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "llama-cpp"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: false
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "llama-cpp"
+  DEFAULT_MULTI_ARCH: "false"
+  DEFAULT_CUDA_VERSION: "12.8"
+  # 7 days
+  RELEASE_AGE_THRESHOLD: 604800
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      llama-cpp-version: ${{ steps.release-check.outputs.resolved-ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Check GitHub for new release
+        id: release-check
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: ai-dock/llama.cpp-cuda
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ inputs.LLAMA_CPP_VERSION && github.event_name || 'schedule' }}
+          manual-ref: ${{ inputs.LLAMA_CPP_VERSION }}
+          resolve-master-to-commit: "false"
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
+          VERSION="${{ steps.release-check.outputs.resolved-ref }}"
+
+          if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && -n "$VERSION" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Building Llama.cpp $VERSION"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+
+            if [[ "$SECRETS" != "true" ]]; then
+              echo "::notice::Skipping - Required secrets not configured"
+            elif [[ "$NEW_RELEASE" != "true" ]]; then
+              echo "::notice::Skipping - No new release detected"
+            else
+              echo "::notice::Skipping - No version resolved"
+            fi
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/base-image:cuda-12.9-mini-py312
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          BASE_IMAGE="${{ matrix.base_image }}"
+          TAG="${BASE_IMAGE##*:}"
+
+          # Extract CUDA runtime version from cuda-X.Y
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          if [[ -z "$CUDA_VERSION" ]]; then
+            echo "::error::Failed to parse base image: $BASE_IMAGE"
+            exit 1
+          fi
+
+          LLAMA_CPP_VERSION="${{ needs.preflight.outputs.llama-cpp-version }}"
+          CUDA_BIN_VERSION="${{ inputs.CUDA_VERSION || env.DEFAULT_CUDA_VERSION }}"
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${LLAMA_CPP_VERSION}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          # Create a safe filename from the matrix value
+          MATRIX_ID=$(echo "$BASE_IMAGE" | md5sum | cut -c1-8)
+
+          echo "IMAGE_TAG=$IMAGE_TAG_BASE" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          echo "CUDA_BIN_VERSION=$CUDA_BIN_VERSION" >> $GITHUB_ENV
+
+          echo "Derived image tag: $IMAGE_TAG_BASE"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd derivatives/llama-cpp
+          docker buildx build \
+            --platform "$platforms" \
+            --build-arg BASE_IMAGE=${{ matrix.base_image }} \
+            --build-arg LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }} \
+            --build-arg CUDA_VERSION=${{ env.CUDA_BIN_VERSION }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "Llama.cpp"
+      image-ref: ${{ needs.preflight.outputs.llama-cpp-version }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
