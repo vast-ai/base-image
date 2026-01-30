@@ -10,7 +10,7 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 
 ## CUDA Compatibility
 
-Images are tagged with the CUDA version they were built against (e.g. `5.8.1-cuda-12.9-py312`). This does not mean you need that exact CUDA version on the host.
+Images are tagged with the CUDA version they were built against (e.g. `6.10.0-cuda-12.9-py312`). This does not mean you need that exact CUDA version on the host.
 
 ### Minor Version Compatibility
 
@@ -37,7 +37,6 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Directory for models, outputs, and configurations |
-| `INVOKEAI_ARGS` | `--port 19000` | Startup arguments passed to InvokeAI |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
 ### Port Reference
@@ -72,7 +71,7 @@ cd base-image/derivatives/pytorch/derivatives/invokeai
 
 docker buildx build \
     --build-arg PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312 \
-    --build-arg INVOKEAI_VERSION=5.8.1 \
+    --build-arg INVOKEAI_VERSION=6.10.0 \
     -t yournamespace/invokeai .
 ```
 
@@ -81,7 +80,7 @@ docker buildx build \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312` | PyTorch mini base image |
-| `INVOKEAI_VERSION` | `latest` | InvokeAI version to install (e.g. `5.8.1` or `latest`) |
+| `INVOKEAI_VERSION` | | InvokeAI version to install (e.g. `6.10.0`) |
 
 ## Building with GitHub Actions
 
@@ -107,7 +106,7 @@ Go to **Actions > Build InvokeAI Image > Run workflow** and fill in the inputs:
 
 | Input | Description |
 |-------|-------------|
-| `INVOKEAI_VERSION` | InvokeAI version (e.g. `5.8.1`) — leave empty to simulate a scheduled build |
+| `INVOKEAI_VERSION` | InvokeAI version (e.g. `6.10.0`) — leave empty to simulate a scheduled build |
 | `DOCKERHUB_REPO` | Repository name under your namespace (default: `invokeai`) |
 | `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
 | `CUSTOM_IMAGE_TAG` | Override the version portion of the tag (e.g. `my-custom-build`) |
@@ -115,14 +114,14 @@ Go to **Actions > Build InvokeAI Image > Run workflow** and fill in the inputs:
 The workflow builds one image per base image in the matrix:
 
 ```
-yourusername/invokeai:5.8.1-cuda-12.9-py312
+yourusername/invokeai:6.10.0-cuda-12.9-py312
 ```
 
 To customize which PyTorch base images are used, modify the `matrix.base_image` array in `.github/workflows/build-invokeai.yml`.
 
 ### Automatic Builds
 
-The workflow includes a 12-hour schedule that automatically builds when new InvokeAI releases are detected on GitHub (`invoke-ai/InvokeAI`). The version tag (e.g. `v5.8.1`) is stripped of its `v` prefix and used as the `INVOKEAI_VERSION` build argument.
+The workflow includes a 12-hour schedule that automatically builds when new InvokeAI releases are detected on GitHub (`invoke-ai/InvokeAI`). The version tag (e.g. `v6.10.0`) is stripped of its `v` prefix and used as the `INVOKEAI_VERSION` build argument.
 
 GitHub disables scheduled workflows on forks by default — to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows. To disable scheduled builds, edit the `cron` line in `.github/workflows/build-invokeai.yml` or remove the `schedule` trigger.
 
