@@ -45,7 +45,15 @@ done
 # Pull the model if set
 if [[ -n "${OLLAMA_MODEL:-}" ]]; then
     echo "Pulling model: ${OLLAMA_MODEL}"
-    ollama pull "${OLLAMA_MODEL}"
+    if ! ollama pull "${OLLAMA_MODEL}"; then
+        echo "Failed to pull model: ${OLLAMA_MODEL}"
+        # Ensure the Ollama server process does not keep running after a failed pull
+        if kill -0 $OLLAMA_PID 2>/dev/null; then
+            kill "$OLLAMA_PID" 2>/dev/null || true
+            wait "$OLLAMA_PID" 2>/dev/null || true
+        fi
+        exit 1
+    fi
     echo "Model pull complete: ${OLLAMA_MODEL}"
 fi
 
