@@ -10,22 +10,19 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-ARG INVOKEAI_VERSION=latest
+ARG INVOKEAI_VERSION
 
 RUN \
     set -euo pipefail && \
+    [[ -n "${INVOKEAI_VERSION}" ]] || { echo "Must specify INVOKEAI_VERSION" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install InvokeAI
-    if [[ "${INVOKEAI_VERSION}" = "latest" ]]; then \
-        uv pip install invokeai pydantic==2.11.7 || uv pip install invokeai; \
-    else \
-        uv pip install invokeai==${INVOKEAI_VERSION} pydantic==2.11.7 || uv pip install invokeai==${INVOKEAI_VERSION}; \
-    fi && \
-    # Patchmatch will likely fail to build if the python version is not 3.12 or 3.10, but it is non-fatal
+    uv pip install invokeai==${INVOKEAI_VERSION} && \
+    # Patchmatch will likely fail to build if the python version is not 3.12 or 3.10
     apt-get update && apt-get install --no-install-recommends -y python3-opencv libopencv-dev && \
-    pip install pypatchmatch || true && \
+    pip install pypatchmatch && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \

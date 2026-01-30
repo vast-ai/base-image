@@ -4,9 +4,9 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "InvokeAI"
+. "${utils}/exit_portal.sh" "Invoke AI"
 
-echo "Starting InvokeAI"
+echo "Starting Invoke AI"
 
 . /venv/main/bin/activate
 

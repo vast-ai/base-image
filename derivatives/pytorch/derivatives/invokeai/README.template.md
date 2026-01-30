@@ -168,7 +168,7 @@ Images are tagged with the CUDA version they were built against (e.g. `5.8.1-cud
 apt update && apt install -y your-favorite-package
 
 # Install Python packages
-uv pip install --system requests openai anthropic
+uv pip install requests openai anthropic
 
 # Add system services
 echo "your-service-config" > /etc/supervisor/conf.d/my-app.conf
