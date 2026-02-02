@@ -1,0 +1,307 @@
+# Build SD Forge variants (lllyasviel, reforge, classic, neo) from upstream repos
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Optional: SLACK_WEBHOOK_URL
+
+name: Build SD Forge Image
+
+on:
+  schedule:
+    # Run weekly on Monday at midnight UTC
+    - cron: '0 0 * * 1'
+
+  workflow_dispatch:
+    inputs:
+      FORGE_VARIANT:
+        description: "Forge variant to build"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - lllyasviel
+          - reforge
+          - classic
+          - neo
+      FORGE_REF:
+        description: "Git ref override (applies to selected variant only)"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "sd-forge"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: false
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "sd-forge"
+  DEFAULT_MULTI_ARCH: "false"
+  PYTORCH_BASE: "vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312"
+  # 7 days in seconds
+  COMMIT_AGE_THRESHOLD: 604800
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+      forge-refs: ${{ steps.build-matrix.outputs.forge-refs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Build variant matrix
+        id: build-matrix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TRIGGER="${{ github.event_name }}"
+          SELECTED_VARIANT="${{ inputs.FORGE_VARIANT }}"
+          MANUAL_REF="${{ inputs.FORGE_REF }}"
+
+          # Define variants: name|owner/repo|branch
+          VARIANTS=(
+            "lllyasviel|lllyasviel/stable-diffusion-webui-forge|main"
+            "reforge|Panchovix/stable-diffusion-webui-reForge|main"
+            "classic|Haoming02/sd-webui-forge-classic|classic"
+            "neo|Haoming02/sd-webui-forge-classic|neo"
+          )
+
+          MATRIX="[]"
+          REFS_SUMMARY=""
+
+          for entry in "${VARIANTS[@]}"; do
+            IFS='|' read -r name repo branch <<< "$entry"
+
+            # Filter by selected variant (manual dispatch)
+            if [[ "$TRIGGER" == "workflow_dispatch" && "$SELECTED_VARIANT" != "all" && "$SELECTED_VARIANT" != "$name" ]]; then
+              echo "Skipping $name - not selected"
+              continue
+            fi
+
+            # Query GitHub API for latest commit SHA and date
+            RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${repo}/commits/${branch}")
+
+            COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
+            COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')
+
+            if [[ "$COMMIT_SHA" == "null" || -z "$COMMIT_SHA" ]]; then
+              echo "::warning::Failed to resolve commit for $name ($repo@$branch)"
+              continue
+            fi
+
+            # Age check (scheduled runs only)
+            if [[ "$TRIGGER" == "schedule" ]]; then
+              COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+              NOW_EPOCH=$(date +%s)
+              AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+              if [[ $AGE -gt $COMMIT_AGE_THRESHOLD ]]; then
+                echo "Skipping $name - latest commit is ${AGE}s old (threshold: ${COMMIT_AGE_THRESHOLD}s)"
+                continue
+              fi
+              echo "✓ $name has recent activity (${AGE}s old)"
+            fi
+
+            # Apply manual ref override if provided for a single variant
+            REF="$COMMIT_SHA"
+            if [[ "$TRIGGER" == "workflow_dispatch" && -n "$MANUAL_REF" && "$SELECTED_VARIANT" == "$name" ]]; then
+              REF="$MANUAL_REF"
+              echo "Using manual ref override for $name: $REF"
+            fi
+
+            REPO_URL="https://github.com/${repo}"
+
+            MATRIX=$(echo "$MATRIX" | jq -c \
+              --arg variant "$name" \
+              --arg repo "$REPO_URL" \
+              --arg branch "$branch" \
+              --arg ref "$REF" \
+              '. + [{"variant": $variant, "repo": $repo, "branch": $branch, "ref": $ref}]')
+
+            REFS_SUMMARY="${REFS_SUMMARY}${name}=${REF} "
+          done
+
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "forge-refs=${REFS_SUMMARY}" >> $GITHUB_OUTPUT
+
+          MATRIX_SIZE=$(echo "$MATRIX" | jq 'length')
+          echo "Matrix size: $MATRIX_SIZE"
+          echo "Matrix: $MATRIX"
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          MATRIX='${{ steps.build-matrix.outputs.matrix }}'
+          MATRIX_SIZE=$(echo "${MATRIX:-[]}" | jq 'length // 0')
+
+          if [[ "$SECRETS" == "true" && "$MATRIX_SIZE" -gt 0 ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Building $MATRIX_SIZE variant(s)"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            if [[ "$SECRETS" != "true" ]]; then
+              echo "::notice::Skipping - Required secrets not configured"
+            else
+              echo "::notice::Skipping - No variants to build (no recent upstream commits)"
+            fi
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          PYTORCH_BASE="${{ env.PYTORCH_BASE }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          if [ -z "$CUDA_VERSION" ]; then
+            echo "Failed to parse CUDA version from base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          VARIANT="${{ matrix.variant }}"
+          REF="${{ matrix.ref }}"
+          DATE=$(date -u +%Y%m%d)
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            IMAGE_TAG_BASE="${VARIANT}-${REF}-${DATE}"
+          fi
+
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}"
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          # Create safe ID from variant name
+          MATRIX_ID=$(echo "$VARIANT" | md5sum | cut -c1-8)
+
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+          echo "Derived image tag: $IMAGE_TAG"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd derivatives/pytorch/derivatives/sd-forge
+          docker buildx build \
+            --platform "$platforms" \
+            --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
+            --build-arg FORGE_REPO=${{ matrix.repo }} \
+            --build-arg FORGE_REF=${{ matrix.ref }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [[ -d all-tags ]] && [[ "$(ls -A all-tags 2>/dev/null)" ]]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "SD Forge"
+      image-ref: ${{ needs.preflight.outputs.forge-refs }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
