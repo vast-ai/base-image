@@ -77,8 +77,8 @@ docker buildx build \
 docker buildx build \
     --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py311 \
     --build-arg FORGE_REPO=https://github.com/Haoming02/sd-webui-forge-classic \
-    --build-arg FORGE_REF=classic \
-    -t yournamespace/forge-classic .
+    --build-arg FORGE_REF=neo \
+    -t yournamespace/forge-neo .
 ```
 
 ### Forge Classic
