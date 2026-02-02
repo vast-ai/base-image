@@ -1,0 +1,4 @@
+name: Build SD Forge Images
+
+on:
+  workflow_dispatch:
