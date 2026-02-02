@@ -41,7 +41,7 @@ on:
 env:
   DEFAULT_DOCKERHUB_REPO: "sd-forge"
   DEFAULT_MULTI_ARCH: "false"
-  PYTORCH_BASE: "vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312"
+  PYTORCH_BASE: "vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py311"
   # 7 days in seconds
   COMMIT_AGE_THRESHOLD: 604800
 
