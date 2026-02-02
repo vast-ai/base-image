@@ -81,6 +81,16 @@ docker buildx build \
     -t yournamespace/forge-neo .
 ```
 
+### Forge Classic
+
+```bash
+docker buildx build \
+    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py311 \
+    --build-arg FORGE_REPO=https://github.com/Haoming02/sd-webui-forge-classic \
+    --build-arg FORGE_REF=main \
+    -t yournamespace/forge-classic .
+```
+
 ### Forge Reforge
 
 ```bash
@@ -94,6 +104,7 @@ docker buildx build \
 ## Useful Links
 
 - [Stable Diffusion WebUI Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge)
+- [Forge Classic](https://github.com/Haoming02/sd-webui-forge-classic/tree/classic)
 - [Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
 - [Forge Reforge](https://github.com/Panchovix/stable-diffusion-webui-reForge)
 - [PyTorch Image Documentation](../../README.md)
