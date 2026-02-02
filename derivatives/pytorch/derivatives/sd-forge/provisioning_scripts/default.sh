@@ -245,8 +245,8 @@ download_hf_file() {
         # Retry loop for rate limits and transient failures
         while [[ $attempt -le $max_retries ]]; do
             log "Downloading $repo/$file_path (attempt $attempt/$max_retries)..."
-
-            if hf download "$repo" \
+            hf_command=$(command -v hf || command -v huggingface-cli)
+            if "$hf_command" download "$repo" \
                 "$file_path" \
                 --local-dir "$temp_dir" \
                 --cache-dir "$temp_dir/.cache" 2>&1 | tee -a "$PROVISIONING_LOG"; then
