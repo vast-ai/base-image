@@ -1,6 +1,7 @@
 ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312
 
 FROM ${BASE_IMAGE}
+ARG BASE_IMAGE
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
@@ -11,6 +12,7 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 COPY ./ROOT /
 
 # Install CUDA runtime libraries required by llama.cpp
+ARG BASE_IMAGE
 RUN \
     set -euo pipefail && \
     CUDA_RUNTIME_VERSION="$(echo "${BASE_IMAGE}" | sed -n 's/.*cuda-\([0-9]\+\.[0-9]\+\).*/\1/p')" && \
