@@ -108,8 +108,8 @@ jobs:
               continue
             fi
 
-            # Age check (scheduled runs only)
-            if [[ "$TRIGGER" == "schedule" ]]; then
+            # Age check: skip stale repos unless a specific variant was requested
+            if [[ "$TRIGGER" == "schedule" || "$SELECTED_VARIANT" == "all" ]]; then
               COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
               NOW_EPOCH=$(date +%s)
               AGE=$((NOW_EPOCH - COMMIT_EPOCH))
