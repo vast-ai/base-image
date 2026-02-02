@@ -1,9 +1,14 @@
 #!/bin/bash
 
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/cleanup_generic.sh"
+. "${utils}/environment.sh"
+
 socket="/tmp/.X11-unix/X${DISPLAY#*:}"
-echo "Waiting for ${socket}..." | tee -a "/var/log/portal/${PROC_NAME}.log"
+echo "Waiting for ${socket}..."
 while ! { [[ -S $socket ]] && timeout 1 socat -u OPEN:/dev/null "UNIX-CONNECT:${socket}" 2>/dev/null; }; do
-  sleep 1 
+  sleep 1
 done
 
-pipewire 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
+pipewire

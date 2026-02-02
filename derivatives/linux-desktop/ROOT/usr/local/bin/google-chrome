@@ -1,3 +1,2 @@
 #!/bin/bash
-
-/opt/google/chrome/google-chrome --no-sandbox $@
+exec /opt/google/chrome/google-chrome --no-sandbox "$@"
