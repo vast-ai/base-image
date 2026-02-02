@@ -213,7 +213,7 @@ jobs:
 
           VARIANT="${{ matrix.variant }}"
           REF="${{ matrix.ref }}"
-          DATE=$(date -u +%Y%m%d)
+          DATE=$(date -u +%Y-%m-%d)
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
 
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"

@@ -286,3 +286,17 @@ Frees ~30GB on the GitHub runner. **Always include this** — ML Docker images a
 - [ ] `collect-tags` job is copied verbatim from existing workflow
 - [ ] `notify` job passes `image-tags: ${{ needs.collect-tags.outputs.all-tags }}`
 - [ ] `notify` job `needs` includes `collect-tags`
+
+## Tag Format
+
+When a tag includes a **commit hash** rather than a proper version number, append a hyphenated ISO 8601 date (`YYYY-MM-DD`) to disambiguate builds. Tags with proper version numbers do not need a date.
+
+```bash
+DATE=$(date -u +%Y-%m-%d)
+# Produces: 2026-02-02
+# NOT:      20260202
+```
+
+Example tags:
+- `lllyasviel-a1b2c3d-2026-02-02-cuda-12.9` (commit hash — date required)
+- `v1.2.3-cuda-12.8` (version number — no date needed)
