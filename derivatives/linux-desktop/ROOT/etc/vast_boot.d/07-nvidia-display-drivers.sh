@@ -95,6 +95,11 @@ configure_nvidia_display_drivers() {
     if $NEED_64 && [[ -d "$EXTRACT_DIR" ]]; then
         # 64-bit libs are in the extraction root
         cp -a "$EXTRACT_DIR"/*.so* "${NVIDIA_DRIVERS_DIR}/lib64/" 2>/dev/null
+        # OptiX runtime binary (libnvoptix.so looks for it in /usr/share/nvidia/)
+        if [[ -f "$EXTRACT_DIR/nvoptix.bin" ]]; then
+            mkdir -p /usr/share/nvidia
+            cp -a "$EXTRACT_DIR/nvoptix.bin" /usr/share/nvidia/
+        fi
         echo "Installed 64-bit NVIDIA display driver libs"
     fi
 
