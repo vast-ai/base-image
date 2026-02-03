@@ -78,6 +78,7 @@ RUN \
         libglvnd0 \
         libglx0 \
         libgudev-1.0-0 \
+        mesa-vulkan-drivers \
         libopengl0 \
         libopus0 \
         libpci3 \
