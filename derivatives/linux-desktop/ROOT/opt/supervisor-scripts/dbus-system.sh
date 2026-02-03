@@ -10,4 +10,4 @@ if [[ -f /run/dbus/pid ]]; then
     rm -f /run/dbus/pid
 fi
 
-dbus-daemon --system --nofork
+dbus-daemon --config-file=/etc/dbus-1/container-system.conf --nofork
