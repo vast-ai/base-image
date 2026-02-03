@@ -1,17 +1,41 @@
 #!/bin/bash
 
-# Install NVIDIA display driver libraries to provide EGL/GLX for 32-bit and 64-bit applications.
+# Install NVIDIA display driver libraries to provide EGL/GLX/Vulkan for
+# 32-bit and 64-bit applications.
 #
 # The nvidia-container-toolkit injects 64-bit driver libs from the host but
-# often omits 32-bit libs.  Installing via apt fails because the repo version
-# rarely matches the host kernel module exactly.
+# often omits 32-bit libs and Vulkan presentation components.  Installing
+# via apt fails because the repo version rarely matches the host kernel
+# module exactly.
 #
 # This script downloads the exact .run package for the host's driver version,
-# extracts it (without running nvidia-installer), and copies the shared
-# libraries to /opt/nvidia-drivers/lib{32,64}/ registered via ldconfig.
+# extracts it, and copies shared libraries + Vulkan manifests to
+# /opt/nvidia-drivers/ registered via ldconfig.
 
 NVIDIA_DRIVERS_DIR="/opt/nvidia-drivers"
 NVIDIA_DRIVERS_LDCONF="/etc/ld.so.conf.d/nvidia-drivers.conf"
+
+# Libraries to check -- if any are missing from ldconfig we need to install.
+# libGLX_nvidia  = GLX + Vulkan ICD implementation
+# libEGL_nvidia  = EGL implementation
+# libnvidia-glvkspirv = Vulkan SPIR-V compiler (internal Vulkan dep)
+DISPLAY_LIBS=(libEGL_nvidia.so.0 libGLX_nvidia.so.0 libnvidia-glvkspirv.so)
+
+check_libs_present() {
+    # $1 = architecture filter for ldconfig -p (e.g. "x86-64" or empty for i386)
+    local arch_filter="$1"
+    local cache
+    cache="$(ldconfig -p)"
+    for lib in "${DISPLAY_LIBS[@]}"; do
+        if [[ -n "$arch_filter" ]]; then
+            echo "$cache" | grep -q "${lib}.*${arch_filter}" || return 1
+        else
+            # For 32-bit: match the lib but exclude x86-64 lines
+            echo "$cache" | grep "$lib" | grep -qv 'x86-64' || return 1
+        fi
+    done
+    return 0
+}
 
 configure_nvidia_display_drivers() {
     command -v nvidia-smi &>/dev/null || return 0
@@ -37,22 +61,21 @@ configure_nvidia_display_drivers() {
     fi
 
     # Detect which lib flavours are missing
-    local LDCONFIG_CACHE NEED_64=false NEED_32=false
-    LDCONFIG_CACHE="$(ldconfig -p)"
+    local NEED_64=false NEED_32=false
 
-    if ! echo "$LDCONFIG_CACHE" | grep -q 'libEGL_nvidia.so.0.*x86-64'; then
+    if ! check_libs_present "x86-64"; then
         NEED_64=true
     fi
 
     # Only check 32-bit on amd64 hosts
     if [[ "$(dpkg --print-architecture 2>/dev/null)" == "amd64" ]]; then
-        if ! echo "$LDCONFIG_CACHE" | grep 'libEGL_nvidia.so.0' | grep -qv 'x86-64'; then
+        if ! check_libs_present ""; then
             NEED_32=true
         fi
     fi
 
     if ! $NEED_64 && ! $NEED_32; then
-        echo "NVIDIA display driver libs already present"
+        echo "NVIDIA display/Vulkan driver libs already present"
         return 0
     fi
 
@@ -89,24 +112,42 @@ configure_nvidia_display_drivers() {
         return 0
     fi
 
-    # Copy libraries
+    # Copy libraries and Vulkan manifests
     mkdir -p "${NVIDIA_DRIVERS_DIR}/lib64" "${NVIDIA_DRIVERS_DIR}/lib32"
 
     if $NEED_64 && [[ -d "$EXTRACT_DIR" ]]; then
         # 64-bit libs are in the extraction root
         cp -a "$EXTRACT_DIR"/*.so* "${NVIDIA_DRIVERS_DIR}/lib64/" 2>/dev/null
-        # OptiX runtime binary (libnvoptix.so looks for it in /usr/share/nvidia/)
-        if [[ -f "$EXTRACT_DIR/nvoptix.bin" ]]; then
-            mkdir -p /usr/share/nvidia
-            cp -a "$EXTRACT_DIR/nvoptix.bin" /usr/share/nvidia/
-        fi
-        echo "Installed 64-bit NVIDIA display driver libs"
+        # Vulkan ICD and implicit layer manifests
+        for json in nvidia_icd.json nvidia_layers.json; do
+            if [[ -f "$EXTRACT_DIR/$json" ]]; then
+                cp -a "$EXTRACT_DIR/$json" "${NVIDIA_DRIVERS_DIR}/lib64/"
+            fi
+        done
+        echo "Installed 64-bit NVIDIA display/Vulkan driver libs"
     fi
 
     if $NEED_32 && [[ -d "${EXTRACT_DIR}/32" ]]; then
         # 32-bit libs are in the 32/ subdirectory
         cp -a "${EXTRACT_DIR}/32"/*.so* "${NVIDIA_DRIVERS_DIR}/lib32/" 2>/dev/null
         echo "Installed 32-bit NVIDIA display driver libs"
+    fi
+
+    # Point the Vulkan loader at our manifests if they aren't already
+    # in a standard search path.  Only write if the file is not a
+    # read-only bind-mount from the toolkit.
+    if [[ -f "${NVIDIA_DRIVERS_DIR}/lib64/nvidia_icd.json" ]]; then
+        local icd_dest="/etc/vulkan/icd.d/nvidia_icd.json"
+        if cp -f "${NVIDIA_DRIVERS_DIR}/lib64/nvidia_icd.json" "$icd_dest" 2>/dev/null; then
+            echo "Installed Vulkan ICD manifest -> ${icd_dest}"
+        fi
+    fi
+    if [[ -f "${NVIDIA_DRIVERS_DIR}/lib64/nvidia_layers.json" ]]; then
+        local layers_dest="/etc/vulkan/implicit_layer.d/nvidia_layers.json"
+        mkdir -p /etc/vulkan/implicit_layer.d
+        if cp -f "${NVIDIA_DRIVERS_DIR}/lib64/nvidia_layers.json" "$layers_dest" 2>/dev/null; then
+            echo "Installed Vulkan implicit layer manifest -> ${layers_dest}"
+        fi
     fi
 
     # Record version for cache validation on next boot
