@@ -1,7 +1,8 @@
 #!/bin/bash
 
 utils=/opt/supervisor-scripts/utils
-. "${utils}/logging.sh"
+# Keep out of GUI display - Very noisy
+. "${utils}/logging.sh" "/var/log/${PROC_NAME}.log"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
 

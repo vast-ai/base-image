@@ -63,6 +63,7 @@ RUN \
         gnupg \
         gstreamer1.0-plugins-bad \
         gzip \
+        inotify-tools \
         kmod \
         lame \
         libavcodec-extra \
@@ -289,8 +290,7 @@ RUN \
     echo "noauth-config: /etc/guacamole/noauth-config.xml" >> /etc/guacamole/guacamole.properties && \
     touch /etc/guacamole/noauth-config.xml && \
     chown -R tomcat:tomcat /etc/guacamole && \
-    chmod -R 755 /etc/guacamole && \
-    chown tomcat:tomcat /var/log/portal
+    chmod -R 755 /etc/guacamole
 
 # Install DE
 RUN \
