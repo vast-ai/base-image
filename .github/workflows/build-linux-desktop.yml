@@ -1,0 +1,4 @@
+name: Build Linux Desktop Image
+
+on:
+  workflow_dispatch:
