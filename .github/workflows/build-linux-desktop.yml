@@ -9,10 +9,6 @@
 name: Build Linux Desktop Image
 
 on:
-  schedule:
-    # Run monthly on the 1st
-    - cron: '0 0 1 * *'
-
   workflow_dispatch:
     inputs:
       DOCKERHUB_REPO:
@@ -37,7 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      blender-version: ${{ steps.blender.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,18 +47,6 @@ jobs:
             echo "available=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - secrets not configured"
           fi
-
-      - name: Detect latest Blender version
-        id: blender
-        run: |
-          LATEST_DIR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\d+\.\d+' | sort -t. -k1,1n -k2,2n | tail -1)
-          MAJOR_MINOR="${LATEST_DIR#Blender}"
-          BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/${LATEST_DIR}/" | \
-            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1)
-
-          echo "version=$BLENDER_VERSION" >> $GITHUB_OUTPUT
-          echo "✓ Latest Blender version: $BLENDER_VERSION"
 
       - name: Determine if build should run
         id: decision
@@ -167,7 +150,6 @@ jobs:
           docker buildx build \
             --platform "$platforms" \
             --build-arg VAST_BASE=${{ matrix.base_image }} \
-            --build-arg BLENDER_VERSION=${{ needs.preflight.outputs.blender-version }} \
             -t ${{ env.FULL_IMAGE }} \
             . --push
 
@@ -218,7 +200,6 @@ jobs:
     with:
       build-result: ${{ needs.build.result }}
       image-name: "Linux Desktop"
-      image-ref: ${{ needs.preflight.outputs.blender-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
