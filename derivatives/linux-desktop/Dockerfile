@@ -420,9 +420,18 @@ RUN \
     update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
     update-alternatives --set x-www-browser /usr/bin/google-chrome-stable
 
-# Blender
+# Blender - version passed via build arg, or auto-detected if empty
+ARG BLENDER_VERSION=""
 RUN \
-    BLENDER_VERSION=4.4.1 && \
+    set -euo pipefail && \
+    if [ -z "$BLENDER_VERSION" ]; then \
+        LATEST_DIR=$(curl -fsSL "https://download.blender.org/release/" | \
+            grep -oP 'Blender\d+\.\d+' | sort -t. -k1,1n -k2,2n | tail -1) && \
+        MAJOR_MINOR="${LATEST_DIR#Blender}" && \
+        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/${LATEST_DIR}/" | \
+            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+    fi && \
+    echo "Installing Blender version: ${BLENDER_VERSION}" && \
     cd /opt && \
     wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
     tar xvf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
