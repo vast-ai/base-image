@@ -200,6 +200,7 @@ jobs:
     with:
       build-result: ${{ needs.build.result }}
       image-name: "Linux Desktop"
+      image-ref: "latest"
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
