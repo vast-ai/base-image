@@ -425,10 +425,9 @@ ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
     if [ -z "$BLENDER_VERSION" ]; then \
-        LATEST_DIR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\d+\.\d+' | sort -t. -k1,1n -k2,2n | tail -1) && \
-        MAJOR_MINOR="${LATEST_DIR#Blender}" && \
-        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/${LATEST_DIR}/" | \
+        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
             grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
     fi && \
     echo "Installing Blender version: ${BLENDER_VERSION}" && \
