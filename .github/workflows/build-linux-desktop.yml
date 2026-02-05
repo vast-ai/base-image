@@ -104,8 +104,8 @@ jobs:
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
 
           # Extract Ubuntu version from running container
-          UBUNTU_VERSION=$(docker run --rm ${{ matrix.base_image }} \
-            bash -c "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'")
+          UBUNTU_VERSION=$(docker run --rm --entrypoint bash ${{ matrix.base_image }} \
+            -c "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'")
 
           # Build the image tag
           BUILD_DATE=$(date -u +%Y-%m-%d)
