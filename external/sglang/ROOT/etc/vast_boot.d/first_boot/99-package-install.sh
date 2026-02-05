@@ -9,7 +9,7 @@ fi
 
 if [[ -n $PIP_PACKAGES ]]; then
     echo "Installing additional python packages"
-    uv pip install --system $PIP_PACKAGES
+    uv pip install --system --break-system-packages $PIP_PACKAGES
 fi
 
 # Put anything more complex into a PROVISIONING_SCRIPT
