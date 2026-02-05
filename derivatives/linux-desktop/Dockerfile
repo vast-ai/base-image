@@ -136,6 +136,7 @@ RUN \
         xfonts-scalable \
         xinit \
         xkb-data \
+        xclip \
         xsel \
         xserver-xorg-core \
         xserver-xorg-input-all \
