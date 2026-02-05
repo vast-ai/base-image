@@ -1,0 +1,226 @@
+# Build Linux Desktop image - works on main repo (scheduled + manual) and forks (manual)
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+# DOCKERHUB_NAMESPACE
+# Optional:
+# SLACK_WEBHOOK_URL
+
+name: Build Linux Desktop Image
+
+on:
+  schedule:
+    # Run monthly on the 1st
+    - cron: '0 0 1 * *'
+
+  workflow_dispatch:
+    inputs:
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "linux-desktop"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: false
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag suffix (replaces date)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "linux-desktop"
+  DEFAULT_MULTI_ARCH: "false"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      blender-version: ${{ steps.blender.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Detect latest Blender version
+        id: blender
+        run: |
+          LATEST_DIR=$(curl -fsSL "https://download.blender.org/release/" | \
+            grep -oP 'Blender\d+\.\d+' | sort -t. -k1,1n -k2,2n | tail -1)
+          MAJOR_MINOR="${LATEST_DIR#Blender}"
+          BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/${LATEST_DIR}/" | \
+            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1)
+
+          echo "version=$BLENDER_VERSION" >> $GITHUB_OUTPUT
+          echo "✓ Latest Blender version: $BLENDER_VERSION"
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Build will proceed"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/base-image:cuda-13.1-mini-py312
+          - vastai/base-image:cuda-12.9-mini-py312
+          - vastai/base-image:stock-ubuntu24.04-py312
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          BASE_IMAGE="${{ matrix.base_image }}"
+          TAG="${BASE_IMAGE##*:}"
+
+          # Extract CUDA version (empty for stock images)
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          # Extract Ubuntu version from running container
+          UBUNTU_VERSION=$(docker run --rm ${{ matrix.base_image }} \
+            bash -c "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'")
+
+          # Build the image tag
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          IMAGE_TAG_SUFFIX="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_SUFFIX" ]; then
+            IMAGE_TAG_SUFFIX="$BUILD_DATE"
+          fi
+
+          if [ -n "$CUDA_VERSION" ]; then
+            IMAGE_TAG="cuda-${CUDA_VERSION}-ubuntu${UBUNTU_VERSION}-${IMAGE_TAG_SUFFIX}"
+          else
+            IMAGE_TAG="ubuntu${UBUNTU_VERSION}-${IMAGE_TAG_SUFFIX}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+
+          # Create a safe filename from the matrix value
+          MATRIX_ID=$(echo "$BASE_IMAGE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+          echo "Base image: $BASE_IMAGE"
+          echo "CUDA version: ${CUDA_VERSION:-none}"
+          echo "Ubuntu version: $UBUNTU_VERSION"
+          echo "Derived image tag: $IMAGE_TAG"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd derivatives/linux-desktop
+          docker buildx build \
+            --platform "$platforms" \
+            --build-arg VAST_BASE=${{ matrix.base_image }} \
+            --build-arg BLENDER_VERSION=${{ needs.preflight.outputs.blender-version }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            # Combine all tag files into JSON array
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "Linux Desktop"
+      image-ref: ${{ needs.preflight.outputs.blender-version }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
