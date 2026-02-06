@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-. /venv/bin/activate
+. /venv/main/bin/activate
 
 cd "${WORKSPACE}"
 
