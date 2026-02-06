@@ -1,9 +1,21 @@
 #!/bin/bash
 
+utils=/opt/supervisor-scripts/utils
+# Keep out of GUI display - Very noisy
+. "${utils}/logging.sh" "/var/log/${PROC_NAME}.log"
+. "${utils}/cleanup_generic.sh"
+. "${utils}/environment.sh"
+
+# Wait for provisioning to complete
+while [ -f "/.provisioning" ]; do
+    echo "${PROC_NAME} startup paused until instance provisioning has completed"
+    sleep 5
+done
+
 sleep 2
 
 socket="$XDG_RUNTIME_DIR/pipewire-0"
-echo "Waiting for ${socket}..." | tee -a "/var/log/portal/${PROC_NAME}.log"
+echo "Waiting for ${socket}..."
 while ! { [[ -S $socket ]] && timeout 1 socat -u OPEN:/dev/null "UNIX-CONNECT:${socket}" 2>/dev/null; }; do
     sleep 1
 done
@@ -32,4 +44,4 @@ selkies-gstreamer --addr=127.0.0.1 --port=16100 \
   --turn_port=${TURN_PORT} \
   --turn_protocol=${TURN_PROTOCOL} \
   --turn_username=${TURN_USERNAME} \
-  --turn_password=${TURN_PASSWORD} 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
+  --turn_password=${TURN_PASSWORD}

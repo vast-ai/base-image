@@ -5,14 +5,12 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
 
-socket="$XDG_RUNTIME_DIR/pipewire-0"
+mkdir -p "${XDG_RUNTIME_DIR}/dbus"
+
+socket="/run/dbus/system_bus_socket"
 echo "Waiting for ${socket}..."
 while ! { [[ -S $socket ]] && timeout 1 socat -u OPEN:/dev/null "UNIX-CONNECT:${socket}" 2>/dev/null; }; do
-    sleep 1
+  sleep 1
 done
 
-export XDG_SESSION_ID="${DISPLAY#*:}"
-export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.debug=false;qt.qpa.*=false}"
-export SHELL=${SHELL:-/bin/bash}
-
-/usr/bin/startplasma-x11
+dbus-daemon --config-file=/etc/dbus-1/container-session.conf --nofork

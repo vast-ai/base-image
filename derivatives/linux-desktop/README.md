@@ -1,384 +1,97 @@
+# Linux Desktop Image
 
-# Linux Desktop Container
+A containerized desktop environment with both low-latency desktop interface by Selkies and VNC support.
 
-> A containerized desktop environment with both low-latency desktop interface by Selkies and VNC support.
+This Linux desktop image is built and maintained by Vast.ai and extends the feature-packed Vast.ai [base image](https://github.com/vast-ai/base-image). For detailed documentation on Instance Portal, Supervisor, environment variables, and other features, see the [base image README](../../README.md).
 
+## Available Tags
 
-## Contents
+Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/linux-desktop/tags).
 
-1. [About the Linux Desktop Image](#about-the-linux-desktop-image)
-2. [Connecting to the Instance](#connecting-to-the-instance)
-3. [Additional Software](#additional-software)
-4. [Application Management](#application-management)
-5. [Instance Startup Process](#instance-startup-process)
-6. [Python Package Management](#python-package-management)
-7. [Environment Variables](#environment-variables)
-8. [Dynamic Provisioning](#dynamic-provisioning)
-9. [Useful Links](#useful-links)
+Tags follow the format: `[cuda-<version>-]ubuntu<version>-<date>`
+- CUDA variants: `cuda-13.1-ubuntu24.04-2026-02-01`
+- Stock Ubuntu: `ubuntu24.04-2026-02-01`
 
-## About the Linux Desktop Image
+## CUDA Compatibility
 
-This Linux desktop image is built and maintained by Vast.ai and extends the feature-packed Vast.ai base docker image.  Much of the documentation below is common to all templates built upon this base.
+Images are tagged with the CUDA version they were built against (e.g. `cuda-12.9-ubuntu24.04-2026-02-01`). This does not mean you need that exact CUDA version on the host.
 
-A single desktop will be launched and you will have three available methods to connect.  Please see the below section for more information.
+### Minor Version Compatibility
 
-## Connecting to the Instance
+NVIDIA's [minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html) guarantees that an application built with any CUDA toolkit release within a major version family will run on a system with a driver from the same major family. In practice:
 
-There are several methods you can use to interact with your instance.
+- A `cuda-12.9` image will run on any machine with a CUDA 12.x driver (driver >= 525).
+- A `cuda-13.1` image will run on any machine with a CUDA 13.x driver (driver >= 580).
+- The 12.x and 13.x families are separate — a `cuda-13.1` image will not work with a 12.x driver under minor version compatibility alone.
 
-### Jupyter Button
+Choose the CUDA variant that matches your driver's major version. Within that family, any minor version will work.
 
-Press the Jupyter button to be immediately logged in to Jupyter Lab or Notebook (Configure this in the template settings).  Here you can:
-- Manage your files
-- Run Jupyter notebooks
-- Open a terminal session
+### Forward Compatibility
 
-### SSH
+[Forward compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html) allows newer CUDA toolkit versions to run on older drivers. It is only available on **datacenter GPUs** (and select NGC Server Ready RTX cards). All of our images include the CUDA Compatibility Package (`cuda-compat`) to support this.
 
-Press the SSH button to reveal the SSH connection details for your instance.  We only support key based SSH login so check out [this guide](https://docs.vast.ai/sshscp) for help setting this up.
+### Stock Ubuntu Images
 
-SSH sessions will automatically launch inside tmux to keep the session active even if you disconnect.  You can disable this behavior by running the following command `touch ~/.no_auto_tmux` and then re-connecting.
+The `ubuntu<version>-<date>` tags (without CUDA prefix) are stock Ubuntu images without pre-installed CUDA libraries. NVIDIA repositories are configured, so you can install whichever CUDA version you need. Use these when you want full control over your CUDA environment.
 
-If you prefer not to add SSH keys, you can use Jupyter based terminals instead.
-
-### Selkies WebRTC
-
-This is the most performant interface.  It has audio support and is very responsive, but requires a fast and stable connection between your computer and the instance.
-
-Only a single user can connect to this interface at once.
-
-The `x264enc` encoder is selected as the default for best compatibility, but you may change this to `nvh264enc` for best performance.
-
-A TURN server is included in the docker image, but if you would like to use your own TURN server, you can do so by specifying the `TURN_HOST`, `TURN_PORT`, `TURN_PROTOCOL`, `TURN_USERNAME` & `TURN_PASSWORD` environment variables. 
-
-### Guacamole VNC
-
-This is a simple VNC interface available in your web browser.  
-
-VNC is transported by the Guacamole protocol and may be slightly faster than direct VNC.
-
-### VNC
-
-you can use your preferred VNC client to connect on the port mapped to `INSTANCE_IP:5900`
-
-You will need to supply the value of environment variable `$OPEN_BUTTON_TOKEN` as a password.  This is randomly generated on first boot and is also visible in the instance logs.
-
-You can also set environment variable `VNC_PASSWORD` to choose your own password.
-
-### SSH Port Forwarding
-
-Instead of connecting to ports exposed to the internet, you can use SSH port forwarding to securely access services on your instance. This method connects directly to the internal ports, bypassing the Caddy authentication layer.
-
-#### Port Reference Table
-
-| Service | External Port | Internal Port |
-| --- | --- | --- |
-| Instance Portal | 1111 | 11111 |
-| x11vnc | 5900 | 5900 |
-| Selkies Desktop | 6100 | 16100 |
-| Guacamole VNC | 6200 | 16200 |
-| Syncthing | 8384 | 18384 |
-| Jupyter | 8080 | 8080 |
-
-When creating SSH port forwards, use the internal ports listed above. These ports don't require authentication or TLS since they're only accessible through your SSH tunnel. See the [Instance Portal](#open-button-instance-portal) for more details on this security model.
-
-* Note: Jupyter is not proxied so forwarding this will require connection to https://localhost:8080 and you will need to supply the auth token which is stored in the instance in environment variable `JUPYTER_TOKEN`. 
-
-#### Example: Forwarding X11vnc to localhost
-
-To forward the VNC port to your local machine:
+## Building From Source
 
 ```bash
-ssh root@INSTANCE_IP -p SSH_PORT -L 5900:localhost:5900
+cd base-image/derivatives/linux-desktop
+
+docker buildx build \
+    --build-arg VAST_BASE=vastai/base-image:cuda-12.9-mini-py312 \
+    --build-arg BLENDER_VERSION=5.0.1 \
+    -t yournamespace/linux-desktop .
 ```
 
-This command:
+### Build Arguments
 
-- Creates a SSH local port forward for your localhost:5900
-- Connects to the instance internal VNC port (5900)
-- Allows you to access a VNC session at localhost:5900 on your machine
-- Maintains a secure, encrypted connection through SSH
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `VAST_BASE` | `vastai/base-image:cuda-12.9.1-cudnn-devel-ubuntu24.04-py312` | Base image to build from |
+| `UBUNTU_VERSION` | `24.04` | Ubuntu version for guacamole builder |
+| `BLENDER_VERSION` | (auto-detected) | Blender version to install, or empty for latest |
 
-The application will now be available on your local machine without requiring the authentication that would be needed when accessing the externally exposed port.
+## Building with GitHub Actions
 
-### Open Button (Instance Portal)
+You can fork this repository and use the included GitHub Actions workflow to automatically build and push Linux Desktop images to your own DockerHub account.
 
-The Instance Portal is your gateway to managing web applications running on your instance. It uses [Caddy](https://caddyserver.com/) as a reverse proxy to provide secure TLS and authentication for all your applications.
+### Setup
 
-#### Getting Started
+1. Fork the [base-image](https://github.com/vast-ai/base-image) repository.
+2. In your fork, go to **Settings > Secrets and variables > Actions** and add the following repository secrets:
 
-1. **Set Up TLS**: To avoid certificate warnings, install the 'Jupyter' certificate by following our [instance setup guide](https://vast.ai/docs/instance-setup/jupyter#installing-the-tls-certificate).
+   | Secret | Description |
+   |--------|-------------|
+   | `DOCKERHUB_USERNAME` | Your DockerHub username |
+   | `DOCKERHUB_TOKEN` | A DockerHub [access token](https://docs.docker.com/security/for-developers/access-tokens/) |
+   | `DOCKERHUB_NAMESPACE` | DockerHub namespace to push to (usually your username or org) |
+   | `SLACK_WEBHOOK_URL` | *(Optional)* Slack incoming webhook for build notifications |
 
-2. **Access Your Applications**: Simply click the 'Open' button on your instance card:
+3. Enable Actions in your fork under **Settings > Actions > General**.
 
-![Open Button](https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/docs/images/instance-card-open-button.png)
+### Triggering a Build
 
-This sets a cookie using your `OPEN_BUTTON_TOKEN`, granting you access. Without this, you'll see a login prompt (username: `vastai`, password: your `OPEN_BUTTON_TOKEN`).
+Go to **Actions > Build Linux Desktop Image > Run workflow** and fill in the inputs:
 
-#### Programmatic Access
+| Input | Description |
+|-------|-------------|
+| `DOCKERHUB_REPO` | Repository name under your namespace (default: `linux-desktop`) |
+| `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
+| `CUSTOM_IMAGE_TAG` | Override the date portion of the tag |
 
-For automated or API access, you can authenticate to any application by including a Bearer token in your HTTP requests:
+The workflow builds three images per run:
 
-```bash
-Authorization: Bearer <OPEN_BUTTON_TOKEN>
+```
+yournamespace/linux-desktop:cuda-13.1-ubuntu24.04-2026-02-01
+yournamespace/linux-desktop:cuda-12.9-ubuntu24.04-2026-02-01
+yournamespace/linux-desktop:ubuntu24.04-2026-02-01
 ```
 
-This is particularly useful for scripts, automated tools, or when you need to access your applications programmatically without browser interaction.
-Once logged in, you'll see your application dashboard:
+### Automatic Builds
 
-![Instance Portal landing page](https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/docs/images/instance-portal-application-list.png)
-
-The dashboard shows all available ports and their corresponding applications. The Instance Portal can create Cloudflare tunnels - perfect for sharing temporary application links or accessing your instance when direct connections aren't available.
-
-Start, stop, and refresh tunnel links using the dashboard controls.
-
-#### Managing Tunnels
-
-![Instance Portal tunnels tab](https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/docs/images/instance-portal-tunnels.png)
-
-The Tunnels tab displays your active Cloudflare tunnels. You can:
-- View existing tunnels linked to running applications
-- Create new 'quick tunnels' to any local port
-- Test applications without opening ports on your instance
-
-Want to use custom domains or virtual networks? Set the `CF_TUNNEL_TOKEN` environment variable to enable domain mapping. Check out the [Cloudflare documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) for details.
-
-#### Monitoring Your Instance
-
-![Instance Portal logs tab](https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/docs/images/instance-portal-logs.png)
-
-The Logs tab provides live streaming of all `*.log` files from `/var/log/portal/`. Outputs for the included applications are piped to `tee -a /var/log/portal/${PROC_NAME}.log`, making them accessible both within your instance and through the Vast GUI logging button.
-
-#### Configuration
-
-The Instance Portal configuration lives in `/etc/portal.yaml`, generated on first start using your `PORTAL_CONFIG` environment variable.
-
-Need to modify the configuration in a running instance? Edit `/etc/portal.yaml` anytime, then restart Caddy with `supervisorctl restart caddy`. Remember that any new applications will need their external ports to be available for direct access.
-
-## Additional Software
-
-Jupyter is always started when run with the Jupyter launch mode.  All other software is managed by supervisord. 
-
-Manage application startup by modifying the `PORTAL_CONFIG` environment variable before instance start, or by editing the file `/etc/portal.yaml` in a running instance.
-
-To disable all additional web app features, simply remove environment variables `PORTAL_CONFIG` and `OPEN_BUTTON_PORT`
-
-### Caddy
-
-Caddy is a web server that adds HTTPS encryption and user authentication to web applications running on your cloud instance.
-
-Here's how it works:
-- Your applications run on your cloud instance, but they're only accessible through the instance's `localhost`
-- Caddy acts as a secure gateway between these applications and the internet
-- When you try to access your cloud applications from your personal computer, you connect through Caddy
-
-This setup gives you two convenient ways to access your cloud applications:
-- Through your web browser with HTTPS security and login protection
-- Directly through SSH Port Forwarding from your computer, bypassing the need for HTTPS or login credentials
-
-### Syncthing
-
-A powerful file synchronization tool that keeps your development environment in sync across devices. Ideal for maintaining consistent workspaces across multiple instances or syncing datasets. Features:
-- Peer-to-peer file synchronization
-- Real-time file updates
-- Conflict resolution
-- Selective sync options
-
-See the [Syncthing documentation](https://docs.syncthing.net/) for setup instructions.
-
-Configure startup of Syncthing through the `PORTAL_CONFIG` environment variable.
-
-### COTURN
-
-TURN/STUN server implementation that enables WebRTC connections across restrictive networks and NATs. Core features:
-- Acts as a media relay when direct peer connections fail
-- Enabled by default, used only when needed.
-
-### Dbus and Audio stack
-
-Audio support is provided through piperwire. Several services are required to enable this:
-
-- pipewire
-- pipewire-pulse
-- wireplumber
-- dbus-system
-- dbus-user
-
-### Cron
-
-The reliable Linux task scheduler, perfect for automating routine tasks in your instance:
-- Schedule model training jobs
-- Automate data downloads
-- Run periodic maintenance tasks
-- Enabled in all launch modes
-Just add entries to your crontab to get started.
-
-### Vast.ai Instance Control
-
-The Vast.ai CLI tool comes pre-installed on your instance, allowing you to stop it from within. An instance-specific API key is already configured, giving you the ability to control this instance while you're logged in.
-
-To stop the instance from inside itself, run:
-
-```bash
-vastai stop instance $CONTAINER_ID
-```
-
-You can incorporate this command into scripts that run on the instance itself - for example, to shut down based on specific conditions. Combined with cron, you can automate when your instance stops based on your needs.
-
-### NVM (Node Version Manager)
-
-Manages Node.js environments, essential for many modern AI tools and visualization frameworks:
-- Pre-installed with latest LTS Node.js version
-- Supports popular ML visualization tools like TensorBoard.js
-- Enables local development of model visualization dashboards
-- Compatible with various AI/ML web interfaces and tools
-
-### Application Management
-
-We use Supervisor to orchestrate applications in the container. Configuration files live in `/etc/supervisor/conf.d/`, with startup scripts in `/opt/supervisor-scripts/`.
-
-Rather than directly launching applications, we use wrapper scripts for better control. This allows us to check for application entries in `/etc/portal.yaml` - if an application isn't configured here, we assume you don't want to run it.
-
-Common Supervisor commands:
-```bash
-# View all processes
-supervisorctl status
-
-# Control specific services
-supervisorctl start coturn
-supervisorctl stop x11vnc
-supervisorctl restart selkies
-
-# Reload configuration after changes
-supervisorctl reload
-
-# Read recent logs
-supervisorctl tail caddy
-supervisorctl tail -f syncthing  # Follow mode
-```
-
-Need more details? Check out the [Supervisor documentation](https://supervisord.readthedocs.io/en/latest).
-
-### Instance Startup Process
-
-The Docker image uses `/opt/instance-tools/bin/entrypoint.sh` as its startup script. This script handles both initial setup and routine startup tasks.
-
-**First Time Setup:**
-- Updates the `vastai` Python package to the latest version
-- Sets up the `${WORKSPACE}` directory with proper permissions for both admin and user access
-- Configures login settings to:
- - Automatically activate the default Python environment
- - Start in the `${WORKSPACE}` directory
-- Creates a backup of the default Python environments
-- Runs any custom setup script defined in the `PROVISIONING_SCRIPT` environment variable
-
-**Every Time the Instance Starts:**
-- Sets up SSH access keys
-- Creates new security certificates if needed
-- Launches `supervisord` to manage running applications
-
-### Python Package Management
-
-**Default Environment:**
-- Python packages install to the `/venv/main/` virtual environment
-- This environment activates automatically when you:
- - Connect via SSH
- - Open a terminal in Jupyter
- - Run Jupyter notebooks
-
-**Automatic Backups:**
-- Every 30 minutes, the system creates a backup of your Python packages
-- Backups are stored in `/workspace/.venv-backup/{INSTANCE_ID}/`
-- These backups let you:
- - Undo recent package changes
- - Recreate your exact environment on a new instance
-
-**Backup Settings:**
-- By default, keeps 48 backups (24 hours worth)
-- Adjust using the `VENV_BACKUP_COUNT` environment variable
-- Set to `0` to turn off backups
-
-
-## Environment Variables
-
-Some more useful environment variables are provided for instance customization.
-
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `WORKSPACE` | string | `/workspace` | Set the workspace directory |
-| `ENABLE_AUTH` | bool | `true` | Enable or disable token-based and basic authentication |
-| `AUTH_EXCLUDE` | string | | Disable authentication for specific ports. eg. `6006,8384` |
-| `ENABLE_HTTPS` | bool | `false` | Enable or disable TLS |
-| `PORTAL_CONFIG` | string | See note below | Configures the Instance Portal and application startup |
-| `VENV_BACKUP_COUNT` | int | `48` | Number of venv backups to retain |
-| `PROVISIONING_SCRIPT` | string | | URL pointing to a shell script (GitHub Repo, Gist) |
-| `SELKIES_ENCODER` | string | `x264enc` | Video encoder |
-| `VNC_PASSWORD` | string | `$OPEN_BUTTON_TOKEN` | Custom password for VNC connections |
-| `TURN_HOST` | string | `$PUBLIC_IPADDR` | TURN host |
-| `TURN_PORT` | string | `$VAST_TCP_PORT_73478` | TURN port |
-| `TURN_PROTOCOL` | string | `tcp` | TURN protocol |
-| `TURN_USERNAME` | string | `turnuser` | TURN username |
-| `TURN_PASSWORD` | string | `$OPEN_BUTTON_TOKEN` | TURN password |
-
-#### PORTAL_CONFIG
-
-The structure of this variable is:
-- Each application is separated by the `|` character
-- Each application parameter is separated by the `:` character
-- Each application must specify `hostname:external_port:local_port:url_path:Application Name`
-
-The hostname in Docker instances will always be `localhost`
-
-Where the internal port and local port are not equal then Caddy will be configured to listen on `0.0.0.0:external_port` acting as a reverse proxy for `hostname:local_port`
-
-If the `external_port` and `local_port` are equal then Caddy will not act as a proxy but the Instance Portal UI will still create links. This is useful because it allows us to create links to Jupyter which is not controlled by Supervisor in Jupyter Launch mode.
-
-`url_path` will be appended to the instance address and is generally set to `/` but can be used to create application deep links.
-
-The `caddy_manager` script will write an equivalent config file at `/etc/portal.yaml` on boot if it does not already exist. This file can be edited in a running instance.
-
-Important: When defining multiple links to a single application, only the first should have non equal ports - We cannot proxy one application multiple times.
-
-Note: Instance Portal UI is **not** required and its own config declaration can be removed from `PORTAL_CONFIG`. This will not affect the authentication system.
-
-
-## Dynamic Provisioning
-
-Sometimes you need flexibility without rebuilding the entire image. For quick customizations:
-
-Host a shell script remotely (GitHub, Gist, etc.)
-Set the raw URL in `PROVISIONING_SCRIPT`
-
-Here's a typical provisioning script:
-
-```bash
-#!/bin/bash
-
-# Cause the script to exit on failure.
-set -eo pipefail
-
-# Activate the main virtual environment
-. /venv/main/bin/activate
-
-# Install your packages
-pip install your-packages
-
-# Download some useful files
-wget -P "${WORKSPACE}/" https://example.org/my-application.tar.gz
-tar xvf ${WORKSPACE}/my-application.tar.gz"
-
-# Set up any additional services
-echo "my-supervisor-config" > /etc/supervisor/conf.d/my-application.conf
-echo "my-supervisor-wrapper" > /opt/supervisor-scripts/my-application.sh
-chmod +x /opt/supervisor-scripts/my-application.sh
-
-# Reconfigure the instance portal
-rm -f /etc/portal.yaml
-export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:1234:11234:/:My Application"
-
-# Reload Supervisor
-supervisorctl reload
-```
+The workflow runs monthly on the 1st of each month. GitHub disables scheduled workflows on forks by default — to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows.
 
 ## Useful Links
 

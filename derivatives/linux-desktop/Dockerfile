@@ -1,4 +1,21 @@
-ARG VAST_BASE=vastai/base-image:cuda-12.4.1-cudnn-devel-ubuntu22.04-ipv2
+ARG VAST_BASE=vastai/base-image:cuda-12.9.1-cudnn-devel-ubuntu24.04-py312
+# Must match the Ubuntu version in VAST_BASE so guacd links against the right SONAMEs
+ARG UBUNTU_VERSION=24.04
+
+# Build guacd in a separate stage to keep -dev packages out of the final image
+FROM ubuntu:${UBUNTU_VERSION} AS guacamole_builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    build-essential ca-certificates wget \
+    libcairo2-dev libjpeg-turbo8-dev libpng-dev \
+    libtool-bin uuid-dev libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev freerdp2-dev libpango1.0-dev libvncserver-dev \
+    libpulse-dev libssl-dev libvorbis-dev libwebp-dev && \
+    cd /tmp && \
+    wget https://downloads.apache.org/guacamole/1.5.5/source/guacamole-server-1.5.5.tar.gz && \
+    tar -xvf guacamole-server-1.5.5.tar.gz && \
+    cd guacamole-server-1.5.5 && \
+    ./configure && make && make install DESTDIR=/guacamole-install
 
 FROM ${VAST_BASE}
 
@@ -8,6 +25,8 @@ LABEL org.opencontainers.image.description="Linux desktop container image suitab
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Copy Supervisor configuration and startup scripts
+# NOTE: ROOT/opt/instance-tools/export_env.sh overrides the base image version.
+# Remove once the base image fix is released.
 COPY ./ROOT /
 
 # Install a basic GPU accelerated graphical environment
@@ -17,25 +36,16 @@ RUN \
     add-apt-repository ppa:pipewire-debian/pipewire-upstream -y && \
     add-apt-repository ppa:pipewire-debian/wireplumber-upstream -y && \
     apt-get update && \
+    # Many base packages (build-essential, ca-certificates, curl, git, wget, etc.)
+    # are already in the base image -- only list packages this layer adds.
     BASE_PACKAGES=( \
         alsa-base \
         alsa-utils \
         aom-tools \
-        build-essential \
         bzip2 \
-        ca-certificates \
-        clinfo \
         coturn \
-        cups-browsed \
-        cups-bsd \
-        cups-common \
-        cups-filters \
-        curl \
         dbus \
-        dnsutils \
         file \
-        fonts-dejavu \
-        fonts-freefont-ttf \
         fonts-hack \
         fonts-liberation \
         fonts-noto \
@@ -49,27 +59,16 @@ RUN \
         fonts-noto-unhinted \
         fonts-opensymbol \
         fonts-symbola \
-        fonts-ubuntu \
-        gcc \
-        git \
         glib-networking \
         gnupg \
         gstreamer1.0-plugins-bad \
         gzip \
-        htop \
-        intel-gpu-tools \
-        jackd2 \
-        jq \
+        inotify-tools \
         kmod \
         lame \
-        less \
-        libc6-dev \
         libavcodec-extra \
         libdrm2 \
-        libegl-dev \
         libegl1 \
-        libelf-dev \
-        libffmpeg-nvenc-dev \
         libgcrypt20 \
         libgirepository-1.0-1 \
         libgl1 \
@@ -77,26 +76,20 @@ RUN \
         libgles2 \
         libglib2.0-0 \
         libglu1 \
-        libglvnd-dev \
         libglvnd0 \
         libglx0 \
-        libgstreamer-plugins-bad1.0-dev \
         libgudev-1.0-0 \
-        libjack-jackd2-0 \
+        mesa-vulkan-drivers \
         libopengl0 \
-        libopenh264-dev \
         libopus0 \
         libpci3 \
         libpulse0 \
         libsm6 \
         libspa-0.2-bluetooth \
         libspa-0.2-jack \
-        libva-dev \
         libva2 \
         libvdpau-va-gl1 \
-        libvpx-dev \
-        libvulkan-dev \
-        libwayland-dev \
+        libvdpau1 \
         libwayland-egl1 \
         libx11-6 \
         libx11-xcb1 \
@@ -107,45 +100,23 @@ RUN \
         libxdmcp6 \
         libxext6 \
         libxfixes3 \
-        libxrandr-dev \
         libxtst6 \
         libxv1 \
-        mesa-utils \
-        mesa-va-drivers \
-        mesa-vulkan-drivers \
-        meson \
-        nano \
-        net-tools \
         novnc \
-        ocl-icd-libopencl1 \
-        packagekit-tools \
         pipewire \
         pipewire-audio-client-libraries \
         pipewire-pulse \
-        pkg-config \
-        printer-driver-cups-pdf \
-        python3 \
-        python3-cups \
-        python3-dev \
         python3-gi \
         python3-numpy \
-        python3-pip \
         python3-setuptools \
         python3-wheel \
-        radeontop \
         rar \
         svt-av1 \
         unar \
         unrar \
-        unzip \
         vainfo \
-        vdpau-driver-all \
         vdpauinfo \
-        vim \
-        vulkan-tools \
-        wayland-protocols \
         websockify \
-        wget \
         wireplumber \
         wmctrl \
         x11-apps \
@@ -165,22 +136,16 @@ RUN \
         xfonts-scalable \
         xinit \
         xkb-data \
+        xclip \
         xsel \
         xserver-xorg-core \
         xserver-xorg-input-all \
         xserver-xorg-input-wacom \
-        xserver-xorg-video-all \
-        xserver-xorg-video-intel \
-        xserver-xorg-video-qxl \
+        xserver-xorg-video-fbdev \
         xsettingsd \
         xvfb \
-        xz-utils \
-        zip \
-        zstd \
     ) && \
     I386_PACKAGES=( \
-        i965-va-driver-shaders:i386 \
-        intel-media-va-driver-non-free:i386 \
         libc6:i386 \
         libdrm2:i386 \
         libegl1:i386 \
@@ -201,9 +166,6 @@ RUN \
         libxext6:i386 \
         libxtst6:i386 \
         libxv1:i386 \
-        mesa-vulkan-drivers:i386 \
-        va-driver-all:i386 \
-        vdpau-driver-all:i386 \
     ) && \
     if [[ $TARGETARCH == "amd64" ]]; then \
         apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}" "${I386_PACKAGES[@]}"; \
@@ -212,16 +174,15 @@ RUN \
     fi && \
     ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 
-# Install latest Vulkan version
+# Vulkan & EGL fallback configs for NVIDIA.
+# The NVIDIA Container Toolkit bind-mounts its own versions of these files at
+# runtime, shadowing the baked-in copies below.  These only take effect on
+# machines where the toolkit is absent or misconfigured.
 RUN \
     set -euo pipefail && \
     VULKAN_API_VERSION=$(dpkg -s libvulkan1 | grep -oP 'Version: [0-9|\.]+' | grep -oP '[0-9]+(\.[0-9]+)(\.[0-9]+)') && \
     mkdir -pm755 /etc/vulkan/icd.d/ && \
-    printf '{"file_format_version" : "1.0.0","ICD": {"library_path": "libGLX_nvidia.so.0","api_version" : "%s"}}' $VULKAN_API_VERSION > /etc/vulkan/icd.d/nvidia_icd.json
-
-# EGL Config
-RUN \
-    set -euo pipefail && \
+    printf '{"file_format_version" : "1.0.0","ICD": {"library_path": "libGLX_nvidia.so.0","api_version" : "%s"}}' "$VULKAN_API_VERSION" > /etc/vulkan/icd.d/nvidia_icd.json && \
     mkdir -pm755 /usr/share/glvnd/egl_vendor.d/ && \
     printf '{"file_format_version" : "1.0.0","ICD": {"library_path": "libEGL_nvidia.so.0"}}' > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
@@ -233,6 +194,7 @@ RUN \
     curl -fsSL -O "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL_VERSION}/virtualgl_${VIRTUALGL_VERSION}_${TARGETARCH}.deb" && \
     apt-get install -y ./virtualgl_${VIRTUALGL_VERSION}_${TARGETARCH}.deb && \
     chmod -f u+s /usr/lib/libvglfaker.so /usr/lib/libvglfaker-nodl.so /usr/lib/libdlfaker.so /usr/lib/libgefaker.so && \
+    ln -sf /usr/lib/libvglfaker.so /usr/lib/x86_64-linux-gnu/libvglfaker.so && \
     if [[ $TARGETARCH == "amd64" ]]; then \
         curl -fsSL -O "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL_VERSION}/virtualgl32_${VIRTUALGL_VERSION}_${TARGETARCH}.deb" && \
         apt-get install -y ./virtualgl32_${VIRTUALGL_VERSION}_${TARGETARCH}.deb && \
@@ -241,9 +203,14 @@ RUN \
     fi && \
     rm -f /tmp/virtualgl*
 
-# NVIDIA VAAPI
+# NVIDIA VAAPI (install build-only deps here, cleaned up after Selkies)
 RUN \
     set -euo pipefail && \
+    apt-get update && apt-get install --no-install-recommends -y \
+        meson pkg-config libc6-dev libegl-dev libglvnd-dev libva-dev \
+        libopenh264-dev libvpx-dev libvulkan-dev libwayland-dev \
+        libxrandr-dev libgstreamer-plugins-bad1.0-dev libffmpeg-nvenc-dev \
+        wayland-protocols libelf-dev && \
     NVIDIA_VAAPI_DRIVER_VERSION="$(curl -fsSL "https://api.github.com/repos/elFarto/nvidia-vaapi-driver/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
     cd /tmp && \
     curl -fsSL "https://github.com/elFarto/nvidia-vaapi-driver/archive/v${NVIDIA_VAAPI_DRIVER_VERSION}.tar.gz" | tar -xzf - && \
@@ -265,55 +232,59 @@ RUN \
     cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && /usr/bin/pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && rm -f "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
     cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
     cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && rm -f selkies-js-interposer.deb
-    
-    #curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-portable-v${SELKIES_VERSION}_amd64.tar.gz" | tar -xzf -
+
+# Clean up build-only packages installed for NVIDIA VAAPI
+RUN apt-get purge -y --auto-remove \
+    meson libegl-dev libglvnd-dev libva-dev libopenh264-dev \
+    libvpx-dev libvulkan-dev libwayland-dev libxrandr-dev \
+    libgstreamer-plugins-bad1.0-dev libffmpeg-nvenc-dev \
+    wayland-protocols libelf-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV CATALINA_BASE=/opt/tomcat9
 ENV CATALINA_HOME=/opt/tomcat9
 
 # Apache Tomcat
 RUN \
+    set -euo pipefail && \
+    TOMCAT_VERSION="$(curl -fsSL https://dlcdn.apache.org/tomcat/tomcat-9/ | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1)" && \
     cd /opt && \
-    wget https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.104/bin/apache-tomcat-9.0.104.tar.gz && \
-    tar xzvf apache-tomcat-9.0.104.tar.gz && \
-    ln -s /opt/apache-tomcat-9.0.104/ /opt/tomcat9 && \
+    wget "https://dlcdn.apache.org/tomcat/tomcat-9/v${TOMCAT_VERSION}/bin/apache-tomcat-${TOMCAT_VERSION}.tar.gz" && \
+    tar xzf "apache-tomcat-${TOMCAT_VERSION}.tar.gz" && \
+    rm "apache-tomcat-${TOMCAT_VERSION}.tar.gz" && \
+    ln -s "/opt/apache-tomcat-${TOMCAT_VERSION}" /opt/tomcat9 && \
     chmod +x /opt/tomcat9/bin/*.sh && \
     useradd -r -m -U -d /opt/tomcat9 -s /bin/false tomcat && \
-    chown -R tomcat:tomcat /opt/apache-tomcat-9.0.104 && \
-    chmod -R 755 /opt/apache-tomcat-9.0.104
+    chown -R tomcat:tomcat "/opt/apache-tomcat-${TOMCAT_VERSION}" && \
+    chmod -R 755 "/opt/apache-tomcat-${TOMCAT_VERSION}"
 
-# Guacamole - TODO build stage
+# Guacamole - install pre-built guacd from builder stage + runtime libraries
+COPY --from=guacamole_builder /guacamole-install/ /
 RUN \
     set -euo pipefail && \
+    ldconfig && \
+    apt-get update && \
+    # Stable package names (same across Ubuntu 22.04 / 24.04)
     apt-get install --no-install-recommends -y \
-        libcairo2-dev \
-        libjpeg-turbo8-dev \
-        libpng-dev \
-        libtool-bin \
-        uuid-dev \
-        libavcodec-dev \
-        libavformat-dev \
-        libavutil-dev \
-        libswscale-dev \
-        freerdp2-dev \
-        libpango1.0-dev \
-        libvncserver-dev \
-        libpulse-dev \
-        libssl-dev \
-        libvorbis-dev \
-        libwebp-dev && \
-    cd /tmp && \
+        libcairo2 libjpeg-turbo8 libuuid1 \
+        libpango-1.0-0 libvncserver1 \
+        libpulse0 libvorbis0a libwebp7 && \
+    # Version-specific packages: ffmpeg SONAMEs and t64 ABI transition
+    . /etc/os-release && \
+    case "$VERSION_ID" in \
+        24.04) apt-get install --no-install-recommends -y \
+            libavcodec60 libavformat60 libavutil58 libswscale7 \
+            libpng16-16t64 libfreerdp-client2-2t64 libssl3t64 ;; \
+        *) apt-get install --no-install-recommends -y \
+            libavcodec58 libavformat58 libavutil56 libswscale5 \
+            libpng16-16 libfreerdp-client2-2 libssl3 ;; \
+    esac && \
     sed -i 's/port="8080"/port="16200" address="127.0.0.1"/' /opt/tomcat9/conf/server.xml && \
-    wget -O /opt/tomcat9/webapps/guacamole.war https://downloads.apache.org/guacamole/1.5.5/binary/guacamole-1.5.5.war && \
+    wget -O /opt/tomcat9/webapps/guacamole.war \
+        https://downloads.apache.org/guacamole/1.5.5/binary/guacamole-1.5.5.war && \
     chown tomcat:tomcat /opt/tomcat9/webapps/guacamole.war && \
-    wget https://downloads.apache.org/guacamole/1.5.5/source/guacamole-server-1.5.5.tar.gz && \
-    tar -xvf guacamole-server-1.5.5.tar.gz && \
-    cd guacamole-server-1.5.5 && \
-    ./configure && \
-    make && \
-    make install && \
     mkdir -p /etc/guacamole/{extensions,lib} && \
-    wget -O  /etc/guacamole/extensions/guacamole-auth-noauth-1.5.5.jar \
+    wget -O /etc/guacamole/extensions/guacamole-auth-noauth-1.5.5.jar \
         https://github.com/GauriSpears/guacamole-noauth/releases/download/1.5.5/guacamole-auth-noauth-1.5.5.jar && \
     echo "guacd-hostname: localhost" > /etc/guacamole/guacamole.properties && \
     echo "guacd-port: 4822" >> /etc/guacamole/guacamole.properties && \
@@ -362,7 +333,6 @@ RUN \
     filelight \
     frameworkintegration \
     gwenview \
-    haveged \
     hunspell \
     im-config \
     kwrite \
@@ -416,12 +386,9 @@ RUN \
     plasma-browser-integration \
     plasma-calendar-addons \
     plasma-dataengines-addons \
-    plasma-discover \
     plasma-integration \
     plasma-runners-addons \
     plasma-widgets-addons \
-    print-manager \
-    qapt-deb-installer \
     qml-module-org-kde-runnermodel \
     qml-module-org-kde-qqc2desktopstyle \
     qml-module-qtgraphicaleffects \
@@ -443,9 +410,7 @@ RUN \
     vlc-plugin-samba \
     vlc-plugin-skins2 \
     vlc-plugin-video-splitter \
-    vlc-plugin-visualization \
-    xdg-user-dirs \
-    xdg-utils
+    vlc-plugin-visualization
 
 # Google Chrome
 RUN \
@@ -455,9 +420,17 @@ RUN \
     update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
     update-alternatives --set x-www-browser /usr/bin/google-chrome-stable
 
-# Blender
+# Blender - version passed via build arg, or auto-detected if empty
+ARG BLENDER_VERSION=""
 RUN \
-    BLENDER_VERSION=4.4.1 && \
+    set -euo pipefail && \
+    if [ -z "$BLENDER_VERSION" ]; then \
+        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
+            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+    fi && \
+    echo "Installing Blender version: ${BLENDER_VERSION}" && \
     cd /opt && \
     wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
     tar xvf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
@@ -467,27 +440,22 @@ RUN \
     cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
 
 
+# GPU benchmarks
+RUN \
+    set -euo pipefail && \
+    apt-get update && apt-get install --no-install-recommends -y glmark2 && \
+    cd /tmp && \
+    wget -O Unigine_Heaven-4.0.run https://assets.unigine.com/d/Unigine_Heaven-4.0.run && \
+    chmod +x Unigine_Heaven-4.0.run && \
+    ./Unigine_Heaven-4.0.run --target /opt/unigine-heaven --noexec && \
+    ln -s /opt/unigine-heaven/heaven /usr/local/bin/heaven && \
+    rm -f /tmp/Unigine_Heaven-4.0.run
+
 # Switch to user for simplicity.  We will switch back to root as all Vast.ai instances default to root login anyway
 ENV XDG_RUNTIME_DIR="/run/user/1001"
 ENV DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1001/dbus/session_bus_socket"
 USER user
-RUN \
-    set -euo pipefail && \
-    mkdir -p "$XDG_RUNTIME_DIR/dbus" && \
-    mkdir -p "/home/user/.config/dbus" && \
-    echo '<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\
-    <busconfig>\
-        <type>session</type>\
-        <keep_umask/>\
-        <listen>unix:path=/run/user/1001/dbus/session_bus_socket</listen>\
-        <auth>EXTERNAL</auth>\
-        <allow_anonymous/>\
-        <policy context="default">\
-            <allow send_destination="*" eavesdrop="true"/>\
-            <allow eavesdrop="true"/>\
-            <allow own="*"/>\
-        </policy>\
-    </busconfig>' > /home/user/.config/dbus/session-local.conf
+RUN mkdir -p "$XDG_RUNTIME_DIR/dbus"
 
 ENV DISPLAY=":20"
 ENV PIPEWIRE_LATENCY="128/48000"
