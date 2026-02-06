@@ -11,13 +11,13 @@ set -euo pipefail
 mkdir -p "${USER_HOME}/Desktop"
 cd /tmp
 [[ -n ${PINOKIO_VERSION:-} ]] || PINOKIO_VERSION=$(curl -s https://api.github.com/repos/pinokiocomputer/pinokio/releases/latest |jq -r .tag_name)
-VERSION_NUMBER=${PINOKIO_VERSION:-5.10.1}
+VERSION_NUMBER=${PINOKIO_VERSION:-v6.0.10}
 FILE_NAME="Pinokio-${VERSION_NUMBER#v}.AppImage"
 wget -O "${FILE_NAME}" "https://github.com/pinokiocomputer/pinokio/releases/download/${VERSION_NUMBER}/${FILE_NAME}"
 chmod +x "${FILE_NAME}"
 ./"${FILE_NAME}" --appimage-extract
 mv /tmp/squashfs-root /opt/pinokio
-chown -R "${USER_NAME}:${USER_NAME}" /opt/pinokio
+chown -R "${USER_NAME}:root" /opt/pinokio
 rm -f "/tmp/${FILE_NAME}"
 EOF
 
