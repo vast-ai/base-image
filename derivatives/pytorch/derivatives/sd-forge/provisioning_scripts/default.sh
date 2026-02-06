@@ -8,7 +8,6 @@ FORGE_DIR="${WORKSPACE_DIR}/stable-diffusion-webui-forge"
 MODELS_DIR="${FORGE_DIR}/models"
 SEMAPHORE_DIR="${WORKSPACE_DIR}/download_sem_$$"
 MAX_PARALLEL="${MAX_PARALLEL:-3}"
-PROVISIONING_LOG="${PROVISIONING_LOG:-/var/log/portal/forge.log}"
 
 # APT packages to install (uncomment as needed)
 APT_PACKAGES=(
@@ -40,8 +39,8 @@ EXTENSIONS=(
 
 # HuggingFace models (requires HF_TOKEN for gated models)
 HF_MODELS_DEFAULT=(
-    "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11/resolve/main/Juggernaut-XI-byRunDiffusion.safetensors
-    |/workspace/stable-diffusion-webui-forge/models/Stable-diffusion/Juggernaut-XI-byRunDiffusion.safetensors"
+    "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors
+    |/workspace/stable-diffusion-webui-forge/models/Stable-diffusion/v1-5-pruned-emaonly.safetensors"
 )
 
 # CivitAI models (requires CIVITAI_TOKEN for some models)
@@ -58,12 +57,9 @@ WGET_DOWNLOADS_DEFAULT=(
 
 ### End Configuration ###
 
-# Ensure log directory exists
-mkdir -p "$(dirname "$PROVISIONING_LOG")"
-
 log() {
     local message="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "$message" | tee -a "$PROVISIONING_LOG"
+    echo "$message"
 }
 
 script_cleanup() {
@@ -249,7 +245,7 @@ download_hf_file() {
             if "$hf_command" download "$repo" \
                 "$file_path" \
                 --local-dir "$temp_dir" \
-                --cache-dir "$temp_dir/.cache" 2>&1 | tee -a "$PROVISIONING_LOG"; then
+                --cache-dir "$temp_dir/.cache" 2>&1; then
 
                 # Verify the file was actually downloaded
                 if [[ -f "$temp_dir/$file_path" ]]; then
@@ -391,7 +387,7 @@ download_file() {
                 wget_args+=(-O "$output_dir/$output_file")
             fi
 
-            if wget "${wget_args[@]}" "$url" 2>&1 | tee -a "$PROVISIONING_LOG"; then
+            if wget "${wget_args[@]}" "$url" 2>&1; then
                 log "Successfully downloaded to: $output_dir"
                 exit 0
             fi
@@ -529,16 +525,6 @@ run_startup_test() {
 }
 
 main() {
-    log "========================================"
-    log "Starting Forge provisioning..."
-    log "========================================"
-
-    # Check for skip flag
-    if [[ -f "/.noprovisioning" ]]; then
-        log "Provisioning skipped (/.noprovisioning exists)"
-        exit 0
-    fi
-
     # Activate virtual environment
     if [[ -f /venv/main/bin/activate ]]; then
         # shellcheck source=/dev/null
@@ -621,10 +607,6 @@ main() {
 
     # Run startup test
     run_startup_test
-
-    log "========================================"
-    log "Provisioning complete!"
-    log "========================================"
 }
 
 main "$@"
