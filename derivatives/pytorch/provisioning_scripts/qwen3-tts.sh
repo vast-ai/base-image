@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+apt-get install --no-install-recommends -y sox
+
 . /venv/main/bin/activate
 
 cd "${WORKSPACE}"
@@ -10,7 +12,7 @@ cd "${WORKSPACE}"
 cd Qwen3-TTS
 
 sed -i '/^import spaces/d; /^@spaces/d' app.py
-sed -i '/^\*\*Note\*\*: This demo uses HuggingFace Spaces Zero GPU/{N;s/.*\n.*/[HuggingFace Spaces](https:\/\/huggingface.co\/spaces\/Qwen\/Qwen3-TTS), running on Vast.ai/}' app.py
+sed -i '/^\*\*Note\*\*: This demo uses HuggingFace Spaces Zero GPU/{N;s/.*\n.*/Qwen3-TTS [HuggingFace Space](https:\/\/huggingface.co\/spaces\/Qwen\/Qwen3-TTS)/}' app.py
 
 uv pip install -r requirements.txt
 uv pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
