@@ -18,7 +18,7 @@ git checkout "${ACE_STEP_UI_REF:-main}"
 npm install
 cd server
 npm install
-cp .env.example .env
+[[ ! -f .env ]] && cp .env.example .env
 
 
 # Create startup script
