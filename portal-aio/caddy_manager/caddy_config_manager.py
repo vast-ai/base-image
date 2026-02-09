@@ -287,6 +287,10 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
     import forwarded_protocol_map
 
     route @noauth {{
+        route /portal-resolver {{
+            respond 200
+        }}
+        
         handle {{
             {cors_block}
             {proxy_block}
