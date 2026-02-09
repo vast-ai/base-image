@@ -288,9 +288,12 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     route @noauth {{
         route /portal-resolver {{
+            header Access-Control-Allow-Origin *
+            header Access-Control-Allow-Methods GET, OPTIONS
+            header Access-Control-Allow-Headers *
             respond 200
         }}
-        
+
         handle {{
             {cors_block}
             {proxy_block}
