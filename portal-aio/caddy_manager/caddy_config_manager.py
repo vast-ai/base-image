@@ -214,6 +214,10 @@ def generate_caddyfile(config):
 
     return caddyfile, web_username, web_password, open_button_token
 
+def get_cors_block():
+    return '''header ?Access-Control-Allow-Origin *
+            header ?Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+            header ?Access-Control-Allow-Headers *'''
 
 def get_reverse_proxy_block(hostname, internal_port, flush_interval):
     use_localhost = False
@@ -229,6 +233,7 @@ def get_reverse_proxy_block(hostname, internal_port, flush_interval):
     
     return f'''reverse_proxy {hostname}:{internal_port} {{
             {host_header}
+            header_up Origin http://localhost:{internal_port}
             header_up X-Forwarded-Proto {{forwarded_protocol}}
             header_up X-Real-IP {{real_ip}}
             flush_interval {flush_interval}
@@ -248,6 +253,7 @@ def generate_noauth_config(hostname, internal_port, flush_interval):
 
 def generate_auth_config(caddy_identifier, username, password, open_button_token, hostname, internal_port, flush_interval):
     hashed_password = subprocess.check_output([CADDY_BIN, 'hash-password', '-p', password]).decode().strip()
+    cors_block = get_cors_block()
     proxy_block = get_reverse_proxy_block(hostname, internal_port, flush_interval)
    
     return f'''    
@@ -257,6 +263,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     route @noauth {{
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
@@ -273,12 +280,14 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     route @has_valid_auth_cookie {{
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
 
     route @has_valid_bearer_token {{
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
@@ -290,6 +299,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
         header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
 
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
