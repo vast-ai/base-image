@@ -162,18 +162,6 @@ def generate_caddyfile(config):
         }}
     }}
 
-    (healthicon) {{
-        route /health.ico {{
-            header Content-Type image/x-icon
-            header Access-Control-Allow-Origin *
-            header Access-Control-Allow-Methods GET, OPTIONS
-            header Access-Control-Allow-Headers *
-            respond 200 {{
-                body "GIF89a\\x01\\x00\\x01\\x00\\x80\\x00\\x00\\xff\\xff\\xff\\x00\\x00\\x00!\\xf9\\x04\\x01\\x00\\x00\\x00\\x00,\\x00\\x00\\x00\\x00\\x01\\x00\\x01\\x00\\x00\\x02\\x02D\\x01\\x00;"
-            }}
-        }}
-    }}
-
     (real_ip_map) {{
         map {{http.request.header.cf-connecting-ip}} {{real_ip}} {{
             ""     {{remote_host}}
@@ -226,6 +214,33 @@ def generate_caddyfile(config):
 
     return caddyfile, web_username, web_password, open_button_token
 
+def get_cors_block():
+    """
+    Generate a CORS header block for Caddy.
+    The behavior is controlled via environment variables:
+      - CADDY_CORS_ALLOWED_ORIGINS: comma-separated list or single origin string.
+        If unset or empty, no CORS headers are added.
+      - CADDY_CORS_ALLOWED_METHODS: methods for Access-Control-Allow-Methods.
+        Defaults to "GET, POST, PUT, DELETE, OPTIONS" if not set.
+      - CADDY_CORS_ALLOWED_HEADERS: headers for Access-Control-Allow-Headers.
+        Defaults to "Authorization, Content-Type" if not set.
+    Does not override headers sent by backend services
+    """
+    allowed_origins = os.environ.get("CADDY_CORS_ALLOWED_ORIGINS", "").strip()
+    if not allowed_origins:
+        # Do not expose permissive CORS by default; require explicit configuration.
+        return ""
+    allowed_methods = os.environ.get(
+        "CADDY_CORS_ALLOWED_METHODS",
+        "GET, POST, PUT, DELETE, OPTIONS",
+    ).strip()
+    allowed_headers = os.environ.get(
+        "CADDY_CORS_ALLOWED_HEADERS",
+        "Authorization, Content-Type",
+    ).strip()
+    return f'''header ?Access-Control-Allow-Origin "{allowed_origins}"
+            header ?Access-Control-Allow-Methods "{allowed_methods}"
+            header ?Access-Control-Allow-Headers "{allowed_headers}"'''
 
 def get_reverse_proxy_block(hostname, internal_port, flush_interval):
     use_localhost = False
@@ -235,7 +250,10 @@ def get_reverse_proxy_block(hostname, internal_port, flush_interval):
         use_localhost = header_up_localhost.lower() == "true" or str(internal_port) in ports_list
     
     if use_localhost:
-        host_header = f"header_up Host localhost:{internal_port}"
+        host_header = f'''
+            header_up Host localhost:{internal_port}
+            header_up Origin {{forwarded_protocol}}://localhost:{internal_port}
+        '''
     else:
         host_header = f"header_up Host {{upstream_hostport}}"
     
@@ -260,6 +278,7 @@ def generate_noauth_config(hostname, internal_port, flush_interval):
 
 def generate_auth_config(caddy_identifier, username, password, open_button_token, hostname, internal_port, flush_interval):
     hashed_password = subprocess.check_output([CADDY_BIN, 'hash-password', '-p', password]).decode().strip()
+    cors_block = get_cors_block()
     proxy_block = get_reverse_proxy_block(hostname, internal_port, flush_interval)
    
     return f'''    
@@ -268,9 +287,8 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
     import forwarded_protocol_map
 
     route @noauth {{
-        import healthicon
-
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
@@ -287,12 +305,14 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     route @has_valid_auth_cookie {{
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
 
     route @has_valid_bearer_token {{
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
@@ -304,6 +324,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
         header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
 
         handle {{
+            {cors_block}
             {proxy_block}
         }}
     }}
