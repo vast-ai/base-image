@@ -162,18 +162,6 @@ def generate_caddyfile(config):
         }}
     }}
 
-    (healthicon) {{
-        route /health.ico {{
-            header Content-Type image/x-icon
-            header Access-Control-Allow-Origin *
-            header Access-Control-Allow-Methods GET, OPTIONS
-            header Access-Control-Allow-Headers *
-            respond 200 {{
-                body "GIF89a\\x01\\x00\\x01\\x00\\x80\\x00\\x00\\xff\\xff\\xff\\x00\\x00\\x00!\\xf9\\x04\\x01\\x00\\x00\\x00\\x00,\\x00\\x00\\x00\\x00\\x01\\x00\\x01\\x00\\x00\\x02\\x02D\\x01\\x00;"
-            }}
-        }}
-    }}
-
     (real_ip_map) {{
         map {{http.request.header.cf-connecting-ip}} {{real_ip}} {{
             ""     {{remote_host}}
@@ -268,8 +256,6 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
     import forwarded_protocol_map
 
     route @noauth {{
-        import healthicon
-
         handle {{
             {proxy_block}
         }}
