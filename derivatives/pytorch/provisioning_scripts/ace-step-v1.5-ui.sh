@@ -36,7 +36,7 @@ utils=/opt/supervisor-scripts/utils
 echo "Starting ACE Step API"
 
 cd "${WORKSPACE}/ACE-Step-1.5"
-UV_PROJECT_ENVIRONMENT=/venv/main/ uv run acestep-api --port 8001
+UV_PROJECT_ENVIRONMENT=/venv/main uv run acestep-api --port 8001
 EOL
 
 chmod +x /opt/supervisor-scripts/ace-step-api.sh
