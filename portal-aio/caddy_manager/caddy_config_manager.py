@@ -158,7 +158,7 @@ def generate_caddyfile(config):
             path /site.webmanifest
             path /.well-known/security.txt
             path /security.txt
-            path /health.ico
+            path /portal-resolver
         }}
     }}
 
