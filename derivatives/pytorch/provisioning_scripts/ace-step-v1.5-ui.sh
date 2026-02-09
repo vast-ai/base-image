@@ -62,7 +62,7 @@ echo "Starting ACE Step UI"
 
 cd "${WORKSPACE}/ace-step-ui"
 . /opt/nvm/nvm.sh
-ACESTEP_PATH=/workspace/ACE-Step-1.5/ ./start.sh
+ACESTEP_PATH="${WORKSPACE:-/workspace}/ACE-Step-1.5/" ./start.sh
 EOL
 
 chmod +x /opt/supervisor-scripts/ace-step-ui.sh
