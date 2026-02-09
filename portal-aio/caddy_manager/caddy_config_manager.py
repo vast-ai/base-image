@@ -215,9 +215,32 @@ def generate_caddyfile(config):
     return caddyfile, web_username, web_password, open_button_token
 
 def get_cors_block():
-    return '''header ?Access-Control-Allow-Origin *
-            header ?Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-            header ?Access-Control-Allow-Headers *'''
+    """
+    Generate a CORS header block for Caddy.
+    The behavior is controlled via environment variables:
+      - CADDY_CORS_ALLOWED_ORIGINS: comma-separated list or single origin string.
+        If unset or empty, no CORS headers are added.
+      - CADDY_CORS_ALLOWED_METHODS: methods for Access-Control-Allow-Methods.
+        Defaults to "GET, POST, PUT, DELETE, OPTIONS" if not set.
+      - CADDY_CORS_ALLOWED_HEADERS: headers for Access-Control-Allow-Headers.
+        Defaults to "Authorization, Content-Type" if not set.
+    Does not override headers sent by backend services
+    """
+    allowed_origins = os.environ.get("PORTAL_CORS_ALLOWED_ORIGINS", "").strip()
+    if not allowed_origins:
+        # Do not expose permissive CORS by default; require explicit configuration.
+        return ""
+    allowed_methods = os.environ.get(
+        "CADDY_CORS_ALLOWED_METHODS",
+        "GET, POST, PUT, DELETE, OPTIONS",
+    ).strip()
+    allowed_headers = os.environ.get(
+        "CADDY_CORS_ALLOWED_HEADERS",
+        "Authorization, Content-Type",
+    ).strip()
+    return f'''header ?Access-Control-Allow-Origin "{allowed_origins}"
+            header ?Access-Control-Allow-Methods "{allowed_methods}"
+            header ?Access-Control-Allow-Headers "{allowed_headers}"'''
 
 def get_reverse_proxy_block(hostname, internal_port, flush_interval):
     use_localhost = False
