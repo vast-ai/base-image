@@ -226,7 +226,7 @@ def get_cors_block():
         Defaults to "Authorization, Content-Type" if not set.
     Does not override headers sent by backend services
     """
-    allowed_origins = os.environ.get("PORTAL_CORS_ALLOWED_ORIGINS", "").strip()
+    allowed_origins = os.environ.get("CADDY_CORS_ALLOWED_ORIGINS", "").strip()
     if not allowed_origins:
         # Do not expose permissive CORS by default; require explicit configuration.
         return ""
