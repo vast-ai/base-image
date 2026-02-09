@@ -158,7 +158,7 @@ def generate_caddyfile(config):
             path /site.webmanifest
             path /.well-known/security.txt
             path /security.txt
-            path /health.ico
+            path /portal-resolver
         }}
     }}
 
@@ -287,6 +287,13 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
     import forwarded_protocol_map
 
     route @noauth {{
+        route /portal-resolver {{
+            header Access-Control-Allow-Origin *
+            header Access-Control-Allow-Methods GET, OPTIONS
+            header Access-Control-Allow-Headers *
+            respond 200
+        }}
+
         handle {{
             {cors_block}
             {proxy_block}
