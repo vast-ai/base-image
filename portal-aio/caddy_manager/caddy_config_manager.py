@@ -250,13 +250,15 @@ def get_reverse_proxy_block(hostname, internal_port, flush_interval):
         use_localhost = header_up_localhost.lower() == "true" or str(internal_port) in ports_list
     
     if use_localhost:
-        host_header = f"header_up Host localhost:{internal_port}"
+        host_header = f'''
+            header_up Host localhost:{internal_port}
+            header_up Origin http://localhost:{internal_port}
+        '''
     else:
         host_header = f"header_up Host {{upstream_hostport}}"
     
     return f'''reverse_proxy {hostname}:{internal_port} {{
             {host_header}
-            header_up Origin http://localhost:{internal_port}
             header_up X-Forwarded-Proto {{forwarded_protocol}}
             header_up X-Real-IP {{real_ip}}
             flush_interval {flush_interval}
