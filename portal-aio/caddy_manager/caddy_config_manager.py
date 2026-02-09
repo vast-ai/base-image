@@ -252,7 +252,7 @@ def get_reverse_proxy_block(hostname, internal_port, flush_interval):
     if use_localhost:
         host_header = f'''
             header_up Host localhost:{internal_port}
-            header_up Origin http://localhost:{internal_port}
+            header_up Origin {{forwarded_protocol}}://localhost:{internal_port}
         '''
     else:
         host_header = f"header_up Host {{upstream_hostport}}"
