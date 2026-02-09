@@ -50,9 +50,11 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/environment.sh"
 . "${utils}/exit_portal.sh" "ACE Step UI"
 
+export ACESTEP_LM_MODEL_PATH=${ACESTEP_LM_MODEL_PATH:=acestep-5Hz-lm-4B}
+
 until curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/docs | grep -q 200; do
   echo "Waiting for ACE Step API..."
-  sleep 2
+  sleep 5
 done
 echo "Service is up!"
 
