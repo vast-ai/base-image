@@ -11,6 +11,8 @@ cd "${WORKSPACE}"
 cd "${WORKSPACE}/ACE-Step-1.5"
 git checkout "${ACE_STEP_REF:-main}"
 UV_PROJECT_ENVIRONMENT=/venv/main uv sync
+# UI is not aware of the correct venv path and looks up this dir for python
+ln -s /venv/main .venv
 
 cd "${WORKSPACE}/ace-step-ui"
 git checkout "${ACE_STEP_UI_REF:-main}"
