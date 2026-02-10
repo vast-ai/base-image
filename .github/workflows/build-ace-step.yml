@@ -42,13 +42,14 @@ env:
   DEFAULT_MULTI_ARCH: "false"
   # 1 week
   RELEASE_AGE_THRESHOLD: 604800
+  ACE_STEP_GITHUB_REPO: "ace-step/ACE-Step-1.5"
 
 jobs:
   preflight:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      ace-step-ref: ${{ steps.release-check.outputs.resolved-ref }}
+      ace-step-ref: ${{ steps.resolve-ref.outputs.ref }}
       ace-step-ui-ref: ${{ steps.resolve-ui-ref.outputs.ref }}
     steps:
       - name: Checkout
@@ -65,16 +66,60 @@ jobs:
             echo "::notice::Skipping - secrets not configured"
           fi
 
-      - name: Check release and resolve ref
-        id: release-check
-        uses: ./.github/actions/check-github-release
-        with:
-          repository: ace-step/ACE-Step-1.5
-          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.ACE_STEP_REF && github.event_name || 'schedule' }}
-          manual-ref: ${{ inputs.ACE_STEP_REF }}
-          default-ref: main
+      - name: Check for new commits
+        id: commit-check
+        if: ${{ !inputs.ACE_STEP_REF }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking GitHub for new commits on ${{ env.ACE_STEP_GITHUB_REPO }} main..."
+
+          COMMIT_DATA=$(gh api "repos/${{ env.ACE_STEP_GITHUB_REPO }}/commits/main" \
+            --jq '{sha: .sha[0:7], date: .commit.committer.date}')
+
+          COMMIT_SHA=$(echo "$COMMIT_DATA" | jq -r '.sha')
+          COMMIT_DATE=$(echo "$COMMIT_DATA" | jq -r '.date')
+
+          if [[ -z "$COMMIT_SHA" || "$COMMIT_SHA" == "null" ]]; then
+            echo "::warning::Could not resolve HEAD of main"
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+          AGE_DAYS=$((AGE / 86400))
+
+          echo "Latest commit: $COMMIT_SHA ($AGE_DAYS days ago)"
+
+          if [[ $AGE -lt ${{ env.RELEASE_AGE_THRESHOLD }} ]]; then
+            echo "new-release=true" >> $GITHUB_OUTPUT
+            echo "✓ New commit detected"
+          else
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            echo "::notice::No new commits in threshold period"
+          fi
+
+      - name: Resolve ACE-Step git ref
+        id: resolve-ref
+        run: |
+          if [[ -n "${{ inputs.ACE_STEP_REF }}" ]]; then
+            REF="${{ inputs.ACE_STEP_REF }}"
+            echo "Using manual ref: $REF"
+          else
+            echo "Resolving HEAD of main branch..."
+            COMMIT=$(git ls-remote "https://github.com/${{ env.ACE_STEP_GITHUB_REPO }}.git" refs/heads/main | cut -f1 | cut -c1-7)
+            if [[ -n "$COMMIT" ]]; then
+              REF="$COMMIT"
+              echo "Resolved main → $REF"
+            else
+              echo "::error::Could not resolve HEAD of main branch"
+              exit 1
+            fi
+          fi
+
+          echo "ref=$REF" >> $GITHUB_OUTPUT
 
       - name: Resolve ACE-Step UI ref
         id: resolve-ui-ref
@@ -86,11 +131,22 @@ jobs:
       - name: Determine if build should run
         id: decision
         run: |
-          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          MANUAL_REF="${{ inputs.ACE_STEP_REF }}"
+          NEW_RELEASE="${{ steps.commit-check.outputs.new-release }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ -n "$MANUAL_REF" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building ref: ${{ steps.release-check.outputs.resolved-ref }}"
+            echo "✓ Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
+          elif [[ "$NEW_RELEASE" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ New commit detected, building ref: ${{ steps.resolve-ref.outputs.ref }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - No new commits detected"
           fi
 
   build:
@@ -147,7 +203,7 @@ jobs:
             IMAGE_TAG_BASE="${{ needs.preflight.outputs.ace-step-ref }}-${BUILD_DATE}"
           fi
 
-          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || 'ace-step' }}"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
           FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
