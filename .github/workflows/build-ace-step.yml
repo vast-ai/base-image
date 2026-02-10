@@ -25,7 +25,7 @@ on:
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
         required: true
-        default: "ace-step"
+        default: "acestep"
       MULTI_ARCH:
         description: 'multi-arch build'
         required: false
