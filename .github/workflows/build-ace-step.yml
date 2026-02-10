@@ -1,0 +1,4 @@
+name: Build ACE-Step Image
+
+on:
+  workflow_dispatch:
