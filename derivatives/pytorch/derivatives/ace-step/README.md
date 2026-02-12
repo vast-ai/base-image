@@ -6,7 +6,7 @@ For detailed documentation on Instance Portal, Supervisor, environment variables
 
 ## Available Tags
 
-Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/ace-step/tags).
+Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/acestep/tags).
 
 ## CUDA Compatibility
 
@@ -76,7 +76,7 @@ cd base-image/derivatives/pytorch/derivatives/ace-step
 docker buildx build \
     --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py311 \
     --build-arg ACE_STEP_REF=main \
-    -t yournamespace/ace-step .
+    -t yournamespace/acestep .
 ```
 
 ### Build Arguments
@@ -113,14 +113,14 @@ Go to **Actions > Build ACE-Step Image > Run workflow** and fill in the inputs:
 |-------|-------------|
 | `ACE_STEP_REF` | A git ref (e.g. `main`, or a commit SHA), or leave empty to auto-detect the latest release |
 | `ACE_STEP_UI_REF` | Git ref for ACE-Step UI (default: `main`) |
-| `DOCKERHUB_REPO` | Repository name under your namespace (default: `ace-step`) |
+| `DOCKERHUB_REPO` | Repository name under your namespace (default: `acestep`) |
 | `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
 | `CUSTOM_IMAGE_TAG` | Override the version portion of the tag (e.g. `my-custom-build`) |
 
 The workflow builds one image per run:
 
 ```
-yourusername/ace-step:main-2026-02-10-cuda-12.9-py311
+yourusername/acestep:main-2026-02-10-cuda-12.9-py311
 ```
 
 To customize which PyTorch base images are used, modify the `matrix.base_image` array in `.github/workflows/build-ace-step.yml`.
