@@ -1,4 +1,291 @@
+# Build ACE-Step image - works on main repo (scheduled + manual) and forks (manual)
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+# DOCKERHUB_NAMESPACE
+# Optional:
+# SLACK_WEBHOOK_URL
+# Note: Build matrix will need periodic updates as new Pytorch images become available
+
 name: Build ACE-Step Image
 
 on:
+  schedule:
+    # Run once per week (Monday at midnight UTC)
+    - cron: '0 0 * * 1'
+
   workflow_dispatch:
+    inputs:
+      ACE_STEP_REF:
+        description: "ACE-Step git ref - leave empty to simulate scheduled build"
+        required: false
+      ACE_STEP_UI_REF:
+        description: "ACE-Step UI git ref (default: main)"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to username/<repo>"
+        required: true
+        default: "acestep"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: false
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_ACE_STEP_REF: "main"
+  DEFAULT_ACE_STEP_UI_REF: "main"
+  DEFAULT_DOCKERHUB_REPO: "acestep"
+  DEFAULT_MULTI_ARCH: "false"
+  # 1 week
+  RELEASE_AGE_THRESHOLD: 604800
+  ACE_STEP_GITHUB_REPO: "ace-step/ACE-Step-1.5"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      ace-step-ref: ${{ steps.resolve-ref.outputs.ref }}
+      ace-step-ui-ref: ${{ steps.resolve-ui-ref.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Check for new commits
+        id: commit-check
+        if: ${{ !inputs.ACE_STEP_REF }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking GitHub for new commits on ${{ env.ACE_STEP_GITHUB_REPO }} main..."
+
+          COMMIT_DATA=$(gh api "repos/${{ env.ACE_STEP_GITHUB_REPO }}/commits/main" \
+            --jq '{sha: .sha[0:7], date: .commit.committer.date}')
+
+          COMMIT_SHA=$(echo "$COMMIT_DATA" | jq -r '.sha')
+          COMMIT_DATE=$(echo "$COMMIT_DATA" | jq -r '.date')
+
+          if [[ -z "$COMMIT_SHA" || "$COMMIT_SHA" == "null" ]]; then
+            echo "::warning::Could not resolve HEAD of main"
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+          AGE_DAYS=$((AGE / 86400))
+
+          echo "Latest commit: $COMMIT_SHA ($AGE_DAYS days ago)"
+
+          if [[ $AGE -lt ${{ env.RELEASE_AGE_THRESHOLD }} ]]; then
+            echo "new-release=true" >> $GITHUB_OUTPUT
+            echo "✓ New commit detected"
+          else
+            echo "new-release=false" >> $GITHUB_OUTPUT
+            echo "::notice::No new commits in threshold period"
+          fi
+
+      - name: Resolve ACE-Step git ref
+        id: resolve-ref
+        run: |
+          if [[ -n "${{ inputs.ACE_STEP_REF }}" ]]; then
+            REF="${{ inputs.ACE_STEP_REF }}"
+            echo "Using manual ref: $REF"
+          else
+            echo "Resolving HEAD of main branch..."
+            COMMIT=$(git ls-remote "https://github.com/${{ env.ACE_STEP_GITHUB_REPO }}.git" refs/heads/main | cut -f1 | cut -c1-7)
+            if [[ -n "$COMMIT" ]]; then
+              REF="$COMMIT"
+              echo "Resolved main → $REF"
+            else
+              echo "::error::Could not resolve HEAD of main branch"
+              exit 1
+            fi
+          fi
+
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+      - name: Resolve ACE-Step UI ref
+        id: resolve-ui-ref
+        run: |
+          REF="${{ inputs.ACE_STEP_UI_REF || env.DEFAULT_ACE_STEP_UI_REF }}"
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+          echo "ACE-Step UI ref: $REF"
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          MANUAL_REF="${{ inputs.ACE_STEP_REF }}"
+          NEW_RELEASE="${{ steps.commit-check.outputs.new-release }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ -n "$MANUAL_REF" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
+          elif [[ "$NEW_RELEASE" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ New commit detected, building ref: ${{ steps.resolve-ref.outputs.ref }}"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - No new commits detected"
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py311
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive CUDA & Python versions
+        id: meta
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+          PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
+
+          if [ -z "$CUDA_VERSION" ] || [ -z "$PYTHON_VERSION" ]; then
+            echo "Failed to parse base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            BUILD_DATE=$(date -u +%Y-%m-%d)
+            IMAGE_TAG_BASE="${{ needs.preflight.outputs.ace-step-ref }}-${BUILD_DATE}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+
+          # Create a safe filename from the matrix value
+          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+          echo "Derived image tag: $IMAGE_TAG"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd derivatives/pytorch/derivatives/ace-step
+          docker buildx build \
+            --platform "$platforms" \
+            --build-arg PYTORCH_BASE=${{ matrix.base_image }} \
+            --build-arg ACE_STEP_REF=${{ needs.preflight.outputs.ace-step-ref }} \
+            --build-arg ACE_STEP_UI_REF=${{ needs.preflight.outputs.ace-step-ui-ref }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            # Combine all tag files into JSON array
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "ACE-Step"
+      image-ref: ${{ needs.preflight.outputs.ace-step-ref }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
