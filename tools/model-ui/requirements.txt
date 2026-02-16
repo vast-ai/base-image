@@ -1,0 +1,5 @@
+# Model UI dependencies — installed in Dockerfile, listed here for documentation
+# starlette and uvicorn are already present in vLLM/SGLang images (FastAPI deps)
+httpx
+uvicorn
+starlette
