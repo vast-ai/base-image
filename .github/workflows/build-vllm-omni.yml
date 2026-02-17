@@ -1,0 +1,4 @@
+name: Build vLLM-Omni Image
+
+on:
+  workflow_dispatch:
