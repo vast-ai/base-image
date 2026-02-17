@@ -100,13 +100,14 @@ print(f"[model-ui] Default tab: {default_tab}")
 
 short_name = model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
 
-# Load HTML and inject config as JSON (safe against special chars in model names)
+# Load HTML and inject config as JSON (escape "<" for safe embedding in <script> tags)
 _html = (Path(__file__).parent / "index.html").read_text()
 _allowed_tabs = [('chat' if t.strip().lower() == 'omni' else t.strip()) for t in _TABS_OVERRIDE.split(",") if t.strip()] or None
 _config_json = json.dumps(
     {"modelId": model_id, "modelShort": short_name, "defaultTab": default_tab, "allowedTabs": _allowed_tabs}
 )
-_html = _html.replace("__CONFIG_JSON__", _config_json)
+_config_json_safe = _config_json.replace("<", "\\u003c")
+_html = _html.replace("__CONFIG_JSON__", _config_json_safe)
 
 # Shared async client for proxying
 _client = httpx.AsyncClient(base_url=API_BASE, timeout=httpx.Timeout(300, connect=10))
