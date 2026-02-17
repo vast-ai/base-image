@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -102,15 +103,22 @@ short_name = model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
 
 # Load HTML and inject config as JSON (escape "<" for safe embedding in <script> tags)
 _html = (Path(__file__).parent / "index.html").read_text()
-_allowed_tabs = [('chat' if t.strip().lower() == 'omni' else t.strip()) for t in _TABS_OVERRIDE.split(",") if t.strip()] or None
+_allowed_tabs = [('chat' if t.strip().lower() == 'omni' else t.strip().lower()) for t in _TABS_OVERRIDE.split(",") if t.strip()] or None
 _config_json = json.dumps(
     {"modelId": model_id, "modelShort": short_name, "defaultTab": default_tab, "allowedTabs": _allowed_tabs}
 )
 _config_json_safe = _config_json.replace("<", "\\u003c")
 _html = _html.replace("__CONFIG_JSON__", _config_json_safe)
 
-# Shared async client for proxying
-_client = httpx.AsyncClient(base_url=API_BASE, timeout=httpx.Timeout(300, connect=10))
+_client = None  # assigned in lifespan
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global _client
+    _client = httpx.AsyncClient(base_url=API_BASE, timeout=httpx.Timeout(300, connect=10))
+    yield
+    await _client.aclose()
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -127,7 +135,7 @@ async def proxy(request: Request):
 
     try:
         if request.method == "GET":
-            r = await _client.get(url)
+            r = await _client.get(url, params=dict(request.query_params))
             return Response(
                 content=r.content,
                 status_code=r.status_code,
@@ -147,7 +155,9 @@ async def proxy(request: Request):
 
         if is_stream:
             req = _client.build_request(
-                "POST", url, content=body, headers={"content-type": "application/json"}
+                "POST", url, content=body,
+                headers={"content-type": "application/json"},
+                params=dict(request.query_params),
             )
             r = await _client.send(req, stream=True)
 
@@ -164,7 +174,8 @@ async def proxy(request: Request):
 
         # Non-streaming POST
         r = await _client.post(
-            url, content=body, headers={"content-type": content_type}
+            url, content=body, headers={"content-type": content_type},
+            params=dict(request.query_params),
         )
         return Response(
             content=r.content,
@@ -187,10 +198,11 @@ async def proxy(request: Request):
 
 
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Route("/", index),
         Route("/api/{path:path}", proxy, methods=["GET", "POST"]),
-    ]
+    ],
 )
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "model ui"
+[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "model ui"
 
 # Env var gate
 if [[ "${ENABLE_UI,,}" = "false" ]]; then

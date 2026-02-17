@@ -988,32 +988,82 @@
 
 
     /* ------------------------------------------------------------------ */
-    /* LocalStorage persistence                                            */
+    /* IndexedDB persistence                                               */
     /* ------------------------------------------------------------------ */
-    const STORAGE_KEYS = { image: 'modelui-img-history', video: 'modelui-vid-history', tts: 'modelui-tts-history' };
+    const DB_NAME = 'modelui-history';
+    const DB_VERSION = 1;
+    const STORES = { image: 'images', video: 'videos', tts: 'tts' };
     const imgHistoryData = [];
     const vidHistoryData = [];
     const ttsHistoryData = [];
 
-    function saveHistory(key, entries) {
-        for (let retry = 0; retry < 5; retry++) {
-            try {
-                localStorage.setItem(key, JSON.stringify(entries));
-                return;
-            } catch (e) {
-                if (e.name === 'QuotaExceededError' && entries.length > 0) {
-                    entries.shift();
-                } else {
-                    return;
+    function openDB() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                for (const name of Object.values(STORES)) {
+                    if (!db.objectStoreNames.contains(name)) {
+                        db.createObjectStore(name, { autoIncrement: true });
+                    }
                 }
-            }
-        }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
     }
 
-    function loadHistory(key) {
-        try {
-            return JSON.parse(localStorage.getItem(key)) || [];
-        } catch { return []; }
+    async function idbSave(storeName, entries) {
+        const db = await openDB();
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        store.clear();
+        for (const entry of entries) store.put(entry);
+        return new Promise((resolve, reject) => {
+            tx.oncomplete = () => { db.close(); resolve(); };
+            tx.onerror = () => { db.close(); reject(tx.error); };
+        });
+    }
+
+    async function idbLoad(storeName) {
+        const db = await openDB();
+        const tx = db.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
+        return new Promise((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => { db.close(); resolve(req.result || []); };
+            req.onerror = () => { db.close(); reject(req.error); };
+        });
+    }
+
+    async function idbClear(storeName) {
+        const db = await openDB();
+        const tx = db.transaction(storeName, 'readwrite');
+        tx.objectStore(storeName).clear();
+        return new Promise((resolve, reject) => {
+            tx.oncomplete = () => { db.close(); resolve(); };
+            tx.onerror = () => { db.close(); reject(tx.error); };
+        });
+    }
+
+    /* Migrate old localStorage data to IndexedDB (one-time) */
+    const _LS_KEYS = { image: 'modelui-img-history', video: 'modelui-vid-history', tts: 'modelui-tts-history' };
+    async function migrateLocalStorage() {
+        for (const [type, lsKey] of Object.entries(_LS_KEYS)) {
+            let raw;
+            try { raw = localStorage.getItem(lsKey); } catch { continue; }
+            if (!raw) continue;
+            try {
+                let entries = JSON.parse(raw);
+                if (!Array.isArray(entries)) continue;
+                /* Image entries were bare base64 strings — wrap them */
+                if (type === 'image') {
+                    entries = entries.map(e => typeof e === 'string' ? { b64: e } : e);
+                }
+                await idbSave(STORES[type], entries);
+                localStorage.removeItem(lsKey);
+            } catch { /* best-effort */ }
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -1212,6 +1262,7 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
+                let finished = false;
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -1221,7 +1272,7 @@
                     for (const line of lines) {
                         if (!line.startsWith('data: ')) continue;
                         const data = line.slice(6).trim();
-                        if (data === '[DONE]') break;
+                        if (data === '[DONE]') { finished = true; break; }
                         try {
                             const delta = JSON.parse(data).choices?.[0]?.delta || {};
                             const cd = delta.content || '';
@@ -1236,6 +1287,7 @@
                             }
                         } catch {}
                     }
+                    if (finished) break;
                 }
             } else {
                 const result = await response.json();
@@ -1330,6 +1382,8 @@
             }
             if (b64List.length) {
                 const historyEl = $('#img-history');
+                const prompt = body.prompt || '';
+                const time = timeNow();
                 const frag = document.createDocumentFragment();
                 for (const b64 of b64List) {
                     const img = document.createElement('img');
@@ -1340,9 +1394,9 @@
                 }
                 historyEl.prepend(frag);
                 $('#img-history-footer').style.display = '';
-                imgHistoryData.unshift(...b64List);
+                imgHistoryData.unshift(...b64List.map(b64 => ({ b64, prompt, time })));
                 while (imgHistoryData.length > 200) imgHistoryData.pop();
-                saveHistory(STORAGE_KEYS.image, imgHistoryData);
+                idbSave(STORES.image, imgHistoryData).catch(() => {});
             } else {
                 errEl.innerHTML = '<div class="error-msg">No images returned</div>';
             }
@@ -1358,7 +1412,7 @@
         $('#img-history').innerHTML = '';
         $('#img-history-footer').style.display = 'none';
         imgHistoryData.length = 0;
-        localStorage.removeItem(STORAGE_KEYS.image);
+        idbClear(STORES.image).catch(() => {});
     });
 
     /* ------------------------------------------------------------------ */
@@ -1424,7 +1478,7 @@
                     prompt, videoHtml, false, time
                 );
                 vidHistoryData.push({ prompt, time, video: videoB64 });
-                saveHistory(STORAGE_KEYS.video, vidHistoryData);
+                idbSave(STORES.video, vidHistoryData).catch(() => {});
             } else {
                 errEl.innerHTML = '<div class="error-msg">No video returned</div>';
             }
@@ -1440,7 +1494,7 @@
         $('#vid-history').innerHTML = '';
         $('#vid-history-footer').style.display = 'none';
         vidHistoryData.length = 0;
-        localStorage.removeItem(STORAGE_KEYS.video);
+        idbClear(STORES.video).catch(() => {});
     });
 
     /* ------------------------------------------------------------------ */
@@ -1511,7 +1565,7 @@
             const fr = new FileReader();
             fr.onload = () => {
                 ttsHistoryData.push({ prompt: text, time, audio: fr.result });
-                saveHistory(STORAGE_KEYS.tts, ttsHistoryData);
+                idbSave(STORES.tts, ttsHistoryData).catch(() => {});
             };
             fr.readAsDataURL(blob);
         } catch (e) {
@@ -1526,20 +1580,24 @@
         $('#tts-history').innerHTML = '';
         $('#tts-history-footer').style.display = 'none';
         ttsHistoryData.length = 0;
-        localStorage.removeItem(STORAGE_KEYS.tts);
+        idbClear(STORES.tts).catch(() => {});
     });
 
 
     /* ------------------------------------------------------------------ */
-    /* Restore history from localStorage                                   */
+    /* Restore history from IndexedDB                                      */
     /* ------------------------------------------------------------------ */
-    (function restoreHistory() {
-        /* Images — flat array of base64 strings */
-        const imgEntries = loadHistory(STORAGE_KEYS.image);
+    (async function restoreHistory() {
+        await migrateLocalStorage();
+
+        /* Images — array of { b64, prompt?, time? } objects */
+        const imgEntries = await idbLoad(STORES.image).catch(() => []);
         imgHistoryData.push(...imgEntries);
         if (imgEntries.length) {
             const historyEl = $('#img-history');
-            for (const b64 of imgEntries) {
+            for (const entry of imgEntries) {
+                const b64 = typeof entry === 'string' ? entry : entry.b64;
+                if (!b64) continue;
                 const img = document.createElement('img');
                 img.src = 'data:image/png;base64,' + b64;
                 img.alt = '';
@@ -1550,7 +1608,7 @@
         }
 
         /* Videos */
-        const vidEntries = loadHistory(STORAGE_KEYS.video);
+        const vidEntries = await idbLoad(STORES.video).catch(() => []);
         vidHistoryData.push(...vidEntries);
         for (const entry of vidEntries) {
             let html = '';
@@ -1571,7 +1629,7 @@
         }
 
         /* TTS */
-        const ttsEntries = loadHistory(STORAGE_KEYS.tts);
+        const ttsEntries = await idbLoad(STORES.tts).catch(() => []);
         ttsHistoryData.push(...ttsEntries);
         for (const entry of ttsEntries) {
             let html = '';
