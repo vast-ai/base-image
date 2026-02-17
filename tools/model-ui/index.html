@@ -421,7 +421,13 @@
                                         </div>
                                     </div>
                                     <div class="field">
-                                        <label><input type="checkbox" id="chat-audio-out"> Request audio output</label>
+                                        <label>Output modality</label>
+                                        <select id="chat-modality">
+                                            <option value="text" selected>Text</option>
+                                            <option value="audio">Audio</option>
+                                            <option value="image">Image</option>
+                                            <option value="video">Video</option>
+                                        </select>
                                     </div>
                                 </div>
                             </div>
@@ -816,7 +822,7 @@
 
     function openLightbox(src) {
         const activePanel = $('.tab-panel.active');
-        const imgs = activePanel ? activePanel.querySelectorAll('.gen-results img, .gen-history img') : [];
+        const imgs = activePanel ? activePanel.querySelectorAll('.gen-results img, .gen-history img, .message-content img') : [];
         lightboxImages = Array.from(imgs).map(img => img.src);
         lightboxIndex = lightboxImages.indexOf(src);
         if (lightboxIndex < 0) lightboxIndex = 0;
@@ -904,7 +910,7 @@
         const temp = parseFloat($('#chat-temp').value);
         const maxTokens = parseInt($('#chat-max-tokens').value);
         const input = $('#chat-input').value.trim();
-        const wantAudio = $('#chat-audio-out').checked;
+        const modality = $('#chat-modality').value;
         const msgs = [];
         if (system) msgs.push({ role: 'system', content: system });
         chatState.messages.forEach(m => msgs.push({ role: m.role, content: m.content }));
@@ -923,10 +929,14 @@
                 msgs.push({ role: 'user', content: input });
             }
         }
-        const body = { model: CONFIG.modelId, messages: msgs, temperature: temp, max_tokens: maxTokens, stream: !wantAudio };
-        if (wantAudio) {
+        const body = { model: CONFIG.modelId, messages: msgs, temperature: temp, max_tokens: maxTokens, stream: modality === 'text' };
+        if (modality === 'audio') {
             body.modalities = ['text', 'audio'];
             body.audio = { voice: 'default', format: 'wav' };
+        } else if (modality === 'image') {
+            body.modalities = ['text', 'image'];
+        } else if (modality === 'video') {
+            body.modalities = ['text', 'video'];
         }
         return body;
     }
@@ -1148,6 +1158,35 @@
         });
     }
 
+    function renderChatMedia(msg) {
+        const content = msg.content;
+        if (Array.isArray(content)) {
+            let text = '';
+            let mediaHtml = '';
+            for (const part of content) {
+                if (part.type === 'text') {
+                    text += part.text;
+                } else if (part.type === 'image_url' && part.image_url?.url) {
+                    mediaHtml += '<img src="' + part.image_url.url
+                        + '" style="max-width:100%;border-radius:var(--radius);margin:0.25rem 0;cursor:pointer" alt="">';
+                } else if (part.type === 'video_url' && part.video_url?.url) {
+                    mediaHtml += '<video controls src="' + part.video_url.url
+                        + '" style="max-width:100%;border-radius:var(--radius);margin:0.25rem 0"></video>';
+                }
+            }
+            if (mediaHtml) return { text, mediaHtml };
+        }
+        if (typeof content === 'string' && content.length > 1000
+            && /^[A-Za-z0-9+/=]+$/.test(content.slice(0, 200))) {
+            return {
+                text: '',
+                mediaHtml: '<img src="data:image/png;base64,' + content
+                    + '" style="max-width:100%;border-radius:var(--radius);margin:0.25rem 0;cursor:pointer" alt="">'
+            };
+        }
+        return null;
+    }
+
     async function sendChat() {
         if (chatState.streaming) {
             if (chatState.controller) chatState.controller.abort();
@@ -1161,7 +1200,7 @@
         if (!text && !files.length && !customPayload) return;
 
         const container = $('#chat-messages');
-        const wantAudio = $('#chat-audio-out').checked;
+        const modality = $('#chat-modality').value;
 
         let body;
         if (customPayload) {
@@ -1234,11 +1273,17 @@
         const sendBtn = $('#chat-send');
         sendBtn.textContent = 'Stop';
 
-        /* Force non-streaming when audio output is requested */
-        if (wantAudio && !customPayload) {
+        /* Force non-streaming for non-text output modalities */
+        if (modality !== 'text' && !customPayload) {
             body.stream = false;
-            body.modalities = ['text', 'audio'];
-            body.audio = { voice: 'default', format: 'wav' };
+            if (modality === 'audio') {
+                body.modalities = ['text', 'audio'];
+                body.audio = { voice: 'default', format: 'wav' };
+            } else if (modality === 'image') {
+                body.modalities = ['text', 'image'];
+            } else if (modality === 'video') {
+                body.modalities = ['text', 'video'];
+            }
         }
 
         const isStream = body.stream !== false;
@@ -1292,22 +1337,33 @@
             } else {
                 const result = await response.json();
                 const msg = result.choices?.[0]?.message || {};
-                fullResponse = msg.content || '';
-                thinkResponse = msg.reasoning_content || '';
-                let display = fullResponse;
-                if (thinkResponse) display = '<think>' + thinkResponse + '</think>' + fullResponse;
-                contentEl.innerHTML = renderWithThinking(display);
+                const mediaResult = renderChatMedia(msg);
+                if (mediaResult) {
+                    let html = '';
+                    if (mediaResult.text) html += renderWithThinking(mediaResult.text);
+                    html += mediaResult.mediaHtml;
+                    contentEl.innerHTML = html;
+                    contentEl.querySelectorAll('img').forEach(img =>
+                        img.addEventListener('click', () => openLightbox(img.src)));
+                    fullResponse = mediaResult.text;
+                } else {
+                    fullResponse = msg.content || '';
+                    thinkResponse = msg.reasoning_content || '';
+                    let display = fullResponse;
+                    if (thinkResponse) display = '<think>' + thinkResponse + '</think>' + fullResponse;
+                    contentEl.innerHTML = renderWithThinking(display);
 
-                /* Handle audio response */
-                const audioObj = msg.audio;
-                if (audioObj && audioObj.data) {
-                    let raw = audioObj.data;
-                    if (raw.includes(',')) raw = raw.split(',')[1];
-                    const bytes = atob(raw);
-                    const arr = new Uint8Array(bytes.length);
-                    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-                    const blob = new Blob([arr], { type: 'audio/wav' });
-                    $('#chat-audio').src = URL.createObjectURL(blob);
+                    /* Handle audio response */
+                    const audioObj = msg.audio;
+                    if (audioObj && audioObj.data) {
+                        let raw = audioObj.data;
+                        if (raw.includes(',')) raw = raw.split(',')[1];
+                        const bytes = atob(raw);
+                        const arr = new Uint8Array(bytes.length);
+                        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+                        const blob = new Blob([arr], { type: 'audio/wav' });
+                        $('#chat-audio').src = URL.createObjectURL(blob);
+                    }
                 }
             }
         } catch (e) {
@@ -1329,7 +1385,7 @@
 
     $('#chat-send').addEventListener('click', sendChat);
     $('#chat-input').addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
     });
     $('#chat-clear').addEventListener('click', () => {
         chatState.messages = [];

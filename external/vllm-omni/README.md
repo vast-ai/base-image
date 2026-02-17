@@ -29,6 +29,7 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | `VLLM_MODEL` | (none) | Model to serve at startup |
 | `VLLM_ARGS` | (none) | Arguments passed to `vllm serve`. Must be set by the user, for example: `--max-model-len 32768 --download-dir /workspace/models --host 127.0.0.1 --port 18000` (see also `/etc/vllm-args.conf` below). |
 | `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` to `VLLM_ARGS` |
+| `ENABLE_UI` | `true` | Enable the Model UI web interface on port 7860 |
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
@@ -45,11 +46,18 @@ echo '--guided-decoding-backend lm-format-enforcer --chat-template-content-forma
 entrypoint.sh
 ```
 
+### Model UI (Built-in Testing Interface)
+
+A lightweight web UI for quickly testing your model is included and accessible via the Instance Portal on port 7860. It auto-detects your model type and shows the relevant tabs (chat, image, video, TTS). Use it to verify your model is working, experiment with parameters, and inspect raw API payloads.
+
+For production or heavy use, point your preferred local client (Open WebUI, SillyTavern, ComfyUI, etc.) at the API endpoint instead. The Model UI is a quick-test tool — dedicated interfaces will give you better performance and more features. Set `ENABLE_UI=false` to disable it.
+
 ### Port Reference
 
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
+| Model UI | 7860 | 17860 |
 | vLLM-Omni API | 8000 | 18000 |
 | Ray Dashboard | 8265 | 28265 |
 | Jupyter | 8080 | 8080 |

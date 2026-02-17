@@ -32,7 +32,7 @@ The default tab is auto-detected from the model name, or set explicitly with `UI
 
 ## Features
 
-- **Multimodal chat** — Attach images or audio files to chat messages; enable "Request audio output" in settings for models that support it (e.g. vLLM-Omni)
+- **Multimodal chat** — Attach images or audio files to chat messages; select an output modality (text, audio, image, video) in settings for models that support non-text responses (e.g. vLLM-Omni). Image and video responses are rendered inline; audio plays automatically.
 - **Thinking/reasoning model support** — `<think>`, `<thinking>`, `<|think|>` blocks (and the `reasoning_content` API field) are rendered in a collapsible section and excluded from conversation history
 - **Generation history** — Image, video, and TTS results persist in localStorage across page refreshes
 - **Lightbox** — Click any image thumbnail to view full-size; navigate with arrow keys or prev/next buttons
