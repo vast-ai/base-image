@@ -4,11 +4,60 @@
 const CONFIG = JSON.parse(document.getElementById('config').textContent);
 
 document.getElementById('model-name').textContent = CONFIG.modelShort;
-document.getElementById('model-path').textContent = CONFIG.modelId;
 document.title = CONFIG.modelShort + ' \u2014 Model UI';
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
+
+/* ------------------------------------------------------------------ */
+/* Model selector                                                      */
+/* ------------------------------------------------------------------ */
+const modelSelect = $('#model-select');
+
+function updateModelConfig(modelId) {
+    CONFIG.modelId = modelId;
+    CONFIG.modelShort = modelId.includes('/') ? modelId.split('/').pop() : modelId;
+    $('#model-name').textContent = CONFIG.modelShort;
+    document.title = CONFIG.modelShort + ' \u2014 Model UI';
+}
+
+async function fetchModels() {
+    try {
+        const r = await fetch('/api/models');
+        if (!r.ok) return;
+        const data = await r.json();
+        const models = (data.data || []).map(m => m.id);
+        if (!models.length) return;
+        const current = modelSelect.value || CONFIG.modelId;
+        modelSelect.innerHTML = '';
+        for (const id of models) {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = id;
+            modelSelect.appendChild(opt);
+        }
+        if (models.includes(current)) {
+            modelSelect.value = current;
+        } else {
+            modelSelect.value = models[0];
+            updateModelConfig(models[0]);
+        }
+    } catch (e) {
+        console.warn('[model-ui] Failed to fetch models:', e);
+    }
+}
+
+modelSelect.addEventListener('change', () => updateModelConfig(modelSelect.value));
+modelSelect.addEventListener('focus', fetchModels);
+
+/* Set initial option from server config, then fetch full list */
+(function initModelSelect() {
+    const opt = document.createElement('option');
+    opt.value = CONFIG.modelId;
+    opt.textContent = CONFIG.modelId;
+    modelSelect.appendChild(opt);
+    fetchModels();
+})();
 
 /* ------------------------------------------------------------------ */
 /* Utilities                                                           */
@@ -699,6 +748,7 @@ async function sendChat() {
     let fullResponse = '';
     let thinkResponse = '';
     let completed = false;
+    let aborted = false;
     chatState.controller = new AbortController();
 
     try {
@@ -779,7 +829,9 @@ async function sendChat() {
         }
         completed = true;
     } catch (e) {
-        if (e.name !== 'AbortError') {
+        if (e.name === 'AbortError') {
+            aborted = true;
+        } else {
             fullResponse += '\n\nError: ' + e.message;
             let display = fullResponse;
             if (thinkResponse) display = '<think>' + thinkResponse + '</think>' + fullResponse;
@@ -788,7 +840,12 @@ async function sendChat() {
     }
 
     contentEl.classList.remove('cursor-blink');
-    if (completed) chatState.messages.push({ role: 'assistant', content: stripThinking(fullResponse) });
+    if (completed) {
+        chatState.messages.push({ role: 'assistant', content: stripThinking(fullResponse) });
+    } else if (!aborted) {
+        /* Request failed — roll back user message to prevent duplicates on retry */
+        chatState.messages.pop();
+    }
     chatState.streaming = false;
     chatState.controller = null;
     sendBtn.textContent = 'Send';

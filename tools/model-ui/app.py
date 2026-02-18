@@ -24,7 +24,7 @@ from starlette.routing import Route
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_BASE = os.environ.get("VLLM_API_BASE", "http://localhost:18000")
+API_BASE = os.environ.get("MODEL_UI_API_BASE", "http://localhost:18000")
 MODEL_NAME = os.environ.get("MODEL_NAME", "")
 _DEFAULT_TAB = (os.environ.get("MODEL_UI_DEFAULT_TAB", "")
                 or os.environ.get("UI_MODE", "")).lower().strip()
@@ -134,7 +134,7 @@ _client = None  # assigned in lifespan
 @asynccontextmanager
 async def lifespan(app):
     global _client
-    _client = httpx.AsyncClient(base_url=API_BASE, timeout=httpx.Timeout(300, connect=10))
+    _client = httpx.AsyncClient(base_url=API_BASE, timeout=httpx.Timeout(600, connect=30))
     yield
     await _client.aclose()
 

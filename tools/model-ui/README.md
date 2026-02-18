@@ -28,7 +28,7 @@ The default tab is auto-detected from the model name, or set explicitly with `MO
 
 | Variable | Default | Description |
 |---|---|---|
-| `VLLM_API_BASE` | `http://localhost:18000` | Inference backend URL |
+| `MODEL_UI_API_BASE` | `http://localhost:18000` | Inference backend URL |
 | `MODEL_NAME` | _(empty)_ | Fallback model name for tab detection if the API hasn't loaded yet |
 | `MODEL_UI_DEFAULT_TAB` | _(auto)_ | Force default tab: `chat`, `image`, `video`, `tts`, or `stt` (`omni` maps to `chat`). Legacy alias: `UI_MODE` |
 | `MODEL_UI_CHAT_CAPS` | — | Chat capabilities (see below). Setting this makes the Chat tab visible |
@@ -96,7 +96,7 @@ MODEL_UI_VIDEO_CAPS=generate
 ## Running
 
 ```bash
-# Expects an OpenAI-compatible API at VLLM_API_BASE
+# Expects an OpenAI-compatible API at MODEL_UI_API_BASE
 pip install httpx uvicorn starlette
 python app.py
 # → http://127.0.0.1:17860
