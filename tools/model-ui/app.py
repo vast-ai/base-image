@@ -26,8 +26,15 @@ from starlette.routing import Route
 
 API_BASE = os.environ.get("VLLM_API_BASE", "http://localhost:18000")
 MODEL_NAME = os.environ.get("MODEL_NAME", "")
-UI_MODE_OVERRIDE = os.environ.get("UI_MODE", "").lower().strip()
-_TABS_OVERRIDE = os.environ.get("MODEL_UI_TABS", "").strip()
+_DEFAULT_TAB = (os.environ.get("MODEL_UI_DEFAULT_TAB", "")
+                or os.environ.get("UI_MODE", "")).lower().strip()
+_CAPS_ENVS = {
+    "chat":  os.environ.get("MODEL_UI_CHAT_CAPS", "").strip(),
+    "image": os.environ.get("MODEL_UI_IMAGE_CAPS", "").strip(),
+    "video": os.environ.get("MODEL_UI_VIDEO_CAPS", "").strip(),
+    "tts":   os.environ.get("MODEL_UI_TTS_CAPS", "").strip(),
+    "stt":   os.environ.get("MODEL_UI_STT_CAPS", "").strip(),
+}
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 600
@@ -42,16 +49,17 @@ _IMAGE_RE = re.compile(
     re.I,
 )
 _TTS_RE = re.compile(r"tts|speech|cosyvoice|parler|bark|xtts", re.I)
+_STT_RE = re.compile(r"whisper|stt|transcri", re.I)
 _OMNI_RE = re.compile(r"omni|bagel", re.I)
 _VIDEO_RE = re.compile(r"wan|hunyuan.*video|cogvideo", re.I)
 
 
 def detect_default_tab(model_id: str) -> str:
-    if UI_MODE_OVERRIDE:
+    if _DEFAULT_TAB:
         return {
             "chat": "chat", "image": "image", "video": "video",
-            "tts": "tts", "omni": "chat",
-        }.get(UI_MODE_OVERRIDE, "chat")
+            "tts": "tts", "stt": "stt", "omni": "chat",
+        }.get(_DEFAULT_TAB, "chat")
     name = model_id or MODEL_NAME
     if _VIDEO_RE.search(name):
         return "video"
@@ -59,6 +67,8 @@ def detect_default_tab(model_id: str) -> str:
         return "image"
     if _TTS_RE.search(name):
         return "tts"
+    if _STT_RE.search(name):
+        return "stt"
     if _OMNI_RE.search(name):
         return "chat"
     return "chat"
@@ -80,7 +90,7 @@ def wait_for_api() -> str:
                     data = r.json().get("data", [])
                     if data:
                         return data[0]["id"]
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
+            except httpx.HTTPError:
                 pass
             print(f"[model-ui] Waiting for API at {API_BASE} ...")
             time.sleep(POLL_INTERVAL)
@@ -103,12 +113,20 @@ short_name = model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
 
 # Load HTML and inject config as JSON (escape "<" for safe embedding in <script> tags)
 _html = (Path(__file__).parent / "index.html").read_text()
-_allowed_tabs = [('chat' if t.strip().lower() == 'omni' else t.strip().lower()) for t in _TABS_OVERRIDE.split(",") if t.strip()] or None
-_config_json = json.dumps(
-    {"modelId": model_id, "modelShort": short_name, "defaultTab": default_tab, "allowedTabs": _allowed_tabs}
-)
+_caps = {tab: [v.strip().lower() for v in raw.split(",") if v.strip()]
+         for tab, raw in _CAPS_ENVS.items() if raw}
+_allowed_tabs = list(_caps.keys()) if _caps else None
+_config_json = json.dumps({
+    "modelId": model_id,
+    "modelShort": short_name,
+    "defaultTab": default_tab,
+    "allowedTabs": _allowed_tabs,
+    "caps": _caps or None,
+})
 _config_json_safe = _config_json.replace("<", "\\u003c")
 _html = _html.replace("__CONFIG_JSON__", _config_json_safe)
+_js = (Path(__file__).parent / "app.js").read_bytes()
+_css = (Path(__file__).parent / "style.css").read_bytes()
 
 _client = None  # assigned in lifespan
 
@@ -127,6 +145,14 @@ async def lifespan(app):
 
 async def index(request: Request):
     return HTMLResponse(_html)
+
+
+async def static_js(request: Request):
+    return Response(content=_js, media_type="application/javascript")
+
+
+async def static_css(request: Request):
+    return Response(content=_css, media_type="text/css")
 
 
 async def proxy(request: Request):
@@ -201,6 +227,8 @@ app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/", index),
+        Route("/static/app.js", static_js),
+        Route("/static/style.css", static_css),
         Route("/api/{path:path}", proxy, methods=["GET", "POST"]),
     ],
 )
