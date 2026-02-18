@@ -7,11 +7,6 @@ if [[ -z $PORTAL_CONFIG ]]; then
     export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:7860:17860:/:Model UI|localhost:8000:18000:/docs:vLLM-Omni API|localhost:8265:28265:/:Ray Dashboard|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
 fi
 
-# Strip Model UI from portal config when disabled
-if [[ "${ENABLE_UI,,}" = "false" ]]; then
-    export PORTAL_CONFIG="${PORTAL_CONFIG//|localhost:7860:17860:\/:Model UI/}"
-fi
-
 # VLLM_MODEL takes precedence over serverless convention if set
 export MODEL_NAME="${VLLM_MODEL:-$MODEL_NAME}"
 export VLLM_MODEL="$MODEL_NAME"

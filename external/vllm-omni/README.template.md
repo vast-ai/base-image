@@ -108,10 +108,8 @@ curl -H 'Authorization: Bearer <TOKEN>' \
 ```
 *Use `https://` instead of `http://` if you've enabled HTTPS in your account settings.*
 
-### **Model UI (Built-in Testing Interface)**
-A lightweight web UI for quickly testing your model is included and accessible via the Instance Portal. It auto-detects your model type and shows the relevant tabs (chat, image, video, TTS). Use it to verify your model is working, experiment with parameters, and inspect raw API payloads.
-
-> **For production or heavy use**, point your preferred local client (Open WebUI, SillyTavern, ComfyUI, etc.) at the API endpoint instead. The Model UI is a quick-test tool — dedicated interfaces will give you better performance and more features. Set `ENABLE_UI=false` to disable it.
+### **Model UI**
+A lightweight web interface for interacting with the model, accessible via the Instance Portal. Supports chat, image, video, TTS, and STT tabs. To disable, remove the Model UI entry from `PORTAL_CONFIG`.
 
 ### **Chat from the Command Line**
 Once connected via SSH or Jupyter terminal:
@@ -126,7 +124,7 @@ vllm chat --url http://localhost:18000/v1
 | Model UI | 7860 | 17860 |
 | vLLM-Omni API | 8000 | 18000 |
 | Ray Dashboard | 8265 | 28265 |
-| Jupyter | 8080 | 8080 |
+| Jupyter | 8080 | 18080 |
 
 ### **Instance Portal (Application Manager)**
 - Web-based dashboard for managing your applications
@@ -178,7 +176,6 @@ For simpler setups, use these environment variables:
 | `VLLM_MODEL` | (none) | Model to serve (e.g., `Qwen/Qwen3-Omni-30B-A3B-Instruct`) |
 | `VLLM_ARGS` | (none) | Arguments passed to `vllm serve` |
 | `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` |
-| `ENABLE_UI` | `true` | Enable the Model UI web interface on port 7860 |
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
