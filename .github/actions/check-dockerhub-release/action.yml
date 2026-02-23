@@ -10,6 +10,10 @@ inputs:
     description: "Regex for base version tags (e.g., ^v[0-9]+\\.[0-9]+\\.[0-9]+$)"
     required: false
     default: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+  version-extract:
+    description: "Optional sed -E expression to extract base version from matched tag (e.g., 's/^(v[0-9]+\\.[0-9]+\\.[0-9]+)-.*/\\1/'). When empty, the matched tag name IS the version."
+    required: false
+    default: ""
   age-threshold-seconds:
     description: "Max age in seconds to consider a release 'new'"
     required: false
@@ -62,58 +66,76 @@ runs:
       run: |
         RESPONSE=$(cat /tmp/dockerhub_tags.json)
         
+        VERSION_EXTRACT='${{ inputs.version-extract }}'
+
         # For manual triggers, use provided version or find latest
         if [[ "${{ inputs.trigger }}" != "schedule" ]]; then
           if [[ -n "${{ inputs.manual-version }}" ]]; then
             VERSION="${{ inputs.manual-version }}"
             echo "Using manual version: $VERSION"
           else
-            # Find latest version
-            VERSION=$(echo "$RESPONSE" | jq -r --arg pattern '${{ inputs.version-pattern }}' '
+            # Find latest matching tag
+            TAG_NAME=$(echo "$RESPONSE" | jq -r --arg pattern '${{ inputs.version-pattern }}' '
               .results
               | map(select(.name | test($pattern)))
               | sort_by(.last_updated)
               | reverse
               | .[0].name // empty
             ')
+
+            # Extract base version if version-extract is provided
+            if [[ -n "$VERSION_EXTRACT" && -n "$TAG_NAME" ]]; then
+              VERSION=$(echo "$TAG_NAME" | sed -E "$VERSION_EXTRACT")
+              echo "Matched tag: $TAG_NAME -> extracted version: $VERSION"
+            else
+              VERSION="$TAG_NAME"
+            fi
             echo "Using latest version: $VERSION"
           fi
-          
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "new-release=true" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
-        # For scheduled runs, find latest and check age
-        VERSION=$(echo "$RESPONSE" | jq -r --arg pattern '${{ inputs.version-pattern }}' '
+
+        # For scheduled runs, find latest matching tag and check age
+        TAG_NAME=$(echo "$RESPONSE" | jq -r --arg pattern '${{ inputs.version-pattern }}' '
           .results
           | map(select(.name | test($pattern)))
           | sort_by(.last_updated)
           | reverse
           | .[0].name // empty
         ')
-        
-        if [[ -z "$VERSION" ]]; then
+
+        if [[ -z "$TAG_NAME" ]]; then
           echo "::warning::No version tags matching pattern found"
           echo "new-release=false" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
+
+        # Extract base version if version-extract is provided
+        if [[ -n "$VERSION_EXTRACT" ]]; then
+          VERSION=$(echo "$TAG_NAME" | sed -E "$VERSION_EXTRACT")
+          echo "Matched tag: $TAG_NAME -> extracted version: $VERSION"
+        else
+          VERSION="$TAG_NAME"
+        fi
+
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Latest version: $VERSION"
-        
-        # Check age
-        LAST_UPDATED=$(echo "$RESPONSE" | jq -r --arg ver "$VERSION" '
+
+        # Check age using the actual tag name (not extracted version)
+        LAST_UPDATED=$(echo "$RESPONSE" | jq -r --arg ver "$TAG_NAME" '
           .results[] | select(.name == $ver) | .last_updated
         ')
-        
+
         RELEASE_EPOCH=$(date -d "$LAST_UPDATED" +%s)
         NOW_EPOCH=$(date +%s)
         AGE=$((NOW_EPOCH - RELEASE_EPOCH))
         AGE_HOURS=$((AGE / 3600))
-        
+
         echo "Version $VERSION is $AGE_HOURS hours old"
-        
+
         if [[ $AGE -lt ${{ inputs.age-threshold-seconds }} ]]; then
           echo "new-release=true" >> $GITHUB_OUTPUT
           echo "✓ New release detected"
@@ -152,9 +174,13 @@ runs:
         else
           echo "new-release=${{ steps.check.outputs.new-release }}" >> $GITHUB_OUTPUT
           echo "resolved-version=${{ steps.check.outputs.version }}" >> $GITHUB_OUTPUT
-          
-          # Read from file and use heredoc for output
-          VARIANTS=$(cat /tmp/variant_tags.json)
+
+          # Read variant tags from file if it exists (may not exist if no matching version was found)
+          if [[ -f /tmp/variant_tags.json ]]; then
+            VARIANTS=$(cat /tmp/variant_tags.json)
+          else
+            VARIANTS="[]"
+          fi
           EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
           echo "variant-tags<<$EOF" >> $GITHUB_OUTPUT
           echo "$VARIANTS" >> $GITHUB_OUTPUT
