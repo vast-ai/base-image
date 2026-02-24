@@ -4,6 +4,11 @@ set -euo pipefail
 
 # Install a reasonable set of packages over the source image
 apt-get update
+
+# Detect distro — some packages are Ubuntu-specific
+DISTRO_ID=$(. /etc/os-release && echo "${ID}")
+
+# Packages available on both Debian and Ubuntu
 apt-get install --no-install-recommends -y \
     acl \
     bc \
@@ -26,7 +31,6 @@ apt-get install --no-install-recommends -y \
     tzdata \
     fonts-dejavu \
     fonts-freefont-ttf \
-    fonts-ubuntu \
     ffmpeg \
     libgl1 \
     libglx-mesa0 \
@@ -37,7 +41,6 @@ apt-get install --no-install-recommends -y \
     lsof \
     procps \
     psmisc \
-    nvtop \
     rdma-core \
     libibverbs1 \
     ibverbs-providers \
@@ -62,9 +65,23 @@ apt-get install --no-install-recommends -y \
     unzip \
     xz-utils \
     zstd \
-    linux-tools-common \
     cron \
     rsyslog
+
+# Distro-specific packages
+if [[ "$DISTRO_ID" == "ubuntu" ]]; then
+    apt-get install --no-install-recommends -y \
+        fonts-ubuntu \
+        nvtop \
+        linux-tools-common
+else
+    # Debian: fonts-ubuntu and linux-tools-common don't exist; nvtop may be in backports
+    if apt-cache show nvtop > /dev/null 2>&1; then
+        apt-get install --no-install-recommends -y nvtop
+    else
+        echo "nvtop not available in configured repositories — skipping"
+    fi
+fi
 
 # Ensure system pip
 if ! which pip > /dev/null 2>&1 || ! which pip3 > /dev/null 2>&1; then
@@ -118,8 +135,16 @@ mkdir -p /var/log/supervisor
 mv "$(which pip)" "$(dirname "$(which pip)")/pip-v-real"
 mv "$(which pip3)" "$(dirname "$(which pip3)")/pip3-v-real"
 
-for bin in /opt/sys-venv/bin/*; do \
-    ln -sf "$bin" "/usr/local/bin/$(basename "$bin")"; \
+# Link sys-venv tools (jupyter, supervisor, etc.) into PATH.
+# Skip python/python3/pip — python must stay as the image's own interpreter
+# (sys-venv scripts use their own shebang to find the right python) and
+# pip is protected by the move-aside/restore pattern above.
+for bin in /opt/sys-venv/bin/*; do
+    name="$(basename "$bin")"
+    case "$name" in
+        python|python3|python3.*|pip|pip3|pip3.*) continue ;;
+    esac
+    ln -sf "$bin" "/usr/local/bin/${name}"
 done
 
 # Remove redundant base image files
