@@ -1,0 +1,4 @@
+name: Build Open WebUI Image
+
+on:
+  workflow_dispatch:
