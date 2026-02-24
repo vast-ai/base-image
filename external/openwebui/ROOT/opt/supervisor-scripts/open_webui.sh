@@ -55,9 +55,10 @@ if [[ "${WEB_LOADER_ENGINE,,}" == "playwright" && -z "${PLAYWRIGHT_WS_URL}" ]]; 
     "$PYTHON_CMD" -c "import nltk; nltk.download('punkt_tab')"
 fi
 
-# CUDA library paths (upstream pattern)
+# CUDA library paths (upstream pattern — derive site-packages path from interpreter)
 if [[ "${USE_CUDA_DOCKER,,}" == "true" ]]; then
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}/usr/local/lib/python3.11/site-packages/torch/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib"
+    SITE_PKGS=$("$PYTHON_CMD" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "/usr/local/lib/python3.11/site-packages")
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${SITE_PKGS}/torch/lib:${SITE_PKGS}/nvidia/cudnn/lib"
 fi
 
 HOST="127.0.0.1"

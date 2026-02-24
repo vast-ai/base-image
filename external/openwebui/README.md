@@ -44,7 +44,7 @@ Tags follow the format `<version>` (e.g. `v0.8.2`), matching the upstream Open W
 | `OLLAMA_MODELS` | `$WORKSPACE/ollama/models` | Model storage path |
 | `OPEN_WEBUI_DATA_DIR` | `$WORKSPACE/data` | Open WebUI data directory (database, uploads, cache) |
 | `WEBUI_SECRET_KEY` | (auto-generated) | Secret key for Open WebUI session encryption |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | URL Open WebUI uses to reach Ollama |
+| `OLLAMA_BASE_URL` | `http://localhost:21434` | URL Open WebUI uses to reach Ollama |
 | `OPENAI_API_KEY` | (none) | OpenAI API key for external model access |
 | `OPENAI_API_BASE_URL` | (none) | Custom OpenAI-compatible API base URL |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
