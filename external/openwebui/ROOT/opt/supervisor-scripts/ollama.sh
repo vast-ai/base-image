@@ -6,6 +6,9 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/environment.sh"
 [[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "ollama"
 
+# Clear stale readiness sentinel from previous runs
+rm -f /tmp/.ollama_ready
+
 # Wait for provisioning to complete
 
 while [ -f "/.provisioning" ]; do
@@ -22,7 +25,7 @@ max_attempts=60
 attempt=1
 
 while true; do
-    if curl -sf http://localhost:${OLLAMA_PORT:-11434}/api/tags > /dev/null 2>&1; then
+    if curl -sf http://localhost:${OLLAMA_PORT:-21434}/api/tags > /dev/null 2>&1; then
         echo "Ollama server is ready"
         break
     fi

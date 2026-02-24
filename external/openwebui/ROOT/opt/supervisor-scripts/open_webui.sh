@@ -13,10 +13,17 @@ while [ -f "/.provisioning" ]; do
     sleep 10
 done
 
-# Wait for Ollama to be ready (server up + model pulled)
+# Wait for Ollama to be ready (server up + model pulled), with timeout
+OLLAMA_WAIT_TIMEOUT=${OLLAMA_WAIT_TIMEOUT:-300}
+elapsed=0
 while [ ! -f "/tmp/.ollama_ready" ]; do
+    if [ $elapsed -ge $OLLAMA_WAIT_TIMEOUT ]; then
+        echo "Timeout after ${OLLAMA_WAIT_TIMEOUT}s waiting for Ollama to be ready"
+        exit 1
+    fi
     echo "$PROC_NAME startup paused until Ollama is ready (/tmp/.ollama_ready not present)"
     sleep 5
+    elapsed=$((elapsed + 5))
 done
 
 # Environment defaults for Open WebUI
@@ -30,24 +37,27 @@ KEY_FILE="${WEBUI_SECRET_KEY_FILE:-${DATA_DIR}/.webui_secret_key}"
 if [[ -z "${WEBUI_SECRET_KEY}" && -z "${WEBUI_JWT_SECRET_KEY}" ]]; then
     if [[ ! -e "$KEY_FILE" ]]; then
         echo "Generating WEBUI_SECRET_KEY"
-        head -c 12 /dev/urandom | base64 > "$KEY_FILE"
+        (umask 077 && head -c 12 /dev/urandom | base64 > "$KEY_FILE")
     fi
     echo "Loading WEBUI_SECRET_KEY from $KEY_FILE"
     WEBUI_SECRET_KEY=$(cat "$KEY_FILE")
 fi
 export WEBUI_SECRET_KEY
 
+# Resolve Python interpreter once for consistent use
+PYTHON_CMD=$(command -v python3 || command -v python)
+
 # Playwright browser install if configured
 if [[ "${WEB_LOADER_ENGINE,,}" == "playwright" && -z "${PLAYWRIGHT_WS_URL}" ]]; then
     echo "Installing Playwright browsers..."
     playwright install chromium
     playwright install-deps chromium
-    python -c "import nltk; nltk.download('punkt_tab')"
+    "$PYTHON_CMD" -c "import nltk; nltk.download('punkt_tab')"
 fi
 
 # CUDA library paths (upstream pattern)
 if [[ "${USE_CUDA_DOCKER,,}" == "true" ]]; then
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/lib/python3.11/site-packages/torch/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}/usr/local/lib/python3.11/site-packages/torch/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib"
 fi
 
 HOST="127.0.0.1"
@@ -56,7 +66,6 @@ UVICORN_WORKERS="${UVICORN_WORKERS:-1}"
 
 # Launch via uvicorn directly (matches upstream start_ollama_docker.sh)
 cd /app/backend || exit 1
-PYTHON_CMD=$(command -v python3 || command -v python)
 exec "$PYTHON_CMD" -m uvicorn open_webui.main:app \
     --host "$HOST" \
     --port "$PORT" \

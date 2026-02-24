@@ -75,8 +75,12 @@ if [[ "$DISTRO_ID" == "ubuntu" ]]; then
         nvtop \
         linux-tools-common
 else
-    # Debian: nvtop may be in backports; fonts-ubuntu and linux-tools-common don't exist
-    apt-get install --no-install-recommends -y nvtop 2>/dev/null || echo "nvtop not available — skipping"
+    # Debian: fonts-ubuntu and linux-tools-common don't exist; nvtop may be in backports
+    if apt-cache show nvtop > /dev/null 2>&1; then
+        apt-get install --no-install-recommends -y nvtop
+    else
+        echo "nvtop not available in configured repositories — skipping"
+    fi
 fi
 
 # Ensure system pip
