@@ -162,7 +162,7 @@ For simpler setups, use these environment variables:
 |----------|---------|-------------|
 | `OLLAMA_MODEL` | (none) | Model to pull at startup (e.g., `llama3.1:8b`) |
 | `OLLAMA_ARGS` | (none) | Extra arguments for `ollama serve` |
-| `OLLAMA_HOST` | `0.0.0.0:11434` | Bind address for Ollama server |
+| `OLLAMA_HOST` | `0.0.0.0:21434` | Bind address for Ollama server |
 | `OLLAMA_MODELS` | `$WORKSPACE/ollama/models` | Model storage path |
 | `OPEN_WEBUI_DATA_DIR` | `$WORKSPACE/data` | Open WebUI data directory |
 | `WEBUI_SECRET_KEY` | (auto-generated) | Secret key for session encryption |
