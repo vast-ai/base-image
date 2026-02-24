@@ -1,3 +1,3 @@
 Deprecated
 
-Please see the [new external image](../../../external/openwebui)
+Please see the [new external image](../../../../external/openwebui)
