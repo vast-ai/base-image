@@ -1,0 +1,249 @@
+# .github/workflows/build-openwebui.yml
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Optional: SLACK_WEBHOOK_URL
+name: Build Open WebUI Image
+
+on:
+  schedule:
+    # Run every 12 hours
+    - cron: '0 0,12 * * *'
+
+  workflow_dispatch:
+    inputs:
+      OPENWEBUI_VERSION:
+        description: "Open WebUI version (e.g. v0.8.2) - leave empty to simulate scheduled build"
+        required: false
+      OLLAMA_VERSION:
+        description: "Ollama version (e.g. 0.15.2) - leave empty to auto-detect"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to username/<repo>"
+        required: true
+        default: "openwebui"
+      MULTI_ARCH:
+        description: 'multi-arch build'
+        required: false
+        default: false
+        type: boolean
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "openwebui"
+  DEFAULT_MULTI_ARCH: "false"
+  # 12 hours
+  RELEASE_AGE_THRESHOLD: 43200
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      openwebui-version: ${{ steps.openwebui-check.outputs.resolved-version }}
+      ollama-version: ${{ steps.ollama-check.outputs.resolved-version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      - name: Check Open WebUI release
+        id: openwebui-check
+        uses: ./.github/actions/check-ghcr-release
+        with:
+          owner: open-webui
+          package: open-webui
+          version-pattern: "^v[0-9]+\\.[0-9]+(\\.[0-9]+)?-cuda$"
+          version-extract: "s/-cuda$//"
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ inputs.OPENWEBUI_VERSION && github.event_name || 'schedule' }}
+          manual-version: ${{ inputs.OPENWEBUI_VERSION }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check Ollama release
+        id: ollama-check
+        uses: ./.github/actions/check-dockerhub-release
+        with:
+          repository: ollama/ollama
+          version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          age-threshold-seconds: "999999999"
+          trigger: ${{ inputs.OLLAMA_VERSION && github.event_name || 'schedule' }}
+          manual-version: ${{ inputs.OLLAMA_VERSION }}
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          NEW_RELEASE="${{ steps.openwebui-check.outputs.new-release }}"
+          OPENWEBUI_VERSION="${{ steps.openwebui-check.outputs.resolved-version }}"
+          OLLAMA_VERSION="${{ steps.ollama-check.outputs.resolved-version }}"
+
+          if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && -n "$OPENWEBUI_VERSION" && -n "$OLLAMA_VERSION" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ Building Open WebUI $OPENWEBUI_VERSION with Ollama $OLLAMA_VERSION"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+
+            if [[ "$SECRETS" != "true" ]]; then
+              echo "::notice::Skipping - Required secrets not configured"
+            elif [[ "$NEW_RELEASE" != "true" ]]; then
+              echo "::notice::Skipping - No new Open WebUI release detected"
+            elif [[ -z "$OPENWEBUI_VERSION" ]]; then
+              echo "::notice::Skipping - No Open WebUI version resolved"
+            else
+              echo "::notice::Skipping - No Ollama version resolved"
+            fi
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+
+    permissions:
+      contents: read
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - ghcr.io/open-webui/open-webui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: GHCR login (for pulling base image)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker Hub login (for pushing)
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          OPENWEBUI_VERSION="${{ needs.preflight.outputs.openwebui-version }}"
+          OLLAMA_VERSION="${{ needs.preflight.outputs.ollama-version }}"
+          OPENWEBUI_BASE="${{ matrix.base_image }}:${OPENWEBUI_VERSION}-cuda"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG" ]]; then
+            IMAGE_TAG="${OPENWEBUI_VERSION}"
+          fi
+
+          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          # Create a safe filename from the matrix value
+          MATRIX_ID=$(echo "${{ matrix.base_image }}" | md5sum | cut -c1-8)
+
+          echo "OPENWEBUI_BASE=$OPENWEBUI_BASE" >> $GITHUB_ENV
+          echo "OLLAMA_VERSION=$OLLAMA_VERSION" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+          echo "Building from: $OPENWEBUI_BASE"
+          echo "Ollama version: $OLLAMA_VERSION"
+          echo "Output tag: $FULL_IMAGE"
+
+      - name: Build and push
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
+          else
+            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          fi
+
+          platforms="linux/amd64"
+          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+
+          cd external/openwebui
+          docker buildx build \
+            --platform "$platforms" \
+            --build-context base_image_source=../.. \
+            --build-arg OPENWEBUI_BASE=${{ env.OPENWEBUI_BASE }} \
+            --build-arg OLLAMA_VERSION=${{ env.OLLAMA_VERSION }} \
+            -t ${{ env.FULL_IMAGE }} \
+            . --push
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [[ -d all-tags ]] && [[ "$(ls -A all-tags 2>/dev/null)" ]]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "Open WebUI"
+      image-ref: ${{ needs.preflight.outputs.openwebui-version }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
