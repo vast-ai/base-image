@@ -150,10 +150,9 @@ done
 # Remove redundant base image files
 [[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh
 
-if [[ ! -d /home/user ]]; then
-    rm -f /etc/vast_boot.d/46-user-propagate-ssh-keys.sh
-    rm -f /etc/vast_boot.d/47-user-git-safe-dirs.sh
-    rm -f /opt/instance-tools/bin/propagate_ssh_keys.sh
+# Create 'user' account (matches base image: uid 1001, gid 0) if not present
+if ! id -u user > /dev/null 2>&1; then
+    useradd -ms /bin/bash user -u 1001 -g 0
 fi
 
 rm -f /etc/vast_boot.d/48-venv-backup.sh
