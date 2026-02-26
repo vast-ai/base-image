@@ -40,5 +40,10 @@ RUN \
     uv pip install --system --break-system-packages ipykernel && \
     python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
 
+# Use familiar workspace (prevent not found error)
+RUN \
+    set -euo pipefail && \
+    mkdir /opt/workspace-internal
+
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
