@@ -27,7 +27,7 @@ instance_identifier=$(echo "${CONTAINER_ID:-${VAST_CONTAINERLABEL:-${CONTAINER_L
 message="# Template controlled environment for C.${instance_identifier}"
 if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment; then
     echo "$message" > /etc/environment
-    echo 'PATH="/opt/sys-venv/shim:/opt/instance-tools/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+    echo 'PATH="/opt/instance-tools/bin:/opt/sys-venv/shim:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
         >> /etc/environment
     env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
             name=${line%%=*}
