@@ -15,7 +15,7 @@ SHELL ["/bin/bash", "-c"]
 ENV DATA_DIRECTORY=/workspace
 ENV WORKSPACE=/workspace
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH=/opt/instance-tools/bin:${PATH}
+ENV PATH=/opt/sys-venv/shim:/opt/instance-tools/bin:${PATH}
 WORKDIR /
 
 COPY --from=base_image_source /ROOT /
