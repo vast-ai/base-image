@@ -16,7 +16,7 @@ ENV WORKSPACE=/workspace
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV PATH=/opt/instance-tools/bin:${PATH}
+ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
 COPY --from=base_image_source /ROOT /
@@ -37,10 +37,13 @@ RUN \
 COPY ./ROOT /
 
 # Ensure we have a Jupyter kernel for vLLM
+# Use explicit path to avoid the sys-venv shim (which is in PATH for boot)
 RUN \
-    uv pip install --system ipykernel && \
-    python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
-    python3 -m ipykernel install --name "vllm" --display-name "vLLM"
+    set -euo pipefail && \
+    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)" && \
+    uv pip install --python "$SYS_PYTHON" --break-system-packages ipykernel && \
+    "$SYS_PYTHON" -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
+    "$SYS_PYTHON" -m ipykernel install --name "vllm" --display-name "vLLM"
 
 # Use familiar workspace
 RUN \

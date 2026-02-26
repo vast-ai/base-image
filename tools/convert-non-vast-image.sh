@@ -116,7 +116,12 @@ git clone https://github.com/vast-ai/vast-cli
 wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer
 update-ca-certificates
 
-# Protect the system python directory when Vast boostrapping adds jupyter
+# Protect the system python directory when Vast bootstrapping adds jupyter.
+# Everything is installed into an isolated venv, then a shim directory at
+# the front of PATH exposes all binaries (including python/pip).  At boot,
+# 10-prep-env.sh removes the python/pip shims so the image's own
+# interpreters take over while tools like jupyter and supervisord remain
+# reachable.
 uv venv -p 3.12 --seed /opt/sys-venv
 VIRTUAL_ENV=/opt/sys-venv uv pip install --no-cache-dir \
     jupyter \
@@ -131,20 +136,13 @@ VIRTUAL_ENV=/opt/sys-venv uv pip install --no-cache-dir \
     supervisor \
     magic-wormhole
 mkdir -p /var/log/supervisor
-# Entrypoint will reset this after launch
-mv "$(which pip)" "$(dirname "$(which pip)")/pip-v-real"
-mv "$(which pip3)" "$(dirname "$(which pip3)")/pip3-v-real"
 
-# Link sys-venv tools (jupyter, supervisor, etc.) into PATH.
-# Skip python/python3/pip — python must stay as the image's own interpreter
-# (sys-venv scripts use their own shebang to find the right python) and
-# pip is protected by the move-aside/restore pattern above.
+# Create a shim bin directory with symlinks to every sys-venv binary.
+# The Dockerfile adds /opt/sys-venv/shim to the front of PATH so that
+# during Vast bootstrap pip/python resolve here (installing into sys-venv).
+mkdir -p /opt/sys-venv/shim
 for bin in /opt/sys-venv/bin/*; do
-    name="$(basename "$bin")"
-    case "$name" in
-        python|python3|python3.*|pip|pip3|pip3.*) continue ;;
-    esac
-    ln -sf "$bin" "/usr/local/bin/${name}"
+    ln -sf "$bin" "/opt/sys-venv/shim/$(basename "$bin")"
 done
 
 # Remove redundant base image files

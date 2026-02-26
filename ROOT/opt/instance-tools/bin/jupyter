@@ -1,10 +1,17 @@
 #!/bin/bash
 
+# Prefer sys-venv jupyter (converted images), fall back to /usr/local/bin
+if [[ -x /opt/sys-venv/bin/jupyter ]]; then
+    JUPYTER_BIN=/opt/sys-venv/bin/jupyter
+else
+    JUPYTER_BIN=/usr/local/bin/jupyter
+fi
+
 type="$1"
 
 # Bail out if this is not a launch command
 if [[ $type != "notebook" ]] && [[ $type != "lab" ]]; then
-        exec /usr/local/bin/jupyter "$@"
+        exec "$JUPYTER_BIN" "$@"
 fi
 
 shift
@@ -17,4 +24,4 @@ set -- "$type" \
   "--ServerApp.preferred_dir=${JUPYTER_DIR:-${WORKSPACE:-/}}" \
   "$@"
 
-/usr/local/bin/jupyter "$@" 2>&1 | tee >(grep -v "health.ico" >> /var/log/portal/jupyter.log)
+"$JUPYTER_BIN" "$@" 2>&1 | tee >(grep -v "health.ico" >> /var/log/portal/jupyter.log)
