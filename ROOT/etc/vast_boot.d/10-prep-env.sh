@@ -5,8 +5,8 @@ cd "${WORKSPACE}"
 
 # Remove python/pip from the sys-venv shim so the image's own interpreters
 # take over now that Vast bootstrapping is complete.
-rm -f /opt/sys-venv/shim/python /opt/sys-venv/shim/python3 /opt/sys-venv/shim/python3.*
-rm -f /opt/sys-venv/shim/pip /opt/sys-venv/shim/pip3 /opt/sys-venv/shim/pip3.*
+rm -f /opt/sys-venv/shim/python /opt/sys-venv/shim/python3*
+rm -f /opt/sys-venv/shim/pip /opt/sys-venv/shim/pip3*
 
 # Remove Jupyter from the portal config if no port or running in SSH only mode
 if [[ -z "${VAST_TCP_PORT_8080}" ]] || { [[ -f /.launch ]] && ! grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; }; then
