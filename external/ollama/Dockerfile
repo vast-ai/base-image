@@ -1,4 +1,4 @@
-ARG OLLAMA_BASE=ollama/ollama:0.15.2
+ARG OLLAMA_BASE=ollama/ollama:0.17.1
 ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312
 
 FROM ${VAST_BASE} AS vast_base_image
@@ -13,6 +13,7 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 SHELL ["/bin/bash", "-c"]
 ENV DATA_DIRECTORY=/workspace
 ENV WORKSPACE=/workspace
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/instance-tools/bin:${PATH}
 WORKDIR /
