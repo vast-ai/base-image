@@ -150,16 +150,25 @@ done
 # Remove redundant base image files
 [[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh
 
-if [[ ! -d /home/user ]]; then
-    rm -f /etc/vast_boot.d/46-user-propagate-ssh-keys.sh
-    rm -f /etc/vast_boot.d/47-user-git-safe-dirs.sh
-    rm -f /opt/instance-tools/bin/propagate_ssh_keys.sh
+# Create 'user' account (matches base image: uid 1001, gid 0) if not present
+if ! id -u user > /dev/null 2>&1; then
+    useradd -ms /bin/bash user -u 1001 -g 0
 fi
 
 rm -f /etc/vast_boot.d/48-venv-backup.sh
 rm -f /opt/instance-tools/bin/venv_backup.sh
-rm -f /etc/supervisor/conf.d/syncthing.conf
 rm -f /etc/supervisor/conf.d/tensorboard.conf
+
+# Install Syncthing
+SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')"
+SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz"
+mkdir -p /opt/syncthing/config /opt/syncthing/data
+wget -O /opt/syncthing.tar.gz "$SYNCTHING_URL"
+(cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1)
+if id -u user > /dev/null 2>&1; then
+    chown -R user:root /opt/syncthing
+fi
+rm -f /opt/syncthing.tar.gz
 
 # Clean up
 apt-get clean && \
