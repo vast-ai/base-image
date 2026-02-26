@@ -43,7 +43,7 @@ RUN \
 # Use familiar workspace (prevent not found error)
 RUN \
     set -euo pipefail && \
-    mkdir /opt/workspace-internal
+    mkdir -p /opt/workspace-internal
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
