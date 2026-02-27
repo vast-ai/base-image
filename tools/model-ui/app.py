@@ -51,7 +51,7 @@ _IMAGE_RE = re.compile(
 _TTS_RE = re.compile(r"tts|speech|cosyvoice|parler|bark|xtts|qwen3.*tts", re.I)
 _STT_RE = re.compile(r"whisper|stt|transcri", re.I)
 _OMNI_RE = re.compile(r"omni|bagel", re.I)
-_VIDEO_RE = re.compile(r"wan|hunyuan.*video|cogvideo", re.I)
+_VIDEO_RE = re.compile(r"\bwan|hunyuan.*video|cogvideo", re.I)
 
 
 def detect_default_tab(model_id: str) -> str:

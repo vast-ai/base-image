@@ -21,7 +21,7 @@ while [ -f "/.provisioning" ]; do
 done
 
 # Launch vllm-omni
-cd ${WORKSPACE}
+cd "${WORKSPACE}"
 
 # User has not specified a remote Ray server
 if [[ -z "$RAY_ADDRESS" || "$RAY_ADDRESS" = "127.0.0.1"* ]]; then
