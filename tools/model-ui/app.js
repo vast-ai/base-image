@@ -171,7 +171,7 @@ $$('.tab-btn').forEach(btn => {
         $$('.tab-panel').forEach(p => p.classList.remove('active'));
         btn.classList.add('active');
         $('#tab-' + btn.dataset.tab).classList.add('active');
-        if (btn.dataset.tab === 'tts' && !ttsVoicesLoaded) loadVoices();
+        if (btn.dataset.tab === 'tts' && !ttsVoicesLoaded && ttsMode === 'basic') loadVoices();
     });
 });
 
@@ -255,6 +255,58 @@ if (vidMode === 'edit') {
     const field = document.querySelector('#vid-uploads')?.closest('.field');
     if (field) field.style.display = 'none';
 }
+
+/* TTS caps — determine available modes.
+ * Each Qwen3-TTS model variant only supports its own task_type, so we only
+ * show modes matching the caps. 'basic' (standard voice picker, no task_type)
+ * is included when caps are unset or explicitly 'custom_voice'.
+ * 'all' enables every mode. */
+function ttsModesFromCaps(tabCaps) {
+    if (!tabCaps) return ['basic'];
+    const has = v => tabCaps.includes(v);
+    if (has('all')) return ['basic', 'voice_design', 'voice_clone'];
+    const modes = [];
+    if (has('custom_voice')) modes.push('basic');
+    if (has('voice_design')) modes.push('voice_design');
+    if (has('voice_clone')) modes.push('voice_clone');
+    return modes.length ? modes : ['basic'];
+}
+const ttsAvailModes = ttsModesFromCaps(CAPS.tts);
+let ttsMode = ttsAvailModes[0];
+const ttsHasExtraModes = ttsAvailModes.length > 1;
+
+function setTtsMode(mode) {
+    ttsMode = mode;
+    /* Update mode selector buttons */
+    $$('.tts-mode-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.ttsMode === mode);
+    });
+    /* Voice + speed: shown in basic */
+    $('#tts-voice-speed').style.display = mode === 'basic' ? '' : 'none';
+    /* Instructions in Advanced: shown in basic */
+    const instrField = $('#tts-instructions-field');
+    if (instrField) instrField.style.display = mode === 'basic' ? '' : 'none';
+    /* Voice design textarea: shown in voice_design */
+    $('#tts-design-field').style.display = mode === 'voice_design' ? '' : 'none';
+    /* Ref audio + ref text: shown in voice_clone */
+    $('#tts-ref-field').style.display = mode === 'voice_clone' ? '' : 'none';
+    $('#tts-reftext-field').style.display = mode === 'voice_clone' ? '' : 'none';
+    /* Load voices if switching to basic and not yet loaded */
+    if (mode === 'basic' && !ttsVoicesLoaded) loadVoices();
+}
+
+/* Show mode selector if extra modes available; hide unavailable buttons */
+if (ttsHasExtraModes) {
+    $('#tts-mode-group').style.display = '';
+    $$('.tts-mode-btn').forEach(btn => {
+        if (!ttsAvailModes.includes(btn.dataset.ttsMode)) btn.style.display = 'none';
+    });
+    $$('.tts-mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => setTtsMode(btn.dataset.ttsMode));
+    });
+}
+/* Apply initial mode */
+setTtsMode(ttsMode);
 
 /* ------------------------------------------------------------------ */
 /* Lightbox                                                            */
@@ -381,14 +433,24 @@ function buildTtsPayload() {
     const body = {
         model: CONFIG.modelId,
         input: $('#tts-text').value.trim(),
-        voice: $('#tts-voice').value,
-        speed: parseFloat($('#tts-speed').value),
         response_format: 'wav',
     };
+    if (ttsMode === 'basic') {
+        body.voice = $('#tts-voice').value;
+        body.speed = parseFloat($('#tts-speed').value);
+        const instr = $('#tts-instructions').value.trim();
+        if (instr) body.instructions = instr;
+    } else if (ttsMode === 'voice_design') {
+        body.task_type = 'VoiceDesign';
+        body.instructions = $('#tts-design').value.trim();
+    } else if (ttsMode === 'voice_clone') {
+        body.task_type = 'Base';
+        if (ttsRefState.dataUrl) body.ref_audio = ttsRefState.dataUrl;
+        const refText = $('#tts-ref-text').value.trim();
+        if (refText) body.ref_text = refText;
+    }
     const lang = $('#tts-lang').value.trim();
     if (lang) body.language = lang;
-    const instr = $('#tts-instructions').value.trim();
-    if (instr) body.instructions = instr;
     return body;
 }
 
@@ -1128,9 +1190,244 @@ async function loadVoices() {
     ttsVoicesLoaded = true;
 }
 
+/* Reference audio state for voice clone */
+const ttsRefState = { file: null, dataUrl: null };
+
+/* Convert any audio blob to WAV (PCM 16-bit) via Web Audio API.
+ * libsndfile on the backend doesn't support WebM/Opus, so we must
+ * transcode to WAV before sending as base64. */
+async function blobToWav(blob) {
+    const ctx = new AudioContext();
+    const buf = await blob.arrayBuffer();
+    const audio = await ctx.decodeAudioData(buf);
+    await ctx.close();
+
+    const numCh = audio.numberOfChannels;
+    const sr = audio.sampleRate;
+    const length = audio.length;
+    const samples = new Float32Array(length * numCh);
+
+    /* Interleave channels */
+    if (numCh === 1) {
+        samples.set(audio.getChannelData(0));
+    } else {
+        const channels = [];
+        for (let c = 0; c < numCh; c++) channels.push(audio.getChannelData(c));
+        for (let i = 0; i < length; i++) {
+            for (let c = 0; c < numCh; c++) samples[i * numCh + c] = channels[c][i];
+        }
+    }
+
+    /* Encode WAV */
+    const bytesPerSample = 2;
+    const dataLen = samples.length * bytesPerSample;
+    const wavBuf = new ArrayBuffer(44 + dataLen);
+    const view = new DataView(wavBuf);
+
+    function writeStr(offset, str) { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); }
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataLen, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);              /* PCM */
+    view.setUint16(22, numCh, true);
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * numCh * bytesPerSample, true);
+    view.setUint16(32, numCh * bytesPerSample, true);
+    view.setUint16(34, 16, true);             /* bits per sample */
+    writeStr(36, 'data');
+    view.setUint32(40, dataLen, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+
+    return new Blob([wavBuf], { type: 'audio/wav' });
+}
+
+/* Read a blob as WAV data URL — converts non-WAV formats first */
+async function readAsWavDataUrl(blob) {
+    const isWav = blob.type === 'audio/wav' || blob.type === 'audio/wave' ||
+        blob.type === 'audio/x-wav' ||
+        (blob.name && /\.wav$/i.test(blob.name));
+    const wavBlob = isWav ? blob : await blobToWav(blob);
+    return new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(wavBlob);
+    });
+}
+
+function renderTtsRefUploads() {
+    const container = $('#tts-ref-uploads');
+    const preview = $('#tts-ref-preview');
+    container.innerHTML = '';
+    if (ttsRefState.file) {
+        const div = document.createElement('div');
+        div.className = 'upload-thumb';
+        div.innerHTML = '<div class="audio-badge">&#9835;</div>';
+        const btn = document.createElement('button');
+        btn.className = 'remove-btn';
+        btn.textContent = '\u00d7';
+        btn.onclick = () => {
+            ttsRefState.file = null; ttsRefState.dataUrl = null;
+            renderTtsRefUploads();
+        };
+        div.appendChild(btn);
+        container.appendChild(div);
+        const name = document.createElement('span');
+        name.style.cssText = 'font-size:0.75rem;color:var(--text-secondary);margin-left:0.25rem';
+        name.textContent = ttsRefState.file.name;
+        container.appendChild(name);
+        /* Show playback preview */
+        preview.src = URL.createObjectURL(ttsRefState.file);
+        preview.style.display = '';
+    } else {
+        preview.removeAttribute('src');
+        preview.style.display = 'none';
+    }
+}
+
+$('#tts-ref-attach').addEventListener('click', () => $('#tts-ref-file').click());
+$('#tts-ref-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    ttsRefState.file = file;
+    ttsRefState.dataUrl = await readAsWavDataUrl(file);
+    renderTtsRefUploads();
+    e.target.value = '';
+});
+
+/* Microphone recording for voice clone reference */
+let ttsRecorder = null;
+let ttsRecStart = 0;
+let ttsRecInterval = null;
+let ttsRecAnimFrame = 0;
+let ttsRecAnalyser = null;
+let ttsRecAudioCtx = null;
+
+function ttsRecUpdateTimer() {
+    const elapsed = Math.floor((Date.now() - ttsRecStart) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s = elapsed % 60;
+    $('#tts-rec-timer').textContent = m + ':' + String(s).padStart(2, '0');
+}
+
+function ttsRecDrawLevel() {
+    if (!ttsRecAnalyser) return;
+    const canvas = $('#tts-rec-level');
+    const ctx = canvas.getContext('2d');
+    const bufLen = ttsRecAnalyser.frequencyBinCount;
+    const data = new Uint8Array(bufLen);
+    ttsRecAnalyser.getByteFrequencyData(data);
+
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    /* Draw frequency bars */
+    const barCount = 20;
+    const step = Math.floor(bufLen / barCount);
+    const barW = (w - (barCount - 1)) / barCount;
+    for (let i = 0; i < barCount; i++) {
+        const val = data[i * step] / 255;
+        const barH = Math.max(2, val * h);
+        const r = Math.round(70 + val * 170);
+        const g = Math.round(100 - val * 30);
+        const b = Math.round(250 - val * 100);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(i * (barW + 1), h - barH, barW, barH);
+    }
+
+    ttsRecAnimFrame = requestAnimationFrame(ttsRecDrawLevel);
+}
+
+function ttsRecStopVisuals() {
+    cancelAnimationFrame(ttsRecAnimFrame);
+    ttsRecAnimFrame = 0;
+    ttsRecAnalyser = null;
+    if (ttsRecAudioCtx) { ttsRecAudioCtx.close().catch(() => {}); ttsRecAudioCtx = null; }
+    const canvas = $('#tts-rec-level');
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    canvas.style.display = 'none';
+}
+
+$('#tts-ref-record').addEventListener('click', async () => {
+    const btn = $('#tts-ref-record');
+
+    /* Stop recording */
+    if (ttsRecorder && ttsRecorder.state === 'recording') {
+        ttsRecorder.stop();
+        return;
+    }
+
+    /* Start recording */
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const chunks = [];
+        ttsRecorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '' });
+
+        /* Set up audio analyser for level meter */
+        ttsRecAudioCtx = new AudioContext();
+        const source = ttsRecAudioCtx.createMediaStreamSource(stream);
+        ttsRecAnalyser = ttsRecAudioCtx.createAnalyser();
+        ttsRecAnalyser.fftSize = 256;
+        source.connect(ttsRecAnalyser);
+        $('#tts-rec-level').style.display = '';
+        ttsRecDrawLevel();
+
+        ttsRecorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+        ttsRecorder.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            clearInterval(ttsRecInterval);
+            ttsRecStopVisuals();
+            btn.classList.remove('recording');
+            btn.innerHTML = '&#9679;';
+            $('#tts-rec-timer').textContent = '';
+
+            if (!chunks.length) return;
+            const blob = new Blob(chunks, { type: ttsRecorder.mimeType });
+            /* Convert to WAV for backend compatibility */
+            const wavBlob = await blobToWav(blob);
+            const file = new File([wavBlob], 'recording.wav', { type: 'audio/wav' });
+            ttsRefState.file = file;
+            ttsRefState.dataUrl = await readAsWavDataUrl(wavBlob);
+            renderTtsRefUploads();
+        };
+
+        ttsRecorder.start();
+        ttsRecStart = Date.now();
+        ttsRecUpdateTimer();
+        ttsRecInterval = setInterval(ttsRecUpdateTimer, 1000);
+        btn.classList.add('recording');
+        btn.innerHTML = '&#9632;';  /* square = stop */
+    } catch (e) {
+        console.warn('[model-ui] Microphone access denied:', e);
+        $('#tts-error').innerHTML = '<div class="error-msg">Microphone access denied. Please allow microphone permissions.</div>';
+    }
+});
+
 async function synthesize() {
     const text = $('#tts-text').value.trim();
     if (!text) return;
+
+    /* Mode-specific validation */
+    if (ttsMode === 'voice_design') {
+        const desc = $('#tts-design').value.trim();
+        if (!desc) {
+            $('#tts-error').innerHTML = '<div class="error-msg">Please enter a voice description.</div>';
+            return;
+        }
+    } else if (ttsMode === 'voice_clone') {
+        if (!ttsRefState.dataUrl) {
+            $('#tts-error').innerHTML = '<div class="error-msg">Please attach a reference audio file.</div>';
+            return;
+        }
+    }
 
     const btn = $('#tts-synth');
     const errEl = $('#tts-error');

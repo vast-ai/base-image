@@ -230,7 +230,14 @@
                         <label>Text</label>
                         <textarea id="tts-text" rows="5" placeholder="Enter text to synthesize..."></textarea>
                     </div>
-                    <div class="grid-2">
+                    <!-- Mode selector (hidden by default, shown when voice_design or voice_clone caps) -->
+                    <div class="tts-mode-group" id="tts-mode-group" style="display:none">
+                        <button class="tts-mode-btn active" data-tts-mode="basic">Standard</button>
+                        <button class="tts-mode-btn" data-tts-mode="voice_design">VoiceDesign</button>
+                        <button class="tts-mode-btn" data-tts-mode="voice_clone">VoiceClone</button>
+                    </div>
+                    <!-- Voice + Speed (basic & custom_voice modes) -->
+                    <div class="grid-2" id="tts-voice-speed">
                         <div class="field">
                             <label>Voice</label>
                             <select id="tts-voice"><option value="default">default</option></select>
@@ -243,6 +250,29 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Voice description (voice_design mode) -->
+                    <div class="field" id="tts-design-field" style="display:none">
+                        <label>Voice description</label>
+                        <textarea id="tts-design" rows="2" placeholder="Describe the voice you want, e.g. &quot;A warm, deep male voice with a calm tone&quot;"></textarea>
+                    </div>
+                    <!-- Reference audio (voice_clone mode) -->
+                    <div class="field" id="tts-ref-field" style="display:none">
+                        <label>Reference audio</label>
+                        <div class="chat-uploads" id="tts-ref-uploads"></div>
+                        <audio id="tts-ref-preview" controls style="display:none;margin-bottom:0.375rem"></audio>
+                        <input type="file" id="tts-ref-file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" hidden>
+                        <div style="display:flex;gap:0.375rem;margin-top:0.25rem;align-items:center">
+                            <button class="btn-icon" id="tts-ref-attach" title="Upload audio file">+</button>
+                            <button class="btn-icon tts-rec-btn" id="tts-ref-record" title="Record from microphone">&#9679;</button>
+                            <canvas class="tts-rec-level" id="tts-rec-level" width="120" height="24" style="display:none"></canvas>
+                            <span class="tts-rec-timer" id="tts-rec-timer"></span>
+                        </div>
+                    </div>
+                    <!-- Reference text (voice_clone mode) -->
+                    <div class="field" id="tts-reftext-field" style="display:none">
+                        <label>Reference text <span style="font-weight:400;color:var(--text-tertiary)">(transcript of reference audio)</span></label>
+                        <input type="text" id="tts-ref-text" placeholder="What is said in the reference audio (optional)">
+                    </div>
                     <details>
                         <summary>Advanced</summary>
                         <div class="details-body">
@@ -251,7 +281,7 @@
                                     <label>Language</label>
                                     <input type="text" id="tts-lang" placeholder="e.g. en, zh (optional)">
                                 </div>
-                                <div class="field">
+                                <div class="field" id="tts-instructions-field">
                                     <label>Instructions</label>
                                     <input type="text" id="tts-instructions" placeholder="Model-dependent (optional)">
                                 </div>

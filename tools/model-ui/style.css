@@ -312,6 +312,37 @@ details[open] > summary { border-bottom: 1px solid var(--border); }
 audio { width: 100%; margin-top: 0.5rem; }
 audio:not([src]) { display: none; }
 
+/* TTS mode selector */
+.tts-mode-group {
+    display: flex; gap: 0; margin-bottom: 0.625rem;
+    border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.tts-mode-btn {
+    flex: 1; background: none; border: none; border-right: 1px solid var(--border);
+    padding: 0.3125rem 0.5rem; font-size: 0.75rem; font-weight: 500;
+    color: var(--text-secondary); cursor: pointer; font-family: var(--font);
+    transition: background 0.15s, color 0.15s;
+}
+.tts-mode-btn:last-child { border-right: none; }
+.tts-mode-btn:hover { background: var(--border-light); }
+.tts-mode-btn.active { background: var(--accent-light); color: var(--accent); }
+
+/* TTS record button & level meter */
+.tts-rec-btn { color: var(--danger); font-size: 0.625rem; }
+.tts-rec-btn.recording {
+    background: rgba(239, 68, 68, 0.12); border-color: var(--danger);
+    animation: rec-pulse 1s ease-in-out infinite;
+}
+@keyframes rec-pulse { 50% { opacity: 0.6; } }
+.tts-rec-level {
+    height: 1.5rem; border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+.tts-rec-timer {
+    font-size: 0.6875rem; color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums; min-width: 3ch;
+}
+
 /* Generation history */
 .gen-history { margin-top: 0.75rem; }
 #img-history {

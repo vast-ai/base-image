@@ -48,7 +48,7 @@ _IMAGE_RE = re.compile(
     r"|playground|pixart|imagen|z[_-]?image",
     re.I,
 )
-_TTS_RE = re.compile(r"tts|speech|cosyvoice|parler|bark|xtts", re.I)
+_TTS_RE = re.compile(r"tts|speech|cosyvoice|parler|bark|xtts|qwen3.*tts", re.I)
 _STT_RE = re.compile(r"whisper|stt|transcri", re.I)
 _OMNI_RE = re.compile(r"omni|bagel", re.I)
 _VIDEO_RE = re.compile(r"wan|hunyuan.*video|cogvideo", re.I)
