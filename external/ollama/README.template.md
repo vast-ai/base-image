@@ -112,10 +112,16 @@ Once connected via SSH or Jupyter terminal:
 ollama run llama3.1:8b
 ```
 
+### **Model UI**
+A lightweight web chat interface is included for quick testing. Open it from the Instance Portal or access port 7860 directly.
+
+For serious use, we recommend connecting the Ollama API (port 11434) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), [oterm](https://github.com/ggozad/oterm), or any application that supports Ollama or the OpenAI-compatible API.
+
 ### **Port Reference**
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
+| Model UI | 7860 | 17860 |
 | Ollama API | 11434 | 21434 |
 | Jupyter | 8080 | 18080 |
 

@@ -57,6 +57,8 @@ The watchdog is enabled by default. To disable: `VLLM_WATCHDOG=false`. To custom
 
 A lightweight web interface for interacting with the model. Supports chat, image, video, TTS, and STT tabs. Available on port 7860 (external) / 17860 (internal).
 
+Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), or any application that speaks the OpenAI API.
+
 - TTS tab supports Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`
 - To disable, remove the Model UI entry from `PORTAL_CONFIG`
 - See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration and advanced usage

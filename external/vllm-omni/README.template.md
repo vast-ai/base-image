@@ -109,7 +109,9 @@ curl -H 'Authorization: Bearer <TOKEN>' \
 *Use `https://` instead of `http://` if you've enabled HTTPS in your account settings.*
 
 ### **Model UI**
-A lightweight web interface for interacting with the model, accessible via the Instance Portal. Supports chat, image, video, TTS, and STT tabs. TTS includes support for Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`. To disable, remove the Model UI entry from `PORTAL_CONFIG`.
+A lightweight web interface for interacting with the model, accessible via the Instance Portal. Supports chat, image, video, TTS, and STT tabs. TTS includes support for Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`.
+
+Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), or any application that speaks the OpenAI API. To disable Model UI, remove its entry from `PORTAL_CONFIG`.
 
 ### **Chat from the Command Line**
 Once connected via SSH or Jupyter terminal:

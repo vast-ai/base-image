@@ -114,13 +114,19 @@ Once connected via SSH or Jupyter terminal:
 vllm chat --url http://localhost:18000/v1
 ```
 
+### **Model UI**
+A lightweight web chat interface is included for quick testing. Open it from the Instance Portal or access port 7860 directly.
+
+For serious use, we recommend connecting the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), [oterm](https://github.com/ggozad/oterm), or any application that speaks the OpenAI API.
+
 ### **Port Reference**
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
+| Model UI | 7860 | 17860 |
 | vLLM API | 8000 | 18000 |
 | Ray Dashboard | 8265 | 28265 |
-| Jupyter | 8080 | 8080 |
+| Jupyter | 8080 | 18080 |
 
 ### **Instance Portal (Application Manager)**
 - Web-based dashboard for managing your applications

@@ -37,11 +37,21 @@ Tags follow the format `<version>` (e.g. `0.15.2`). Unlike vLLM/SGLang, there ar
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
 
+### Model UI
+
+A lightweight web interface is included for quick interactions with your model. It supports chat with streaming and thinking/reasoning model output. Available on port 7860 (external) / 17860 (internal).
+
+Model UI is provided as a convenience for testing and casual use. For the best experience, connect the Ollama API (port 11434) to your preferred local client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), [oterm](https://github.com/ggozad/oterm), or any application that supports Ollama or the OpenAI-compatible API.
+
+- To disable, remove the Model UI entry from `PORTAL_CONFIG`
+- See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration
+
 ### Port Reference
 
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
+| Model UI | 7860 | 17860 |
 | Ollama API | 11434 | 21434 |
 | Jupyter | 8080 | 18080 |
 

@@ -41,14 +41,24 @@ echo '--guided-decoding-backend lm-format-enforcer --chat-template-content-forma
 entrypoint.sh
 ```
 
+### Model UI
+
+A lightweight web interface is included for quick interactions with your model. It supports chat with streaming, multimodal input (images, audio), and thinking/reasoning model output. Available on port 7860 (external) / 17860 (internal).
+
+Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred local client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), [oterm](https://github.com/ggozad/oterm), or any application that speaks the OpenAI API.
+
+- To disable, remove the Model UI entry from `PORTAL_CONFIG`
+- See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration
+
 ### Port Reference
 
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
+| Model UI | 7860 | 17860 |
 | vLLM API | 8000 | 18000 |
 | Ray Dashboard | 8265 | 28265 |
-| Jupyter | 8080 | 8080 |
+| Jupyter | 8080 | 18080 |
 
 ### Interacting with vLLM
 
