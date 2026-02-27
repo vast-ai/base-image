@@ -422,7 +422,7 @@ function buildVideoPayload() {
         num_frames: frames,
         fps: fps,
         num_inference_steps: steps,
-        cfg_scale: cfg,
+        guidance_scale: cfg,
     };
     if (seed >= 0) body.seed = seed;
     if (negative) body.negative_prompt = negative;
