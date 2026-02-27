@@ -380,13 +380,11 @@ function buildImagePayload() {
     const body = {
         model: CONFIG.modelId,
         messages: [{ role: 'user', content: userContent.length === 1 ? prompt : userContent }],
-        modalities: ['image'],
         stream: false,
-        max_tokens: 2048,
         width: parseInt(size[0]),
         height: parseInt(size[1]),
         num_inference_steps: steps,
-        cfg_scale: cfg,
+        guidance_scale: cfg,
     };
     if (seed >= 0) body.seed = seed;
     if (negative) body.negative_prompt = negative;
@@ -998,7 +996,6 @@ async function generateImage() {
         const result = await r.json();
         const msg = result.choices?.[0]?.message || {};
         const content = msg.content;
-        /* Extract base64 images from response */
         const b64List = [];
         if (Array.isArray(content)) {
             for (const part of content) {
@@ -1011,6 +1008,7 @@ async function generateImage() {
             && /^[A-Za-z0-9+/=]+$/.test(content.slice(0, 200))) {
             b64List.push(content);
         }
+
         if (b64List.length) {
             const historyEl = $('#img-history');
             const time = timeNow();

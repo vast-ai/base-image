@@ -17,7 +17,7 @@ Lightweight web interface for vLLM, vLLM-Omni, and SGLang inference backends. Si
 | Tab | API endpoint | Use case |
 |---|---|---|
 | **Chat** | `/v1/chat/completions` | Text, multimodal, and audio conversation (streaming for text, non-streaming when audio output is requested). Supports image and audio file attachments. |
-| **Image** | `/v1/chat/completions` | Image generation/editing (Flux, SDXL, etc.) — sends a chat completion with image content in the response |
+| **Image** | `/v1/chat/completions` | Image generation/editing (Flux, SDXL, Qwen-Image, etc.) — sends a chat completion with image content in the response |
 | **Video** | `/v1/chat/completions` | Video generation/editing (Wan, HunyuanVideo, etc.) — sends a chat completion with video content in the response |
 | **TTS** | `/v1/audio/speech` | Text-to-speech — standard OpenAI TTS, plus Qwen3-TTS modes (VoiceDesign, VoiceClone) via vLLM-Omni |
 | **STT** | `/v1/audio/transcriptions` | Speech-to-text (Whisper, etc.) — multipart form data |

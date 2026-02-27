@@ -256,15 +256,15 @@ details[open] > summary { border-bottom: 1px solid var(--border); }
 .chat-uploads:empty { display: none; margin: 0; }
 .upload-thumb {
     position: relative; width: 3rem; height: 3rem;
-    border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border);
+    border-radius: var(--radius); border: 1px solid var(--border);
 }
-.upload-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.upload-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .upload-thumb .audio-badge {
     display: flex; align-items: center; justify-content: center;
     width: 100%; height: 100%; background: var(--border-light); font-size: 1rem;
 }
 .upload-thumb .remove-btn {
-    position: absolute; top: -3px; right: -3px; width: 0.875rem; height: 0.875rem;
+    position: absolute; top: -0.3125rem; right: -0.3125rem; width: 0.875rem; height: 0.875rem;
     border-radius: 50%; background: var(--danger); color: #fff; border: none;
     font-size: 0.5rem; cursor: pointer; display: flex;
     align-items: center; justify-content: center; line-height: 1;
