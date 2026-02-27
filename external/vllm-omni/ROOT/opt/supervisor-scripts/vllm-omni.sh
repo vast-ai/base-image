@@ -87,5 +87,6 @@ if [[ "${VLLM_WATCHDOG:-true}" != "false" ]]; then
     ) &
 fi
 
+cd "${WORKSPACE}/vllm-omni"
 # Read complex args from /etc/vllm-args.conf if env vars were unsuitable
 eval "vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
