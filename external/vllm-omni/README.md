@@ -1,14 +1,16 @@
-# vLLM Image
+# vLLM-Omni Image
 
-A vLLM image based on the official [vllm/vllm-openai](https://hub.docker.com/r/vllm/vllm-openai) image with Vast.ai tooling added on top. This image includes the Instance Portal, Supervisor process management, and other conveniences from the Vast.ai [base image](https://github.com/vast-ai/base-image).
+A vLLM-Omni image based on the official [vllm/vllm-omni](https://hub.docker.com/r/vllm/vllm-omni) image with Vast.ai tooling added on top. This image includes the Instance Portal, Supervisor process management, and other conveniences from the Vast.ai [base image](https://github.com/vast-ai/base-image).
+
+vLLM-Omni extends standard vLLM with omni-modality capabilities, supporting image generation, text-to-speech, diffusion models, and other multimodal workloads in addition to text generation.
 
 For detailed documentation on Instance Portal, Supervisor, environment variables, and other features, see the [base image README](../../README.md).
 
 ## How This Image Works
 
-Unlike derivative images that extend `vastai/base-image`, this image starts from the official vLLM image and adds Vast.ai tooling on top. This approach:
+Unlike derivative images that extend `vastai/base-image`, this image starts from the official vLLM-Omni image and adds Vast.ai tooling on top. This approach:
 
-- Preserves the vendor's optimized vLLM installation
+- Preserves the vendor's optimized vLLM-Omni installation
 - Adds Instance Portal for web-based application management
 - Adds Supervisor for process management
 - Includes support for `HOTFIX_SCRIPT` and `PROVISIONING_SCRIPT` along with other boot optimizations
@@ -16,9 +18,9 @@ Unlike derivative images that extend `vastai/base-image`, this image starts from
 
 ## Available Tags
 
-Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/vllm/tags).
+Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/vllm-omni/tags).
 
-## vLLM Configuration
+## vLLM-Omni Configuration
 
 ### Environment Variables
 
@@ -30,10 +32,14 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
+| `VLLM_WATCHDOG` | `true` | Enable crash watchdog that monitors logs and restarts vLLM on fatal engine errors |
+| `VLLM_CRASH_PATTERN` | _(see below)_ | Custom regex for crash detection (default matches `EngineDeadError` and related patterns) |
+
+To enable omni-modality features (image generation, TTS, etc.), include `--omni` in `VLLM_ARGS`.
 
 ### Complex Arguments
 
-For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/vllm-args.conf`. The contents of this file are appended to `$VLLM_ARGS` when launching vLLM.
+For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/vllm-args.conf`. The contents of this file are appended to `$VLLM_ARGS` when launching vLLM-Omni.
 
 Example template on start:
 ```bash
@@ -41,14 +47,21 @@ echo '--guided-decoding-backend lm-format-enforcer --chat-template-content-forma
 entrypoint.sh
 ```
 
+### Engine Crash Watchdog
+
+vLLM-Omni's engine core can crash on certain requests while the HTTP server stays alive. Supervisor sees a running process and never restarts. The watchdog monitors the log file (`/var/log/portal/vllm-omni.log`) for fatal error patterns and terminates the process to trigger a supervisor restart.
+
+The watchdog is enabled by default. To disable: `VLLM_WATCHDOG=false`. To customize the detection pattern, set `VLLM_CRASH_PATTERN` to a bash-compatible regex.
+
 ### Model UI
 
-A lightweight web interface is included for quick interactions with your model. It supports chat with streaming, multimodal input (images, audio), and thinking/reasoning model output. Available on port 7860 (external) / 17860 (internal).
+A lightweight web interface for interacting with the model. Supports chat, image, video, TTS, and STT tabs. Available on port 7860 (external) / 17860 (internal).
 
-Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred local client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), [oterm](https://github.com/ggozad/oterm), or any application that speaks the OpenAI API.
+Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), or any application that speaks the OpenAI API.
 
+- TTS tab supports Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`
 - To disable, remove the Model UI entry from `PORTAL_CONFIG`
-- See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration
+- See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration and advanced usage
 
 ### Port Reference
 
@@ -56,11 +69,11 @@ Model UI is provided as a convenience for testing and casual use. For the best e
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
 | Model UI | 7860 | 17860 |
-| vLLM API | 8000 | 18000 |
+| vLLM-Omni API | 8000 | 18000 |
 | Ray Dashboard | 8265 | 28265 |
 | Jupyter | 8080 | 18080 |
 
-### Interacting with vLLM
+### Interacting with vLLM-Omni
 
 **Chat from the command line:**
 ```bash
@@ -100,25 +113,25 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 This image uses a `--build-context` to access files from the base-image repository:
 
 ```bash
-cd base-image/external/vllm
+cd base-image/external/vllm-omni
 
 docker buildx build \
     --platform linux/amd64,linux/arm64 \
     --build-context base_image_source=../.. \
-    --build-arg VLLM_BASE=vllm/vllm-openai:v0.13.0 \
-    -t yournamespace/vllm . --push
+    --build-arg VLLM_OMNI_BASE=vllm/vllm-omni:v0.14.0 \
+    -t yournamespace/vllm-omni . --push
 ```
 
 ### Build Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `VLLM_BASE` | `vllm/vllm-openai:v0.13.0` | Official vLLM image to use as the base |
+| `VLLM_OMNI_BASE` | `vllm/vllm-omni:v0.14.0` | Official vLLM-Omni image to use as the base |
 | `VAST_BASE` | `vastai/base-image:stock-ubuntu24.04-py312` | Vast base image (used to copy Caddy binary) |
 
 ## Building with GitHub Actions
 
-You can fork this repository and use the included GitHub Actions workflow to automatically build and push vLLM images to your own DockerHub account.
+You can fork this repository and use the included GitHub Actions workflow to automatically build and push vLLM-Omni images to your own DockerHub account.
 
 ### Setup
 
@@ -136,42 +149,43 @@ You can fork this repository and use the included GitHub Actions workflow to aut
 
 ### Triggering a Build
 
-Go to **Actions > Build vLLM Image > Run workflow** and fill in the inputs:
+Go to **Actions > Build vLLM-Omni Image > Run workflow** and fill in the inputs:
 
 | Input | Description |
 |-------|-------------|
-| `VLLM_VERSION` | A release tag (e.g. `v0.14.0`), `nightly`, or leave empty to auto-detect the latest release |
-| `DOCKERHUB_REPO` | Repository name under your namespace (default: `vllm`) |
+| `VLLM_OMNI_VERSION` | A release tag (e.g. `v0.14.0`), `nightly`, or leave empty to auto-detect the latest release |
+| `DOCKERHUB_REPO` | Repository name under your namespace (default: `vllm-omni`) |
 | `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
 | `CUSTOM_IMAGE_TAG` | Override the version portion of the tag (e.g. `my-custom-build`) |
 
 The workflow pushes images tagged as `<namespace>/<repo>:<version>-cuda-<cuda_version>`:
 
 ```
-yourusername/vllm:v0.14.0-cuda-12.9
-yourusername/vllm:v0.14.0-cuda-13.0
+yourusername/vllm-omni:v0.14.0-cuda-12.9
+yourusername/vllm-omni:v0.14.0-cuda-13.0
 ```
 
 Nightly builds pull from the upstream `nightly` tag and are pushed as:
 
 ```
-yourusername/vllm:nightly-2025-01-15-cuda-12.9
+yourusername/vllm-omni:nightly-2025-01-15-cuda-12.9
 ```
 
 ### Automatic Builds
 
-The workflow includes a 12-hour schedule that automatically builds new vLLM releases when detected on DockerHub. GitHub disables scheduled workflows on forks by default — to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows. To disable scheduled builds, edit the `cron` line in `.github/workflows/build-vllm.yml` or remove the `schedule` trigger.
+The workflow includes a 12-hour schedule that automatically builds new vLLM-Omni releases when detected on DockerHub. GitHub disables scheduled workflows on forks by default — to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows. To disable scheduled builds, edit the `cron` line in `.github/workflows/build-vllm-omni.yml` or remove the `schedule` trigger.
 
 ### Customizing the Image
 
 To build a variant with modifications:
 
-1. Edit `external/vllm/Dockerfile` or the files under `external/vllm/ROOT/` in your fork.
+1. Edit `external/vllm-omni/Dockerfile` or the files under `external/vllm-omni/ROOT/` in your fork.
 2. Trigger a manual build. Your changes will be included in the built image.
-3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/vllm.conf` and the startup script in `ROOT/opt/supervisor-scripts/vllm.sh`.
+3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/vllm-omni.conf` and the startup script in `ROOT/opt/supervisor-scripts/vllm-omni.sh`.
 
 ## Useful Links
 
-- [vLLM Documentation](https://docs.vllm.ai/en/latest)
+- [vLLM-Omni Documentation](https://docs.vllm.ai/projects/vllm-omni/en/latest)
+- [vLLM-Omni GitHub](https://github.com/vllm-project/vllm-omni)
 - [Base Image Documentation](../../README.md)
-- [Image Source](https://github.com/vast-ai/base-image/tree/main/external/vllm)
+- [Image Source](https://github.com/vast-ai/base-image/tree/main/external/vllm-omni)

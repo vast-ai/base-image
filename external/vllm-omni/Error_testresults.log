@@ -1,0 +1,2 @@
+55483:31319102 ERROR 1: System requirements test failed. System total memory is less than the sum of all the GPUs VRAM.
+55488:31319120 ERROR 1: System requirements test failed. System total memory is less than the sum of all the GPUs VRAM.

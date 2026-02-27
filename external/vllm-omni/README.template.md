@@ -1,21 +1,21 @@
-# vLLM Inference Engine
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=vLLM)**
+# vLLM-Omni Inference Engine
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=vLLM-Omni)**
 
 ## What is this template?
 
-This template gives you a **hosted vLLM API server** running in a Docker container. vLLM lets you serve large language models with high throughput and low latency through a simple REST API. It's perfect for AI development, production deployments, or adding high-performance LLMs to your applications.
+This template gives you a **hosted vLLM-Omni API server** running in a Docker container. vLLM-Omni extends vLLM with omni-modality capabilities, letting you serve multimodal models that handle text, images, audio, and more through a simple REST API. It's perfect for AI development, production deployments, or adding high-performance multimodal LLMs to your applications.
 
-**Think:** *"Your own private, high-performance ChatGPT API that you control completely."*
+**Think:** *"Your own private, high-performance multimodal AI API that you control completely."*
 
-> **Latest builds:** Docker images are automatically rebuilt when new vLLM releases are detected. The default template tag is updated less frequently to allow for QA testing. To use a newly built image before it becomes the template default, select a specific version from the **version tag dropdown** on the template configuration page.
+> **Latest builds:** Docker images are automatically rebuilt when new vLLM-Omni releases are detected. The default template tag is updated less frequently to allow for QA testing. To use a newly built image before it becomes the template default, select a specific version from the **version tag dropdown** on the template configuration page.
 
 ---
 
 ## What can I do with this?
 
-- **Serve popular LLMs** with optimized performance and throughput
+- **Serve popular multimodal models** with optimized performance and throughput
 - **Load any compatible model** from HuggingFace or local storage
-- **Send API requests** to generate text with OpenAI-compatible endpoints
+- **Send API requests** for text generation, image generation, text-to-speech, and more
 - **Integrate with your applications** via REST API
 - **Scale with multiple GPUs** automatically using tensor parallelism
 - **Access your API** from anywhere or via SSH tunnel
@@ -27,10 +27,10 @@ This template gives you a **hosted vLLM API server** running in a Docker contain
 ## Who is this for?
 
 This is **perfect** if you:
-- Want to run AI models with maximum performance without buying expensive hardware
+- Want to run multimodal AI models with maximum performance without buying expensive hardware
 - Need a high-throughput API for your projects or business
-- Are building production applications that use large language models
-- Want to experiment with different AI models with optimized inference
+- Are building production applications that use omni-modality models (text, vision, audio, TTS, diffusion)
+- Want to experiment with different multimodal models with optimized inference
 - Need programmatic access to LLMs with OpenAI-compatible endpoints
 
 ---
@@ -39,7 +39,7 @@ This is **perfect** if you:
 
 ### **Step 1: Configure Your Model**
 Set the `VLLM_MODEL` environment variable with your desired model:
-- **Any HuggingFace model:** Use the full model path (e.g., `meta-llama/Llama-3.1-8B-Instruct`)
+- **Any HuggingFace model:** Use the full model path (e.g., `Qwen/Qwen3-Omni-30B-A3B-Instruct`)
 
 **Optional configuration:**
 - `VLLM_ARGS`: Additional arguments to pass to the vllm serve command
@@ -48,10 +48,10 @@ Set the `VLLM_MODEL` environment variable with your desired model:
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=vLLM)"** when you've found an instance that works for you
+Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=vLLM-Omni)"** when you've found an instance that works for you
 
 ### **Step 3: Wait for Setup**
-vLLM and your chosen model will download and start automatically *(this might take a few minutes depending on model size)*
+vLLM-Omni and your chosen model will download and start automatically *(this might take a few minutes depending on model size)*
 
 ### **Step 4: Access Your Instance**
 **Easy access:** Just click the **"Open"** button - authentication is handled automatically!
@@ -88,7 +88,7 @@ Your authentication token is available as `OPEN_BUTTON_TOKEN` in your instance e
 - Jupyter terminal: `echo $OPEN_BUTTON_TOKEN`
 
 ### **API Endpoints**
-vLLM provides OpenAI-compatible endpoints:
+vLLM-Omni provides OpenAI-compatible endpoints:
 ```bash
 # Chat completions
 curl -H 'Authorization: Bearer <TOKEN>' \
@@ -108,23 +108,23 @@ curl -H 'Authorization: Bearer <TOKEN>' \
 ```
 *Use `https://` instead of `http://` if you've enabled HTTPS in your account settings.*
 
+### **Model UI**
+A lightweight web interface for interacting with the model, accessible via the Instance Portal. Supports chat, image, video, TTS, and STT tabs. TTS includes support for Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`.
+
+Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), or any application that speaks the OpenAI API. To disable Model UI, remove its entry from `PORTAL_CONFIG`.
+
 ### **Chat from the Command Line**
 Once connected via SSH or Jupyter terminal:
 ```bash
 vllm chat --url http://localhost:18000/v1
 ```
 
-### **Model UI**
-A lightweight web chat interface is included for quick testing. Open it from the Instance Portal or access port 7860 directly.
-
-For serious use, we recommend connecting the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), [oterm](https://github.com/ggozad/oterm), or any application that speaks the OpenAI API.
-
 ### **Port Reference**
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
 | Model UI | 7860 | 17860 |
-| vLLM API | 8000 | 18000 |
+| vLLM-Omni API | 8000 | 18000 |
 | Ray Dashboard | 8265 | 28265 |
 | Jupyter | 8080 | 18080 |
 
@@ -135,7 +135,7 @@ For serious use, we recommend connecting the OpenAI-compatible API (port 8000) t
 - Start and stop services with a few clicks
 
 ### **Ray Dashboard**
-- Monitor your distributed vLLM workloads
+- Monitor your distributed vLLM-Omni workloads
 - View cluster status and resource utilization
 - Access via Instance Portal or directly on port 8265
 
@@ -156,7 +156,7 @@ For simpler setups, use these environment variables:
 
 ### **Service Management**
 - **Supervisor** manages all background services
-- Easy commands: `supervisorctl status`, `supervisorctl restart vllm`
+- Easy commands: `supervisorctl status`, `supervisorctl restart vllm-omni`
 - Add your own services with simple configuration files
 
 ### **Task Scheduling**
@@ -175,16 +175,18 @@ For simpler setups, use these environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLLM_MODEL` | (none) | Model to serve (e.g., `meta-llama/Llama-3.1-8B-Instruct`) |
+| `VLLM_MODEL` | (none) | Model to serve (e.g., `Qwen/Qwen3-Omni-30B-A3B-Instruct`) |
 | `VLLM_ARGS` | (none) | Arguments passed to `vllm serve` |
 | `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` |
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
+| `VLLM_WATCHDOG` | `true` | Crash watchdog — restarts vLLM on fatal engine errors |
+| `VLLM_CRASH_PATTERN` | _(built-in)_ | Custom regex for crash detection |
 
 ### **Complex Arguments**
-For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/vllm-args.conf`. The contents of this file are appended to `$VLLM_ARGS` when launching vLLM.
+For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/vllm-args.conf`. The contents of this file are appended to `$VLLM_ARGS` when launching vLLM-Omni.
 
 Example template on start:
 ```bash
@@ -226,11 +228,11 @@ Want to save your perfect setup? Templates can't be changed directly, but you ca
 
 ## Need More Help?
 
-- **vLLM Documentation:** [Official vLLM Documentation](https://docs.vllm.ai/)
-- **Image Source & Features:** [GitHub Repository](https://github.com/vast-ai/base-image/tree/main/external/vllm)
+- **vLLM-Omni Documentation:** [Official vLLM-Omni Documentation](https://docs.vllm.ai/projects/vllm-omni/en/latest)
+- **vLLM-Omni GitHub:** [GitHub Repository](https://github.com/vllm-project/vllm-omni)
+- **Image Source & Features:** [GitHub Repository](https://github.com/vast-ai/base-image/tree/main/external/vllm-omni)
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 - **SSH Setup Guide:** [Vast.ai SSH Documentation](https://docs.vast.ai/instances/sshscp)
 - **Template Configuration:** [Vast.ai Template Guide](https://docs.vast.ai/templates)
 - **Support:** Use the messaging icon in the Vast.ai console
 
-updated 20251222
