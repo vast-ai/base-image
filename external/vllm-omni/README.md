@@ -35,7 +35,7 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | `VLLM_WATCHDOG` | `true` | Enable crash watchdog that monitors logs and restarts vLLM on fatal engine errors |
 | `VLLM_CRASH_PATTERN` | _(see below)_ | Custom regex for crash detection (default matches `EngineDeadError` and related patterns) |
 
-The `--omni` flag is automatically added to the `vllm serve` command to enable omni-modality features.
+To enable omni-modality features (image generation, TTS, etc.), include `--omni` in `VLLM_ARGS`.
 
 ### Complex Arguments
 

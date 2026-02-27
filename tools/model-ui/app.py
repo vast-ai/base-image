@@ -188,9 +188,11 @@ async def proxy(request: Request):
             r = await _client.send(req, stream=True)
 
             async def generate():
-                async for chunk in r.aiter_bytes():
-                    yield chunk
-                await r.aclose()
+                try:
+                    async for chunk in r.aiter_bytes():
+                        yield chunk
+                finally:
+                    await r.aclose()
 
             return StreamingResponse(
                 generate(),
