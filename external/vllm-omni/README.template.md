@@ -109,7 +109,7 @@ curl -H 'Authorization: Bearer <TOKEN>' \
 *Use `https://` instead of `http://` if you've enabled HTTPS in your account settings.*
 
 ### **Model UI**
-A lightweight web interface for interacting with the model, accessible via the Instance Portal. Supports chat, image, video, TTS, and STT tabs. To disable, remove the Model UI entry from `PORTAL_CONFIG`.
+A lightweight web interface for interacting with the model, accessible via the Instance Portal. Supports chat, image, video, TTS, and STT tabs. TTS includes support for Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`. To disable, remove the Model UI entry from `PORTAL_CONFIG`.
 
 ### **Chat from the Command Line**
 Once connected via SSH or Jupyter terminal:
@@ -180,6 +180,8 @@ For simpler setups, use these environment variables:
 | `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
+| `VLLM_WATCHDOG` | `true` | Crash watchdog — restarts vLLM on fatal engine errors |
+| `VLLM_CRASH_PATTERN` | _(built-in)_ | Custom regex for crash detection |
 
 ### **Complex Arguments**
 For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/vllm-args.conf`. The contents of this file are appended to `$VLLM_ARGS` when launching vLLM-Omni.
@@ -232,4 +234,3 @@ Want to save your perfect setup? Templates can't be changed directly, but you ca
 - **Template Configuration:** [Vast.ai Template Guide](https://docs.vast.ai/templates)
 - **Support:** Use the messaging icon in the Vast.ai console
 
-updated 20260212

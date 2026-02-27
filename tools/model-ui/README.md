@@ -19,7 +19,7 @@ Lightweight web interface for vLLM, vLLM-Omni, and SGLang inference backends. Si
 | **Chat** | `/v1/chat/completions` | Text, multimodal, and audio conversation (streaming for text, non-streaming when audio output is requested). Supports image and audio file attachments. |
 | **Image** | `/v1/chat/completions` | Image generation/editing (Flux, SDXL, etc.) — sends a chat completion with image content in the response |
 | **Video** | `/v1/chat/completions` | Video generation/editing (Wan, HunyuanVideo, etc.) — sends a chat completion with video content in the response |
-| **TTS** | `/v1/audio/speech` | Text-to-speech (CosyVoice, etc.) |
+| **TTS** | `/v1/audio/speech` | Text-to-speech — standard OpenAI TTS, plus Qwen3-TTS modes (VoiceDesign, VoiceClone) via vLLM-Omni |
 | **STT** | `/v1/audio/transcriptions` | Speech-to-text (Whisper, etc.) — multipart form data |
 
 The default tab is auto-detected from the model name, or set explicitly with `MODEL_UI_DEFAULT_TAB`. Setting tabs to `omni` maps to `chat`.
@@ -34,7 +34,7 @@ The default tab is auto-detected from the model name, or set explicitly with `MO
 | `MODEL_UI_CHAT_CAPS` | — | Chat capabilities (see below). Setting this makes the Chat tab visible |
 | `MODEL_UI_IMAGE_CAPS` | — | Image capabilities: `generate`, `edit`, or both. Makes Image tab visible |
 | `MODEL_UI_VIDEO_CAPS` | — | Video capabilities: `generate`, `edit`, or both. Makes Video tab visible |
-| `MODEL_UI_TTS_CAPS` | — | TTS capabilities. Makes TTS tab visible |
+| `MODEL_UI_TTS_CAPS` | — | TTS capabilities (see below). Makes TTS tab visible |
 | `MODEL_UI_STT_CAPS` | — | STT capabilities. Makes STT tab visible |
 
 ### Per-Tab Capabilities
@@ -60,6 +60,19 @@ Use the special value `all` to show a tab with all default capabilities (no rest
 | `edit` | Attachment required, button says "Edit", disabled until image attached |
 | `generate,edit` | Same as `all` — dynamic "Generate"/"Edit" based on whether an image is attached |
 
+**TTS capabilities** control the TTS mode for Qwen3-TTS models served via vLLM-Omni. Standard OpenAI-compatible TTS models work with the default or `custom_voice` mode.
+
+| Value | Effect |
+|---|---|
+| `all` | All modes available: Standard, VoiceDesign, VoiceClone — mode selector shown |
+| `custom_voice` | Standard TTS (voice dropdown, speed, instructions) — no `task_type` sent |
+| `voice_design` | VoiceDesign mode — describe the voice in natural language, sends `task_type: "VoiceDesign"` |
+| `voice_clone` | VoiceClone mode — upload or record reference audio + optional transcript, sends `task_type: "Base"` |
+| `custom_voice,voice_design` | Standard and VoiceDesign modes, mode selector shown |
+| `custom_voice,voice_design,voice_clone` | Same as `all` |
+
+When multiple modes are configured, a mode selector appears at the top of the TTS panel. VoiceClone supports both file upload and microphone recording; reference audio is converted to WAV client-side for backend compatibility.
+
 ### Examples
 
 ```bash
@@ -83,6 +96,18 @@ MODEL_UI_VIDEO_CAPS=generate
 
 # Video generation only — no img2vid/vid2vid
 MODEL_UI_VIDEO_CAPS=generate
+
+# Standard TTS model (CosyVoice, etc.)
+MODEL_UI_TTS_CAPS=custom_voice
+
+# Qwen3-TTS VoiceDesign model — describe the voice you want
+MODEL_UI_TTS_CAPS=voice_design
+
+# Qwen3-TTS VoiceClone model — clone from reference audio
+MODEL_UI_TTS_CAPS=voice_clone
+
+# Qwen3-TTS with all modes available
+MODEL_UI_TTS_CAPS=all
 ```
 
 ## Features

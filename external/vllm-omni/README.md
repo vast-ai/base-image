@@ -32,6 +32,8 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | `RAY_ARGS` | `--head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265` | Arguments passed to `ray start` |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
+| `VLLM_WATCHDOG` | `true` | Enable crash watchdog that monitors logs and restarts vLLM on fatal engine errors |
+| `VLLM_CRASH_PATTERN` | _(see below)_ | Custom regex for crash detection (default matches `EngineDeadError` and related patterns) |
 
 The `--omni` flag is automatically added to the `vllm serve` command to enable omni-modality features.
 
@@ -45,10 +47,17 @@ echo '--guided-decoding-backend lm-format-enforcer --chat-template-content-forma
 entrypoint.sh
 ```
 
+### Engine Crash Watchdog
+
+vLLM-Omni's engine core can crash on certain requests while the HTTP server stays alive. Supervisor sees a running process and never restarts. The watchdog monitors the log file (`/var/log/portal/vllm-omni.log`) for fatal error patterns and terminates the process to trigger a supervisor restart.
+
+The watchdog is enabled by default. To disable: `VLLM_WATCHDOG=false`. To customize the detection pattern, set `VLLM_CRASH_PATTERN` to a bash-compatible regex.
+
 ### Model UI
 
 A lightweight web interface for interacting with the model. Supports chat, image, video, TTS, and STT tabs. Available on port 7860 (external) / 17860 (internal).
 
+- TTS tab supports Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`
 - To disable, remove the Model UI entry from `PORTAL_CONFIG`
 - See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration and advanced usage
 

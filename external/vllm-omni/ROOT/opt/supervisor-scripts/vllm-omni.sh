@@ -65,33 +65,27 @@ fi
 # ---------------------------------------------------------------------------
 # vLLM Omni's engine core can crash on bad requests while the HTTP server
 # stays alive. Supervisor sees a running process and never restarts.
-# We pipe output through a monitor that watches for fatal engine errors
-# and kills the process to trigger supervisor's autorestart.
+# A background watchdog tails the log file (written by logging.sh) and
+# kills the script on fatal engine errors to trigger supervisor's autorestart.
 #
 # Set VLLM_CRASH_PATTERN to override the default detection regex.
 # Set VLLM_WATCHDOG=false to disable crash monitoring entirely.
 
 CRASH_PATTERN=${VLLM_CRASH_PATTERN:-"EngineDeadError|AsyncEngineDeadError|engine process.*(dead|died|failed)|ENGINE_DEAD|Background loop has errored"}
-WATCHDOG_ENABLED=${VLLM_WATCHDOG:-true}
 
-LOGPIPE=$(mktemp -u /tmp/vllm-logpipe.XXXXXX)
-mkfifo "$LOGPIPE"
+if [[ "${VLLM_WATCHDOG:-true}" != "false" ]]; then
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 1; done
+        tail -n 0 -f "$logfile" | while IFS= read -r line; do
+            if [[ "$line" =~ $CRASH_PATTERN ]]; then
+                echo "[watchdog] Fatal engine error detected — terminating vLLM for restart"
+                echo "[watchdog] Matched: ${BASH_REMATCH[0]}"
+                kill $$ 2>/dev/null
+                break
+            fi
+        done
+    ) &
+fi
 
 # Read complex args from /etc/vllm-args.conf if env vars were unsuitable
-eval "vllm serve ${VLLM_MODEL:-} ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" > "$LOGPIPE" 2>&1 &
-VLLM_PID=$!
-
-# Pass output through to stdout; watch for crash patterns
-while IFS= read -r line; do
-    printf '%s\n' "$line"
-    if [[ "${WATCHDOG_ENABLED,,}" = "true" ]] && [[ "$line" =~ $CRASH_PATTERN ]]; then
-        echo "[watchdog] Fatal engine error detected — terminating vLLM for restart"
-        echo "[watchdog] Matched: ${BASH_REMATCH[0]}"
-        kill $VLLM_PID 2>/dev/null
-        break
-    fi
-done < "$LOGPIPE"
-
-rm -f "$LOGPIPE"
-wait $VLLM_PID 2>/dev/null
-exit $?
+eval "vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
