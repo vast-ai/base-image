@@ -43,6 +43,12 @@ RUN \
     # This base image sets unusual defaults
     rm -f /root/.tmux.conf
 
+# Install Model UI (lightweight web interface) — chat only by default
+ENV MODEL_UI_CHAT_CAPS=all
+COPY --from=base_image_source tools/model-ui /opt/model-ui
+RUN uv venv /opt/model-ui/venv && \
+    uv pip install --python /opt/model-ui/venv/bin/python --no-cache-dir -r /opt/model-ui/requirements.txt
+
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
