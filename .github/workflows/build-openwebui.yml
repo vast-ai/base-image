@@ -41,7 +41,7 @@ jobs:
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
       openwebui-version: ${{ steps.openwebui-check.outputs.resolved-version }}
-      ollama-version: ${{ steps.ollama-check.outputs.resolved-version }}
+      ollama-version: ${{ steps.decision.outputs.ollama-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,13 +72,15 @@ jobs:
 
       - name: Check Ollama release
         id: ollama-check
-        uses: ./.github/actions/check-dockerhub-release
+        uses: ./.github/actions/check-github-release
         with:
           repository: ollama/ollama
-          version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          tag-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: "999999999"
           trigger: ${{ inputs.OLLAMA_VERSION && github.event_name || 'schedule' }}
-          manual-version: ${{ inputs.OLLAMA_VERSION }}
+          manual-ref: ${{ inputs.OLLAMA_VERSION && format('v{0}', inputs.OLLAMA_VERSION) || '' }}
+          resolve-master-to-commit: "false"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine if build should run
         id: decision
@@ -86,7 +88,10 @@ jobs:
           SECRETS="${{ steps.secrets.outputs.available }}"
           NEW_RELEASE="${{ steps.openwebui-check.outputs.new-release }}"
           OPENWEBUI_VERSION="${{ steps.openwebui-check.outputs.resolved-version }}"
-          OLLAMA_VERSION="${{ steps.ollama-check.outputs.resolved-version }}"
+          OLLAMA_VERSION="${{ steps.ollama-check.outputs.resolved-ref }}"
+          OLLAMA_VERSION="${OLLAMA_VERSION#v}"
+
+          echo "ollama-version=$OLLAMA_VERSION" >> $GITHUB_OUTPUT
 
           if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && -n "$OPENWEBUI_VERSION" && -n "$OLLAMA_VERSION" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
