@@ -150,6 +150,18 @@ $$('input[type="range"]').forEach(input => {
     update();
 });
 
+/* Elapsed timer for long-running generation requests */
+function startElapsedTimer(btn, label) {
+    const t0 = Date.now();
+    const id = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        btn.textContent = label + ' (' + m + ':' + String(sec).padStart(2, '0') + ')';
+    }, 1000);
+    return id;
+}
+
 /* Auto-growing textareas */
 function autoGrow(el) {
     if (!el) return;
@@ -365,24 +377,17 @@ function getCheckedModalities() {
 function buildImagePayload() {
     const prompt = $('#img-prompt').value.trim();
     const negative = $('#img-negative').value.trim();
-    const size = $('#img-size').value.split('x');
+    const size = $('#img-size').value;
     const steps = parseInt($('#img-steps').value);
     const cfg = parseFloat($('#img-cfg').value);
     const seed = parseInt($('#img-seed').value);
     const count = parseInt($('#img-count').value);
 
-    const userContent = [];
-    userContent.push({ type: 'text', text: prompt });
-    if (imgAttachState.dataUrl) {
-        userContent.push({ type: 'image_url', image_url: { url: imgAttachState.dataUrl } });
-    }
-
     const body = {
         model: CONFIG.modelId,
-        messages: [{ role: 'user', content: userContent.length === 1 ? prompt : userContent }],
-        stream: false,
-        width: parseInt(size[0]),
-        height: parseInt(size[1]),
+        prompt: prompt,
+        size: size,
+        response_format: 'b64_json',
         num_inference_steps: steps,
         guidance_scale: cfg,
     };
@@ -392,7 +397,34 @@ function buildImagePayload() {
     return body;
 }
 
-function buildVideoPayload() {
+function buildImageEditFormData() {
+    const prompt = $('#img-prompt').value.trim();
+    const negative = $('#img-negative').value.trim();
+    const size = $('#img-size').value;
+    const steps = parseInt($('#img-steps').value);
+    const cfg = parseFloat($('#img-cfg').value);
+    const seed = parseInt($('#img-seed').value);
+
+    const fd = new FormData();
+    fd.append('model', CONFIG.modelId);
+    fd.append('prompt', prompt);
+    fd.append('size', size);
+    fd.append('response_format', 'b64_json');
+    fd.append('num_inference_steps', String(steps));
+    fd.append('guidance_scale', String(cfg));
+    if (seed >= 0) fd.append('seed', String(seed));
+    if (negative) fd.append('negative_prompt', negative);
+
+    /* Attach the reference image */
+    if (imgAttachState.file) {
+        fd.append('image', imgAttachState.file, imgAttachState.file.name);
+    } else if (imgAttachState.dataUrl) {
+        fd.append('url', imgAttachState.dataUrl);
+    }
+    return fd;
+}
+
+function buildVideoFormData() {
     const prompt = $('#vid-prompt').value.trim();
     const negative = $('#vid-negative').value.trim();
     const width = parseInt($('#vid-width').value);
@@ -403,28 +435,33 @@ function buildVideoPayload() {
     const cfg = parseFloat($('#vid-cfg').value);
     const seed = parseInt($('#vid-seed').value);
 
-    const userContent = [];
-    userContent.push({ type: 'text', text: prompt });
-    if (vidAttachState.dataUrl) {
-        userContent.push({ type: 'image_url', image_url: { url: vidAttachState.dataUrl } });
-    }
+    const fd = new FormData();
+    fd.append('model', CONFIG.modelId);
+    fd.append('prompt', prompt);
+    fd.append('size', width + 'x' + height);
+    fd.append('num_frames', String(frames));
+    fd.append('fps', String(fps));
+    fd.append('num_inference_steps', String(steps));
+    fd.append('guidance_scale', String(cfg));
+    if (seed >= 0) fd.append('seed', String(seed));
+    if (negative) fd.append('negative_prompt', negative);
 
-    const body = {
-        model: CONFIG.modelId,
-        messages: [{ role: 'user', content: userContent.length === 1 ? prompt : userContent }],
-        modalities: ['video'],
-        stream: false,
-        max_tokens: 2048,
-        width: width,
-        height: height,
-        num_frames: frames,
-        fps: fps,
-        num_inference_steps: steps,
-        guidance_scale: cfg,
-    };
-    if (seed >= 0) body.seed = seed;
-    if (negative) body.negative_prompt = negative;
-    return body;
+    /* Attach reference image/video for I2V */
+    if (vidAttachState.file) {
+        fd.append('input_reference', vidAttachState.file, vidAttachState.file.name);
+    } else if (vidAttachState.dataUrl) {
+        /* Convert data URL to blob for multipart upload */
+        const m = vidAttachState.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (m) {
+            const binary = atob(m[2]);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: m[1] });
+            const ext = m[1].split('/')[1] || 'bin';
+            fd.append('input_reference', blob, 'reference.' + ext);
+        }
+    }
+    return fd;
 }
 
 function buildTtsPayload() {
@@ -979,35 +1016,31 @@ async function generateImage() {
     const errEl = $('#img-error');
     errEl.innerHTML = '';
     btn.disabled = true;
-    btn.textContent = isEdit ? 'Editing...' : 'Generating...';
-
-    const body = buildImagePayload();
+    const label = isEdit ? 'Editing...' : 'Generating...';
+    btn.textContent = label;
+    const timer = startElapsedTimer(btn, label);
 
     try {
-        const r = await fetch('/api/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
+        let r;
+        if (isEdit) {
+            const fd = buildImageEditFormData();
+            r = await fetch('/api/images/edits', { method: 'POST', body: fd });
+        } else {
+            const body = buildImagePayload();
+            r = await fetch('/api/images/generations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        }
         if (!r.ok) {
             const err = await r.json().catch(() => ({ error: r.statusText }));
             throw new Error(err.error?.message || err.error || JSON.stringify(err));
         }
         const result = await r.json();
-        const msg = result.choices?.[0]?.message || {};
-        const content = msg.content;
-        const b64List = [];
-        if (Array.isArray(content)) {
-            for (const part of content) {
-                if (part.type === 'image_url' && part.image_url?.url) {
-                    const m = part.image_url.url.match(/^data:[^;]+;base64,(.+)$/);
-                    if (m) b64List.push(m[1]);
-                }
-            }
-        } else if (typeof content === 'string' && content.length > 1000
-            && /^[A-Za-z0-9+/=]+$/.test(content.slice(0, 200))) {
-            b64List.push(content);
-        }
+        const b64List = (result.data || [])
+            .map(d => d.b64_json)
+            .filter(Boolean);
 
         if (b64List.length) {
             const historyEl = $('#img-history');
@@ -1031,6 +1064,7 @@ async function generateImage() {
     } catch (e) {
         errEl.innerHTML = '<div class="error-msg">' + escapeHtml(e.message) + '</div>';
     }
+    clearInterval(timer);
     btn.disabled = false;
     btn.textContent = isEdit ? 'Edit' : 'Generate';
 }
@@ -1103,39 +1137,32 @@ async function generateVideo() {
     const errEl = $('#vid-error');
     errEl.innerHTML = '';
     btn.disabled = true;
-    btn.textContent = isVidEdit ? 'Editing...' : 'Generating...';
+    const label = isVidEdit ? 'Editing...' : 'Generating...';
+    btn.textContent = label;
+    const timer = startElapsedTimer(btn, label);
 
-    const body = buildVideoPayload();
+    const fd = buildVideoFormData();
 
     try {
-        const r = await fetch('/api/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
+        const r = await fetch('/api/videos', { method: 'POST', body: fd });
         if (!r.ok) {
             const err = await r.json().catch(() => ({ error: r.statusText }));
             throw new Error(err.error?.message || err.error || JSON.stringify(err));
         }
         const result = await r.json();
-        const msg = result.choices?.[0]?.message || {};
-        const content = msg.content;
+        const entries = result.data || [];
         let videoHtml = '';
         let videoB64 = null;
-        const items = Array.isArray(content) ? content : [];
-        for (const part of items) {
-            if (part.type === 'video_url' && part.video_url?.url) {
-                const m = part.video_url.url.match(/^data:[^;]+;base64,(.+)$/);
-                if (m) {
-                    videoB64 = m[1];
-                    const binary = atob(m[1]);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    const blob = new Blob([bytes], { type: 'video/mp4' });
-                    const url = URL.createObjectURL(blob);
-                    videoHtml += '<video controls src="' + url + '"></video>';
-                }
-            }
+        for (const entry of entries) {
+            const b64 = entry.b64_json;
+            if (!b64) continue;
+            videoB64 = b64;
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: 'video/mp4' });
+            const url = URL.createObjectURL(blob);
+            videoHtml += '<video controls src="' + url + '"></video>';
         }
         if (videoHtml) {
             const time = timeNow();
@@ -1153,6 +1180,7 @@ async function generateVideo() {
     } catch (e) {
         errEl.innerHTML = '<div class="error-msg">' + escapeHtml(e.message) + '</div>';
     }
+    clearInterval(timer);
     btn.disabled = false;
     btn.textContent = isVidEdit ? 'Edit' : 'Generate';
 }
