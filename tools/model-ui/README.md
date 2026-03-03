@@ -16,9 +16,9 @@ Lightweight web interface for vLLM, vLLM-Omni, and SGLang inference backends. Si
 
 | Tab | API endpoint | Use case |
 |---|---|---|
-| **Chat** | `/v1/chat/completions` | Text, multimodal, and audio conversation (streaming for text, non-streaming when audio output is requested). Supports image and audio file attachments. |
-| **Image** | `/v1/chat/completions` | Image generation/editing (Flux, SDXL, Qwen-Image, etc.) — sends a chat completion with image content in the response |
-| **Video** | `/v1/chat/completions` | Video generation/editing (Wan, HunyuanVideo, etc.) — sends a chat completion with video content in the response |
+| **Chat** | `/v1/chat/completions` | Text conversation with streaming. Supports image and audio file attachments for vision-language models. Always sends `modalities: ["text"]` |
+| **Image** | `/v1/images/generations`, `/v1/images/edits` | Image generation/editing (Flux, SDXL, etc.). Optional "Use chat API" toggle routes through `/v1/chat/completions` instead (required for BAGEL and other chat-based diffusion models) |
+| **Video** | `/v1/videos` | Video generation/editing (Wan, HunyuanVideo, etc.) — multipart form data |
 | **TTS** | `/v1/audio/speech` | Text-to-speech — standard OpenAI TTS, plus Qwen3-TTS modes (VoiceDesign, VoiceClone) via vLLM-Omni |
 | **STT** | `/v1/audio/transcriptions` | Speech-to-text (Whisper, etc.) — multipart form data |
 
@@ -36,6 +36,7 @@ The default tab is auto-detected from the model name, or set explicitly with `MO
 | `MODEL_UI_VIDEO_CAPS` | — | Video capabilities: `generate`, `edit`, or both. Makes Video tab visible |
 | `MODEL_UI_TTS_CAPS` | — | TTS capabilities (see below). Makes TTS tab visible |
 | `MODEL_UI_STT_CAPS` | — | STT capabilities. Makes STT tab visible |
+| `MODEL_UI_PROMPT_WRAPPER` | — | Prompt wrapper template applied to all outgoing prompts. Use `{prompt}` as the placeholder. Example: `<\|im_start\|>{prompt}<\|im_end\|>` (required for BAGEL) |
 
 ### Per-Tab Capabilities
 
@@ -43,13 +44,12 @@ The `MODEL_UI_<TAB>_CAPS` env vars serve two purposes: they control which tabs a
 
 Use the special value `all` to show a tab with all default capabilities (no restrictions).
 
-**Chat capabilities** control which output modality checkboxes are visible and pre-checked. The special `require_attach` token enforces that the user must attach a file before sending.
+**Chat capabilities** control the chat tab. The special `require_attach` token enforces that the user must attach a file before sending.
 
 | Value | Effect |
 |---|---|
-| `all` | Tab visible, all modality checkboxes available (default behavior) |
-| `text,image` | Only Text and Image checkboxes visible, both pre-checked |
-| `image,require_attach` | Only Image checkbox visible; user must attach a file to send |
+| `all` | Tab visible with defaults |
+| `require_attach` | User must attach a file before sending |
 
 **Image/Video capabilities** control the generate vs. edit workflow:
 
@@ -59,6 +59,7 @@ Use the special value `all` to show a tab with all default capabilities (no rest
 | `generate` | Attachment field hidden entirely, button always says "Generate" |
 | `edit` | Attachment required, button says "Edit", disabled until image attached |
 | `generate,edit` | Same as `all` — dynamic "Generate"/"Edit" based on whether an image is attached |
+| `chat_api` | Pre-selects the "Use chat API" toggle (routes through `/v1/chat/completions` instead of dedicated image endpoints). Combine with other values, e.g. `chat_api,generate` |
 
 **TTS capabilities** control the TTS mode for Qwen3-TTS models served via vLLM-Omni. Standard OpenAI-compatible TTS models work with the default or `custom_voice` mode.
 
@@ -79,9 +80,6 @@ When multiple modes are configured, a mode selector appears at the top of the TT
 # Show only the chat tab with all defaults (e.g. base vLLM text model)
 MODEL_UI_CHAT_CAPS=all
 
-# Chat-based image editor — requires image attachment, image output only
-MODEL_UI_CHAT_CAPS=image,require_attach
-
 # Text-to-image model — chat for prompting, image tab for generation only
 MODEL_UI_CHAT_CAPS=all
 MODEL_UI_IMAGE_CAPS=generate
@@ -89,10 +87,18 @@ MODEL_UI_IMAGE_CAPS=generate
 # Image editing model — always require an input image on the image tab
 MODEL_UI_IMAGE_CAPS=edit
 
-# Omni model — chat with text + audio output, plus image and video generation
-MODEL_UI_CHAT_CAPS=text,audio
+# BAGEL or other chat-based diffusion model — use chat API for image gen, wrap prompts
+MODEL_UI_CHAT_CAPS=all
+MODEL_UI_IMAGE_CAPS=chat_api,generate
+MODEL_UI_PROMPT_WRAPPER="<|im_start|>{prompt}<|im_end|>"
+
+# Omni model — chat plus image and video generation
+MODEL_UI_CHAT_CAPS=all
 MODEL_UI_IMAGE_CAPS=generate
 MODEL_UI_VIDEO_CAPS=generate
+
+# Vision-language model that requires image attachment
+MODEL_UI_CHAT_CAPS=require_attach
 
 # Video generation only — no img2vid/vid2vid
 MODEL_UI_VIDEO_CAPS=generate
@@ -112,7 +118,7 @@ MODEL_UI_TTS_CAPS=all
 
 ## Features
 
-- **Multimodal chat** — Attach images or audio files to chat messages; select an output modality (text, audio, image, video) in settings for models that support non-text responses (e.g. vLLM-Omni). Image and video responses are rendered inline; audio plays automatically.
+- **Multimodal chat** — Attach images or audio files to chat messages for vision-language and audio understanding models. Text-only output with streaming.
 - **Thinking/reasoning model support** — `<think>`, `<thinking>`, `<|think|>` blocks (and the `reasoning_content` API field) are rendered in a collapsible section and excluded from conversation history
 - **Generation history** — Image, video, and TTS results persist in IndexedDB across page refreshes
 - **Lightbox** — Click any image thumbnail to view full-size; navigate with arrow keys or prev/next buttons

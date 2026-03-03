@@ -39,7 +39,6 @@
                         <div class="input-footer">
                             <button id="chat-clear" class="btn-link">Clear conversation</button>
                         </div>
-                        <audio id="chat-audio" controls autoplay></audio>
                         <details>
                             <summary>Settings</summary>
                             <div class="details-body">
@@ -61,19 +60,6 @@
                                             <input type="range" id="chat-max-tokens" min="1" max="16384" step="1" value="2048">
                                             <span class="range-value">2048</span>
                                         </div>
-                                    </div>
-                                </div>
-                                <div class="field">
-                                    <label>Output modalities</label>
-                                    <div id="chat-modalities" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.125rem">
-                                        <label style="font-size:0.8125rem;display:flex;align-items:center;gap:0.25rem;cursor:pointer">
-                                            <input type="checkbox" value="text" checked> Text</label>
-                                        <label style="font-size:0.8125rem;display:flex;align-items:center;gap:0.25rem;cursor:pointer">
-                                            <input type="checkbox" value="audio"> Audio</label>
-                                        <label style="font-size:0.8125rem;display:flex;align-items:center;gap:0.25rem;cursor:pointer">
-                                            <input type="checkbox" value="image"> Image</label>
-                                        <label style="font-size:0.8125rem;display:flex;align-items:center;gap:0.25rem;cursor:pointer">
-                                            <input type="checkbox" value="video"> Video</label>
                                     </div>
                                 </div>
                             </div>
@@ -98,6 +84,11 @@
                     <details>
                         <summary>Advanced</summary>
                         <div class="details-body">
+                            <div class="field">
+                                <label style="font-size:0.8125rem;display:flex;align-items:center;gap:0.25rem;cursor:pointer">
+                                    <input type="checkbox" id="img-use-chat-api"> Use chat API
+                                </label>
+                            </div>
                             <div class="field">
                                 <label>Negative prompt</label>
                                 <textarea id="img-negative" rows="2" placeholder="What to avoid..."></textarea>
@@ -131,7 +122,7 @@
                                     <label>Seed</label>
                                     <input type="number" id="img-seed" value="-1" placeholder="-1 = random">
                                 </div>
-                                <div class="field">
+                                <div class="field" id="img-count-field">
                                     <label>Count</label>
                                     <div class="range-row">
                                         <input type="range" id="img-count" min="1" max="4" step="1" value="1">
