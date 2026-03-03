@@ -9,6 +9,7 @@ document.title = CONFIG.modelShort + ' \u2014 Model UI';
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
+
 /* ------------------------------------------------------------------ */
 /* Model selector                                                      */
 /* ------------------------------------------------------------------ */
@@ -140,15 +141,44 @@ function stripThinking(text) {
     return text.trim();
 }
 
+/* Resolve seed — randomize if -1 */
+function resolveSeed(seed) {
+    return seed < 0 ? Math.floor(Math.random() * 2147483647) : seed;
+}
+
+/* Prompt wrapper — applies MODEL_UI_PROMPT_WRAPPER template if configured.
+   Template uses {prompt} as the placeholder, e.g. "<|im_start|>{prompt}<|im_end|>" */
+function wrapPrompt(text) {
+    if (!CONFIG.promptWrapper) return text;
+    return CONFIG.promptWrapper.replace('{prompt}', text);
+}
+
 /* Range inputs — sync display values */
-$$('input[type="range"]').forEach(input => {
-    const display = input.parentElement.querySelector('.range-value');
-    if (!display) return;
-    const decimals = input.step.includes('.') ? input.step.split('.')[1].length : 0;
-    const update = () => { display.textContent = parseFloat(input.value).toFixed(decimals); };
-    input.addEventListener('input', update);
-    update();
-});
+function initRangeInputs(root) {
+    (root || document).querySelectorAll('input[type="range"]').forEach(input => {
+        if (input.dataset.rangeInit) return;
+        input.dataset.rangeInit = '1';
+        const display = input.parentElement.querySelector('.range-value');
+        if (!display) return;
+        const decimals = input.step.includes('.') ? input.step.split('.')[1].length : 0;
+        const update = () => { display.textContent = parseFloat(input.value).toFixed(decimals); };
+        input.addEventListener('input', update);
+        update();
+    });
+}
+initRangeInputs();
+
+/* Elapsed timer for long-running generation requests */
+function startElapsedTimer(btn, label) {
+    const t0 = Date.now();
+    const id = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        btn.textContent = label + ' (' + m + ':' + String(sec).padStart(2, '0') + ')';
+    }, 1000);
+    return id;
+}
 
 /* Auto-growing textareas */
 function autoGrow(el) {
@@ -215,25 +245,6 @@ function capsMode(tabCaps) {
 const imgMode = capsMode(CAPS.image);
 const vidMode = capsMode(CAPS.video);
 
-/* Chat caps — hide unavailable modality checkboxes ('all' = no restriction) */
-if (CAPS.chat && !CAPS.chat.includes('all')) {
-    const boxes = [...$$('#chat-modalities input[type="checkbox"]')];
-    let anyChecked = false;
-    boxes.forEach(cb => {
-        if (!CAPS.chat.includes(cb.value)) {
-            cb.checked = false;
-            cb.closest('label').style.display = 'none';
-        } else if (cb.checked) {
-            anyChecked = true;
-        }
-    });
-    /* Ensure at least one visible checkbox is checked */
-    if (!anyChecked) {
-        const first = boxes.find(cb => CAPS.chat.includes(cb.value));
-        if (first) first.checked = true;
-    }
-}
-
 /* Image caps — adjust attachment field and button */
 if (imgMode === 'edit') {
     const label = document.querySelector('#img-uploads')?.closest('.field')?.querySelector('label');
@@ -291,8 +302,8 @@ function setTtsMode(mode) {
     /* Ref audio + ref text: shown in voice_clone */
     $('#tts-ref-field').style.display = mode === 'voice_clone' ? '' : 'none';
     $('#tts-reftext-field').style.display = mode === 'voice_clone' ? '' : 'none';
-    /* Load voices if switching to basic and not yet loaded */
-    if (mode === 'basic' && !ttsVoicesLoaded) loadVoices();
+    /* Load voices if switching to basic and not yet loaded (only if TTS tab is enabled) */
+    if (mode === 'basic' && !ttsVoicesLoaded && (!CONFIG.allowedTabs || CONFIG.allowedTabs.includes('tts'))) loadVoices();
 }
 
 /* Show mode selector if extra modes available; hide unavailable buttons */
@@ -357,42 +368,82 @@ document.addEventListener('keydown', e => {
 /* ------------------------------------------------------------------ */
 /* Payload build functions                                             */
 /* ------------------------------------------------------------------ */
-function getCheckedModalities() {
-    const checked = Array.from($$('#chat-modalities input[type="checkbox"]:checked')).map(cb => cb.value);
-    return checked.length ? checked : ['text'];
-}
 
 function buildImagePayload() {
     const prompt = $('#img-prompt').value.trim();
     const negative = $('#img-negative').value.trim();
-    const size = $('#img-size').value.split('x');
+    const size = $('#img-size').value;
     const steps = parseInt($('#img-steps').value);
     const cfg = parseFloat($('#img-cfg').value);
     const seed = parseInt($('#img-seed').value);
     const count = parseInt($('#img-count').value);
 
-    const userContent = [];
-    userContent.push({ type: 'text', text: prompt });
-    if (imgAttachState.dataUrl) {
-        userContent.push({ type: 'image_url', image_url: { url: imgAttachState.dataUrl } });
-    }
-
     const body = {
         model: CONFIG.modelId,
-        messages: [{ role: 'user', content: userContent.length === 1 ? prompt : userContent }],
-        stream: false,
-        width: parseInt(size[0]),
-        height: parseInt(size[1]),
+        prompt: wrapPrompt(prompt),
+        size: size,
+        response_format: 'b64_json',
         num_inference_steps: steps,
         guidance_scale: cfg,
     };
-    if (seed >= 0) body.seed = seed;
+    body.seed = resolveSeed(seed);
     if (negative) body.negative_prompt = negative;
     if (count > 1) body.n = count;
     return body;
 }
 
-function buildVideoPayload() {
+/* Compress an image file/dataUrl via Canvas to stay under server multipart limits.
+   Returns a Promise<Blob>.  Max dimension is clamped to maxPx (default 2048). */
+function compressImage(src, maxPx = 2048, quality = 0.90) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            let { width: w, height: h } = img;
+            if (Math.max(w, h) > maxPx) {
+                const scale = maxPx / Math.max(w, h);
+                w = Math.round(w * scale);
+                h = Math.round(h * scale);
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('toBlob failed')),
+                'image/jpeg', quality);
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = typeof src === 'string' ? src : URL.createObjectURL(src);
+    });
+}
+
+async function buildImageEditFormData() {
+    const prompt = $('#img-prompt').value.trim();
+    const negative = $('#img-negative').value.trim();
+    const size = $('#img-size').value;
+    const steps = parseInt($('#img-steps').value);
+    const cfg = parseFloat($('#img-cfg').value);
+    const seed = parseInt($('#img-seed').value);
+
+    const fd = new FormData();
+    fd.append('model', CONFIG.modelId);
+    fd.append('prompt', wrapPrompt(prompt));
+    fd.append('size', size);
+    fd.append('response_format', 'b64_json');
+    fd.append('num_inference_steps', String(steps));
+    fd.append('guidance_scale', String(cfg));
+    fd.append('seed', String(resolveSeed(seed)));
+    if (negative) fd.append('negative_prompt', negative);
+
+    /* Attach the reference image — compress to avoid multipart size limits */
+    if (imgAttachState.file || imgAttachState.dataUrl) {
+        const src = imgAttachState.file || imgAttachState.dataUrl;
+        const blob = await compressImage(src);
+        fd.append('image', blob, 'image.jpg');
+    }
+    return fd;
+}
+
+async function buildVideoFormData() {
     const prompt = $('#vid-prompt').value.trim();
     const negative = $('#vid-negative').value.trim();
     const width = parseInt($('#vid-width').value);
@@ -403,28 +454,42 @@ function buildVideoPayload() {
     const cfg = parseFloat($('#vid-cfg').value);
     const seed = parseInt($('#vid-seed').value);
 
-    const userContent = [];
-    userContent.push({ type: 'text', text: prompt });
-    if (vidAttachState.dataUrl) {
-        userContent.push({ type: 'image_url', image_url: { url: vidAttachState.dataUrl } });
-    }
+    const fd = new FormData();
+    fd.append('model', CONFIG.modelId);
+    fd.append('prompt', wrapPrompt(prompt));
+    fd.append('size', width + 'x' + height);
+    fd.append('num_frames', String(frames));
+    fd.append('fps', String(fps));
+    fd.append('num_inference_steps', String(steps));
+    fd.append('guidance_scale', String(cfg));
+    fd.append('seed', String(resolveSeed(seed)));
+    if (negative) fd.append('negative_prompt', negative);
 
-    const body = {
-        model: CONFIG.modelId,
-        messages: [{ role: 'user', content: userContent.length === 1 ? prompt : userContent }],
-        modalities: ['video'],
-        stream: false,
-        max_tokens: 2048,
-        width: width,
-        height: height,
-        num_frames: frames,
-        fps: fps,
-        num_inference_steps: steps,
-        guidance_scale: cfg,
-    };
-    if (seed >= 0) body.seed = seed;
-    if (negative) body.negative_prompt = negative;
-    return body;
+    /* Attach reference image/video for I2V — compress images to avoid multipart size limits */
+    if (vidAttachState.file || vidAttachState.dataUrl) {
+        const src = vidAttachState.file || vidAttachState.dataUrl;
+        const isImage = vidAttachState.file
+            ? vidAttachState.file.type.startsWith('image/')
+            : /^data:image\//.test(vidAttachState.dataUrl);
+        if (isImage) {
+            const blob = await compressImage(src);
+            fd.append('input_reference', blob, 'reference.jpg');
+        } else if (vidAttachState.file) {
+            fd.append('input_reference', vidAttachState.file, vidAttachState.file.name);
+        } else {
+            /* Video data URL → blob */
+            const m = vidAttachState.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+            if (m) {
+                const binary = atob(m[2]);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                const blob = new Blob([bytes], { type: m[1] });
+                const ext = m[1].split('/')[1] || 'bin';
+                fd.append('input_reference', blob, 'reference.' + ext);
+            }
+        }
+    }
+    return fd;
 }
 
 function buildTtsPayload() {
@@ -630,98 +695,6 @@ function renderChatUploads() {
     });
 }
 
-function renderChatMedia(msg) {
-    const content = msg.content;
-    if (Array.isArray(content)) {
-        let text = '';
-        let mediaHtml = '';
-        for (const part of content) {
-            if (part.type === 'text') {
-                text += part.text;
-            } else if (part.type === 'image_url' && part.image_url?.url) {
-                mediaHtml += '<img src="' + escapeHtml(part.image_url.url)
-                    + '" style="height:120px;width:auto;max-width:100%;object-fit:cover;border-radius:var(--radius-sm);margin:0.25rem 0;cursor:pointer" alt="">';
-            } else if (part.type === 'video_url' && part.video_url?.url) {
-                mediaHtml += '<video controls src="' + escapeHtml(part.video_url.url)
-                    + '" style="max-width:100%;border-radius:var(--radius);margin:0.25rem 0"></video>';
-            }
-        }
-        if (mediaHtml) return { text, mediaHtml };
-    }
-    if (typeof content === 'string' && content.length > 1000
-        && /^[A-Za-z0-9+/=]+$/.test(content.slice(0, 200))) {
-        return {
-            text: '',
-            mediaHtml: '<img src="data:image/png;base64,' + escapeHtml(content)
-                + '" style="height:120px;width:auto;max-width:100%;object-fit:cover;border-radius:var(--radius-sm);margin:0.25rem 0;cursor:pointer" alt="">'
-        };
-    }
-    return null;
-}
-
-function pushChatMediaToHistory(msg) {
-    const content = msg.content;
-    if (!content) return;
-    const time = timeNow();
-    const prompt = '(from chat)';
-    const items = Array.isArray(content) ? content : [];
-
-    /* Handle raw base64 string content as image */
-    if (typeof content === 'string' && content.length > 1000
-        && /^[A-Za-z0-9+/=]+$/.test(content.slice(0, 200))) {
-        const b64 = content;
-        imgHistoryData.unshift({ b64, prompt, time });
-        while (imgHistoryData.length > 200) imgHistoryData.pop();
-        idbSave(STORES.image, imgHistoryData).catch(() => {});
-        const historyEl = $('#img-history');
-        const img = document.createElement('img');
-        img.src = 'data:image/png;base64,' + b64;
-        img.alt = '';
-        img.addEventListener('click', () => openLightbox(img.src));
-        historyEl.prepend(wrapHistoryImg(img));
-        $('#img-history-footer').style.display = '';
-        return;
-    }
-
-    for (const part of items) {
-        if (part.type === 'image_url' && part.image_url?.url) {
-            const url = part.image_url.url;
-            const m = url.match(/^data:[^;]+;base64,(.+)$/);
-            if (m) {
-                const b64 = m[1];
-                imgHistoryData.unshift({ b64, prompt, time });
-                while (imgHistoryData.length > 200) imgHistoryData.pop();
-                idbSave(STORES.image, imgHistoryData).catch(() => {});
-                const historyEl = $('#img-history');
-                const img = document.createElement('img');
-                img.src = url;
-                img.alt = '';
-                img.addEventListener('click', () => openLightbox(img.src));
-                historyEl.prepend(wrapHistoryImg(img));
-                $('#img-history-footer').style.display = '';
-            }
-        } else if (part.type === 'video_url' && part.video_url?.url) {
-            const url = part.video_url.url;
-            const m = url.match(/^data:[^;]+;base64,(.+)$/);
-            if (m) {
-                try {
-                    const binary = atob(m[1]);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    const blob = new Blob([bytes], { type: 'video/mp4' });
-                    const blobUrl = URL.createObjectURL(blob);
-                    const videoHtml = '<video controls src="' + blobUrl + '"></video>';
-                    prependGenCard($('#vid-history'), $('#vid-history-footer'), prompt, videoHtml, false, time);
-                    addVidUseBtn($('#vid-history').firstChild, m[1]);
-                    vidHistoryData.push({ prompt, time, video: m[1] });
-                    while (vidHistoryData.length > 200) vidHistoryData.shift();
-                    idbSave(STORES.video, vidHistoryData).catch(() => {});
-                } catch (e) { console.warn('[model-ui] Failed to process video from chat:', e); }
-            }
-        }
-    }
-}
-
 async function sendChat() {
     if (chatState.streaming) {
         if (chatState.controller) chatState.controller.abort();
@@ -734,25 +707,14 @@ async function sendChat() {
     if (!text && !files.length) return;
 
     const container = $('#chat-messages');
-    const modalities = getCheckedModalities();
-    const hasNonText = modalities.some(m => m !== 'text');
 
-    if (CAPS.chat && !CAPS.chat.includes('all')) {
-        const caps = CAPS.chat.filter(c => !c.startsWith('require_'));
-        const bad = modalities.filter(m => !caps.includes(m));
-        if (bad.length) {
-            addMessage(container, 'assistant', 'Unsupported modalities: ' + bad.join(', '));
-            return;
-        }
-    }
-    if (CAPS.chat) {
-        if (CAPS.chat.includes('require_attach') && !files.length) {
-            addMessage(container, 'assistant', 'This model requires a file attachment. Please attach a file before sending.');
-            return;
-        }
+    if (CAPS.chat && CAPS.chat.includes('require_attach') && !files.length) {
+        addMessage(container, 'assistant', 'This model requires a file attachment. Please attach a file before sending.');
+        return;
     }
 
-    /* Build user content — multimodal if files attached, plain text otherwise */
+    /* Build user content — plain string for text-only, array when files attached */
+    const wrapped = wrapPrompt(text);
     let userContent;
     if (files.length) {
         const parts = [];
@@ -764,10 +726,10 @@ async function sendChat() {
                 parts.push({ type: 'image_url', image_url: { url: f.dataUrl } });
             }
         }
-        if (text) parts.push({ type: 'text', text: text });
+        if (text) parts.push({ type: 'text', text: wrapped });
         userContent = parts;
     } else {
-        userContent = text;
+        userContent = wrapped;
     }
 
     chatState.messages.push({ role: 'user', content: userContent });
@@ -783,7 +745,7 @@ async function sendChat() {
     if (system) apiMessages.push({ role: 'system', content: system });
     apiMessages.push(...chatState.messages);
 
-    const body = { model: CONFIG.modelId, messages: apiMessages, temperature: temp, max_tokens: maxTokens, stream: !hasNonText };
+    const body = { model: CONFIG.modelId, messages: apiMessages, modalities: ['text'], temperature: temp, max_tokens: maxTokens, stream: true };
 
     input.value = '';
     input.style.height = 'auto';
@@ -798,13 +760,6 @@ async function sendChat() {
     const sendBtn = $('#chat-send');
     sendBtn.textContent = 'Stop';
 
-    /* Force non-streaming for non-text output modalities */
-    if (hasNonText) {
-        body.modalities = modalities;
-        if (modalities.includes('audio')) body.audio = { voice: 'default', format: 'wav' };
-    }
-
-    const isStream = body.stream !== false;
     let fullResponse = '';
     let thinkResponse = '';
     let completed = false;
@@ -823,69 +778,35 @@ async function sendChat() {
             throw new Error(err.error?.message || err.error || JSON.stringify(err));
         }
 
-        if (isStream) {
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let finished = false;
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') { finished = true; break; }
-                    try {
-                        const delta = JSON.parse(data).choices?.[0]?.delta || {};
-                        const cd = delta.content || '';
-                        const rd = delta.reasoning_content || '';
-                        if (cd) fullResponse += cd;
-                        if (rd) thinkResponse += rd;
-                        if (cd || rd) {
-                            let display = fullResponse;
-                            if (thinkResponse) display = '<think>' + thinkResponse + (fullResponse ? '</think>' : '') + fullResponse;
-                            contentEl.innerHTML = renderWithThinking(display);
-                            container.scrollTop = container.scrollHeight;
-                        }
-                    } catch (e) { console.warn('[model-ui] Failed to parse SSE chunk:', e); }
-                }
-                if (finished) break;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finished = false;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') { finished = true; break; }
+                try {
+                    const delta = JSON.parse(data).choices?.[0]?.delta || {};
+                    const cd = delta.content || '';
+                    const rd = delta.reasoning_content || '';
+                    if (cd) fullResponse += cd;
+                    if (rd) thinkResponse += rd;
+                    if (cd || rd) {
+                        let display = fullResponse;
+                        if (thinkResponse) display = '<think>' + thinkResponse + (fullResponse ? '</think>' : '') + fullResponse;
+                        contentEl.innerHTML = renderWithThinking(display);
+                        container.scrollTop = container.scrollHeight;
+                    }
+                } catch (e) { console.warn('[model-ui] Failed to parse SSE chunk:', e); }
             }
-        } else {
-            const result = await response.json();
-            const msg = result.choices?.[0]?.message || {};
-            const mediaResult = renderChatMedia(msg);
-            if (mediaResult) {
-                let html = '';
-                if (mediaResult.text) html += renderWithThinking(mediaResult.text);
-                html += mediaResult.mediaHtml;
-                contentEl.innerHTML = html;
-                contentEl.querySelectorAll('img').forEach(img =>
-                    img.addEventListener('click', () => openLightbox(img.src)));
-                fullResponse = mediaResult.text;
-                pushChatMediaToHistory(msg);
-            } else {
-                fullResponse = msg.content || '';
-                thinkResponse = msg.reasoning_content || '';
-                let display = fullResponse;
-                if (thinkResponse) display = '<think>' + thinkResponse + '</think>' + fullResponse;
-                contentEl.innerHTML = renderWithThinking(display);
-
-                /* Handle audio response */
-                const audioObj = msg.audio;
-                if (audioObj && audioObj.data) {
-                    let raw = audioObj.data;
-                    if (raw.includes(',')) raw = raw.split(',')[1];
-                    const bytes = atob(raw);
-                    const arr = new Uint8Array(bytes.length);
-                    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-                    const blob = new Blob([arr], { type: 'audio/wav' });
-                    $('#chat-audio').src = URL.createObjectURL(blob);
-                }
-            }
+            if (finished) break;
         }
         completed = true;
     } catch (e) {
@@ -919,7 +840,6 @@ $('#chat-clear').addEventListener('click', () => {
     chatState.messages = [];
     chatState.files = [];
     $('#chat-messages').innerHTML = '';
-    $('#chat-audio').removeAttribute('src');
     renderChatUploads();
 });
 
@@ -970,20 +890,62 @@ $('#img-file').addEventListener('change', e => {
     e.target.value = '';
 });
 
-async function generateImage() {
+/* "Use chat API" toggle — hide count (not supported via chat API) */
+const imgUseChatApi = $('#img-use-chat-api');
+imgUseChatApi.addEventListener('change', () => {
+    const countField = $('#img-count-field');
+    if (countField) countField.style.display = imgUseChatApi.checked ? 'none' : '';
+});
+
+/* Image caps — 'chat_api' preselects the toggle */
+if (CAPS.image && CAPS.image.includes('chat_api')) {
+    imgUseChatApi.checked = true;
+    const countField = $('#img-count-field');
+    if (countField) countField.style.display = 'none';
+}
+
+async function generateImageViaChat() {
     const prompt = $('#img-prompt').value.trim();
     if (!prompt) return;
 
-    const isEdit = imgMode === 'edit' || (imgMode === 'both' && !!imgAttachState.dataUrl);
     const btn = $('#img-generate');
     const errEl = $('#img-error');
     errEl.innerHTML = '';
     btn.disabled = true;
-    btn.textContent = isEdit ? 'Editing...' : 'Generating...';
-
-    const body = buildImagePayload();
+    const label = imgAttachState.dataUrl ? 'Editing...' : 'Generating...';
+    btn.textContent = label;
+    const timer = startElapsedTimer(btn, label);
 
     try {
+        const size = $('#img-size').value;
+        const [w, h] = size.split('x').map(Number);
+        const steps = parseInt($('#img-steps').value);
+        const seed = parseInt($('#img-seed').value);
+        const contentParts = [{ type: 'text', text: wrapPrompt(prompt) }];
+
+        /* img2img — attach reference image as image_url */
+        if (imgAttachState.file || imgAttachState.dataUrl) {
+            const src = imgAttachState.file || imgAttachState.dataUrl;
+            const blob = await compressImage(src);
+            const dataUrl = await new Promise(resolve => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.readAsDataURL(blob);
+            });
+            contentParts.push({ type: 'image_url', image_url: { url: dataUrl } });
+        }
+
+        const body = {
+            model: CONFIG.modelId,
+            messages: [{ role: 'user', content: contentParts }],
+            modalities: ['image'],
+            width: w,
+            height: h,
+            num_inference_steps: steps,
+            seed: resolveSeed(seed),
+            stream: false,
+        };
+
         const r = await fetch('/api/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -995,19 +957,83 @@ async function generateImage() {
         }
         const result = await r.json();
         const msg = result.choices?.[0]?.message || {};
-        const content = msg.content;
-        const b64List = [];
-        if (Array.isArray(content)) {
-            for (const part of content) {
+
+        /* Extract image — content can be raw base64 string or array with image_url parts */
+        let b64 = null;
+        if (typeof msg.content === 'string' && msg.content.length > 1000
+            && /^[A-Za-z0-9+/=]+$/.test(msg.content.slice(0, 200))) {
+            b64 = msg.content;
+        } else if (Array.isArray(msg.content)) {
+            for (const part of msg.content) {
                 if (part.type === 'image_url' && part.image_url?.url) {
                     const m = part.image_url.url.match(/^data:[^;]+;base64,(.+)$/);
-                    if (m) b64List.push(m[1]);
+                    if (m) { b64 = m[1]; break; }
                 }
             }
-        } else if (typeof content === 'string' && content.length > 1000
-            && /^[A-Za-z0-9+/=]+$/.test(content.slice(0, 200))) {
-            b64List.push(content);
         }
+
+        if (b64) {
+            const time = timeNow();
+            const historyEl = $('#img-history');
+            const img = document.createElement('img');
+            img.src = 'data:image/png;base64,' + b64;
+            img.alt = '';
+            img.addEventListener('click', () => openLightbox(img.src));
+            historyEl.prepend(wrapHistoryImg(img));
+            $('#img-history-footer').style.display = '';
+            imgHistoryData.unshift({ b64, prompt, time });
+            while (imgHistoryData.length > 200) imgHistoryData.pop();
+            idbSave(STORES.image, imgHistoryData).catch(() => {});
+        } else {
+            errEl.innerHTML = '<div class="error-msg">No image returned</div>';
+        }
+    } catch (e) {
+        errEl.innerHTML = '<div class="error-msg">' + escapeHtml(e.message) + '</div>';
+    }
+    clearInterval(timer);
+    btn.disabled = false;
+    renderImgUploads();
+}
+
+async function generateImage() {
+    /* Route through chat API when toggle is on */
+    if ($('#img-use-chat-api').checked) {
+        return generateImageViaChat();
+    }
+
+    const prompt = $('#img-prompt').value.trim();
+    if (!prompt) return;
+
+    const isEdit = imgMode === 'edit' || (imgMode === 'both' && !!imgAttachState.dataUrl);
+    const btn = $('#img-generate');
+    const errEl = $('#img-error');
+    errEl.innerHTML = '';
+    btn.disabled = true;
+    const label = isEdit ? 'Editing...' : 'Generating...';
+    btn.textContent = label;
+    const timer = startElapsedTimer(btn, label);
+
+    try {
+        let r;
+        if (isEdit) {
+            const fd = await buildImageEditFormData();
+            r = await fetch('/api/images/edits', { method: 'POST', body: fd });
+        } else {
+            const body = buildImagePayload();
+            r = await fetch('/api/images/generations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        }
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({ error: r.statusText }));
+            throw new Error(err.error?.message || err.error || JSON.stringify(err));
+        }
+        const result = await r.json();
+        const b64List = (result.data || [])
+            .map(d => d.b64_json)
+            .filter(Boolean);
 
         if (b64List.length) {
             const historyEl = $('#img-history');
@@ -1031,6 +1057,7 @@ async function generateImage() {
     } catch (e) {
         errEl.innerHTML = '<div class="error-msg">' + escapeHtml(e.message) + '</div>';
     }
+    clearInterval(timer);
     btn.disabled = false;
     btn.textContent = isEdit ? 'Edit' : 'Generate';
 }
@@ -1103,39 +1130,32 @@ async function generateVideo() {
     const errEl = $('#vid-error');
     errEl.innerHTML = '';
     btn.disabled = true;
-    btn.textContent = isVidEdit ? 'Editing...' : 'Generating...';
+    const label = isVidEdit ? 'Editing...' : 'Generating...';
+    btn.textContent = label;
+    const timer = startElapsedTimer(btn, label);
 
-    const body = buildVideoPayload();
+    const fd = await buildVideoFormData();
 
     try {
-        const r = await fetch('/api/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
+        const r = await fetch('/api/videos', { method: 'POST', body: fd });
         if (!r.ok) {
             const err = await r.json().catch(() => ({ error: r.statusText }));
             throw new Error(err.error?.message || err.error || JSON.stringify(err));
         }
         const result = await r.json();
-        const msg = result.choices?.[0]?.message || {};
-        const content = msg.content;
+        const entries = result.data || [];
         let videoHtml = '';
         let videoB64 = null;
-        const items = Array.isArray(content) ? content : [];
-        for (const part of items) {
-            if (part.type === 'video_url' && part.video_url?.url) {
-                const m = part.video_url.url.match(/^data:[^;]+;base64,(.+)$/);
-                if (m) {
-                    videoB64 = m[1];
-                    const binary = atob(m[1]);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    const blob = new Blob([bytes], { type: 'video/mp4' });
-                    const url = URL.createObjectURL(blob);
-                    videoHtml += '<video controls src="' + url + '"></video>';
-                }
-            }
+        for (const entry of entries) {
+            const b64 = entry.b64_json;
+            if (!b64) continue;
+            videoB64 = b64;
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: 'video/mp4' });
+            const url = URL.createObjectURL(blob);
+            videoHtml += '<video controls src="' + url + '"></video>';
         }
         if (videoHtml) {
             const time = timeNow();
@@ -1153,6 +1173,7 @@ async function generateVideo() {
     } catch (e) {
         errEl.innerHTML = '<div class="error-msg">' + escapeHtml(e.message) + '</div>';
     }
+    clearInterval(timer);
     btn.disabled = false;
     btn.textContent = isVidEdit ? 'Edit' : 'Generate';
 }

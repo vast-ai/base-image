@@ -35,6 +35,7 @@ _CAPS_ENVS = {
     "tts":   os.environ.get("MODEL_UI_TTS_CAPS", "").strip(),
     "stt":   os.environ.get("MODEL_UI_STT_CAPS", "").strip(),
 }
+_PROMPT_WRAPPER = os.environ.get("MODEL_UI_PROMPT_WRAPPER", "").strip()
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 600
@@ -122,6 +123,7 @@ _config_json = json.dumps({
     "defaultTab": default_tab,
     "allowedTabs": _allowed_tabs,
     "caps": _caps or None,
+    "promptWrapper": _PROMPT_WRAPPER or None,
 })
 _config_json_safe = _config_json.replace("<", "\\u003c")
 _html = _html.replace("__CONFIG_JSON__", _config_json_safe)
