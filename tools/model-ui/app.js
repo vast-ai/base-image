@@ -302,8 +302,8 @@ function setTtsMode(mode) {
     /* Ref audio + ref text: shown in voice_clone */
     $('#tts-ref-field').style.display = mode === 'voice_clone' ? '' : 'none';
     $('#tts-reftext-field').style.display = mode === 'voice_clone' ? '' : 'none';
-    /* Load voices if switching to basic and not yet loaded */
-    if (mode === 'basic' && !ttsVoicesLoaded) loadVoices();
+    /* Load voices if switching to basic and not yet loaded (only if TTS tab is enabled) */
+    if (mode === 'basic' && !ttsVoicesLoaded && (!CONFIG.allowedTabs || CONFIG.allowedTabs.includes('tts'))) loadVoices();
 }
 
 /* Show mode selector if extra modes available; hide unavailable buttons */
