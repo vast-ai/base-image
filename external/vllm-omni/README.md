@@ -60,6 +60,7 @@ A lightweight web interface for interacting with the model. Supports chat, image
 Model UI is provided as a convenience for testing and casual use. For the best experience, connect the OpenAI-compatible API (port 8000) to your preferred client — [Open WebUI](https://github.com/open-webui/open-webui), [SillyTavern](https://github.com/SillyTavern/SillyTavern), or any application that speaks the OpenAI API.
 
 - TTS tab supports Qwen3-TTS modes (VoiceDesign, VoiceClone) when configured via `MODEL_UI_TTS_CAPS`
+- For chat-based diffusion models (BAGEL), set `MODEL_UI_IMAGE_CAPS=chat_api,generate` and `MODEL_UI_PROMPT_WRAPPER="<|im_start|>{prompt}<|im_end|>"` to route image generation through `/v1/chat/completions` with proper prompt wrapping
 - To disable, remove the Model UI entry from `PORTAL_CONFIG`
 - See [`tools/model-ui/README.md`](../../tools/model-ui/README.md) for capabilities configuration and advanced usage
 
