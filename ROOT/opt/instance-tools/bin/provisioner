@@ -1,0 +1,10 @@
+#!/bin/bash
+# CLI wrapper for the declarative provisioner module
+# Activates the main venv and runs the provisioner as a Python module
+
+. /venv/main/bin/activate 2>/dev/null
+
+# Add the provisioner library to the Python path
+export PYTHONPATH="/opt/instance-tools/lib:${PYTHONPATH:-}"
+
+exec python -m provisioner "$@"

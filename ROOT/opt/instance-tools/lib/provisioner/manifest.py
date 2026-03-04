@@ -1,0 +1,128 @@
+"""YAML manifest loading, environment variable expansion, and env_merge."""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+
+import yaml
+
+from .schema import DownloadEntry, Manifest, validate_manifest
+
+log = logging.getLogger("provisioner")
+
+# Matches ${VAR}, ${VAR:-default}, ${VAR:=default}
+_ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _expand_var(match: re.Match) -> str:
+    """Expand a single ${...} expression."""
+    expr = match.group(1)
+
+    # ${VAR:-default} or ${VAR:=default}
+    for sep in (":-", ":="):
+        if sep in expr:
+            var_name, default = expr.split(sep, 1)
+            return os.environ.get(var_name, default)
+
+    # ${VAR}
+    return os.environ.get(expr, "")
+
+
+def expand_env(value: str) -> str:
+    """Expand all ${...} expressions in a string."""
+    return _ENV_PATTERN.sub(_expand_var, value)
+
+
+def _expand_recursive(obj):
+    """Recursively expand environment variables in all string values."""
+    if isinstance(obj, str):
+        return expand_env(obj)
+    if isinstance(obj, dict):
+        return {k: _expand_recursive(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_recursive(item) for item in obj]
+    return obj
+
+
+def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
+    """Parse semicolon-separated 'url|path' entries from an env var value.
+
+    Format: "url1|path1;url2|path2"
+    This matches the convention used in existing provisioning scripts.
+    """
+    entries = []
+    for raw in env_value.split(";"):
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        if "|" not in raw:
+            log.warning("Skipping malformed env_merge entry (no '|'): %s", raw)
+            continue
+        url, dest = raw.split("|", 1)
+        url = url.strip()
+        dest = dest.strip()
+        if url and dest:
+            entries.append(DownloadEntry(url=url, dest=dest))
+    return entries
+
+
+def apply_env_merge(manifest: Manifest) -> None:
+    """Merge download entries from environment variables into the manifest.
+
+    For each entry in env_merge, read the named env var, parse its
+    semicolon-separated url|path values, and append to the downloads list.
+    """
+    for env_var, target in manifest.env_merge.items():
+        value = os.environ.get(env_var, "")
+        if not value:
+            continue
+        if target != "downloads":
+            log.warning("env_merge target '%s' not supported (only 'downloads')", target)
+            continue
+        entries = _parse_env_merge_entries(value)
+        if entries:
+            log.info("env_merge: added %d downloads from $%s", len(entries), env_var)
+            manifest.downloads.extend(entries)
+
+
+def resolve_conditionals(manifest: Manifest, hf_token_valid: bool) -> None:
+    """Resolve conditional_downloads and merge results into downloads."""
+    condition_map = {
+        "hf_token_valid": hf_token_valid,
+    }
+
+    for cond in manifest.conditional_downloads:
+        result = condition_map.get(cond.when)
+        if result is None:
+            log.warning("Unknown condition: '%s' -- skipping", cond.when)
+            continue
+        if result:
+            log.info("Condition '%s' is true: adding %d downloads", cond.when, len(cond.downloads))
+            manifest.downloads.extend(cond.downloads)
+        else:
+            log.info("Condition '%s' is false: adding %d else_downloads", cond.when, len(cond.else_downloads))
+            manifest.downloads.extend(cond.else_downloads)
+
+    # Clear conditional_downloads after resolution
+    manifest.conditional_downloads = []
+
+
+def load_manifest(path: str) -> Manifest:
+    """Load a YAML manifest file, expand env vars, and validate.
+
+    Returns a fully populated Manifest dataclass.
+    """
+    log.info("Loading manifest: %s", path)
+
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+
+    if raw is None:
+        raise ValueError(f"Empty manifest: {path}")
+
+    # Expand env vars in all string values before validation
+    expanded = _expand_recursive(raw)
+
+    return validate_manifest(expanded)
