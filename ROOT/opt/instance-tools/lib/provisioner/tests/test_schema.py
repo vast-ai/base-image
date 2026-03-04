@@ -8,10 +8,13 @@ from provisioner.schema import (
     Auth,
     AuthProvider,
     ConcurrencySettings,
+    CondaPackages,
     ConditionalDownload,
     DownloadEntry,
+    FileWrite,
     GitRepo,
     Manifest,
+    OnFailure,
     PipPackages,
     RetrySettings,
     Service,
@@ -73,10 +76,14 @@ class TestDefaults:
 
     def test_pip_packages_defaults(self):
         m = validate_manifest({"version": 1})
-        assert m.pip_packages.tool == "uv"
-        assert m.pip_packages.packages == []
-        assert m.pip_packages.args == ""
-        assert m.pip_packages.requirements == []
+        assert m.pip_packages == []
+
+    def test_file_write_defaults(self):
+        f = FileWrite()
+        assert f.path == ""
+        assert f.content == ""
+        assert f.permissions == "0644"
+        assert f.owner == ""
 
     def test_empty_lists_default(self):
         m = validate_manifest({"version": 1})
@@ -86,6 +93,14 @@ class TestDefaults:
         assert m.conditional_downloads == []
         assert m.services == []
         assert m.post_commands == []
+        assert m.write_files == []
+        assert m.write_files_late == []
+
+    def test_on_failure_defaults(self):
+        m = validate_manifest({"version": 1})
+        assert m.on_failure.action == "continue"
+        assert m.on_failure.max_retries == 3
+        assert m.on_failure.webhook == ""
 
     def test_service_defaults(self):
         s = Service()
@@ -98,7 +113,19 @@ class TestDefaults:
         g = GitRepo()
         assert g.recursive is True
         assert g.pull_if_exists is False
-        assert g.pip_install_editable is False
+        assert g.post_commands == []
+
+    def test_pip_packages_block_defaults(self):
+        p = PipPackages()
+        assert p.venv == ""
+        assert p.python == ""
+        assert p.tool == "uv"
+
+    def test_conda_packages_defaults(self):
+        m = validate_manifest({"version": 1})
+        assert m.conda_packages.packages == []
+        assert m.conda_packages.channels == []
+        assert m.conda_packages.args == ""
 
 
 # ---------- Nested construction ----------
@@ -177,7 +204,81 @@ class TestBuildNested:
         })
         assert m.settings.workspace == "/w"
 
-    def test_pip_packages_full(self):
+    def test_pip_packages_list_format(self):
+        m = validate_manifest({
+            "version": 1,
+            "pip_packages": [
+                {
+                    "tool": "pip",
+                    "packages": ["numpy", "scipy"],
+                    "args": "--no-cache-dir",
+                    "requirements": ["/a/req.txt", "/b/req.txt"],
+                    "venv": "/venv/custom",
+                    "python": "3.11",
+                },
+                {
+                    "packages": ["torch"],
+                },
+            ],
+        })
+        assert len(m.pip_packages) == 2
+        assert m.pip_packages[0].tool == "pip"
+        assert m.pip_packages[0].packages == ["numpy", "scipy"]
+        assert m.pip_packages[0].venv == "/venv/custom"
+        assert m.pip_packages[0].python == "3.11"
+        assert m.pip_packages[1].packages == ["torch"]
+        assert m.pip_packages[1].venv == ""
+
+    def test_on_failure_construction(self):
+        m = validate_manifest({
+            "version": 1,
+            "on_failure": {
+                "action": "retry",
+                "max_retries": 5,
+                "webhook": "https://hooks.example.com/fail",
+            },
+        })
+        assert m.on_failure.action == "retry"
+        assert m.on_failure.max_retries == 5
+        assert m.on_failure.webhook == "https://hooks.example.com/fail"
+
+    def test_write_files_construction(self):
+        m = validate_manifest({
+            "version": 1,
+            "write_files": [
+                {"path": "/etc/app.conf", "content": "key=val\n", "permissions": "0600", "owner": "root:root"},
+            ],
+            "write_files_late": [
+                {"path": "/tmp/done.txt", "content": "ok"},
+            ],
+        })
+        assert len(m.write_files) == 1
+        assert isinstance(m.write_files[0], FileWrite)
+        assert m.write_files[0].path == "/etc/app.conf"
+        assert m.write_files[0].permissions == "0600"
+        assert m.write_files[0].owner == "root:root"
+        assert len(m.write_files_late) == 1
+        assert m.write_files_late[0].permissions == "0644"  # default
+
+    def test_conda_packages_construction(self):
+        m = validate_manifest({
+            "version": 1,
+            "conda_packages": {
+                "packages": ["numpy=1.24", "scipy>=1.10"],
+                "channels": ["conda-forge", "nvidia"],
+                "args": "--no-update-deps",
+            },
+        })
+        assert m.conda_packages.packages == ["numpy=1.24", "scipy>=1.10"]
+        assert m.conda_packages.channels == ["conda-forge", "nvidia"]
+        assert m.conda_packages.args == "--no-update-deps"
+
+
+# ---------- Backward compatibility ----------
+
+class TestBackwardCompat:
+    def test_pip_packages_dict_wrapped_in_list(self):
+        """Old single-dict pip_packages format is auto-wrapped in a list."""
         m = validate_manifest({
             "version": 1,
             "pip_packages": {
@@ -187,10 +288,21 @@ class TestBuildNested:
                 "requirements": ["/a/req.txt", "/b/req.txt"],
             },
         })
-        assert m.pip_packages.tool == "pip"
-        assert m.pip_packages.packages == ["numpy", "scipy"]
-        assert m.pip_packages.args == "--no-cache-dir"
-        assert len(m.pip_packages.requirements) == 2
+        assert isinstance(m.pip_packages, list)
+        assert len(m.pip_packages) == 1
+        assert m.pip_packages[0].tool == "pip"
+        assert m.pip_packages[0].packages == ["numpy", "scipy"]
+        assert m.pip_packages[0].args == "--no-cache-dir"
+        assert len(m.pip_packages[0].requirements) == 2
+
+    def test_pip_packages_dict_with_venv_fields(self):
+        """Old format doesn't have venv/python, they default to empty."""
+        m = validate_manifest({
+            "version": 1,
+            "pip_packages": {"packages": ["torch"]},
+        })
+        assert m.pip_packages[0].venv == ""
+        assert m.pip_packages[0].python == ""
 
 
 # ---------- Full manifest roundtrip ----------
@@ -203,12 +315,17 @@ class TestFullManifest:
         assert m.settings.concurrency.hf_downloads == 2
         assert m.settings.retry.max_attempts == 3
         assert len(m.apt_packages) == 2
-        assert m.pip_packages.tool == "uv"
-        assert len(m.pip_packages.packages) == 2
+        assert len(m.pip_packages) == 1
+        assert m.pip_packages[0].tool == "uv"
+        assert len(m.pip_packages[0].packages) == 2
         assert len(m.git_repos) == 1
         assert len(m.downloads) == 3
         assert len(m.conditional_downloads) == 1
         assert m.env_merge == {"HF_MODELS": "downloads"}
         assert len(m.services) == 1
         assert m.services[0].name == "test-app"
+        assert len(m.write_files) == 1
+        assert m.write_files[0].path == "/tmp/early.conf"
+        assert len(m.write_files_late) == 1
+        assert m.write_files_late[0].permissions == "0600"
         assert len(m.post_commands) == 1

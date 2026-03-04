@@ -27,9 +27,10 @@ utils=/opt/supervisor-scripts/utils
 
 {wait_block}# Set environment variables
 {env_exports}
+
 # Launch application
 cd {workdir}
-{command}
+{pre_commands}{command}
 """
 
 _SUPERVISOR_CONF_TEMPLATE = """\
@@ -81,12 +82,18 @@ def _generate_startup_script(service: Service) -> str:
         env_lines.append(f'export {key}="{value}"')
     env_exports = "\n".join(env_lines) if env_lines else "# (none)"
 
+    # Pre-launch commands
+    pre_commands = ""
+    if service.pre_commands:
+        pre_commands = "\n".join(service.pre_commands) + "\n"
+
     return _STARTUP_SCRIPT_TEMPLATE.format(
         venv=service.venv,
         exit_serverless=exit_serverless,
         exit_portal=exit_portal,
         wait_block=wait_block,
         env_exports=env_exports,
+        pre_commands=pre_commands,
         workdir=service.workdir,
         command=service.command,
         name=service.name,

@@ -1,8 +1,10 @@
 #!/bin/bash
 # CLI wrapper for the declarative provisioner module
-# Activates the main venv and runs the provisioner as a Python module
+# Uses a standalone venv so the provisioner doesn't depend on or pollute
+# the application venv (/venv/main). Runtime pip installs from the manifest
+# target whatever venv is declared in the manifest's settings.venv field.
 
-. /venv/main/bin/activate 2>/dev/null
+. /opt/instance-tools/provisioner/venv/bin/activate 2>/dev/null
 
 # Add the provisioner library to the Python path
 export PYTHONPATH="/opt/instance-tools/lib:${PYTHONPATH:-}"

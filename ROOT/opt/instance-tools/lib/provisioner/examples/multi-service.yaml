@@ -1,0 +1,75 @@
+# Multi-service deployment with a backend API and frontend UI
+# Demonstrates multiple services, apt packages, conda, and editable pip installs
+
+version: 1
+
+settings:
+  workspace: "${WORKSPACE:-/workspace}"
+  venv: "/venv/main"
+
+on_failure:
+  action: retry
+  max_retries: 3
+
+apt_packages:
+  - ffmpeg
+  - libsndfile1
+  - sox
+
+pip_packages:
+  - tool: uv
+    packages:
+      - torch
+      - torchaudio
+      - torchvision
+    args: "--torch-backend auto"
+
+  - venv: system
+    tool: pip
+    packages:
+      - supervisor-stdout
+
+conda_packages:
+  packages:
+    - nccl
+  channels:
+    - nvidia
+
+git_repos:
+  - url: https://github.com/your-org/ml-backend
+    dest: "${WORKSPACE:-/workspace}/ml-backend"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+      - "uv pip install --no-cache --python /venv/main/bin/python -e ."
+
+  - url: https://github.com/your-org/web-frontend
+    dest: "${WORKSPACE:-/workspace}/web-frontend"
+    ref: "${FRONTEND_VERSION:-main}"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+downloads:
+  - url: https://huggingface.co/your-org/your-model/resolve/main/model.safetensors
+    dest: "${WORKSPACE:-/workspace}/models/model.safetensors"
+  - url: https://huggingface.co/your-org/your-model/resolve/main/config.json
+    dest: "${WORKSPACE:-/workspace}/models/config.json"
+
+services:
+  - name: ml-backend
+    portal_search_term: "ML Backend"
+    workdir: "${WORKSPACE:-/workspace}/ml-backend"
+    command: "uvicorn app:app --host 127.0.0.1 --port 8000"
+    skip_on_serverless: false
+    environment:
+      MODEL_DIR: "${WORKSPACE:-/workspace}/models"
+      CUDA_VISIBLE_DEVICES: "0"
+
+  - name: web-frontend
+    portal_search_term: "Web Frontend"
+    workdir: "${WORKSPACE:-/workspace}/web-frontend"
+    command: "python app.py --port 7860 --api-url http://127.0.0.1:8000"
+    environment:
+      GRADIO_SERVER_NAME: "0.0.0.0"
+
+post_commands:
+  - "ln -sf ${WORKSPACE:-/workspace}/models ${WORKSPACE:-/workspace}/ml-backend/models"

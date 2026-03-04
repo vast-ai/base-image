@@ -103,6 +103,32 @@ class TestGenerateStartupScript:
         script = _generate_startup_script(basic_service)
         assert "cd /workspace/my-app" in script
 
+    def test_pre_commands(self):
+        svc = Service(
+            name="a",
+            command="python app.py",
+            workdir="/workspace/app",
+            pre_commands=[
+                "git config --global safe.directory '*'",
+                "ln -sf /models /workspace/app/models",
+            ],
+        )
+        script = _generate_startup_script(svc)
+        assert "git config --global safe.directory '*'" in script
+        assert "ln -sf /models /workspace/app/models" in script
+        # Pre commands should appear before the main command
+        pre_pos = script.index("git config")
+        cmd_pos = script.index("python app.py")
+        assert pre_pos < cmd_pos
+
+    def test_no_pre_commands(self):
+        svc = Service(name="a", command="echo hi", workdir="/")
+        script = _generate_startup_script(svc)
+        # Should not have any leftover pre_commands artifacts
+        lines = script.strip().split("\n")
+        # The last non-empty line should be the command
+        assert lines[-1] == "echo hi"
+
 
 class TestGenerateSupervisorConf:
     def test_program_section(self):

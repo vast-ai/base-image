@@ -1,410 +1,599 @@
-# Declarative Provisioner
+# Provisioner
 
-A Python module that replaces ad-hoc bash provisioning scripts with a declarative YAML manifest. Instead of writing hundreds of lines of bash boilerplate for apt/pip installation, model downloads, retry logic, and supervisor service registration, you declare what you need in YAML and the provisioner handles it.
+A declarative, YAML-driven instance provisioner for Vast.ai base images. Instead of writing imperative shell scripts, you describe *what* should be installed in a manifest file and the provisioner handles execution order, parallelism, idempotency, and failure handling.
+
+```
+provisioner manifest.yaml [--dry-run] [--force]
+```
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Execution Phases](#execution-phases)
+- [Manifest Reference](#manifest-reference)
+  - [settings](#settings)
+  - [auth](#auth)
+  - [on_failure](#on_failure)
+  - [write_files / write_files_late](#write_files--write_files_late)
+  - [apt_packages](#apt_packages)
+  - [pip_packages](#pip_packages)
+  - [conda_packages](#conda_packages)
+  - [git_repos](#git_repos)
+  - [downloads](#downloads)
+  - [conditional_downloads](#conditional_downloads)
+  - [env_merge](#env_merge)
+  - [services](#services)
+  - [post_commands](#post_commands)
+- [Environment Variable Expansion](#environment-variable-expansion)
+- [Idempotency](#idempotency)
+- [Failure Handling](#failure-handling)
+- [CLI Reference](#cli-reference)
+- [Running Tests](#running-tests)
+- [Examples](#examples)
 
 ## Quick Start
 
-### 1. Write a manifest
-
 ```yaml
 version: 1
 
-settings:
-  workspace: "${WORKSPACE:-/workspace}"
-  venv: "/venv/main"
-
-apt_packages:
-  - libasound2-dev
-
 pip_packages:
-  packages:
-    - torch
-    - torchaudio
+  - packages: [torch, torchvision]
+    args: "--torch-backend auto"
 
-downloads:
-  - url: "https://huggingface.co/org/repo/resolve/main/model.safetensors"
-    dest: "${WORKSPACE}/models/model.safetensors"
+git_repos:
+  - url: https://github.com/your-org/your-app
+    dest: /workspace/your-app
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
 
 services:
-  - name: "my-app"
-    portal_search_term: "My App"
-    workdir: "${WORKSPACE}/my-app"
+  - name: your-app
+    portal_search_term: "Your App"
+    workdir: /workspace/your-app
     command: "python app.py --port 7860"
 ```
 
-### 2. Run it
-
 ```bash
-# Direct invocation
-provisioner manifest.yaml
-
-# Dry run (prints what would be done without executing)
+# Dry run (prints what would happen)
 provisioner manifest.yaml --dry-run
 
-# Via environment variable (set in Vast.ai template)
-PROVISIONING_MANIFEST=https://example.com/manifest.yaml
+# Execute
+provisioner manifest.yaml
+
+# Force re-run all phases (ignore cached state)
+provisioner manifest.yaml --force
 ```
 
-## How It Works
+## Architecture
 
-The provisioner executes 8 phases sequentially:
+```
+bin/provisioner                     Shell wrapper (activates provisioner venv, exec python -m provisioner)
+lib/provisioner/
+├── __main__.py                     Pipeline orchestrator and CLI entry point
+├── schema.py                       Manifest dataclasses and validation
+├── manifest.py                     YAML loading, env expansion, conditionals
+├── state.py                        Content-hash idempotency (/.provisioner_state/)
+├── failure.py                      Failure actions (continue/retry/destroy/stop)
+├── auth.py                         HuggingFace and CivitAI token validation
+├── log.py                          Logging setup (stdout + file)
+├── concurrency.py                  Thread pool runner + file locking
+├── supervisor.py                   Supervisor startup script + .conf generation
+├── installers/
+│   ├── apt.py                      apt-get install
+│   ├── pip.py                      uv/pip install with multi-venv support
+│   ├── conda.py                    mamba/conda install via Miniforge3
+│   ├── git.py                      Parallel git clone with post-commands
+│   └── files.py                    Cloud-init style file writer
+├── downloaders/
+│   ├── base.py                     Retry with exponential backoff
+│   ├── huggingface.py              huggingface-cli download
+│   └── wget.py                     wget download (with CivitAI auth)
+├── examples/                       Example manifests
+└── tests/                          Test suite (pytest)
+```
 
-| Phase | Action | Parallelism | On failure |
-|-------|--------|-------------|------------|
-| 1 | Load & validate manifest, expand env vars | - | Abort |
-| 2 | Validate auth tokens, resolve conditional downloads | - | Abort |
-| 3 | Install apt packages | Sequential | **Fail-fast** |
-| 4 | Clone git repos | Parallel (ThreadPool) | **Fail-fast** |
-| 5 | Install pip packages + requirements files | Sequential (after git) | **Fail-fast** |
-| 6 | Download files | Parallel (two pools: HF + wget) | **Best-effort** |
-| 7 | Register supervisor services | Sequential | **Always runs** |
-| 8 | Run post_commands | Sequential | **Always runs** |
+The provisioner runs in its own isolated venv at `/opt/instance-tools/provisioner/venv/`, completely separate from the application venv at `/venv/main`. The `bin/provisioner` wrapper handles venv activation and `PYTHONPATH` setup.
 
-### Error Handling
+## Execution Phases
 
-Not all failures are equal. A missing system package means the app can't start, but a flaky CivitAI download shouldn't prevent the app from registering with supervisor.
+Phases run sequentially in this order:
 
-- **Phases 3-5 (apt, git, pip)** are **fail-fast**. These are hard dependencies -- if any fails, the provisioner skips all remaining phases and exits immediately. The app can't function without its code and packages.
-- **Phase 6 (downloads)** is **best-effort**. Individual download failures are logged, but execution continues to phases 7-8. Each download already retries with exponential backoff before giving up, so a failure here means persistent issues (rate limits, bad URLs, revoked tokens). The app may still start with partial models.
-- **Phases 7-8 (services, post_commands)** **always run**, even if some downloads failed. The app must be registered with supervisor so it can start and potentially recover. Failures in these phases are logged but don't prevent each other from running.
+| Phase | Description | Failure Mode |
+|-------|-------------|--------------|
+| 1 | Load manifest, expand env vars | Abort |
+| 2 | Validate auth tokens, resolve conditionals, apply env_merge | Non-fatal |
+| 2b | Write early files (`write_files`) | **Fail-fast** |
+| 3 | Install apt packages | **Fail-fast** |
+| 4 | Clone git repos + run post_commands (parallel) | **Fail-fast** |
+| 5 | Install pip packages (per block, sequential) | **Fail-fast** |
+| 5b | Install conda packages | **Fail-fast** |
+| 6 | Download files (parallel, two pools: HF + wget) | **Best-effort** |
+| 7 | Register supervisor services | Always runs |
+| 7b | Write late files (`write_files_late`) | Always runs |
+| 8 | Run post_commands | Always runs |
 
-The exit code is **0 only when everything succeeds**. Any failure in any phase results in exit code 1, which tells the boot script not to set the `/.provisioning_manifest_complete` sentinel -- so provisioning will be retried on the next restart.
+**Fail-fast** means a failure in that phase skips all remaining phases and exits immediately with code 1. This is appropriate for dependencies -- the app cannot run without its packages.
 
-## Boot Integration
+**Best-effort** means individual failures are logged but execution continues. Missing model files are recoverable; the app may still start.
 
-When the `PROVISIONING_MANIFEST` environment variable is set, the boot script (`75-provisioning-script.sh`) processes it automatically on instance startup:
+**Always runs** means phases 7-8 execute regardless of download failures. Services must be registered with supervisor even if some models are still missing.
 
-- If the value is a URL, it is downloaded first
-- If the value is a local file path, it is used directly
-- `PROVISIONING_SCRIPT` (bash) runs first if present -- the two are independent
-- A sentinel file `/.provisioning_manifest_complete` prevents re-running on restart
+The exit code is 0 on full success, 1 if anything failed. A non-zero exit tells the boot script not to mark provisioning as complete, so it will be retried on next restart.
 
 ## Manifest Reference
 
-### `version`
+Every manifest starts with `version: 1`. All other sections are optional.
 
-Required. Must be `1`.
-
-```yaml
-version: 1
-```
-
-### `settings`
-
-Global configuration. All fields have defaults.
+### settings
 
 ```yaml
-settings:
-  workspace: "${WORKSPACE:-/workspace}"       # Base path for relative references
-  venv: "/venv/main"                          # Python virtual environment
-  log_file: "${PROVISIONING_LOG:-/var/log/portal/provisioning.log}"
-  concurrency:
-    hf_downloads: 3                           # Max parallel HuggingFace downloads
-    wget_downloads: 5                         # Max parallel wget downloads
-  retry:
-    max_attempts: 5                           # Retries per download
-    initial_delay: 2                          # Seconds before first retry
-    backoff_multiplier: 2                     # Exponential backoff factor (2, 4, 8, 16...)
-```
-
-### `auth`
-
-Names the environment variables that hold API tokens. Tokens are validated at startup and used to resolve conditional downloads.
-
-```yaml
-auth:
-  huggingface:
-    token_env: "HF_TOKEN"                     # Validated via HF whoami API
-  civitai:
-    token_env: "CIVITAI_TOKEN"                # Validated via CivitAI API
-```
-
-### `apt_packages`
-
-System packages to install via `apt-get`.
-
-```yaml
-apt_packages:
-  - libasound2-dev
-  - sox
-  - ffmpeg
-```
-
-### `pip_packages`
-
-Python packages. Installed after git clones so that requirements files from cloned repos are available.
-
-```yaml
-pip_packages:
-  tool: "uv"                                  # "uv" (default) or "pip"
-  packages:
-    - "torch==${TORCH_VERSION:-2.8.0}"
-    - torchaudio
-  args: "--torch-backend ${TORCH_BACKEND:-cu128}"  # Extra args passed to installer
-  requirements:
-    - "${WORKSPACE}/app/requirements.txt"
-```
-
-### `git_repos`
-
-Git repositories to clone. Cloned in parallel.
-
-```yaml
-git_repos:
-  - url: "https://github.com/org/repo"
-    dest: "${WORKSPACE}/repo"
-    ref: "${APP_REF:-}"                       # Empty = default branch
-    recursive: true                           # --recursive flag (default: true)
-    pull_if_exists: false                     # git pull if dest exists (default: false)
-    requirements: "requirements.txt"          # Relative to cloned dir, auto-installed
-    pip_install_editable: false               # pip install -e (default: false)
-```
-
-### `downloads`
-
-Files to download. URL type is auto-detected:
-
-| URL Pattern | Handler | Auth |
-|-------------|---------|------|
-| `huggingface.co` | `huggingface-cli download` | `$HF_TOKEN` (automatic) |
-| `civitai.com` | `wget` + Authorization header | `$CIVITAI_TOKEN` |
-| Anything else | Plain `wget` | None |
-
-```yaml
-downloads:
-  - url: "https://huggingface.co/org/repo/resolve/main/model.safetensors"
-    dest: "${WORKSPACE}/models/model.safetensors"
-  - url: "https://civitai.com/api/download/models/12345"
-    dest: "${WORKSPACE}/models/Lora/"         # Trailing / = content-disposition filename
-```
-
-Features:
-- **Parallel downloads** with configurable pool sizes (HF and wget pools are independent)
-- **File locking** (`fcntl.flock`) prevents concurrent downloads of the same file
-- **Retry with exponential backoff** on failure
-- **Skip existing files** (checked inside the lock to prevent race conditions)
-- **Trailing slash** on `dest` resolves the filename from the server's Content-Disposition header
-
-### `conditional_downloads`
-
-Downloads that depend on token validity. Useful for gated models with open fallbacks.
-
-```yaml
-conditional_downloads:
-  - when: "hf_token_valid"
-    downloads:
-      - url: "https://huggingface.co/org/gated-model/resolve/main/model.safetensors"
-        dest: "${WORKSPACE}/models/model.safetensors"
-    else_downloads:
-      - url: "https://huggingface.co/org/open-model/resolve/main/model.safetensors"
-        dest: "${WORKSPACE}/models/model.safetensors"
-```
-
-Supported conditions:
-- `hf_token_valid` -- true if `$HF_TOKEN` passes the HuggingFace whoami API check
-
-### `env_merge`
-
-Merge additional downloads from environment variables at runtime. This is for user-supplied model lists using the existing `"url|path"` semicolon-separated format from bash provisioning scripts.
-
-```yaml
-env_merge:
-  HF_MODELS: downloads                       # Parse $HF_MODELS, append to downloads
-  CIVITAI_MODELS: downloads
-  WGET_DOWNLOADS: downloads
-```
-
-Environment variable format:
-```
-HF_MODELS="https://hf.co/org/repo/resolve/main/a.safetensors|/workspace/models/a.safetensors;https://hf.co/org/repo/resolve/main/b.safetensors|/workspace/models/b.safetensors"
-```
-
-### `services`
-
-Register supervisor services. Generates a startup script and `.conf` file matching the conventions used by existing services in this image.
-
-```yaml
-services:
-  - name: "my-app"                            # Used for filenames and supervisor program name
-    portal_search_term: "My App"              # Checked against /etc/portal.yaml
-    skip_on_serverless: true                  # Skip startup if SERVERLESS=true (default: true)
-    venv: "/venv/main"                        # Virtual environment to activate
-    workdir: "${WORKSPACE}/my-app"            # Working directory for the command
-    command: "python app.py --port 7860"      # The command to run
-    wait_for_provisioning: true               # Wait for /.provisioning to be removed (default: true)
-    environment:                              # Environment variables exported in the script
-      GRADIO_SERVER_NAME: "127.0.0.1"
-```
-
-Generated files:
-- `/opt/supervisor-scripts/{name}.sh` -- startup script (sources utils, activates venv, exports env, runs command)
-- `/etc/supervisor/conf.d/{name}.conf` -- supervisor config (autostart, autorestart, stdout logging)
-
-After writing the files, runs `supervisorctl reread && supervisorctl update`.
-
-### `post_commands`
-
-Escape hatch for anything not covered by other sections. Commands run sequentially via `shell=True`.
-
-```yaml
-post_commands:
-  - "ln -sf /workspace/models /workspace/app/models"
-  - "chmod +x /workspace/app/run.sh"
-```
-
-## Environment Variable Expansion
-
-All string values in the manifest support bash-style variable expansion:
-
-| Syntax | Behavior |
-|--------|----------|
-| `${VAR}` | Value of `$VAR`, empty string if unset |
-| `${VAR:-default}` | Value of `$VAR`, or `default` if unset |
-| `${VAR:=default}` | Same as `:-` (value of `$VAR`, or `default` if unset) |
-
-Expansion is applied recursively to all string values before validation.
-
-## Module Structure
-
-```
-/opt/instance-tools/lib/provisioner/
-    __init__.py              # Package init, version
-    __main__.py              # CLI: argparse, 8-phase orchestration
-    schema.py                # Dataclasses for manifest structure + validation
-    manifest.py              # YAML loading, env var expansion, env_merge, conditionals
-    auth.py                  # Token validation (HF, CivitAI) via urllib
-    concurrency.py           # ThreadPoolExecutor pools + fcntl.flock file locking
-    log.py                   # Logging setup (stdout + file, timestamped)
-    downloaders/
-        __init__.py
-        base.py              # retry_with_backoff() helper
-        huggingface.py       # Parse HF URL -> repo/file, run huggingface-cli, move to dest
-        wget.py              # wget subprocess with auth header support
-    installers/
-        __init__.py
-        apt.py               # apt-get update + install
-        pip.py               # uv pip install / pip install (packages + requirements)
-        git.py               # git clone + checkout + optional requirements install
-    supervisor.py            # Generate startup script + .conf from templates
-    tests/                   # Test suite (see below)
-```
-
-## CLI Usage
-
-```
-usage: provisioner [-h] [--dry-run] manifest
-
-Declarative instance provisioner
-
-positional arguments:
-  manifest    Path to YAML manifest file
-
-options:
-  -h, --help  show this help message and exit
-  --dry-run   Print what would be done without executing
-```
-
-The `provisioner` wrapper at `/opt/instance-tools/bin/provisioner` activates the main venv and sets `PYTHONPATH` automatically.
-
-## Running Tests
-
-Install pytest (not included in the base image):
-
-```bash
-pip install pytest
-```
-
-Run from the repository root:
-
-```bash
-# Run all tests
-python -m pytest ROOT/opt/instance-tools/lib/provisioner/tests/ -v
-
-# Run a specific test file
-python -m pytest ROOT/opt/instance-tools/lib/provisioner/tests/test_schema.py -v
-
-# Run tests matching a pattern
-python -m pytest ROOT/opt/instance-tools/lib/provisioner/tests/ -v -k "test_env"
-```
-
-Tests use `unittest.mock` to avoid real subprocess calls, network requests, and filesystem side effects. No external services or tokens are needed to run the full suite.
-
-## Full Example Manifest
-
-```yaml
-version: 1
-
 settings:
   workspace: "${WORKSPACE:-/workspace}"
   venv: "/venv/main"
-  log_file: "${PROVISIONING_LOG:-/var/log/portal/provisioning.log}"
+  log_file: "/var/log/portal/provisioning.log"
   concurrency:
     hf_downloads: 3
     wget_downloads: 5
   retry:
     max_attempts: 5
-    initial_delay: 2
-    backoff_multiplier: 2
+    initial_delay: 2          # seconds before first retry
+    backoff_multiplier: 2     # exponential backoff (delays: 2s, 4s, 8s, 16s)
+```
 
+All values shown are defaults. `venv` is the default target for pip installs when no block-level venv is specified. `retry` controls download retry behavior.
+
+### auth
+
+```yaml
 auth:
   huggingface:
     token_env: "HF_TOKEN"
   civitai:
     token_env: "CIVITAI_TOKEN"
+```
 
+Names the environment variables that hold API tokens. Tokens are **never** stored in the manifest. The provisioner validates tokens by making live API calls during phase 2 -- the results gate [conditional_downloads](#conditional_downloads).
+
+A network failure or missing token returns "invalid", which selects the `else_downloads` branch.
+
+### on_failure
+
+```yaml
+on_failure:
+  action: continue        # continue | retry | destroy | stop
+  max_retries: 3          # only used by retry
+  webhook: ""             # URL to POST failure info (optional)
+```
+
+Controls what happens when provisioning fails:
+
+| Action | Behavior |
+|--------|----------|
+| `continue` | Log the failure, exit 1. Default. |
+| `retry` | Increment attempt counter (`/.provisioner_attempts`). If under `max_retries`, exit 1 and let the boot script re-run. If limit exceeded, fall through to `continue`. |
+| `destroy` | Call `vastai destroy instance $CONTAINER_ID --api-key $CONTAINER_API_KEY`. |
+| `stop` | Call `vastai stop instance $CONTAINER_ID --api-key $CONTAINER_API_KEY`. |
+
+**Webhook:** If configured, a JSON payload is POSTed on failure:
+
+```json
+{
+  "action": "retry",
+  "manifest": "/path/to/manifest.yaml",
+  "error": "Pip installation failed: ...",
+  "container_id": "12345",
+  "timestamp": "2025-01-15T10:30:00"
+}
+```
+
+The `PROVISIONER_WEBHOOK_URL` environment variable overrides `on_failure.webhook` in the manifest, allowing operators to set a global webhook without modifying manifests.
+
+### write_files / write_files_late
+
+Cloud-init style file writing in two phases: `write_files` runs early (phase 2b, fail-fast) and `write_files_late` runs late (phase 7b, always runs).
+
+```yaml
+# Phase 2b: Written immediately after auth validation, before apt/pip/git
+# Use for config files that must exist before packages are installed
+write_files:
+  - path: /etc/app/config.yaml
+    content: |
+      database: postgres://localhost/app
+      debug: false
+    permissions: "0644"           # Octal (default: "0644")
+    owner: "appuser:appgroup"    # Optional user:group or user
+
+  - path: /opt/scripts/setup.sh
+    content: |
+      #!/bin/bash
+      echo "Setup complete"
+    permissions: "0755"
+
+# Phase 7b: Written after services are registered, before post_commands
+# Use for config that depends on cloned repos or installed packages
+write_files_late:
+  - path: /workspace/app/.env
+    content: |
+      MODEL_PATH=/workspace/models
+      PORT=7860
+    permissions: "0600"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `path` | | Absolute path to write (parent dirs created automatically) |
+| `content` | `""` | File content (supports env var expansion like all manifest strings) |
+| `permissions` | `"0644"` | Octal permission string |
+| `owner` | `""` | Optional `user:group` or `user` (falls back to user's primary group) |
+
+**Early vs late:** Use `write_files` for config files needed during installation (apt sources, pip config, git config). Use `write_files_late` for app config that references paths created during provisioning or that should be regenerated on each run.
+
+**Owner handling:** If the specified user/group doesn't exist or the process lacks permission to chown, a warning is logged but the file is still written with its content and permissions.
+
+### apt_packages
+
+```yaml
 apt_packages:
-  - libasound2-dev
-  - sox
+  - ffmpeg
+  - libsndfile1
+  - "ffmpeg=7:6.1.1-3ubuntu5"   # version pinning with =
+```
 
+Installed via `apt-get update -qq && apt-get install -y -qq --no-install-recommends`. Failure is fatal (fail-fast). Always runs `apt-get update` first to ensure fresh package lists.
+
+### pip_packages
+
+A list of install blocks. Each block can target a different venv with different options.
+
+```yaml
 pip_packages:
-  tool: "uv"
-  packages:
-    - "torch==${TORCH_VERSION:-2.8.0}"
-    - torchaudio
-  args: "--torch-backend ${TORCH_BACKEND:-cu128}"
-  requirements:
-    - "${WORKSPACE}/app/requirements.txt"
+  # Standard install into default venv (/venv/main)
+  - packages: [torch, torchaudio]
+    args: "--torch-backend auto"
 
+  # Different venv, auto-created with specific Python version
+  - venv: "/venv/custom"
+    python: "3.11"
+    tool: pip                     # "uv" (default) or "pip"
+    packages:
+      - "numpy==1.24.0"
+      - "pandas<2.0"
+    requirements:
+      - /workspace/app/requirements.txt
+
+  # System python (no venv)
+  - venv: system
+    packages: [setuptools, wheel]
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `venv` | `""` (uses `settings.venv`) | Target venv path, or `"system"` for system python |
+| `python` | `""` | Python version for auto-creating the venv (e.g. `"3.11"`) |
+| `tool` | `"uv"` | Install tool: `"uv"` or `"pip"` |
+| `packages` | `[]` | Package specifiers (version operators: `>=`, `==`, `~=`, `!=`, `<`, `>`) |
+| `args` | `""` | Extra arguments appended to the install command |
+| `requirements` | `[]` | Paths to requirements files |
+
+**Automatic flags** (always added, do not specify manually):
+
+| Flag | When |
+|------|------|
+| `--no-cache` (uv) / `--no-cache-dir` (pip) | Always |
+| `--break-system-packages` | When `venv: system` |
+| `--system` | When `venv: system` and `tool: uv` |
+
+**Auto-venv creation:** When `venv` or `python` is explicitly set, the provisioner creates the venv if it doesn't exist (using `uv venv` or `python -m venv`). The default `/venv/main` is assumed to pre-exist in the base image.
+
+**Backward compatibility:** A single dict (old format) is automatically wrapped in a list:
+```yaml
+# This still works:
+pip_packages:
+  packages: [torch]
+```
+
+### conda_packages
+
+```yaml
+conda_packages:
+  packages:
+    - "cudatoolkit=11.8"
+    - "nccl>=2.18"
+  channels:
+    - conda-forge
+    - nvidia
+  env: "/venv/conda-ml"          # target conda prefix env (auto-created)
+  python: "3.11"                  # for env auto-creation
+  args: "--no-update-deps"
+```
+
+Uses the Miniforge3 installation at `/opt/miniforge3/`. Prefers `mamba` (faster dependency solver), falls back to `conda`. The tool is located by checking `/opt/miniforge3/bin/` first, then `PATH`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `packages` | `[]` | Package specifiers (conda syntax: `=` exact, `>=`, `<=`, `<`, `>`) |
+| `channels` | `[]` | Extra channels passed as `-c` flags |
+| `env` | `""` | Target conda prefix environment path |
+| `python` | `""` | Python version for env auto-creation |
+| `args` | `""` | Extra arguments |
+
+Without `env`, packages install into the base/active conda environment. With `env`, the prefix is auto-created if the `conda-meta/` directory doesn't exist, using `{tool} create -y -p {path} [python={version}]`.
+
+### git_repos
+
+```yaml
 git_repos:
-  - url: "https://github.com/org/repo"
-    dest: "${WORKSPACE}/repo"
-    ref: "${APP_REF:-}"
+  - url: https://github.com/org/repo
+    dest: "${WORKSPACE:-/workspace}/repo"
+    ref: "v2.0"
     recursive: true
     pull_if_exists: false
-    requirements: "requirements.txt"
-    pip_install_editable: false
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+      - "uv pip install --no-cache --python /venv/main/bin/python -e ."
+      - "sed -i 's/old/new/' config.yaml"
+```
 
+All repos are cloned **in parallel** (4 workers). Each repo's `post_commands` run in its directory immediately after clone+checkout, within the parallel pool.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | | Repository URL |
+| `dest` | | Local destination path |
+| `ref` | `""` | Tag, branch, or commit to checkout after cloning |
+| `recursive` | `true` | Pass `--recursive` to git clone (handles submodules) |
+| `pull_if_exists` | `false` | If dest exists: `true` runs `git pull`, `false` skips |
+| `post_commands` | `[]` | Shell commands run in repo dir after clone+checkout |
+
+**post_commands** run with `shell=True` and `cwd` set to the repo's `dest` directory. Use them for:
+- Installing requirements: `uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt`
+- Editable installs: `uv pip install --no-cache --python /venv/main/bin/python -e .`
+- Patching files, setting permissions, running setup scripts
+
+Since post_commands run within the parallel clone pool, repos with heavier post-processing don't block other repos from cloning.
+
+### downloads
+
+```yaml
 downloads:
-  - url: "https://huggingface.co/org/repo/resolve/main/model.safetensors"
-    dest: "${WORKSPACE}/models/model.safetensors"
-  - url: "https://civitai.com/api/download/models/12345"
-    dest: "${WORKSPACE}/models/Stable-diffusion/"
+  - url: https://huggingface.co/org/model/resolve/main/weights.safetensors
+    dest: /workspace/models/weights.safetensors
+  - url: https://civitai.com/api/download/models/12345
+    dest: /workspace/models/loras/        # trailing / = resolve filename from server
+  - url: https://example.com/file.bin
+    dest: /workspace/other/file.bin
+```
 
+Downloads run in two independent parallel pools:
+
+| URL Pattern | Handler | Auth | Pool |
+|-------------|---------|------|------|
+| `huggingface.co` | `huggingface-cli download` | `$HF_TOKEN` (automatic) | `hf_downloads` |
+| `civitai.com` | `wget` with `Authorization` header | `$CIVITAI_TOKEN` | `wget_downloads` |
+| Everything else | `wget` | None | `wget_downloads` |
+
+**Trailing `/` on dest:** The provisioner resolves the filename from the server's `Content-Disposition` header (falling back to the URL's last path segment) and appends it to the directory path.
+
+**Features:**
+- Parallel downloads with configurable pool sizes
+- `fcntl`-based file locking prevents concurrent downloads of the same file
+- Retry with exponential backoff on failure
+- Existing files are skipped (checked inside the lock to prevent races)
+- HuggingFace downloads use a temp directory and atomic move to dest
+- Failed wget downloads clean up partial files
+
+### conditional_downloads
+
+```yaml
 conditional_downloads:
-  - when: "hf_token_valid"
+  - when: hf_token_valid
     downloads:
-      - url: "https://huggingface.co/org/gated-model/resolve/main/model.safetensors"
-        dest: "${WORKSPACE}/models/gated.safetensors"
+      - url: https://huggingface.co/org/gated-model/resolve/main/model.safetensors
+        dest: /workspace/models/gated.safetensors
     else_downloads:
-      - url: "https://huggingface.co/org/open-model/resolve/main/model.safetensors"
-        dest: "${WORKSPACE}/models/open.safetensors"
+      - url: https://huggingface.co/org/open-model/resolve/main/model.safetensors
+        dest: /workspace/models/fallback.safetensors
+```
 
+Resolved during phase 2 based on token validation results. The selected entries are merged into the main `downloads` list before phase 6 runs.
+
+**Supported conditions:** `hf_token_valid`, `civitai_token_valid`
+
+### env_merge
+
+```yaml
 env_merge:
   HF_MODELS: downloads
   CIVITAI_MODELS: downloads
-  WGET_DOWNLOADS: downloads
+  EXTRA_DOWNLOADS: downloads
+```
 
+Parses environment variables as semicolon-separated `url|path` entries and appends them to the `downloads` list at runtime. Only the `"downloads"` target is supported.
+
+```bash
+# Example:
+export HF_MODELS="https://hf.co/org/model/resolve/main/a.safetensors|/workspace/models/a.safetensors;https://hf.co/org/model/resolve/main/b.safetensors|/workspace/models/b.safetensors"
+```
+
+Lines starting with `#` are treated as comments and skipped. Entries without `|` are warned and skipped.
+
+### services
+
+```yaml
 services:
-  - name: "my-app"
+  - name: my-app
     portal_search_term: "My App"
     skip_on_serverless: true
     venv: "/venv/main"
-    workdir: "${WORKSPACE}/my-app"
+    workdir: /workspace/app
     command: "python app.py --port 7860"
+    pre_commands:
+      - "ln -sf /models ./models"
+      - "python setup_config.py"
     wait_for_provisioning: true
     environment:
-      GRADIO_SERVER_NAME: "127.0.0.1"
-
-post_commands:
-  - "echo 'Provisioning complete'"
+      GRADIO_SERVER_NAME: "0.0.0.0"
 ```
+
+Generates two files per service, then reloads supervisor:
+- `/opt/supervisor-scripts/{name}.sh` -- startup script
+- `/etc/supervisor/conf.d/{name}.conf` -- supervisor config
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | | Service name (used for filenames and supervisor program name) |
+| `portal_search_term` | `""` | Checked against `/etc/portal.yaml` -- service exits if not found |
+| `skip_on_serverless` | `true` | Exit startup script if `$SERVERLESS=true` |
+| `venv` | `"/venv/main"` | Venv to activate in the startup script |
+| `workdir` | `""` | Working directory (`cd` before running command) |
+| `command` | `""` | Launch command -- must be the last line in the script |
+| `pre_commands` | `[]` | Shell commands run after cd/env exports, before the launch command |
+| `wait_for_provisioning` | `true` | Poll-wait for `/.provisioning` to be removed before starting |
+| `environment` | `{}` | Extra env vars exported in the startup script |
+
+**Generated startup script structure:**
+
+```bash
+#!/bin/bash
+. "${utils}/logging.sh"
+. "${utils}/cleanup_generic.sh"
+. "${utils}/environment.sh"
+. "${utils}/exit_serverless.sh"           # if skip_on_serverless
+. "${utils}/exit_portal.sh" "My App"      # if portal_search_term set
+
+. /venv/main/bin/activate
+
+# Wait for provisioning                  # if wait_for_provisioning
+while [ -f "/.provisioning" ]; do
+    sleep 5
+done
+
+export GRADIO_SERVER_NAME="0.0.0.0"
+
+cd /workspace/app
+ln -sf /models ./models                   # pre_commands
+python setup_config.py
+python app.py --port 7860                 # command (last line)
+```
+
+The `command` must be the last line because it becomes the process that supervisor monitors. Use `pre_commands` for any setup needed at service startup time (symlinks, config generation, migrations).
+
+### post_commands
+
+```yaml
+post_commands:
+  - "ln -sf /workspace/models /workspace/app/models"
+  - "npm install --prefix /workspace/web-ui"
+  - "chmod +x /workspace/app/run.sh"
+```
+
+Arbitrary shell commands run sequentially after all other phases. Each command runs with `shell=True`. A failed command logs an error but does not prevent subsequent commands from running. Use this for npm installs, symlinks, config generation, or anything not covered by other sections.
+
+## Environment Variable Expansion
+
+All string values in the manifest support bash-style variable expansion, applied recursively before any processing:
+
+| Syntax | Behavior |
+|--------|----------|
+| `${VAR}` | Value of `$VAR`, or empty string if unset |
+| `${VAR:-default}` | Value of `$VAR`, or `default` if unset |
+| `${VAR:=default}` | Same as `:-` |
+
+```yaml
+# Common patterns:
+dest: "${WORKSPACE:-/workspace}/ComfyUI"
+ref: "${COMFYUI_VERSION:-main}"
+command: "python app.py ${APP_ARGS:---port 7860 --host 0.0.0.0}"
+```
+
+Expansion happens on the raw YAML dict before dataclass construction, so every field -- settings paths, URLs, commands, token env names -- can reference environment variables.
+
+## Idempotency
+
+Each phase computes a SHA-256 content hash of its inputs before execution. If the stored hash matches the one from the last successful run, the entire phase is skipped.
+
+**Storage:** `/.provisioner_state/{stage_name}.hash`
+
+| Stage | Hash Inputs |
+|-------|-------------|
+| write_files | Ordered (path, content, permissions, owner) tuples |
+| apt | Sorted package list |
+| git | Sorted (url, ref, recursive, pull_if_exists, post_commands) tuples |
+| pip | Per-block: (venv, tool, packages, args, requirements, python) |
+| conda | (packages, channels, args, env, python) |
+| downloads | Sorted (url, dest) tuples |
+| services | Sorted (name, command, venv, workdir, environment) tuples |
+| write_files_late | Ordered (path, content, permissions, owner) tuples |
+| post_commands | Ordered command list |
+
+**`--force`** clears all stored hashes, forcing every phase to re-run.
+
+**`--dry-run`** never reads or writes state. All phases execute in dry-run mode regardless of stored hashes.
+
+**Edge cases:**
+- The git hash covers repo configuration, not repo contents. Manually editing a cloned repo doesn't invalidate the hash. Set `pull_if_exists: true` if you need to force updates.
+- The download stage hash covers the URL list. Individual file-exists checks still run within the phase, so already-downloaded files are skipped even when the phase re-runs.
+- Download and post_commands hashes are only stored when no errors occurred in those phases.
+- State lives at `/.provisioner_state/` (root filesystem), surviving workspace resets but wiped on container rebuild.
+
+## Failure Handling
+
+Failure behavior depends on the phase:
+
+- **Phase 2b (write_files):** Fail-fast. Config files needed by later phases must be written successfully.
+- **Phases 3-5b (apt/git/pip/conda):** Fail-fast. The first error triggers `handle_failure()` and exits with code 1.
+- **Phase 6 (downloads):** Best-effort. Individual failures are logged and `had_errors` is set, but all downloads are attempted.
+- **Phases 7-7b-8 (services/write_files_late/post_commands):** Always run. Failures set `had_errors` but don't prevent other services or commands from completing.
+
+After all phases, if `had_errors` is true, `handle_failure()` is called with the configured `on_failure` action.
+
+The provisioner's exit code is checked by the boot script (`/etc/vast_boot.d/`). A non-zero exit means provisioning is incomplete and will be retried on next boot (the `/.provisioning_manifest_complete` sentinel is not written).
+
+## CLI Reference
+
+```
+provisioner <manifest> [--dry-run] [--force]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `manifest` | Path to YAML manifest file (required) |
+| `--dry-run` | Print what would be done without executing anything |
+| `--force` | Clear all cached state and re-run every phase |
+
+The `bin/provisioner` wrapper script activates the provisioner's own venv and sets `PYTHONPATH`, so the command is available directly:
+
+```bash
+provisioner /path/to/manifest.yaml --dry-run
+```
+
+## Running Tests
+
+```bash
+cd /opt/instance-tools
+
+# Run all tests
+PYTHONPATH=lib python3 -m pytest lib/provisioner/tests/ -v
+
+# Run a specific test file
+PYTHONPATH=lib python3 -m pytest lib/provisioner/tests/test_schema.py -v
+
+# Run tests matching a pattern
+PYTHONPATH=lib python3 -m pytest lib/provisioner/tests/ -v -k "test_conda"
+```
+
+Tests use `unittest.mock` to avoid real subprocess calls, network requests, and filesystem side effects. No external services, tokens, or root permissions are needed.
+
+## Examples
+
+See the [`examples/`](examples/) directory:
+
+| File | Description |
+|------|-------------|
+| [`minimal.yaml`](examples/minimal.yaml) | Single app, no downloads |
+| [`comfyui.yaml`](examples/comfyui.yaml) | ComfyUI with custom nodes and model downloads |
+| [`whisper-webui.yaml`](examples/whisper-webui.yaml) | Multi-service (WebUI + API) |
+| [`multi-service.yaml`](examples/multi-service.yaml) | Backend + frontend with conda, system pip, retry |
+| [`gated-models.yaml`](examples/gated-models.yaml) | Conditional downloads with token gating and env_merge |
+| [`full-reference.yaml`](examples/full-reference.yaml) | Every field documented with inline comments |

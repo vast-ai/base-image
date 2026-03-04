@@ -12,15 +12,15 @@ from provisioner.concurrency import FileLock, run_parallel
 
 
 class TestFileLock:
-    def test_lock_creates_and_removes_lockfile(self, tmp_path):
+    def test_lock_creates_lockfile(self, tmp_path):
         target = str(tmp_path / "testfile.bin")
         lockfile = f"{target}.lock"
 
         with FileLock(target):
             assert os.path.exists(lockfile)
 
-        # Lockfile cleaned up after exit
-        assert not os.path.exists(lockfile)
+        # Lockfile intentionally NOT removed (avoids race condition)
+        assert os.path.exists(lockfile)
 
     def test_lock_is_exclusive(self, tmp_path):
         """Two threads competing for the same lock: only one holds it at a time."""
@@ -67,7 +67,8 @@ class TestFileLock:
             with FileLock(target):
                 raise RuntimeError("intentional")
 
-        assert not os.path.exists(lockfile)
+        # Lock is released but file persists (avoids race condition)
+        assert os.path.exists(lockfile)
 
 
 class TestRunParallel:

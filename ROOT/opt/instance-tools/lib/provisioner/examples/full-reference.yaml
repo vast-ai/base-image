@@ -1,0 +1,184 @@
+# Full reference manifest - demonstrates every available field
+# This is not a real deployment; it's a schema reference with comments
+
+version: 1
+
+# ---- Settings ----
+# All fields are optional with sensible defaults
+settings:
+  workspace: "${WORKSPACE:-/workspace}"     # Base directory for app files
+  venv: "/venv/main"                        # Default venv for pip installs
+  log_file: "/var/log/portal/provisioning.log"
+  concurrency:
+    hf_downloads: 3                         # Max parallel HuggingFace downloads
+    wget_downloads: 5                       # Max parallel wget/CivitAI downloads
+  retry:
+    max_attempts: 5                         # Download retry count
+    initial_delay: 2                        # Seconds before first retry
+    backoff_multiplier: 2                   # Exponential backoff factor
+
+# ---- Auth ----
+# Token env var names (tokens are read from env, not stored in manifest)
+auth:
+  huggingface:
+    token_env: "HF_TOKEN"                   # Default: HF_TOKEN
+  civitai:
+    token_env: "CIVITAI_TOKEN"              # Default: CIVITAI_TOKEN
+
+# ---- Failure handling ----
+# What to do when provisioning fails
+on_failure:
+  action: retry                              # continue | retry | destroy | stop
+  max_retries: 3                             # Only for retry (default: 3)
+  webhook: "https://hooks.example.com/fail"  # Optional URL to POST failure info
+  # Env var PROVISIONER_WEBHOOK_URL overrides this webhook
+
+# ---- Phase 2b: Early file writes ----
+# Written immediately after auth validation, before apt/pip/git (fail-fast)
+# Use for config files that must exist before packages are installed
+write_files:
+  - path: /etc/app/config.yaml
+    content: |
+      database: postgres://localhost/app
+      debug: false
+    permissions: "0644"                       # Octal permission string (default: "0644")
+    owner: "root:root"                        # Optional user:group or just user
+
+  - path: /opt/scripts/setup.sh
+    content: |
+      #!/bin/bash
+      echo "Setup complete"
+    permissions: "0755"                       # Executable
+
+# ---- Phase 3: APT packages ----
+# Installed via: apt-get update && apt-get install -y --no-install-recommends
+# Version pinning: use = for exact version (e.g. "ffmpeg=7:6.1.1-3ubuntu5")
+apt_packages:
+  - ffmpeg
+  - libsndfile1
+
+# ---- Phase 5: Pip packages ----
+# List of pip install blocks. Each block can target a different venv.
+# Version specifiers: >=, <=, ==, ~=, !=, <, > all work (e.g. "torch>=2.0")
+#
+# Automatic flags (you do NOT need to add these):
+#   --no-cache / --no-cache-dir  (always added)
+#   --break-system-packages      (added when venv: system)
+#   --system                     (added for uv when venv: system)
+pip_packages:
+  - venv: "/venv/main"                     # Optional, defaults to settings.venv
+    tool: uv                                # "uv" or "pip"
+    packages:                               # Direct package installs
+      - "torch>=2.0"
+      - torchaudio
+    args: "--torch-backend auto"            # Extra args appended to install command
+    requirements:                           # Requirements files (can use env vars)
+      - "${WORKSPACE:-/workspace}/app/requirements.txt"
+
+  - venv: "/venv/custom"                   # Different venv for isolated deps
+    python: "3.11"                          # Auto-create venv with this Python version
+    packages:
+      - "numpy==1.24.0"
+      - "pandas<2.0"
+
+  - venv: system                            # Install to system python (no venv)
+    packages:                               # --break-system-packages added automatically
+      - setuptools
+      - wheel
+
+# ---- Phase 5b: Conda packages ----
+# Uses Miniforge3 at /opt/miniforge3/ (mamba preferred, falls back to conda).
+# /opt/miniforge3/bin/ is checked first, then PATH.
+# Version specifiers: = for exact, >=, <=, <, > (e.g. "numpy=1.24")
+conda_packages:
+  packages:
+    - "cudatoolkit=11.8"
+    - "nccl>=2.18"
+  channels:                                 # Extra channels (-c flags)
+    - conda-forge
+    - nvidia
+  env: "/venv/conda-ml"                     # Target conda prefix env (auto-created if missing)
+  python: "3.11"                            # Python version for env auto-creation
+  args: ""                                  # Extra args (e.g. "--no-update-deps")
+  # Without env, packages install into the base/active conda environment.
+  # Env existence is detected by the conda-meta/ directory.
+
+# ---- Phase 4: Git repos ----
+# Cloned in parallel. Each repo's post_commands run in its directory
+# after clone+checkout (still within the parallel pool).
+# Use post_commands for requirements installs, patches, editable installs, etc.
+git_repos:
+  - url: https://github.com/org/repo
+    dest: "${WORKSPACE:-/workspace}/repo"
+    ref: "${VERSION:-main}"                 # Tag, branch, or commit (optional)
+    recursive: true                         # --recursive flag (default: true)
+    pull_if_exists: false                   # Git pull if dest already exists (default: false)
+    post_commands:                          # Shell commands run in repo dir after clone
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+      - "uv pip install --no-cache --python /venv/main/bin/python -e ."
+      - "sed -i 's/old/new/' config.yaml"
+      - "chmod +x scripts/*.sh"
+
+# ---- Phase 6: Downloads ----
+# URL auto-detection: huggingface.co -> huggingface-cli, civitai.com -> wget+auth, other -> wget
+# Trailing / on dest -> use Content-Disposition filename
+downloads:
+  - url: https://huggingface.co/org/model/resolve/main/weights.safetensors
+    dest: "${WORKSPACE:-/workspace}/models/weights.safetensors"
+  - url: https://civitai.com/api/download/models/12345
+    dest: "${WORKSPACE:-/workspace}/models/loras/"
+  - url: https://example.com/file.bin
+    dest: "${WORKSPACE:-/workspace}/other/file.bin"
+
+# ---- Conditional downloads ----
+# Resolved at phase 2 based on token validity, merged into downloads list
+conditional_downloads:
+  - when: hf_token_valid                    # Supported: hf_token_valid, civitai_token_valid
+    downloads:
+      - url: https://huggingface.co/org/gated-model/resolve/main/model.safetensors
+        dest: "${WORKSPACE:-/workspace}/models/gated.safetensors"
+    else_downloads:                         # Used when condition is false (optional)
+      - url: https://huggingface.co/org/open-model/resolve/main/model.safetensors
+        dest: "${WORKSPACE:-/workspace}/models/open.safetensors"
+
+# ---- Env merge ----
+# Parse env vars as "url|path;url|path" and add to downloads
+# Allows runtime injection of extra downloads without modifying the manifest
+env_merge:
+  HF_MODELS: downloads                     # Only "downloads" target is supported
+  CIVITAI_MODELS: downloads
+
+# ---- Phase 7: Supervisor services ----
+# Generates startup script + supervisor .conf, then runs supervisorctl reread/update
+services:
+  - name: my-app                            # Used for script/conf filenames
+    portal_search_term: "My App"            # Checked against /etc/portal.yaml
+    skip_on_serverless: true                # Exit if $SERVERLESS=true (default: true)
+    venv: "/venv/main"                      # Venv to activate in startup script
+    workdir: "${WORKSPACE:-/workspace}/app" # cd before running command
+    command: "python app.py --port 7860"    # The actual launch command (must be last in script)
+    pre_commands:                           # Shell commands run before the launch command
+      - "ln -sf /models ./models"
+      - "python setup_config.py"
+    wait_for_provisioning: true             # Wait for /.provisioning to be removed (default: true)
+    environment:                            # Extra env vars exported in startup script
+      GRADIO_SERVER_NAME: "0.0.0.0"
+      MODEL_DIR: "${WORKSPACE:-/workspace}/models"
+
+# ---- Phase 7b: Late file writes ----
+# Written after services are registered, before post_commands (always runs)
+# Use for app config that depends on cloned repos or installed packages
+write_files_late:
+  - path: "${WORKSPACE:-/workspace}/app/.env"
+    content: |
+      MODEL_PATH=${WORKSPACE:-/workspace}/models
+      PORT=7860
+    permissions: "0600"                       # Restrictive for secrets
+
+# ---- Phase 8: Post commands ----
+# Arbitrary shell commands run sequentially after everything else
+# Failures logged but don't block other post commands
+# Use for npm installs, symlinks, config generation, etc.
+post_commands:
+  - "ln -sf /workspace/models /workspace/app/models"
+  - "chmod +x /workspace/app/run.sh"

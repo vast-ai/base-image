@@ -87,10 +87,15 @@ def apply_env_merge(manifest: Manifest) -> None:
             manifest.downloads.extend(entries)
 
 
-def resolve_conditionals(manifest: Manifest, hf_token_valid: bool) -> None:
+def resolve_conditionals(
+    manifest: Manifest,
+    hf_token_valid: bool,
+    civitai_token_valid: bool = False,
+) -> None:
     """Resolve conditional_downloads and merge results into downloads."""
     condition_map = {
         "hf_token_valid": hf_token_valid,
+        "civitai_token_valid": civitai_token_valid,
     }
 
     for cond in manifest.conditional_downloads:

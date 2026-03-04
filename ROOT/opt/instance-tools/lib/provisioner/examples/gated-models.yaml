@@ -1,0 +1,46 @@
+# Demonstrates conditional downloads based on token availability
+# Falls back to open-weight alternatives when tokens are not set
+#
+# Env vars used:
+#   HF_TOKEN      - HuggingFace token (enables gated model downloads)
+#   CIVITAI_TOKEN - CivitAI token (enables CivitAI model downloads)
+
+version: 1
+
+settings:
+  workspace: "${WORKSPACE:-/workspace}"
+  venv: "/venv/main"
+  concurrency:
+    hf_downloads: 3
+    wget_downloads: 5
+  retry:
+    max_attempts: 5
+    initial_delay: 2
+    backoff_multiplier: 2
+
+# Always download these
+downloads:
+  - url: https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/v1-5-pruned-emaonly-fp16.safetensors
+    dest: "${WORKSPACE:-/workspace}/models/checkpoints/sd15.safetensors"
+
+# Download gated models only if HF token is valid, otherwise fall back to open alternatives
+conditional_downloads:
+  - when: hf_token_valid
+    downloads:
+      - url: https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
+        dest: "${WORKSPACE:-/workspace}/models/checkpoints/sdxl_base.safetensors"
+    else_downloads:
+      - url: https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/v1-5-pruned-emaonly-fp16.safetensors
+        dest: "${WORKSPACE:-/workspace}/models/checkpoints/sd15_fallback.safetensors"
+
+  - when: civitai_token_valid
+    downloads:
+      - url: https://civitai.com/api/download/models/128713
+        dest: "${WORKSPACE:-/workspace}/models/loras/"
+
+# Extra downloads can be injected at runtime via env vars
+# Format: "url1|path1;url2|path2"
+env_merge:
+  HF_MODELS: downloads
+  CIVITAI_MODELS: downloads
+  EXTRA_DOWNLOADS: downloads

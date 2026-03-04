@@ -11,11 +11,18 @@ import yaml
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     """Ensure tests don't leak env vars and don't have stale logger handlers."""
     # Remove tokens so auth tests are predictable
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("CIVITAI_TOKEN", raising=False)
+    monkeypatch.delenv("PROVISIONER_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("CONTAINER_ID", raising=False)
+    monkeypatch.delenv("CONTAINER_API_KEY", raising=False)
+
+    # Redirect state and failure files to temp dirs (avoid writing to /)
+    monkeypatch.setattr("provisioner.state.STATE_DIR", str(tmp_path / "provisioner_state"))
+    monkeypatch.setattr("provisioner.failure.ATTEMPTS_FILE", str(tmp_path / "provisioner_attempts"))
 
     # Clean up provisioner logger handlers between tests
     import logging
@@ -56,12 +63,14 @@ def full_manifest_data():
             "civitai": {"token_env": "CIVITAI_TOKEN"},
         },
         "apt_packages": ["vim", "curl"],
-        "pip_packages": {
-            "tool": "uv",
-            "packages": ["torch", "torchaudio"],
-            "args": "--extra-index-url https://example.com",
-            "requirements": ["/workspace/app/requirements.txt"],
-        },
+        "pip_packages": [
+            {
+                "tool": "uv",
+                "packages": ["torch", "torchaudio"],
+                "args": "--extra-index-url https://example.com",
+                "requirements": ["/workspace/app/requirements.txt"],
+            },
+        ],
         "git_repos": [
             {
                 "url": "https://github.com/example/repo",
@@ -69,8 +78,7 @@ def full_manifest_data():
                 "ref": "main",
                 "recursive": True,
                 "pull_if_exists": False,
-                "requirements": "requirements.txt",
-                "pip_install_editable": False,
+                "post_commands": ["uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"],
             }
         ],
         "downloads": [
@@ -116,6 +124,12 @@ def full_manifest_data():
                 "wait_for_provisioning": True,
                 "environment": {"GRADIO_SERVER_NAME": "127.0.0.1"},
             }
+        ],
+        "write_files": [
+            {"path": "/tmp/early.conf", "content": "key=value\n", "permissions": "0644"},
+        ],
+        "write_files_late": [
+            {"path": "/tmp/late.conf", "content": "done=true\n", "permissions": "0600"},
         ],
         "post_commands": ["echo done"],
     }

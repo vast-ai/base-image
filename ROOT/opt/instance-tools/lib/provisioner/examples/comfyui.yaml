@@ -1,0 +1,70 @@
+# ComfyUI provisioning manifest
+# Equivalent of provisioning_scripts/comfyui.sh
+#
+# Env vars used:
+#   WORKSPACE          - Base workspace directory (default: /workspace)
+#   COMFYUI_VERSION    - Git ref for ComfyUI (default: main)
+#   API_WRAPPER_VERSION - Git ref for API wrapper (default: main)
+#   COMFYUI_ARGS       - CLI args for ComfyUI (default: --disable-auto-launch --port 18188 --enable-cors-header)
+#   API_WRAPPER_ARGS   - CLI args for API wrapper (default: --host localhost --port 18288)
+#   HF_TOKEN           - HuggingFace token for gated model downloads
+#   SKIP_BASE_MODEL    - Set to "true" to skip downloading the base SD 1.5 model
+
+version: 1
+
+settings:
+  workspace: "${WORKSPACE:-/workspace}"
+  venv: "/venv/main"
+
+pip_packages:
+  - tool: uv
+    packages:
+      - torch
+      - torchaudio
+      - torchvision
+    args: "--torch-backend auto"
+
+git_repos:
+  - url: https://github.com/comfyanonymous/ComfyUI
+    dest: "${WORKSPACE:-/workspace}/ComfyUI"
+    ref: "${COMFYUI_VERSION:-main}"
+    post_commands:
+      - "git config --file /tmp/temporary-git-config --add safe.directory '*'"
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+  - url: https://github.com/ltdrdata/ComfyUI-Manager
+    dest: "${WORKSPACE:-/workspace}/ComfyUI/custom_nodes/ComfyUI-Manager"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+  - url: https://github.com/cubiq/ComfyUI_essentials
+    dest: "${WORKSPACE:-/workspace}/ComfyUI/custom_nodes/ComfyUI_essentials"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+  - url: https://github.com/ai-dock/comfyui-api-wrapper
+    dest: "${WORKSPACE:-/workspace}/comfyui-api-wrapper"
+    ref: "${API_WRAPPER_VERSION:-main}"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+apt_packages:
+  - libmagic1
+
+downloads:
+  - url: https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/v1-5-pruned-emaonly-fp16.safetensors
+    dest: "${WORKSPACE:-/workspace}/ComfyUI/models/checkpoints/v1-5-pruned-emaonly-fp16.safetensors"
+
+services:
+  - name: comfyui
+    portal_search_term: "comfyui"
+    workdir: "${WORKSPACE:-/workspace}/ComfyUI"
+    command: "LD_PRELOAD=libtcmalloc_minimal.so.4 python main.py ${COMFYUI_ARGS:---disable-auto-launch --port 18188 --enable-cors-header}"
+
+  - name: comfyui-api-wrapper
+    portal_search_term: "comfyui api wrapper"
+    workdir: "${WORKSPACE:-/workspace}/comfyui-api-wrapper"
+    command: "uvicorn main:app ${API_WRAPPER_ARGS:---host localhost --port 18288}"
+
+post_commands:
+  - "ln -sf ${WORKSPACE:-/workspace}/ComfyUI/models/checkpoints ${WORKSPACE:-/workspace}/ComfyUI/models/ckpt 2>/dev/null || true"

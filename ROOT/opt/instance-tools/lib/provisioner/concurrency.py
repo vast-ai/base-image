@@ -24,7 +24,9 @@ class FileLock:
         self._fd: int | None = None
 
     def __enter__(self):
-        os.makedirs(os.path.dirname(self.lockfile), exist_ok=True)
+        lock_dir = os.path.dirname(self.lockfile)
+        if lock_dir:
+            os.makedirs(lock_dir, exist_ok=True)
         self._fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR)
         try:
             fcntl.flock(self._fd, fcntl.LOCK_EX)
@@ -39,10 +41,10 @@ class FileLock:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
             os.close(self._fd)
             self._fd = None
-        try:
-            os.unlink(self.lockfile)
-        except OSError:
-            pass
+        # Intentionally do NOT unlink the lockfile -- removing it after
+        # releasing the lock creates a race where another process holds
+        # a lock on a deleted inode while a third creates a new file.
+        # Stale .lock files are harmless.
         return False
 
 

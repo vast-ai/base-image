@@ -44,6 +44,17 @@ class PipPackages:
     packages: list[str] = field(default_factory=list)
     args: str = ""
     requirements: list[str] = field(default_factory=list)
+    venv: str = ""
+    python: str = ""
+
+
+@dataclass
+class CondaPackages:
+    packages: list[str] = field(default_factory=list)
+    channels: list[str] = field(default_factory=list)
+    args: str = ""
+    env: str = ""
+    python: str = ""
 
 
 @dataclass
@@ -53,8 +64,7 @@ class GitRepo:
     ref: str = ""
     recursive: bool = True
     pull_if_exists: bool = False
-    requirements: str = ""
-    pip_install_editable: bool = False
+    post_commands: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -84,8 +94,24 @@ class Service:
     venv: str = "/venv/main"
     workdir: str = ""
     command: str = ""
+    pre_commands: list[str] = field(default_factory=list)
     wait_for_provisioning: bool = True
     environment: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class FileWrite:
+    path: str = ""
+    content: str = ""
+    permissions: str = "0644"
+    owner: str = ""
+
+
+@dataclass
+class OnFailure:
+    action: str = "continue"
+    max_retries: int = 3
+    webhook: str = ""
 
 
 @dataclass
@@ -93,14 +119,18 @@ class Manifest:
     version: int = 1
     settings: Settings = field(default_factory=Settings)
     auth: Auth = field(default_factory=Auth)
+    write_files: list[FileWrite] = field(default_factory=list)
     apt_packages: list[str] = field(default_factory=list)
-    pip_packages: PipPackages = field(default_factory=PipPackages)
+    pip_packages: list[PipPackages] = field(default_factory=list)
+    conda_packages: CondaPackages = field(default_factory=CondaPackages)
     git_repos: list[GitRepo] = field(default_factory=list)
     downloads: list[DownloadEntry] = field(default_factory=list)
     conditional_downloads: list[ConditionalDownload] = field(default_factory=list)
     env_merge: dict[str, str] = field(default_factory=dict)
     services: list[Service] = field(default_factory=list)
+    write_files_late: list[FileWrite] = field(default_factory=list)
     post_commands: list[str] = field(default_factory=list)
+    on_failure: OnFailure = field(default_factory=OnFailure)
 
 
 def _build_nested(cls, data):
@@ -148,5 +178,10 @@ def validate_manifest(data: dict) -> Manifest:
     version = data.get("version")
     if version != 1:
         raise ValueError(f"Unsupported manifest version: {version} (expected 1)")
+
+    # Backward compat: wrap single pip_packages dict in a list
+    pip = data.get("pip_packages")
+    if isinstance(pip, dict):
+        data = dict(data, pip_packages=[pip])
 
     return _build_nested(Manifest, data)
