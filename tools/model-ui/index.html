@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Model UI</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232563eb'/></svg>">
+    <script id="config" type="application/json">__CONFIG_JSON__</script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1 id="model-name"></h1>
+            <select class="model-select" id="model-select"></select>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="chat">Chat</button>
+            <button class="tab-btn" data-tab="image">Image</button>
+            <button class="tab-btn" data-tab="video">Video</button>
+            <button class="tab-btn" data-tab="tts">TTS</button>
+            <button class="tab-btn" data-tab="stt">STT</button>
+        </nav>
+
+        <main>
+            <!-- Chat -->
+            <section id="tab-chat" class="tab-panel active">
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages"></div>
+                    <div class="chat-input-area">
+                        <div class="chat-uploads" id="chat-uploads"></div>
+                        <textarea id="chat-input" rows="1" placeholder="Type a message or attach files..."></textarea>
+                        <input type="file" id="chat-file" accept="image/*,audio/*" multiple hidden>
+                        <div class="chat-actions">
+                            <button class="btn-icon" id="chat-attach" title="Attach image or audio">+</button>
+                            <button id="chat-send" class="btn-primary">Send</button>
+                        </div>
+                        <div class="input-footer">
+                            <button id="chat-clear" class="btn-link">Clear conversation</button>
+                        </div>
+                        <details>
+                            <summary>Settings</summary>
+                            <div class="details-body">
+                                <div class="field">
+                                    <label>System message</label>
+                                    <textarea id="chat-system" rows="2">You are a helpful assistant.</textarea>
+                                </div>
+                                <div class="grid-2">
+                                    <div class="field">
+                                        <label>Temperature</label>
+                                        <div class="range-row">
+                                            <input type="range" id="chat-temp" min="0" max="2" step="0.05" value="0.7">
+                                            <span class="range-value">0.70</span>
+                                        </div>
+                                    </div>
+                                    <div class="field">
+                                        <label>Max tokens</label>
+                                        <div class="range-row">
+                                            <input type="range" id="chat-max-tokens" min="1" max="16384" step="1" value="2048">
+                                            <span class="range-value">2048</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Image -->
+            <section id="tab-image" class="tab-panel">
+                <div class="scroll-panel">
+                    <div class="field">
+                        <label>Reference image <span style="font-weight:400;color:var(--text-tertiary)">(optional — enables editing)</span></label>
+                        <div class="chat-uploads" id="img-uploads"></div>
+                        <input type="file" id="img-file" accept="image/*" hidden>
+                        <button class="btn-icon" id="img-attach" title="Attach reference image" style="margin-top:0.25rem">+</button>
+                    </div>
+                    <div class="field">
+                        <label>Prompt</label>
+                        <textarea id="img-prompt" rows="3" placeholder="Describe the image you want to generate..."></textarea>
+                    </div>
+                    <details>
+                        <summary>Advanced</summary>
+                        <div class="details-body">
+                            <div class="field">
+                                <label style="font-size:0.8125rem;display:flex;align-items:center;gap:0.25rem;cursor:pointer">
+                                    <input type="checkbox" id="img-use-chat-api"> Use chat API
+                                </label>
+                            </div>
+                            <div class="field">
+                                <label>Negative prompt</label>
+                                <textarea id="img-negative" rows="2" placeholder="What to avoid..."></textarea>
+                            </div>
+                            <div class="grid-2">
+                                <div class="field">
+                                    <label>Size</label>
+                                    <select id="img-size">
+                                        <option value="1024x1024" selected>1024 x 1024</option>
+                                        <option value="512x512">512 x 512</option>
+                                        <option value="768x768">768 x 768</option>
+                                        <option value="1024x768">1024 x 768</option>
+                                        <option value="768x1024">768 x 1024</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label>Steps</label>
+                                    <div class="range-row">
+                                        <input type="range" id="img-steps" min="1" max="100" step="1" value="30">
+                                        <span class="range-value">30</span>
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label>CFG scale</label>
+                                    <div class="range-row">
+                                        <input type="range" id="img-cfg" min="1" max="20" step="0.5" value="7">
+                                        <span class="range-value">7.0</span>
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label>Seed</label>
+                                    <input type="number" id="img-seed" value="-1" placeholder="-1 = random">
+                                </div>
+                                <div class="field" id="img-count-field">
+                                    <label>Count</label>
+                                    <div class="range-row">
+                                        <input type="range" id="img-count" min="1" max="4" step="1" value="1">
+                                        <span class="range-value">1</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                    <button id="img-generate" class="btn-primary">Generate</button>
+                    <div id="img-error"></div>
+                    <div class="gen-history" id="img-history"></div>
+                    <div class="history-footer" id="img-history-footer" style="display:none">
+                        <button class="btn-link" id="img-clear-history">Clear history</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Video -->
+            <section id="tab-video" class="tab-panel">
+                <div class="scroll-panel">
+                    <div class="field">
+                        <label>Reference image/video <span style="font-weight:400;color:var(--text-tertiary)">(optional — img2vid / vid2vid)</span></label>
+                        <div class="chat-uploads" id="vid-uploads"></div>
+                        <input type="file" id="vid-file" accept="image/*,video/*" hidden>
+                        <button class="btn-icon" id="vid-attach" title="Attach reference" style="margin-top:0.25rem">+</button>
+                    </div>
+                    <div class="field">
+                        <label>Prompt</label>
+                        <textarea id="vid-prompt" rows="3" placeholder="Describe the video you want to generate..."></textarea>
+                    </div>
+                    <details>
+                        <summary>Advanced</summary>
+                        <div class="details-body">
+                            <div class="field">
+                                <label>Negative prompt</label>
+                                <textarea id="vid-negative" rows="2" placeholder="What to avoid..."></textarea>
+                            </div>
+                            <div class="grid-2">
+                                <div class="field">
+                                    <label>Width</label>
+                                    <input type="number" id="vid-width" value="832" min="64" step="16">
+                                </div>
+                                <div class="field">
+                                    <label>Height</label>
+                                    <input type="number" id="vid-height" value="480" min="64" step="16">
+                                </div>
+                                <div class="field">
+                                    <label>Frames</label>
+                                    <div class="range-row">
+                                        <input type="range" id="vid-frames" min="1" max="200" step="1" value="81">
+                                        <span class="range-value">81</span>
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label>FPS</label>
+                                    <div class="range-row">
+                                        <input type="range" id="vid-fps" min="1" max="60" step="1" value="16">
+                                        <span class="range-value">16</span>
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label>Steps</label>
+                                    <div class="range-row">
+                                        <input type="range" id="vid-steps" min="1" max="100" step="1" value="40">
+                                        <span class="range-value">40</span>
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label>CFG scale</label>
+                                    <div class="range-row">
+                                        <input type="range" id="vid-cfg" min="1" max="20" step="0.5" value="4">
+                                        <span class="range-value">4.0</span>
+                                    </div>
+                                </div>
+                                <div class="field">
+                                    <label>Seed</label>
+                                    <input type="number" id="vid-seed" value="-1" placeholder="-1 = random">
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                    <button id="vid-generate" class="btn-primary">Generate</button>
+                    <div id="vid-error"></div>
+                    <div class="gen-history" id="vid-history"></div>
+                    <div class="history-footer" id="vid-history-footer" style="display:none">
+                        <button class="btn-link" id="vid-clear-history">Clear history</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TTS -->
+            <section id="tab-tts" class="tab-panel">
+                <div class="scroll-panel">
+                    <div class="field">
+                        <label>Text</label>
+                        <textarea id="tts-text" rows="5" placeholder="Enter text to synthesize..."></textarea>
+                    </div>
+                    <!-- Mode selector (hidden by default, shown when voice_design or voice_clone caps) -->
+                    <div class="tts-mode-group" id="tts-mode-group" style="display:none">
+                        <button class="tts-mode-btn active" data-tts-mode="basic">Standard</button>
+                        <button class="tts-mode-btn" data-tts-mode="voice_design">VoiceDesign</button>
+                        <button class="tts-mode-btn" data-tts-mode="voice_clone">VoiceClone</button>
+                    </div>
+                    <!-- Voice + Speed (basic & custom_voice modes) -->
+                    <div class="grid-2" id="tts-voice-speed">
+                        <div class="field">
+                            <label>Voice</label>
+                            <select id="tts-voice"><option value="default">default</option></select>
+                        </div>
+                        <div class="field">
+                            <label>Speed</label>
+                            <div class="range-row">
+                                <input type="range" id="tts-speed" min="0.25" max="4" step="0.05" value="1">
+                                <span class="range-value">1.00</span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Voice description (voice_design mode) -->
+                    <div class="field" id="tts-design-field" style="display:none">
+                        <label>Voice description</label>
+                        <textarea id="tts-design" rows="2" placeholder="Describe the voice you want, e.g. &quot;A warm, deep male voice with a calm tone&quot;"></textarea>
+                    </div>
+                    <!-- Reference audio (voice_clone mode) -->
+                    <div class="field" id="tts-ref-field" style="display:none">
+                        <label>Reference audio</label>
+                        <div class="chat-uploads" id="tts-ref-uploads"></div>
+                        <audio id="tts-ref-preview" controls style="display:none;margin-bottom:0.375rem"></audio>
+                        <input type="file" id="tts-ref-file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" hidden>
+                        <div style="display:flex;gap:0.375rem;margin-top:0.25rem;align-items:center">
+                            <button class="btn-icon" id="tts-ref-attach" title="Upload audio file">+</button>
+                            <button class="btn-icon tts-rec-btn" id="tts-ref-record" title="Record from microphone">&#9679;</button>
+                            <canvas class="tts-rec-level" id="tts-rec-level" width="120" height="24" style="display:none"></canvas>
+                            <span class="tts-rec-timer" id="tts-rec-timer"></span>
+                        </div>
+                    </div>
+                    <!-- Reference text (voice_clone mode) -->
+                    <div class="field" id="tts-reftext-field" style="display:none">
+                        <label>Reference text <span style="font-weight:400;color:var(--text-tertiary)">(transcript of reference audio)</span></label>
+                        <input type="text" id="tts-ref-text" placeholder="What is said in the reference audio (optional)">
+                    </div>
+                    <details>
+                        <summary>Advanced</summary>
+                        <div class="details-body">
+                            <div class="grid-2">
+                                <div class="field">
+                                    <label>Language</label>
+                                    <input type="text" id="tts-lang" placeholder="e.g. en, zh (optional)">
+                                </div>
+                                <div class="field" id="tts-instructions-field">
+                                    <label>Instructions</label>
+                                    <input type="text" id="tts-instructions" placeholder="Model-dependent (optional)">
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                    <button id="tts-synth" class="btn-primary">Synthesize</button>
+                    <div id="tts-error"></div>
+                    <div class="gen-history" id="tts-history"></div>
+                    <div class="history-footer" id="tts-history-footer" style="display:none">
+                        <button class="btn-link" id="tts-clear-history">Clear history</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- STT -->
+            <section id="tab-stt" class="tab-panel">
+                <div class="scroll-panel">
+                    <div class="field">
+                        <label>Audio file</label>
+                        <div class="chat-uploads" id="stt-uploads"></div>
+                        <input type="file" id="stt-file" accept="audio/*,video/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" hidden>
+                        <button class="btn-icon" id="stt-attach" title="Choose audio file" style="margin-top:0.25rem">+</button>
+                    </div>
+                    <details>
+                        <summary>Advanced</summary>
+                        <div class="details-body">
+                            <div class="grid-2">
+                                <div class="field">
+                                    <label>Language</label>
+                                    <input type="text" id="stt-lang" placeholder="e.g. en, zh (optional)">
+                                </div>
+                                <div class="field">
+                                    <label>Temperature</label>
+                                    <div class="range-row">
+                                        <input type="range" id="stt-temp" min="0" max="1" step="0.05" value="0">
+                                        <span class="range-value">0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label>Prompt <span style="font-weight:400;color:var(--text-tertiary)">(context / spelling hints)</span></label>
+                                <input type="text" id="stt-prompt" placeholder="Optional context for the model...">
+                            </div>
+                        </div>
+                    </details>
+                    <button id="stt-transcribe" class="btn-primary" disabled>Transcribe</button>
+                    <div id="stt-error"></div>
+                    <div class="gen-history" id="stt-history"></div>
+                    <div class="history-footer" id="stt-history-footer" style="display:none">
+                        <button class="btn-link" id="stt-clear-history">Clear history</button>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <div class="lightbox" id="lightbox">
+        <button class="lb-nav lb-prev" id="lb-prev">&#8249;</button>
+        <img id="lightbox-img" src="" alt="">
+        <button class="lb-nav lb-next" id="lb-next">&#8250;</button>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

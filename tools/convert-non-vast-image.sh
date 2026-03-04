@@ -4,6 +4,11 @@ set -euo pipefail
 
 # Install a reasonable set of packages over the source image
 apt-get update
+
+# Detect distro — some packages are Ubuntu-specific
+DISTRO_ID=$(. /etc/os-release && echo "${ID}")
+
+# Packages available on both Debian and Ubuntu
 apt-get install --no-install-recommends -y \
     acl \
     bc \
@@ -26,7 +31,6 @@ apt-get install --no-install-recommends -y \
     tzdata \
     fonts-dejavu \
     fonts-freefont-ttf \
-    fonts-ubuntu \
     ffmpeg \
     libgl1 \
     libglx-mesa0 \
@@ -37,7 +41,6 @@ apt-get install --no-install-recommends -y \
     lsof \
     procps \
     psmisc \
-    nvtop \
     rdma-core \
     libibverbs1 \
     ibverbs-providers \
@@ -62,9 +65,23 @@ apt-get install --no-install-recommends -y \
     unzip \
     xz-utils \
     zstd \
-    linux-tools-common \
     cron \
     rsyslog
+
+# Distro-specific packages
+if [[ "$DISTRO_ID" == "ubuntu" ]]; then
+    apt-get install --no-install-recommends -y \
+        fonts-ubuntu \
+        nvtop \
+        linux-tools-common
+else
+    # Debian: fonts-ubuntu and linux-tools-common don't exist; nvtop may be in backports
+    if apt-cache show nvtop > /dev/null 2>&1; then
+        apt-get install --no-install-recommends -y nvtop
+    else
+        echo "nvtop not available in configured repositories — skipping"
+    fi
+fi
 
 # Ensure system pip
 if ! which pip > /dev/null 2>&1 || ! which pip3 > /dev/null 2>&1; then
@@ -99,7 +116,12 @@ git clone https://github.com/vast-ai/vast-cli
 wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer
 update-ca-certificates
 
-# Protect the system python directory when Vast boostrapping adds jupyter
+# Protect the system python directory when Vast bootstrapping adds jupyter.
+# Everything is installed into an isolated venv, then a shim directory at
+# the front of PATH exposes all binaries (including python/pip).  At boot,
+# 10-prep-env.sh removes the python/pip shims so the image's own
+# interpreters take over while tools like jupyter and supervisord remain
+# reachable.
 uv venv -p 3.12 --seed /opt/sys-venv
 VIRTUAL_ENV=/opt/sys-venv uv pip install --no-cache-dir \
     jupyter \
@@ -114,27 +136,37 @@ VIRTUAL_ENV=/opt/sys-venv uv pip install --no-cache-dir \
     supervisor \
     magic-wormhole
 mkdir -p /var/log/supervisor
-# Entrypoint will reset this after launch
-mv "$(which pip)" "$(dirname "$(which pip)")/pip-v-real"
-mv "$(which pip3)" "$(dirname "$(which pip3)")/pip3-v-real"
 
-for bin in /opt/sys-venv/bin/*; do \
-    ln -sf "$bin" "/usr/local/bin/$(basename "$bin")"; \
+# Create a shim bin directory with symlinks to every sys-venv binary.
+# The Dockerfile adds /opt/sys-venv/shim to the front of PATH so that
+# during Vast bootstrap pip/python resolve here (installing into sys-venv).
+mkdir -p /opt/sys-venv/shim
+for bin in /opt/sys-venv/bin/*; do
+    ln -sf "$bin" "/opt/sys-venv/shim/$(basename "$bin")"
 done
 
 # Remove redundant base image files
 [[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh
 
-if [[ ! -d /home/user ]]; then
-    rm -f /etc/vast_boot.d/46-user-propagate-ssh-keys.sh
-    rm -f /etc/vast_boot.d/47-user-git-safe-dirs.sh
-    rm -f /opt/instance-tools/bin/propagate_ssh_keys.sh
+# Create 'user' account (matches base image: uid 1001, gid 0) if not present
+if ! id -u user > /dev/null 2>&1; then
+    useradd -ms /bin/bash user -u 1001 -g 0
 fi
 
 rm -f /etc/vast_boot.d/48-venv-backup.sh
 rm -f /opt/instance-tools/bin/venv_backup.sh
-rm -f /etc/supervisor/conf.d/syncthing.conf
 rm -f /etc/supervisor/conf.d/tensorboard.conf
+
+# Install Syncthing
+SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')"
+SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz"
+mkdir -p /opt/syncthing/config /opt/syncthing/data
+wget -O /opt/syncthing.tar.gz "$SYNCTHING_URL"
+(cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1)
+if id -u user > /dev/null 2>&1; then
+    chown -R user:root /opt/syncthing
+fi
+rm -f /opt/syncthing.tar.gz
 
 # Clean up
 apt-get clean && \

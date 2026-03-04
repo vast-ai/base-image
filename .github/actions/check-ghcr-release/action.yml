@@ -1,0 +1,243 @@
+# .github/actions/check-ghcr-release/action.yml
+name: Check GHCR Release
+description: Check for new releases on GitHub Container Registry (GHCR)
+
+inputs:
+  owner:
+    description: "GHCR package owner/org (e.g., open-webui)"
+    required: true
+  package:
+    description: "GHCR package name (e.g., open-webui)"
+    required: true
+  version-pattern:
+    description: "Regex for version tags (e.g., ^v[0-9]+\\.[0-9]+(\\.[0-9]+)?-cuda$)"
+    required: false
+    default: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+  version-extract:
+    description: "Optional sed -E expression to extract base version from matched tag (e.g., 's/-cuda$//'). When empty, the matched tag name IS the version."
+    required: false
+    default: ""
+  age-threshold-seconds:
+    description: "Max age in seconds to consider a release 'new'"
+    required: false
+    default: "86400"
+  max-pages:
+    description: "Maximum number of API pages to search (100 versions per page)"
+    required: false
+    default: "10"
+  trigger:
+    description: "What triggered the workflow (github.event_name)"
+    required: true
+  manual-version:
+    description: "Version provided via manual trigger (if any)"
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub token for API access (defaults to github.token)"
+    required: false
+    default: ""
+
+outputs:
+  new-release:
+    description: "Whether a new release was found (always true for manual triggers)"
+    value: ${{ steps.result.outputs.new-release }}
+  resolved-version:
+    description: "The version to use for building"
+    value: ${{ steps.result.outputs.resolved-version }}
+  variant-tags:
+    description: "JSON array of all tags for this version"
+    value: ${{ steps.result.outputs.variant-tags }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch tags from GHCR
+      id: fetch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        echo "Fetching package versions from GHCR for ${{ inputs.owner }}/${{ inputs.package }}..."
+
+        PATTERN='${{ inputs.version-pattern }}'
+        MAX_PAGES=${{ inputs.max-pages }}
+        FOUND_TAG=""
+        FOUND_UPDATED=""
+        ALL_TAGS_JSON="[]"
+        page=1
+
+        while [[ $page -le $MAX_PAGES ]]; do
+          echo "Fetching page $page..."
+
+          AUTH_HEADER=""
+          if [[ -n "$GH_TOKEN" ]]; then
+            AUTH_HEADER="Authorization: Bearer $GH_TOKEN"
+          fi
+
+          if [[ -n "$AUTH_HEADER" ]]; then
+            RESPONSE=$(curl -sfS \
+              -H "Accept: application/vnd.github+json" \
+              -H "$AUTH_HEADER" \
+              "https://api.github.com/orgs/${{ inputs.owner }}/packages/container/${{ inputs.package }}/versions?per_page=100&page=${page}" 2>/dev/null || echo "")
+          else
+            RESPONSE=$(curl -sfS \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${{ inputs.owner }}/packages/container/${{ inputs.package }}/versions?per_page=100&page=${page}" 2>/dev/null || echo "")
+          fi
+
+          if [[ -z "$RESPONSE" || "$RESPONSE" == "[]" ]]; then
+            if [[ $page -eq 1 ]]; then
+              echo "::warning::Failed to fetch versions from GHCR"
+              echo "success=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            break
+          fi
+
+          # Flatten to {tag, updated_at} pairs and check for pattern match
+          MATCHING=$(echo "$RESPONSE" | jq -r --arg pattern "$PATTERN" '
+            [.[] | . as $ver |
+              .metadata.container.tags[] |
+              select(test($pattern)) |
+              {tag: ., updated_at: $ver.updated_at, tags: $ver.metadata.container.tags}
+            ] | if length > 0 then . else empty end
+          ' 2>/dev/null || echo "")
+
+          if [[ -n "$MATCHING" && "$MATCHING" != "null" ]]; then
+            # Take the first match (newest, since API returns newest first)
+            FOUND_TAG=$(echo "$MATCHING" | jq -r '.[0].tag')
+            FOUND_UPDATED=$(echo "$MATCHING" | jq -r '.[0].updated_at')
+            ALL_TAGS_JSON=$(echo "$MATCHING" | jq -c '.[0].tags')
+            echo "Found matching tag: $FOUND_TAG (updated: $FOUND_UPDATED) on page $page"
+            break
+          fi
+
+          echo "No match on page $page, continuing..."
+          ((page++))
+        done
+
+        if [[ -z "$FOUND_TAG" ]]; then
+          echo "::warning::No version tags matching pattern '$PATTERN' found in $MAX_PAGES pages"
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "$FOUND_TAG" > /tmp/ghcr_found_tag.txt
+          echo "$FOUND_UPDATED" > /tmp/ghcr_found_updated.txt
+          echo "$ALL_TAGS_JSON" > /tmp/ghcr_all_tags.json
+          exit 0
+        fi
+
+        echo "success=true" >> $GITHUB_OUTPUT
+        echo "$FOUND_TAG" > /tmp/ghcr_found_tag.txt
+        echo "$FOUND_UPDATED" > /tmp/ghcr_found_updated.txt
+        echo "$ALL_TAGS_JSON" > /tmp/ghcr_all_tags.json
+
+    - name: Determine version and check age
+      id: check
+      if: steps.fetch.outputs.success == 'true'
+      shell: bash
+      run: |
+        FOUND_TAG=$(cat /tmp/ghcr_found_tag.txt)
+        FOUND_UPDATED=$(cat /tmp/ghcr_found_updated.txt)
+        VERSION_EXTRACT='${{ inputs.version-extract }}'
+
+        # For manual triggers, use provided version or find latest
+        if [[ "${{ inputs.trigger }}" != "schedule" ]]; then
+          if [[ -n "${{ inputs.manual-version }}" ]]; then
+            VERSION="${{ inputs.manual-version }}"
+            echo "Using manual version: $VERSION"
+          else
+            if [[ -z "$FOUND_TAG" ]]; then
+              echo "::warning::No matching tag found"
+              echo "new-release=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            TAG_NAME="$FOUND_TAG"
+            # Extract base version if version-extract is provided
+            if [[ -n "$VERSION_EXTRACT" && -n "$TAG_NAME" ]]; then
+              VERSION=$(echo "$TAG_NAME" | sed -E "$VERSION_EXTRACT")
+              echo "Matched tag: $TAG_NAME -> extracted version: $VERSION"
+            else
+              VERSION="$TAG_NAME"
+            fi
+            echo "Using latest version: $VERSION"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "new-release=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # For scheduled runs, check age
+        if [[ -z "$FOUND_TAG" ]]; then
+          echo "::warning::No version tags matching pattern found"
+          echo "new-release=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        TAG_NAME="$FOUND_TAG"
+
+        # Extract base version if version-extract is provided
+        if [[ -n "$VERSION_EXTRACT" ]]; then
+          VERSION=$(echo "$TAG_NAME" | sed -E "$VERSION_EXTRACT")
+          echo "Matched tag: $TAG_NAME -> extracted version: $VERSION"
+        else
+          VERSION="$TAG_NAME"
+        fi
+
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Latest version: $VERSION"
+
+        # Check age
+        RELEASE_EPOCH=$(date -d "$FOUND_UPDATED" +%s)
+        NOW_EPOCH=$(date +%s)
+        AGE=$((NOW_EPOCH - RELEASE_EPOCH))
+        AGE_HOURS=$((AGE / 3600))
+
+        echo "Version $VERSION is $AGE_HOURS hours old"
+
+        if [[ $AGE -lt ${{ inputs.age-threshold-seconds }} ]]; then
+          echo "new-release=true" >> $GITHUB_OUTPUT
+          echo "✓ New release detected"
+        else
+          echo "new-release=false" >> $GITHUB_OUTPUT
+          echo "::notice::Release is older than threshold"
+        fi
+
+    - name: Find variant tags
+      id: variants
+      if: steps.fetch.outputs.success == 'true' && steps.check.outputs.version != ''
+      shell: bash
+      run: |
+        VERSION="${{ steps.check.outputs.version }}"
+        ALL_TAGS=$(cat /tmp/ghcr_all_tags.json 2>/dev/null || echo "[]")
+
+        # Filter tags that start with the version
+        VARIANT_TAGS=$(echo "$ALL_TAGS" | jq -c --arg ver "$VERSION" '
+          [.[] | select(startswith($ver))]
+        ')
+
+        echo "Found variants: $VARIANT_TAGS"
+        echo "$VARIANT_TAGS" > /tmp/variant_tags.json
+
+    - name: Set outputs
+      id: result
+      shell: bash
+      run: |
+        if [[ "${{ steps.fetch.outputs.success }}" != "true" ]]; then
+          echo "new-release=false" >> $GITHUB_OUTPUT
+          echo "resolved-version=" >> $GITHUB_OUTPUT
+          echo "variant-tags=[]" >> $GITHUB_OUTPUT
+        else
+          echo "new-release=${{ steps.check.outputs.new-release }}" >> $GITHUB_OUTPUT
+          echo "resolved-version=${{ steps.check.outputs.version }}" >> $GITHUB_OUTPUT
+
+          if [[ -f /tmp/variant_tags.json ]]; then
+            VARIANTS=$(cat /tmp/variant_tags.json)
+          else
+            VARIANTS="[]"
+          fi
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "variant-tags<<$EOF" >> $GITHUB_OUTPUT
+          echo "$VARIANTS" >> $GITHUB_OUTPUT
+          echo "$EOF" >> $GITHUB_OUTPUT
+        fi

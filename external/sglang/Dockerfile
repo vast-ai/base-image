@@ -16,7 +16,7 @@ ENV WORKSPACE=/workspace
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV PATH=/opt/instance-tools/bin:${PATH}
+ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
 COPY --from=base_image_source /ROOT /
@@ -43,15 +43,23 @@ RUN \
     # This base image sets unusual defaults
     rm -f /root/.tmux.conf
 
+# Install Model UI (lightweight web interface) — chat only by default
+ENV MODEL_UI_CHAT_CAPS=all
+COPY --from=base_image_source tools/model-ui /opt/model-ui
+RUN uv venv /opt/model-ui/venv && \
+    uv pip install --python /opt/model-ui/venv/bin/python --no-cache-dir -r /opt/model-ui/requirements.txt
+
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
 # Ensure we have a Jupyter kernel for SGLang
+# Use explicit path to avoid the sys-venv shim (which is in PATH for boot)
 RUN \
     set -euo pipefail && \
-    uv pip install --system --break-system-packages ipykernel && \
-    python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
-    python3 -m ipykernel install --name "sglang" --display-name "SGLang"
+    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)" && \
+    uv pip install --python "$SYS_PYTHON" --break-system-packages ipykernel && \
+    "$SYS_PYTHON" -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
+    "$SYS_PYTHON" -m ipykernel install --name "sglang" --display-name "SGLang"
 
 # Use familiar workspace. Do not move the real sgl-workspace
 RUN \

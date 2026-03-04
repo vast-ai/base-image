@@ -681,7 +681,7 @@ window.InstancePortal = (function() {
                         if (isProxied) {
                             // When proxied, we need to check for a 200 response
                             // Using regular fetch (not no-cors) to read the status
-                            const response = await fetch(`${tunnel_url}/health.ico?t=${Date.now()}`, {
+                            const response = await fetch(`${tunnel_url}/portal-resolver?t=${Date.now()}`, {
                                 cache: 'no-store',
                                 credentials: 'omit'
                             });
@@ -701,7 +701,7 @@ window.InstancePortal = (function() {
                             // For non-proxied apps where we cannot control CORS headers, we just need any response
                             // This may give us a false positive for resolvable but it is the best we can do
                             // Use fetch with no-cors
-                            await fetch(`${tunnel_url}/health.ico?t=${Date.now()}`, {
+                            await fetch(`${tunnel_url}/portal-resolver?t=${Date.now()}`, {
                                 mode: 'no-cors',
                                 cache: 'no-store',
                                 credentials: 'omit'

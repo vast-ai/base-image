@@ -69,7 +69,8 @@ jobs:
         uses: ./.github/actions/check-dockerhub-release
         with:
           repository: lmsysorg/sglang
-          version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+          version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-cu[0-9]+-amd64$"
+          version-extract: "s/^(v[0-9]+\\.[0-9]+\\.[0-9]+)-.*/\\1/"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           trigger: ${{ inputs.SGLANG_VERSION && github.event_name || 'schedule' }}
           manual-version: ${{ inputs.SGLANG_VERSION }}
@@ -91,23 +92,20 @@ jobs:
           echo "Available variants: $VARIANTS"
 
           # Convert variant tags to build matrix
-          # Base tag (v0.5.7) is CUDA 12.9, -cu130 is CUDA 13.0
-          MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
-            map(
-              # Skip arch-specific tags (we use multi-arch builds)
-              select(test("-(x86_64|aarch64)") | not)
-            )
+          # Upstream tags are now arch-specific: v0.5.9-cu129-amd64, v0.5.9-cu130-amd64, etc.
+          # Filter to amd64 only, exclude runtime/xeon/cann variants
+          # Extract CUDA version generically: cu129 -> 12.9, cu130 -> 13.0
+          MATRIX=$(echo "$VARIANTS" | jq -c '
+            map(select(endswith("-amd64")))
+            | map(select(test("-(runtime|xeon|cann)") | not))
             | map(
-              if . == $ver then
-                {tag: ., cuda: "12.9"}
-              elif endswith("-cu130") then
-                {tag: ., cuda: "13.0"}
-              elif endswith("-cu128") then
-                {tag: ., cuda: "12.8"}
-              else
-                empty
-              end
-            )
+                . as $tag
+                | ($tag | capture("-cu(?<raw>[0-9]+)-amd64$") | .raw) as $cu
+                | {
+                    tag: $tag,
+                    cuda: ($cu[0:($cu | length) - 1] + "." + $cu[($cu | length) - 1:])
+                  }
+              )
           ')
 
           echo "Build matrix: $MATRIX"
@@ -115,7 +113,7 @@ jobs:
 
           MATRIX_SIZE=$(echo "$MATRIX" | jq 'length')
           if [[ "$MATRIX_SIZE" -eq 0 ]]; then
-            echo "::error::No valid image variants found for $VERSION"
+            echo "::error::No valid amd64 image variants found for $VERSION"
             exit 1
           fi
 
@@ -218,14 +216,11 @@ jobs:
 
       - name: Build and push
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          # Upstream SGLang images are now arch-specific (no multi-arch manifests)
+          if [[ "${{ inputs.MULTI_ARCH }}" == "true" ]]; then
+            echo "::warning::Multi-arch not supported for SGLang (upstream images are arch-specific). Building amd64 only."
           fi
-
           platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
 
           cd external/sglang
           docker buildx build \
