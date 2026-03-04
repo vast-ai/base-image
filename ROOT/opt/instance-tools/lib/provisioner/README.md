@@ -17,6 +17,7 @@ provisioner manifest.yaml [--dry-run] [--force]
   - [on_failure](#on_failure)
   - [write_files / write_files_late](#write_files--write_files_late)
   - [apt_packages](#apt_packages)
+  - [extensions](#extensions)
   - [pip_packages](#pip_packages)
   - [conda_packages](#conda_packages)
   - [git_repos](#git_repos)
@@ -73,6 +74,7 @@ lib/provisioner/
 ├── __main__.py                     Pipeline orchestrator and CLI entry point
 ├── schema.py                       Manifest dataclasses and validation
 ├── manifest.py                     YAML loading, env expansion, conditionals
+├── extensions.py                   Extension loader and runner (phase 3b)
 ├── state.py                        Content-hash idempotency (/.provisioner_state/)
 ├── failure.py                      Failure actions (continue/retry/destroy/stop)
 ├── auth.py                         HuggingFace and CivitAI token validation
@@ -105,6 +107,7 @@ Phases run sequentially in this order:
 | 2 | Validate auth tokens, resolve conditionals, apply env_merge | Non-fatal |
 | 2b | Write early files (`write_files`) | **Fail-fast** |
 | 3 | Install apt packages | **Fail-fast** |
+| 3b | Run extensions (discover repos, downloads, etc.) | **Fail-fast** |
 | 4 | Clone git repos + run post_commands (parallel) | **Fail-fast** |
 | 5 | Install pip packages (per block, sequential) | **Fail-fast** |
 | 5b | Install conda packages | **Fail-fast** |
@@ -129,7 +132,6 @@ Every manifest starts with `version: 1`. All other sections are optional.
 
 ```yaml
 settings:
-  workspace: "${WORKSPACE:-/workspace}"
   venv: "/venv/main"
   log_file: "/var/log/portal/provisioning.log"
   concurrency:
@@ -241,6 +243,48 @@ apt_packages:
 ```
 
 Installed via `apt-get update -qq && apt-get install -y -qq --no-install-recommends`. Failure is fatal (fail-fast). Always runs `apt-get update` first to ensure fresh package lists.
+
+### extensions
+
+Run custom Python modules in phase 3b to discover additional resources. Extensions run **before** git clones and downloads, so they can append items to `manifest.git_repos`, `manifest.downloads`, `manifest.pip_packages`, etc. The normal provisioner phases then handle the actual work.
+
+This allows derivative images to add image-specific discovery logic (e.g. parsing a ComfyUI workflow to find required models and custom nodes) without modifying the base provisioner.
+
+```yaml
+extensions:
+  - module: provisioner_comfyui           # Importable Python module name
+    config:                                # Arbitrary dict passed to extension
+      workflows:
+        - https://example.com/workflow.json
+        - /workspace/workflows/my_workflow.json
+  - module: provisioner_other
+    enabled: false                         # Skip this extension
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `module` | `""` | Python module name (must be importable via `PYTHONPATH`) |
+| `config` | `{}` | Arbitrary configuration dict passed to the extension's `run()` function |
+| `enabled` | `true` | Set to `false` to skip this extension |
+
+**Extension interface:** Each module must implement a `run()` function:
+
+```python
+def run(config: dict, context: ExtensionContext, dry_run: bool = False) -> None:
+    # Discover resources and append to the manifest
+    for wf in config.get("workflows", []):
+        models, nodes = parse_workflow(wf)
+        context.manifest.downloads.extend(models)
+        context.manifest.git_repos.extend(nodes)
+```
+
+`ExtensionContext` provides:
+- `manifest` — the full `Manifest` object. Extensions append to its lists (`downloads`, `git_repos`, `pip_packages`, etc.) to inject discovered resources into later phases.
+- `log` — a logger instance for the extension
+
+**Module placement:** The `bin/provisioner` wrapper sets `PYTHONPATH=/opt/instance-tools/lib`. Derivative images place extension modules under `/opt/instance-tools/lib/` (e.g. `/opt/instance-tools/lib/provisioner_comfyui/__init__.py`). No pip install required — just drop in the package.
+
+**Error handling:** Extension failure is **fail-fast** — if an extension raises, the provisioner aborts before git clones, pip installs, or downloads run. This prevents partial provisioning when discovery fails.
 
 ### pip_packages
 
@@ -357,8 +401,19 @@ Since post_commands run within the parallel clone pool, repos with heavier post-
 
 ```yaml
 downloads:
+  # Single file download to specific path
   - url: https://huggingface.co/org/model/resolve/main/weights.safetensors
     dest: /workspace/models/weights.safetensors
+
+  # Full repo download to a directory (for inference engines, LLMs, etc.)
+  - url: https://huggingface.co/meta-llama/Llama-3-8B
+    dest: /workspace/models/llama3
+
+  # Full repo download to HF cache ($HF_HOME) -- no dest needed
+  # vLLM and other engines can load directly from cache
+  - url: https://huggingface.co/meta-llama/Llama-3-8B
+
+  # CivitAI and generic downloads
   - url: https://civitai.com/api/download/models/12345
     dest: /workspace/models/loras/        # trailing / = resolve filename from server
   - url: https://example.com/file.bin
@@ -369,18 +424,29 @@ Downloads run in two independent parallel pools:
 
 | URL Pattern | Handler | Auth | Pool |
 |-------------|---------|------|------|
-| `huggingface.co` | `huggingface-cli download` | `$HF_TOKEN` (automatic) | `hf_downloads` |
+| `huggingface.co` | `hf download` | `$HF_TOKEN` (automatic) | `hf_downloads` |
 | `civitai.com` | `wget` with `Authorization` header | `$CIVITAI_TOKEN` | `wget_downloads` |
 | Everything else | `wget` | None | `wget_downloads` |
 
-**Trailing `/` on dest:** The provisioner resolves the filename from the server's `Content-Disposition` header (falling back to the URL's last path segment) and appends it to the directory path.
+**HuggingFace URL formats:**
+
+| URL | Behavior |
+|-----|----------|
+| `.../resolve/{rev}/{file}` with `dest` | Download single file to specific path |
+| `.../resolve/{rev}/{file}` without `dest` | Download single file to HF cache |
+| `huggingface.co/org/repo` with `dest` | Download full repo to directory (`--local-dir`) |
+| `huggingface.co/org/repo` without `dest` | Download full repo to HF cache (`$HF_HOME`) |
+
+**HF cache mode** (no `dest`): `hf download` manages its own cache at `$HF_HOME` (default `~/.cache/huggingface/hub`). This is the standard approach for inference engines like vLLM that load models from cache by repo ID. The cache handles deduplication, symlinks, and resumption automatically.
+
+**Trailing `/` on dest:** For wget downloads, the provisioner resolves the filename from the server's `Content-Disposition` header (falling back to the URL's last path segment) and appends it to the directory path. For HF single-file downloads, the filename is taken from the URL.
 
 **Features:**
 - Parallel downloads with configurable pool sizes
 - `fcntl`-based file locking prevents concurrent downloads of the same file
 - Retry with exponential backoff on failure
 - Existing files are skipped (checked inside the lock to prevent races)
-- HuggingFace downloads use a temp directory and atomic move to dest
+- HuggingFace single-file downloads use a temp directory and atomic move to dest
 - Failed wget downloads clean up partial files
 
 ### conditional_downloads
@@ -519,6 +585,7 @@ Each phase computes a SHA-256 content hash of its inputs before execution. If th
 |-------|-------------|
 | write_files | Ordered (path, content, permissions, owner) tuples |
 | apt | Sorted package list |
+| extensions | Ordered (module, config, enabled) dicts |
 | git | Sorted (url, ref, recursive, pull_if_exists, post_commands) tuples |
 | pip | Per-block: (venv, tool, packages, args, requirements, python) |
 | conda | (packages, channels, args, env, python) |
@@ -542,7 +609,7 @@ Each phase computes a SHA-256 content hash of its inputs before execution. If th
 Failure behavior depends on the phase:
 
 - **Phase 2b (write_files):** Fail-fast. Config files needed by later phases must be written successfully.
-- **Phases 3-5b (apt/git/pip/conda):** Fail-fast. The first error triggers `handle_failure()` and exits with code 1.
+- **Phases 3-5b (apt/extensions/git/pip/conda):** Fail-fast. The first error triggers `handle_failure()` and exits with code 1.
 - **Phase 6 (downloads):** Best-effort. Individual failures are logged and `had_errors` is set, but all downloads are attempted.
 - **Phases 7-7b-8 (services/write_files_late/post_commands):** Always run. Failures set `had_errors` but don't prevent other services or commands from completing.
 

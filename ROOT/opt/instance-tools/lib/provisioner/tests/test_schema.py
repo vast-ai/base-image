@@ -11,6 +11,7 @@ from provisioner.schema import (
     CondaPackages,
     ConditionalDownload,
     DownloadEntry,
+    Extension,
     FileWrite,
     GitRepo,
     Manifest,
@@ -54,7 +55,6 @@ class TestValidateManifest:
 class TestDefaults:
     def test_settings_defaults(self):
         m = validate_manifest({"version": 1})
-        assert m.settings.workspace == "/workspace"
         assert m.settings.venv == "/venv/main"
         assert m.settings.log_file == "/var/log/portal/provisioning.log"
 
@@ -85,12 +85,19 @@ class TestDefaults:
         assert f.permissions == "0644"
         assert f.owner == ""
 
+    def test_extension_defaults(self):
+        e = Extension()
+        assert e.module == ""
+        assert e.config == {}
+        assert e.enabled is True
+
     def test_empty_lists_default(self):
         m = validate_manifest({"version": 1})
         assert m.apt_packages == []
         assert m.git_repos == []
         assert m.downloads == []
         assert m.conditional_downloads == []
+        assert m.extensions == []
         assert m.services == []
         assert m.post_commands == []
         assert m.write_files == []
@@ -135,11 +142,9 @@ class TestBuildNested:
         m = validate_manifest({
             "version": 1,
             "settings": {
-                "workspace": "/my/workspace",
                 "concurrency": {"hf_downloads": 10},
             },
         })
-        assert m.settings.workspace == "/my/workspace"
         assert m.settings.concurrency.hf_downloads == 10
         # Non-overridden fields keep defaults
         assert m.settings.concurrency.wget_downloads == 5
@@ -200,9 +205,9 @@ class TestBuildNested:
         m = validate_manifest({
             "version": 1,
             "unknown_key": "ignored",
-            "settings": {"workspace": "/w", "also_unknown": True},
+            "settings": {"venv": "/venv/custom", "also_unknown": True},
         })
-        assert m.settings.workspace == "/w"
+        assert m.settings.venv == "/venv/custom"
 
     def test_pip_packages_list_format(self):
         m = validate_manifest({
@@ -260,6 +265,38 @@ class TestBuildNested:
         assert len(m.write_files_late) == 1
         assert m.write_files_late[0].permissions == "0644"  # default
 
+    def test_extensions_construction(self):
+        m = validate_manifest({
+            "version": 1,
+            "extensions": [
+                {"module": "provisioner_comfyui", "config": {"workflows": ["a.json"]}, "enabled": True},
+                {"module": "provisioner_other", "enabled": False},
+            ],
+        })
+        assert len(m.extensions) == 2
+        assert isinstance(m.extensions[0], Extension)
+        assert m.extensions[0].module == "provisioner_comfyui"
+        assert m.extensions[0].config == {"workflows": ["a.json"]}
+        assert m.extensions[0].enabled is True
+        assert m.extensions[1].module == "provisioner_other"
+        assert m.extensions[1].enabled is False
+        assert m.extensions[1].config == {}
+
+    def test_extensions_arbitrary_nested_config(self):
+        """Arbitrary nested dicts in config pass through unchanged."""
+        m = validate_manifest({
+            "version": 1,
+            "extensions": [{
+                "module": "my_ext",
+                "config": {
+                    "workflows": ["https://example.com/wf.json"],
+                    "options": {"resolution": "1024x1024", "steps": 20},
+                },
+            }],
+        })
+        assert m.extensions[0].config["options"]["steps"] == 20
+        assert m.extensions[0].config["workflows"] == ["https://example.com/wf.json"]
+
     def test_conda_packages_construction(self):
         m = validate_manifest({
             "version": 1,
@@ -311,7 +348,6 @@ class TestFullManifest:
     def test_full_manifest(self, full_manifest_data):
         m = validate_manifest(full_manifest_data)
         assert m.version == 1
-        assert m.settings.workspace == "/workspace"
         assert m.settings.concurrency.hf_downloads == 2
         assert m.settings.retry.max_attempts == 3
         assert len(m.apt_packages) == 2
@@ -322,6 +358,9 @@ class TestFullManifest:
         assert len(m.downloads) == 3
         assert len(m.conditional_downloads) == 1
         assert m.env_merge == {"HF_MODELS": "downloads"}
+        assert len(m.extensions) == 1
+        assert m.extensions[0].module == "provisioner_example"
+        assert m.extensions[0].config == {"key": "value", "nested": {"a": 1}}
         assert len(m.services) == 1
         assert m.services[0].name == "test-app"
         assert len(m.write_files) == 1

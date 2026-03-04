@@ -163,7 +163,6 @@ class TestDryRunPipeline:
         monkeypatch.setenv("MY_WS", "/workspace")
         path = tmp_manifest({
             "version": 1,
-            "settings": {"workspace": "${MY_WS}"},
             "downloads": [{
                 "url": "https://huggingface.co/a/b/resolve/main/f.bin",
                 "dest": "${MY_WS}/models/f.bin",
@@ -230,6 +229,19 @@ class TestDryRunPipeline:
         path = tmp_manifest({
             "version": 1,
             "pip_packages": [{"venv": "system", "packages": ["requests"]}],
+        })
+        result = run(path, dry_run=True)
+        assert result == 0
+
+    @patch("provisioner.__main__.validate_hf_token", return_value=False)
+    @patch("provisioner.__main__.validate_civitai_token", return_value=False)
+    def test_extensions_dry_run(self, mock_civ, mock_hf, tmp_manifest):
+        path = tmp_manifest({
+            "version": 1,
+            "extensions": [
+                {"module": "nonexistent_ext", "config": {"key": "val"}},
+                {"module": "disabled_ext", "enabled": False},
+            ],
         })
         result = run(path, dry_run=True)
         assert result == 0
@@ -360,6 +372,32 @@ class TestErrorHandling:
         result = run(path)
         assert result == 1  # exit code still non-zero
         mock_subproc.assert_called_once()  # but post_command ran
+
+    @patch("provisioner.__main__.handle_failure")
+    @patch("provisioner.__main__.validate_hf_token", return_value=False)
+    @patch("provisioner.__main__.validate_civitai_token", return_value=False)
+    @patch("provisioner.__main__.install_apt_packages")
+    @patch("provisioner.__main__.run_extensions", side_effect=RuntimeError("extension broke"))
+    @patch("provisioner.__main__.clone_git_repos")
+    @patch("provisioner.__main__.install_pip_packages")
+    @patch("provisioner.__main__.register_services")
+    def test_extension_failure_is_fatal(
+        self, mock_svc, mock_pip, mock_git, mock_ext, mock_apt, mock_civ, mock_hf,
+        mock_failure, tmp_manifest,
+    ):
+        """Phase 3b failure should abort -- phases 4-8 never run."""
+        path = tmp_manifest({
+            "version": 1,
+            "extensions": [{"module": "bad_ext", "config": {}}],
+            "git_repos": [{"url": "https://github.com/a/b", "dest": "/d"}],
+            "services": [{"name": "app", "command": "echo", "workdir": "/tmp"}],
+        })
+        result = run(path)
+        assert result == 1
+        mock_git.assert_not_called()
+        mock_pip.assert_not_called()
+        mock_svc.assert_not_called()
+        mock_failure.assert_called_once()
 
     @patch("provisioner.__main__.handle_failure")
     @patch("provisioner.__main__.validate_hf_token", return_value=False)

@@ -296,21 +296,21 @@ class TestLoadManifest:
         assert len(m.services) == 1
 
     def test_expands_env_vars(self, tmp_manifest, monkeypatch):
-        monkeypatch.setenv("MY_WORKSPACE", "/custom/workspace")
+        monkeypatch.setenv("MY_VENV", "/venv/custom")
         path = tmp_manifest({
             "version": 1,
-            "settings": {"workspace": "${MY_WORKSPACE}"},
+            "settings": {"venv": "${MY_VENV}"},
         })
         m = load_manifest(path)
-        assert m.settings.workspace == "/custom/workspace"
+        assert m.settings.venv == "/venv/custom"
 
     def test_expands_defaults(self, tmp_manifest):
         path = tmp_manifest({
             "version": 1,
-            "settings": {"workspace": "${UNSET_12345:-/fallback}"},
+            "settings": {"venv": "${UNSET_12345:-/venv/fallback}"},
         })
         m = load_manifest(path)
-        assert m.settings.workspace == "/fallback"
+        assert m.settings.venv == "/venv/fallback"
 
     def test_empty_file_raises(self, tmp_path):
         path = tmp_path / "empty.yaml"

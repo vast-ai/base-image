@@ -8,7 +8,6 @@
 version: 1
 
 settings:
-  workspace: "${WORKSPACE:-/workspace}"
   venv: "/venv/main"
   concurrency:
     hf_downloads: 3

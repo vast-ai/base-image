@@ -8,6 +8,7 @@ Execution phases (sequential):
     2. Validate auth tokens, resolve conditional_downloads
     2b. Write early files (write_files)              [fail-fast]
     3. Install apt packages                          [fail-fast]
+    3b. Run extensions (discover repos/downloads)    [fail-fast]
     4. Clone git repos + post commands (parallel)    [fail-fast]
     5. Install pip packages                          [fail-fast]
     5b. Install conda packages                       [fail-fast]
@@ -37,6 +38,7 @@ import sys
 
 from .auth import validate_civitai_token, validate_hf_token
 from .concurrency import run_parallel
+from .extensions import run_extensions
 from .downloaders.huggingface import download_hf
 from .downloaders.wget import download_wget
 from .failure import handle_failure
@@ -84,9 +86,9 @@ def _pip_block_hash_data(block: PipPackages, default_venv: str) -> str:
 def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
     """Execute the full provisioning pipeline.
 
-    Phases 3-5 (apt/git/pip) are fail-fast: a failure skips remaining
-    phases and returns 1 immediately -- the app can't run without its
-    dependencies.
+    Phases 3-5b (apt/extensions/git/pip/conda) are fail-fast: a failure
+    skips remaining phases and returns 1 immediately -- the app can't
+    run without its dependencies.
 
     Phase 6 (downloads) is best-effort: individual download failures
     are logged but execution continues.  Missing models are recoverable
@@ -110,7 +112,6 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
     setup_logging(manifest.settings.log_file)
 
     log.info("Provisioner starting (version 1)")
-    log.info("Workspace: %s", manifest.settings.workspace)
 
     if dry_run:
         log.info("=== DRY RUN MODE ===")
@@ -165,6 +166,25 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("apt", apt_hash)
         except Exception as e:
             log.error("APT installation failed: %s", e)
+            handle_failure(manifest.on_failure, manifest_path, error=str(e))
+            return 1
+
+    # Phase 3b: Extensions (discovery -- may append to git_repos, downloads, etc.)
+    log.info("--- Phase 3b: Extensions ---")
+    ext_hash_data = json.dumps(
+        [{"module": e.module, "config": e.config, "enabled": e.enabled} for e in manifest.extensions],
+        sort_keys=True,
+    )
+    ext_hash = compute_stage_hash("extensions", ext_hash_data)
+    if not dry_run and is_stage_complete("extensions", ext_hash):
+        log.info("Extensions unchanged, skipping")
+    else:
+        try:
+            run_extensions(manifest.extensions, manifest=manifest, dry_run=dry_run)
+            if not dry_run:
+                mark_stage_complete("extensions", ext_hash)
+        except Exception as e:
+            log.error("Extension failed: %s", e)
             handle_failure(manifest.on_failure, manifest_path, error=str(e))
             return 1
 

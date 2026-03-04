@@ -1,7 +1,12 @@
 """HuggingFace download handler.
 
-Parses HF URLs to extract repo/file, then uses `huggingface-cli download`
-to fetch files with automatic token usage from $HF_TOKEN.
+Supports two modes:
+  1. Single file: URL contains /resolve/ — downloads one file to dest.
+  2. Full repo:   URL is just huggingface.co/org/repo — downloads entire model.
+
+When dest is empty, downloads go to the HF cache ($HF_HOME or
+~/.cache/huggingface/hub).  This is the standard approach for inference
+engines like vLLM that read models from cache directly.
 """
 
 from __future__ import annotations
@@ -19,33 +24,110 @@ from .base import retry_with_backoff
 
 log = logging.getLogger("provisioner")
 
-# Pattern: https://huggingface.co/{org}/{repo}/resolve/{revision}/{file_path}
-_HF_URL_RE = re.compile(
+# Single file: https://huggingface.co/{org}/{repo}/resolve/{revision}/{file_path}
+_HF_FILE_RE = re.compile(
     r"https://huggingface\.co/([^/]+/[^/]+)/resolve/([^/]+)/(.*)"
+)
+
+# Repo-level: https://huggingface.co/{org}/{repo} (optionally with trailing /)
+_HF_REPO_RE = re.compile(
+    r"https://huggingface\.co/([^/]+/[^/]+?)/?$"
 )
 
 
 def parse_hf_url(url: str) -> tuple[str, str, str]:
     """Extract (repo, revision, file_path) from a HuggingFace URL.
 
-    Raises ValueError if the URL doesn't match the expected pattern.
+    For single-file URLs: returns (repo, revision, file_path).
+    For repo-level URLs: returns (repo, "", "").
+
+    Raises ValueError if the URL doesn't match any expected pattern.
     """
-    m = _HF_URL_RE.match(url)
-    if not m:
-        raise ValueError(f"Invalid HuggingFace URL: {url}")
-    return m.group(1), m.group(2), m.group(3)
+    m = _HF_FILE_RE.match(url)
+    if m:
+        return m.group(1), m.group(2), m.group(3)
+
+    m = _HF_REPO_RE.match(url)
+    if m:
+        return m.group(1), "", ""
+
+    raise ValueError(f"Invalid HuggingFace URL: {url}")
 
 
-def download_hf(entry: DownloadEntry, retry: RetrySettings, dry_run: bool = False) -> None:
-    """Download a file from HuggingFace.
+def _download_repo(
+    repo: str, dest: str, retry: RetrySettings, dry_run: bool = False,
+) -> None:
+    """Download an entire HuggingFace repo."""
+    cache_mode = not dest
 
-    Uses `huggingface-cli download` which automatically reads $HF_TOKEN.
-    File locking prevents concurrent downloads of the same file.
-    """
-    repo, revision, file_path = parse_hf_url(entry.url)
-    dest = entry.dest
+    if dry_run:
+        if cache_mode:
+            log.info("[DRY RUN] Would download HF repo %s -> HF cache", repo)
+        else:
+            log.info("[DRY RUN] Would download HF repo %s -> %s", repo, dest)
+        return
 
-    # If dest ends with /, append the filename from the URL
+    label = repo
+
+    def _do_download() -> bool:
+        cmd = ["hf", "download", repo]
+        if dest:
+            cmd += ["--local-dir", dest]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            log.warning("hf download stderr: %s", result.stderr.strip())
+            return False
+        if cache_mode:
+            log.info("Successfully downloaded repo %s to HF cache", repo)
+        else:
+            log.info("Successfully downloaded repo %s -> %s", repo, dest)
+        return True
+
+    if dest:
+        os.makedirs(dest, exist_ok=True)
+
+    if not retry_with_backoff(
+        _do_download,
+        label=label,
+        max_attempts=retry.max_attempts,
+        initial_delay=retry.initial_delay,
+        backoff_multiplier=retry.backoff_multiplier,
+    ):
+        raise RuntimeError(f"Failed to download repo {repo}")
+
+
+def _download_file(
+    repo: str, revision: str, file_path: str,
+    dest: str, retry: RetrySettings, dry_run: bool = False,
+) -> None:
+    """Download a single file from a HuggingFace repo."""
+    cache_mode = not dest
+
+    if cache_mode:
+        if dry_run:
+            log.info("[DRY RUN] Would download HF %s/%s -> HF cache", repo, file_path)
+            return
+
+        def _do_download() -> bool:
+            cmd = ["hf", "download", repo, file_path, "--revision", revision]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                log.warning("hf download stderr: %s", result.stderr.strip())
+                return False
+            log.info("Successfully downloaded %s/%s to HF cache", repo, file_path)
+            return True
+
+        if not retry_with_backoff(
+            _do_download,
+            label=f"{repo}/{file_path}",
+            max_attempts=retry.max_attempts,
+            initial_delay=retry.initial_delay,
+            backoff_multiplier=retry.backoff_multiplier,
+        ):
+            raise RuntimeError(f"Failed to download {repo}/{file_path}")
+        return
+
+    # dest mode: download to a specific path
     if dest.endswith("/"):
         dest = os.path.join(dest, os.path.basename(file_path))
 
@@ -64,7 +146,7 @@ def download_hf(entry: DownloadEntry, retry: RetrySettings, dry_run: bool = Fals
             tmp_dir = tempfile.mkdtemp()
             try:
                 cmd = [
-                    "huggingface-cli", "download",
+                    "hf", "download",
                     repo, file_path,
                     "--revision", revision,
                     "--local-dir", tmp_dir,
@@ -95,4 +177,19 @@ def download_hf(entry: DownloadEntry, retry: RetrySettings, dry_run: bool = Fals
             initial_delay=retry.initial_delay,
             backoff_multiplier=retry.backoff_multiplier,
         ):
-            raise RuntimeError(f"Failed to download {entry.url}")
+            raise RuntimeError(f"Failed to download {repo}/{file_path}")
+
+
+def download_hf(entry: DownloadEntry, retry: RetrySettings, dry_run: bool = False) -> None:
+    """Download from HuggingFace.
+
+    Handles both single-file URLs (/resolve/) and full repo URLs.
+    When dest is empty, downloads go to the HF cache ($HF_HOME).
+    Uses `hf download` which automatically reads $HF_TOKEN.
+    """
+    repo, revision, file_path = parse_hf_url(entry.url)
+
+    if file_path:
+        _download_file(repo, revision, file_path, entry.dest, retry, dry_run)
+    else:
+        _download_repo(repo, entry.dest, retry, dry_run)

@@ -52,7 +52,6 @@ def full_manifest_data():
     return {
         "version": 1,
         "settings": {
-            "workspace": "/workspace",
             "venv": "/venv/main",
             "log_file": "/tmp/test_provisioner.log",
             "concurrency": {"hf_downloads": 2, "wget_downloads": 4},
@@ -130,6 +129,12 @@ def full_manifest_data():
         ],
         "write_files_late": [
             {"path": "/tmp/late.conf", "content": "done=true\n", "permissions": "0600"},
+        ],
+        "extensions": [
+            {
+                "module": "provisioner_example",
+                "config": {"key": "value", "nested": {"a": 1}},
+            },
         ],
         "post_commands": ["echo done"],
     }

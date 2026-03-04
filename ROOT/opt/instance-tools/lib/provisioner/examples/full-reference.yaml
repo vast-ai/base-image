@@ -6,7 +6,6 @@ version: 1
 # ---- Settings ----
 # All fields are optional with sensible defaults
 settings:
-  workspace: "${WORKSPACE:-/workspace}"     # Base directory for app files
   venv: "/venv/main"                        # Default venv for pip installs
   log_file: "/var/log/portal/provisioning.log"
   concurrency:
@@ -56,6 +55,20 @@ write_files:
 apt_packages:
   - ffmpeg
   - libsndfile1
+
+# ---- Phase 3b: Extensions (discovery) ----
+# Custom Python modules that discover additional resources (models, repos, packages).
+# Extensions run BEFORE git clones and downloads, so they can append to manifest lists.
+# Derivative images place extension packages under /opt/instance-tools/lib/
+# Each module must implement: run(config, context, dry_run) -> None
+extensions:
+  - module: provisioner_comfyui             # Importable Python module
+    config:                                  # Arbitrary dict passed to run()
+      workflows:
+        - https://example.com/workflow.json
+        - /workspace/workflows/my_workflow.json
+  - module: provisioner_other               # Another extension
+    enabled: false                           # Disabled, will be skipped
 
 # ---- Phase 5: Pip packages ----
 # List of pip install blocks. Each block can target a different venv.
@@ -120,13 +133,31 @@ git_repos:
       - "chmod +x scripts/*.sh"
 
 # ---- Phase 6: Downloads ----
-# URL auto-detection: huggingface.co -> huggingface-cli, civitai.com -> wget+auth, other -> wget
-# Trailing / on dest -> use Content-Disposition filename
+# URL auto-detection: huggingface.co -> hf download, civitai.com -> wget+auth, other -> wget
+#
+# HuggingFace supports two modes:
+#   Single file: URL has /resolve/{rev}/{path} — downloads one file
+#   Full repo:   URL is just huggingface.co/org/repo — downloads entire model
+#
+# When dest is omitted, HF downloads go to $HF_HOME cache.
+# Inference engines like vLLM load directly from cache by repo ID.
 downloads:
+  # Single file to specific path
   - url: https://huggingface.co/org/model/resolve/main/weights.safetensors
     dest: "${WORKSPACE:-/workspace}/models/weights.safetensors"
+
+  # Full repo to a local directory
+  - url: https://huggingface.co/meta-llama/Llama-3-8B
+    dest: "${WORKSPACE:-/workspace}/models/llama3"
+
+  # Full repo to HF cache (no dest) — standard for vLLM, TGI, etc.
+  - url: https://huggingface.co/meta-llama/Llama-3-8B
+
+  # CivitAI (trailing / resolves filename from Content-Disposition header)
   - url: https://civitai.com/api/download/models/12345
     dest: "${WORKSPACE:-/workspace}/models/loras/"
+
+  # Generic wget
   - url: https://example.com/file.bin
     dest: "${WORKSPACE:-/workspace}/other/file.bin"
 

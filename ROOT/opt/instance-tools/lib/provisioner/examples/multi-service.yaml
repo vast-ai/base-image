@@ -4,7 +4,6 @@
 version: 1
 
 settings:
-  workspace: "${WORKSPACE:-/workspace}"
   venv: "/venv/main"
 
 on_failure:

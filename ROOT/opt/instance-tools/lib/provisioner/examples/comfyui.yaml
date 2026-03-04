@@ -13,7 +13,6 @@
 version: 1
 
 settings:
-  workspace: "${WORKSPACE:-/workspace}"
   venv: "/venv/main"
 
 pip_packages:
@@ -27,7 +26,7 @@ pip_packages:
 git_repos:
   - url: https://github.com/comfyanonymous/ComfyUI
     dest: "${WORKSPACE:-/workspace}/ComfyUI"
-    ref: "${COMFYUI_VERSION:-main}"
+    ref: "${COMFYUI_VERSION:-master}"
     post_commands:
       - "git config --file /tmp/temporary-git-config --add safe.directory '*'"
       - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"

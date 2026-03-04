@@ -20,7 +20,6 @@ class ConcurrencySettings:
 
 @dataclass
 class Settings:
-    workspace: str = "/workspace"
     venv: str = "/venv/main"
     log_file: str = "/var/log/portal/provisioning.log"
     concurrency: ConcurrencySettings = field(default_factory=ConcurrencySettings)
@@ -108,6 +107,13 @@ class FileWrite:
 
 
 @dataclass
+class Extension:
+    module: str = ""
+    config: dict = field(default_factory=dict)
+    enabled: bool = True
+
+
+@dataclass
 class OnFailure:
     action: str = "continue"
     max_retries: int = 3
@@ -127,6 +133,7 @@ class Manifest:
     downloads: list[DownloadEntry] = field(default_factory=list)
     conditional_downloads: list[ConditionalDownload] = field(default_factory=list)
     env_merge: dict[str, str] = field(default_factory=dict)
+    extensions: list[Extension] = field(default_factory=list)
     services: list[Service] = field(default_factory=list)
     write_files_late: list[FileWrite] = field(default_factory=list)
     post_commands: list[str] = field(default_factory=list)

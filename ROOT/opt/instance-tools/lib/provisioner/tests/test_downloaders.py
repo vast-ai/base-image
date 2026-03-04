@@ -63,6 +63,30 @@ class TestParseHfUrl:
         assert repo == "my-org/my-repo"
         assert rev == "v1.0"
 
+    def test_repo_url(self):
+        repo, rev, path = parse_hf_url(
+            "https://huggingface.co/meta-llama/Llama-3-8B"
+        )
+        assert repo == "meta-llama/Llama-3-8B"
+        assert rev == ""
+        assert path == ""
+
+    def test_repo_url_trailing_slash(self):
+        repo, rev, path = parse_hf_url(
+            "https://huggingface.co/meta-llama/Llama-3-8B/"
+        )
+        assert repo == "meta-llama/Llama-3-8B"
+        assert rev == ""
+        assert path == ""
+
+    def test_repo_url_dots_in_name(self):
+        repo, rev, path = parse_hf_url(
+            "https://huggingface.co/black-forest-labs/FLUX.1-dev"
+        )
+        assert repo == "black-forest-labs/FLUX.1-dev"
+        assert rev == ""
+        assert path == ""
+
 
 # ---------- retry_with_backoff ----------
 
@@ -159,16 +183,15 @@ class TestGetContentDispositionFilename:
         assert "Authorization: Bearer tok" in cmd
 
 
-# ---------- download_hf ----------
+# ---------- download_hf (single file with dest) ----------
 
-class TestDownloadHf:
+class TestDownloadHfFile:
     def test_dry_run(self):
         entry = DownloadEntry(
             url="https://huggingface.co/org/repo/resolve/main/model.bin",
             dest="/tmp/model.bin",
         )
         retry = RetrySettings()
-        # Should not raise, should not call subprocess
         download_hf(entry, retry=retry, dry_run=True)
 
     def test_dry_run_trailing_slash(self):
@@ -190,7 +213,6 @@ class TestDownloadHf:
             dest="/tmp/model.bin",
         )
         download_hf(entry, retry=RetrySettings())
-        # Should not raise, file already exists
 
     @patch("provisioner.downloaders.huggingface.retry_with_backoff", return_value=True)
     @patch("provisioner.downloaders.huggingface.FileLock")
@@ -208,6 +230,85 @@ class TestDownloadHf:
         mock_retry.assert_called_once()
         kwargs = mock_retry.call_args[1]
         assert kwargs["max_attempts"] == 3
+
+
+# ---------- download_hf (single file, no dest -> HF cache) ----------
+
+class TestDownloadHfFileCache:
+    def test_dry_run_no_dest(self, caplog):
+        import logging
+        caplog.set_level(logging.INFO)
+        entry = DownloadEntry(
+            url="https://huggingface.co/org/repo/resolve/main/model.bin",
+            dest="",
+        )
+        download_hf(entry, retry=RetrySettings(), dry_run=True)
+        assert "HF cache" in caplog.text
+
+    @patch("provisioner.downloaders.huggingface.retry_with_backoff", return_value=True)
+    def test_no_dest_calls_retry_without_local_dir(self, mock_retry):
+        entry = DownloadEntry(
+            url="https://huggingface.co/org/repo/resolve/main/model.bin",
+            dest="",
+        )
+        download_hf(entry, retry=RetrySettings(max_attempts=2))
+        mock_retry.assert_called_once()
+        kwargs = mock_retry.call_args[1]
+        assert kwargs["max_attempts"] == 2
+
+
+# ---------- download_hf (full repo) ----------
+
+class TestDownloadHfRepo:
+    def test_dry_run_with_dest(self, caplog):
+        import logging
+        caplog.set_level(logging.INFO)
+        entry = DownloadEntry(
+            url="https://huggingface.co/meta-llama/Llama-3-8B",
+            dest="/workspace/models/llama3",
+        )
+        download_hf(entry, retry=RetrySettings(), dry_run=True)
+        assert "meta-llama/Llama-3-8B" in caplog.text
+        assert "/workspace/models/llama3" in caplog.text
+
+    def test_dry_run_no_dest(self, caplog):
+        import logging
+        caplog.set_level(logging.INFO)
+        entry = DownloadEntry(
+            url="https://huggingface.co/meta-llama/Llama-3-8B",
+            dest="",
+        )
+        download_hf(entry, retry=RetrySettings(), dry_run=True)
+        assert "HF cache" in caplog.text
+
+    @patch("provisioner.downloaders.huggingface.retry_with_backoff", return_value=True)
+    @patch("provisioner.downloaders.huggingface.os.makedirs")
+    def test_repo_with_dest(self, mock_makedirs, mock_retry):
+        entry = DownloadEntry(
+            url="https://huggingface.co/meta-llama/Llama-3-8B",
+            dest="/workspace/models/llama3",
+        )
+        download_hf(entry, retry=RetrySettings(max_attempts=3))
+        mock_retry.assert_called_once()
+        mock_makedirs.assert_called_once_with("/workspace/models/llama3", exist_ok=True)
+
+    @patch("provisioner.downloaders.huggingface.retry_with_backoff", return_value=True)
+    def test_repo_no_dest_cache_mode(self, mock_retry):
+        entry = DownloadEntry(
+            url="https://huggingface.co/meta-llama/Llama-3-8B",
+            dest="",
+        )
+        download_hf(entry, retry=RetrySettings())
+        mock_retry.assert_called_once()
+
+    @patch("provisioner.downloaders.huggingface.retry_with_backoff", return_value=False)
+    def test_repo_download_failure_raises(self, mock_retry):
+        entry = DownloadEntry(
+            url="https://huggingface.co/meta-llama/Llama-3-8B",
+            dest="",
+        )
+        with pytest.raises(RuntimeError, match="Failed to download repo"):
+            download_hf(entry, retry=RetrySettings())
 
 
 # ---------- download_wget ----------
