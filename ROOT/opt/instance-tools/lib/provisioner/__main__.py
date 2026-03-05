@@ -1,26 +1,30 @@
 """CLI entry point for the declarative provisioner.
 
 Usage:
-    python -m provisioner manifest.yaml [--dry-run] [--force]
+    python -m provisioner [manifest.yaml | URL] [--dry-run] [--force]
+
+    When called without a manifest argument, the provisioner checks for
+    PROVISIONING_SCRIPT and runs only that.  If neither a manifest nor
+    PROVISIONING_SCRIPT is set, it exits 0 silently.
 
 Execution phases (sequential):
-    1. Load & validate manifest, expand env vars
-    2. Validate auth tokens, resolve conditional_downloads
+    1.  Load & validate manifest, expand env vars
+    1b. Run extensions (append to manifest)          [fail-fast]
+    2.  Validate auth tokens, resolve conditional_downloads
     2b. Write early files (write_files)              [fail-fast]
-    3. Install apt packages                          [fail-fast]
-    3b. Run extensions (discover repos/downloads)    [fail-fast]
-    4. Clone git repos + post commands (parallel)    [fail-fast]
-    5. Install pip packages                          [fail-fast]
+    3.  Install apt packages                         [fail-fast]
+    4.  Clone git repos + post commands (parallel)   [fail-fast]
+    5.  Install pip packages                         [fail-fast]
     5b. Install conda packages                       [fail-fast]
-    6. Download all files (parallel, two pools)      [best-effort]
-    7. Register supervisor services                  [always runs]
-    7b. Write late files (write_files_late)          [always runs]
-    8. Run post_commands                             [always runs]
+    6.  Download all files (parallel, two pools)     [fail-fast]
+    7.  Register supervisor services                 [fail-fast]
+    7b. Write late files (write_files_late)          [fail-fast]
+    8.  Run post_commands                             [fail-fast]
+    9.  Run PROVISIONING_SCRIPT (legacy script)      [fail-fast]
 
-Phases 3-5b are fail-fast: if any fails, later phases are skipped
-and the provisioner exits 1.  Phases 6-8 always run even if an
-earlier best-effort phase had failures.  The exit code is non-zero
-when anything failed, so the boot script knows to retry on next start.
+All phases are fail-fast: if any phase fails, later phases are
+skipped and the provisioner exits 1.  If provisioning hasn't
+produced the intended environment, it is marked as failed.
 
 Each phase uses content-hash idempotency: if the inputs haven't
 changed since the last successful run, the phase is skipped.
@@ -33,23 +37,26 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import time
+import urllib.parse
 
 from .auth import validate_civitai_token, validate_hf_token
 from .concurrency import run_parallel
 from .extensions import run_extensions
 from .downloaders.huggingface import download_hf
 from .downloaders.wget import download_wget
-from .failure import handle_failure
+from .failure import handle_failure, notify_success
 from .installers.apt import install_apt_packages
 from .installers.files import write_files
 from .installers.conda import install_conda_packages
 from .installers.git import clone_git_repos
 from .installers.pip import install_pip_packages
 from .log import setup_logging
-from .manifest import apply_env_merge, load_manifest, resolve_conditionals
-from .schema import DownloadEntry, PipPackages
+from .manifest import apply_env_merge, load_manifest, resolve_conditionals, resolve_manifest_source
+from .schema import CondaPackages, DownloadEntry, Manifest, PipPackages
 from .state import clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
 from .supervisor import register_services
 
@@ -63,7 +70,8 @@ def _classify_downloads(
     hf = []
     wget = []
     for entry in downloads:
-        if "huggingface.co" in entry.url:
+        hostname = urllib.parse.urlparse(entry.url).hostname or ""
+        if hostname == "huggingface.co" or hostname.endswith(".huggingface.co"):
             hf.append(entry)
         else:
             wget.append(entry)
@@ -83,30 +91,73 @@ def _pip_block_hash_data(block: PipPackages, default_venv: str) -> str:
     }, sort_keys=True)
 
 
-def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
+def _conda_block_hash_data(block: CondaPackages, default_conda_env: str) -> str:
+    """Serialize a conda block for hashing."""
+    env = block.env or default_conda_env
+    return json.dumps({
+        "env": env,
+        "packages": sorted(block.packages),
+        "channels": sorted(block.channels),
+        "args": block.args,
+        "python": block.python,
+    }, sort_keys=True)
+
+
+def _apply_env_overrides(manifest: Manifest) -> None:
+    """Apply PROVISIONER_* env var overrides to a loaded manifest.
+
+    Env vars override manifest values, letting operators tune behavior
+    without editing manifests.
+    """
+    val = os.environ.get("PROVISIONER_RETRY_MAX")
+    if val is not None:
+        try:
+            manifest.on_failure.max_retries = int(val)
+        except ValueError:
+            log.warning("PROVISIONER_RETRY_MAX=%r is not a valid integer, ignoring", val)
+
+    val = os.environ.get("PROVISIONER_RETRY_DELAY")
+    if val is not None:
+        try:
+            manifest.on_failure.retry_delay = int(val)
+        except ValueError:
+            log.warning("PROVISIONER_RETRY_DELAY=%r is not a valid integer, ignoring", val)
+
+    val = os.environ.get("PROVISIONER_FAILURE_ACTION")
+    if val is not None:
+        manifest.on_failure.action = val
+
+    val = os.environ.get("PROVISIONER_WEBHOOK_URL")
+    if val is not None:
+        manifest.on_failure.webhook = val
+
+    val = os.environ.get("PROVISIONER_WEBHOOK_ON_SUCCESS")
+    if val is not None:
+        manifest.on_failure.webhook_on_success = val.lower() in ("1", "true", "yes")
+
+    val = os.environ.get("PROVISIONER_LOG_FILE")
+    if val is not None:
+        manifest.settings.log_file = val
+
+    val = os.environ.get("PROVISIONER_VENV")
+    if val is not None:
+        manifest.settings.venv = val
+
+    val = os.environ.get("PROVISIONER_CONDA_ENV")
+    if val is not None:
+        manifest.settings.conda_env = val
+
+
+def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bool = False) -> int:
     """Execute the full provisioning pipeline.
 
-    Phases 3-5b (apt/extensions/git/pip/conda) are fail-fast: a failure
-    skips remaining phases and returns 1 immediately -- the app can't
-    run without its dependencies.
-
-    Phase 6 (downloads) is best-effort: individual download failures
-    are logged but execution continues.  Missing models are recoverable
-    and the app may still start.
-
-    Phases 7-8 (services/post_commands) always run regardless of
-    download failures -- the app must be registered with supervisor.
+    All phases are fail-fast: if any phase fails, later phases are
+    skipped and the function returns 1 immediately.  If provisioning
+    hasn't produced the intended environment, it should be marked
+    as failed so the retry loop can re-attempt.
 
     Returns 0 on full success, 1 if anything failed.
     """
-    had_errors = False
-
-    # Phase 1: Load & validate manifest
-    try:
-        manifest = load_manifest(manifest_path)
-    except Exception as e:
-        log.error("Failed to load manifest: %s", e)
-        return 1
 
     # Set up logging with the manifest's log file
     setup_logging(manifest.settings.log_file)
@@ -119,6 +170,27 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
     if force:
         log.info("=== FORCE MODE: clearing all state ===")
         clear_all_state()
+
+    # Phase 1b: Extensions (discovery -- may append to git_repos, downloads, etc.)
+    # Extensions run first so they can populate the manifest before any
+    # installation phase sees it.  Their only purpose is to append items
+    # to existing manifest lists (downloads, git_repos, pip_packages, etc.).
+    log.info("--- Phase 1b: Extensions ---")
+    ext_hash_data = json.dumps(
+        [{"module": e.module, "config": e.config, "enabled": e.enabled} for e in manifest.extensions],
+        sort_keys=True,
+    )
+    ext_hash = compute_stage_hash("extensions", ext_hash_data)
+    if not dry_run and is_stage_complete("extensions", ext_hash):
+        log.info("Extensions unchanged, skipping")
+    else:
+        try:
+            run_extensions(manifest.extensions, manifest=manifest, dry_run=dry_run)
+            if not dry_run:
+                mark_stage_complete("extensions", ext_hash)
+        except Exception as e:
+            log.error("Extension failed: %s", e)
+            return 1
 
     # Phase 2: Validate auth tokens
     hf_token_env = manifest.auth.huggingface.token_env
@@ -148,7 +220,6 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("write_files", wf_hash)
         except Exception as e:
             log.error("Early file write failed: %s", e)
-            handle_failure(manifest.on_failure, manifest_path, error=str(e))
             return 1
 
     # ---- Fail-fast phases (3-5): dependencies required for the app ----
@@ -166,33 +237,13 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("apt", apt_hash)
         except Exception as e:
             log.error("APT installation failed: %s", e)
-            handle_failure(manifest.on_failure, manifest_path, error=str(e))
-            return 1
-
-    # Phase 3b: Extensions (discovery -- may append to git_repos, downloads, etc.)
-    log.info("--- Phase 3b: Extensions ---")
-    ext_hash_data = json.dumps(
-        [{"module": e.module, "config": e.config, "enabled": e.enabled} for e in manifest.extensions],
-        sort_keys=True,
-    )
-    ext_hash = compute_stage_hash("extensions", ext_hash_data)
-    if not dry_run and is_stage_complete("extensions", ext_hash):
-        log.info("Extensions unchanged, skipping")
-    else:
-        try:
-            run_extensions(manifest.extensions, manifest=manifest, dry_run=dry_run)
-            if not dry_run:
-                mark_stage_complete("extensions", ext_hash)
-        except Exception as e:
-            log.error("Extension failed: %s", e)
-            handle_failure(manifest.on_failure, manifest_path, error=str(e))
             return 1
 
     # Phase 4: Clone git repos (parallel)
     log.info("--- Phase 4: Git repos ---")
     git_hash_data = json.dumps(
         sorted(
-            [(r.url, r.ref, r.recursive, r.pull_if_exists, r.post_commands) for r in manifest.git_repos],
+            [(r.url, r.dest, r.ref, r.recursive, r.pull_if_exists, r.post_commands) for r in manifest.git_repos],
             key=lambda t: t[0],
         )
     )
@@ -209,7 +260,6 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("git", git_hash)
         except Exception as e:
             log.error("Git clone failed: %s", e)
-            handle_failure(manifest.on_failure, manifest_path, error=str(e))
             return 1
 
     # Phase 5: Install pip packages
@@ -233,32 +283,26 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("pip", pip_hash)
         except Exception as e:
             log.error("Pip installation failed: %s", e)
-            handle_failure(manifest.on_failure, manifest_path, error=str(e))
             return 1
 
     # Phase 5b: Install conda packages
     log.info("--- Phase 5b: Conda packages ---")
-    conda_hash_data = json.dumps({
-        "packages": sorted(manifest.conda_packages.packages),
-        "channels": sorted(manifest.conda_packages.channels),
-        "args": manifest.conda_packages.args,
-        "env": manifest.conda_packages.env,
-        "python": manifest.conda_packages.python,
-    }, sort_keys=True)
+    conda_hash_data = json.dumps(
+        [_conda_block_hash_data(b, manifest.settings.conda_env) for b in manifest.conda_packages],
+        sort_keys=True,
+    )
     conda_hash = compute_stage_hash("conda", conda_hash_data)
     if not dry_run and is_stage_complete("conda", conda_hash):
         log.info("Conda packages unchanged, skipping")
     else:
         try:
-            install_conda_packages(manifest.conda_packages, dry_run=dry_run)
+            for block in manifest.conda_packages:
+                install_conda_packages(block, default_conda_env=manifest.settings.conda_env, dry_run=dry_run)
             if not dry_run:
                 mark_stage_complete("conda", conda_hash)
         except Exception as e:
             log.error("Conda installation failed: %s", e)
-            handle_failure(manifest.on_failure, manifest_path, error=str(e))
             return 1
-
-    # ---- Best-effort phase (6): downloads may fail without breaking the app ----
 
     # Phase 6: Download files (parallel, two pools)
     log.info("--- Phase 6: Downloads ---")
@@ -273,6 +317,7 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
         retry = manifest.settings.retry
         civitai_token = os.environ.get(civitai_token_env, "")
         concurrency = manifest.settings.concurrency
+        dl_failed = False
 
         if hf_downloads:
             def _dl_hf(entry: DownloadEntry) -> None:
@@ -284,10 +329,10 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 label="HF downloads",
             )
             if any(r is not None for r in hf_results):
-                had_errors = True
-                log.warning("Some HuggingFace downloads failed -- continuing anyway")
+                dl_failed = True
+                log.error("Some HuggingFace downloads failed")
 
-        if wget_downloads:
+        if not dl_failed and wget_downloads:
             def _dl_wget(entry: DownloadEntry) -> None:
                 download_wget(entry, retry=retry, civitai_token=civitai_token, dry_run=dry_run)
 
@@ -297,23 +342,24 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 label="wget downloads",
             )
             if any(r is not None for r in wget_results):
-                had_errors = True
-                log.warning("Some wget downloads failed -- continuing anyway")
+                dl_failed = True
+                log.error("Some wget downloads failed")
 
         if not hf_downloads and not wget_downloads:
             log.info("No downloads to process")
 
-        # Only mark complete if no download errors
-        if not had_errors and not dry_run:
-            mark_stage_complete("downloads", dl_hash)
+        if dl_failed:
+            return 1
 
-    # ---- Always-run phases (7-8): app must be registered even if downloads failed ----
+        if not dry_run:
+            mark_stage_complete("downloads", dl_hash)
 
     # Phase 7: Register supervisor services
     log.info("--- Phase 7: Supervisor services ---")
     svc_hash_data = json.dumps(
         sorted(
-            [(s.name, s.command, s.venv, s.workdir, json.dumps(s.environment, sort_keys=True))
+            [(s.name, s.command, s.venv, s.workdir, json.dumps(s.environment, sort_keys=True),
+              s.portal_search_term, s.skip_on_serverless, s.wait_for_provisioning, s.pre_commands)
              for s in manifest.services],
             key=lambda t: t[0],
         )
@@ -328,7 +374,7 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("services", svc_hash)
         except Exception as e:
             log.error("Service registration failed: %s", e)
-            had_errors = True
+            return 1
 
     # Phase 7b: Write late files
     log.info("--- Phase 7b: Late file writes ---")
@@ -345,7 +391,7 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 mark_stage_complete("write_files_late", wfl_hash)
         except Exception as e:
             log.error("Late file write failed: %s", e)
-            had_errors = True
+            return 1
 
     # Phase 8: Post commands
     log.info("--- Phase 8: Post commands ---")
@@ -359,21 +405,164 @@ def run(manifest_path: str, dry_run: bool = False, force: bool = False) -> int:
                 log.info("[DRY RUN] Would run: %s", cmd)
                 continue
             log.info("Running: %s", cmd)
-            result = subprocess.run(cmd, shell=True)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.stdout:
+                for line in result.stdout.rstrip("\n").split("\n"):
+                    log.info("[post_command] %s", line)
+            if result.stderr:
+                for line in result.stderr.rstrip("\n").split("\n"):
+                    log.warning("[post_command] %s", line)
             if result.returncode != 0:
                 log.error("Post command failed (exit %d): %s", result.returncode, cmd)
-                had_errors = True
+                return 1
 
-        if not had_errors and not dry_run:
+        if not dry_run:
             mark_stage_complete("post_commands", post_hash)
 
-    if had_errors:
-        log.warning("Provisioning finished with errors")
-        handle_failure(manifest.on_failure, manifest_path, error="provisioning finished with errors")
-        return 1
+    # Phase 9: Run PROVISIONING_SCRIPT (legacy script support)
+    script_url = os.environ.get("PROVISIONING_SCRIPT", "")
+    if script_url:
+        log.info("--- Phase 9: Provisioning script ---")
+        script_hash = compute_stage_hash("provisioning_script", script_url)
+        if not dry_run and is_stage_complete("provisioning_script", script_hash):
+            log.info("Provisioning script unchanged, skipping")
+        else:
+            if dry_run:
+                log.info("[DRY RUN] Would download and run PROVISIONING_SCRIPT: %s", script_url)
+            else:
+                # Download script if URL, otherwise use local path
+                try:
+                    script_path = resolve_manifest_source(script_url, cache_path="/provisioning.sh")
+                except RuntimeError as e:
+                    log.error("Failed to download provisioning script: %s", e)
+                    return 1
+
+                # Prep: dos2unix + chmod (match legacy behavior)
+                if shutil.which("dos2unix"):
+                    subprocess.run(["dos2unix", script_path], capture_output=True)
+                os.chmod(script_path, 0o755)
+
+                # Execute and capture output
+                log.info("Running provisioning script: %s", script_path)
+                result = subprocess.run(
+                    [script_path],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.stdout:
+                    for line in result.stdout.rstrip("\n").split("\n"):
+                        log.info("[script] %s", line)
+                if result.stderr:
+                    for line in result.stderr.rstrip("\n").split("\n"):
+                        log.warning("[script] %s", line)
+                if result.returncode != 0:
+                    log.error("Provisioning script failed (exit %d)", result.returncode)
+                    return 1
+
+                mark_stage_complete("provisioning_script", script_hash)
 
     log.info("Provisioning complete!")
     return 0
+
+
+def run_with_retries(manifest_source: str | None = None, dry_run: bool = False, force: bool = False) -> int:
+    """Load manifest, apply env overrides, and run with retry loop.
+
+    *manifest_source* may be a local file path, an HTTP(S) URL, or None.
+    If a URL, the manifest is downloaded first (with retries).
+    If None and PROVISIONING_SCRIPT is set, a default Manifest is used
+    (script-only mode).  If neither is set, returns 0 immediately.
+
+    The provisioner always retries on failure (default 3 retries, 30s delay).
+    After retries are exhausted, on_failure.action controls post-exhaustion
+    behavior: continue (default), stop, or destroy.
+
+    Returns 0 on success, 1 on failure.
+    """
+    # Script-only mode: no manifest, just PROVISIONING_SCRIPT
+    if manifest_source is None:
+        if not os.environ.get("PROVISIONING_SCRIPT"):
+            setup_logging()
+            log.info("No manifest and no PROVISIONING_SCRIPT set, nothing to do")
+            return 0
+
+        # Use a default manifest with env overrides for retry/failure settings
+        manifest = Manifest()
+        _apply_env_overrides(manifest)
+        manifest_path = "(script-only)"
+
+        max_retries = manifest.on_failure.max_retries
+        retry_delay = manifest.on_failure.retry_delay
+
+        if dry_run or max_retries == 0:
+            rc = run(manifest_path, manifest, dry_run=dry_run, force=force)
+            if rc == 0 and not dry_run:
+                notify_success(manifest.on_failure, manifest_path)
+            elif rc != 0 and not dry_run:
+                handle_failure(manifest.on_failure, manifest_path, error="provisioning script failed")
+            return rc
+
+        for attempt in range(1, max_retries + 1):
+            rc = run(manifest_path, manifest, dry_run=dry_run, force=force)
+            if rc == 0:
+                notify_success(manifest.on_failure, manifest_path)
+                return 0
+            if attempt < max_retries:
+                log.warning("Attempt %d/%d failed, retrying in %ds...", attempt, max_retries, retry_delay)
+                time.sleep(retry_delay)
+            else:
+                log.error("All %d attempts exhausted", max_retries)
+
+        handle_failure(manifest.on_failure, manifest_path, error="provisioning script failed after all retries")
+        return 1
+
+    # Resolve URL → local file (or pass through if already a path)
+    try:
+        manifest_path = resolve_manifest_source(manifest_source)
+    except RuntimeError as e:
+        setup_logging()
+        log.error("%s", e)
+        return 1
+
+    # Load manifest
+    try:
+        manifest = load_manifest(manifest_path)
+    except Exception as e:
+        setup_logging()
+        log.error("Failed to load manifest: %s", e)
+        return 1
+
+    # Apply env var overrides
+    _apply_env_overrides(manifest)
+
+    max_retries = manifest.on_failure.max_retries
+    retry_delay = manifest.on_failure.retry_delay
+
+    # Skip retry loop for dry-run or max_retries=0
+    if dry_run or max_retries == 0:
+        rc = run(manifest_path, manifest, dry_run=dry_run, force=force)
+        if rc == 0 and not dry_run:
+            notify_success(manifest.on_failure, manifest_path)
+        elif rc != 0 and not dry_run:
+            handle_failure(manifest.on_failure, manifest_path, error="provisioning failed")
+        return rc
+
+    # Retry loop
+    for attempt in range(1, max_retries + 1):
+        rc = run(manifest_path, manifest, dry_run=dry_run, force=force)
+        if rc == 0:
+            notify_success(manifest.on_failure, manifest_path)
+            return 0
+
+        if attempt < max_retries:
+            log.warning("Attempt %d/%d failed, retrying in %ds...", attempt, max_retries, retry_delay)
+            time.sleep(retry_delay)
+        else:
+            log.error("All %d attempts exhausted", max_retries)
+
+    # All retries exhausted — dispatch failure action
+    handle_failure(manifest.on_failure, manifest_path, error="provisioning failed after all retries")
+    return 1
 
 
 def main() -> None:
@@ -382,7 +571,9 @@ def main() -> None:
     )
     parser.add_argument(
         "manifest",
-        help="Path to YAML manifest file",
+        nargs="?",
+        default=None,
+        help="Path to YAML manifest file or HTTP(S) URL (optional if PROVISIONING_SCRIPT is set)",
     )
     parser.add_argument(
         "--dry-run",
@@ -400,7 +591,7 @@ def main() -> None:
     # Set up basic logging before manifest is loaded
     setup_logging()
 
-    sys.exit(run(args.manifest, dry_run=args.dry_run, force=args.force))
+    sys.exit(run_with_retries(args.manifest, dry_run=args.dry_run, force=args.force))
 
 
 if __name__ == "__main__":

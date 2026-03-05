@@ -7,13 +7,17 @@ import os
 import pytest
 import yaml
 
+from unittest.mock import MagicMock, patch
+
 from provisioner.manifest import (
     _expand_recursive,
+    _is_url,
     _parse_env_merge_entries,
     apply_env_merge,
     expand_env,
     load_manifest,
     resolve_conditionals,
+    resolve_manifest_source,
 )
 from provisioner.schema import DownloadEntry, validate_manifest
 
@@ -352,3 +356,101 @@ class TestLoadManifest:
         })
         m = load_manifest(path)
         assert m.services[0].workdir == "/workspace/app"
+
+
+# ---------- _is_url ----------
+
+class TestIsUrl:
+    def test_https(self):
+        assert _is_url("https://example.com/manifest.yaml") is True
+
+    def test_http(self):
+        assert _is_url("http://example.com/manifest.yaml") is True
+
+    def test_file_path(self):
+        assert _is_url("/path/to/manifest.yaml") is False
+
+    def test_relative_path(self):
+        assert _is_url("manifest.yaml") is False
+
+    def test_empty(self):
+        assert _is_url("") is False
+
+
+# ---------- resolve_manifest_source ----------
+
+class TestResolveManifestSource:
+    def test_local_path_returned_unchanged(self):
+        result = resolve_manifest_source("/path/to/manifest.yaml")
+        assert result == "/path/to/manifest.yaml"
+
+    def test_relative_path_returned_unchanged(self):
+        result = resolve_manifest_source("manifest.yaml")
+        assert result == "manifest.yaml"
+
+    @patch("provisioner.manifest.urllib.request.urlopen")
+    def test_url_downloaded_to_cache_path(self, mock_urlopen, tmp_path):
+        yaml_content = b"version: 1\napt_packages:\n  - vim\n"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = yaml_content
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        cache = str(tmp_path / "manifest.yaml")
+        result = resolve_manifest_source("https://example.com/manifest.yaml", cache_path=cache)
+
+        assert result == cache
+        assert os.path.isfile(cache)
+        with open(cache) as f:
+            assert f.read() == yaml_content.decode()
+
+    @patch("provisioner.manifest.urllib.request.urlopen")
+    def test_url_download_failure_raises_runtime_error(self, mock_urlopen, tmp_path):
+        import urllib.error
+        mock_urlopen.side_effect = urllib.error.URLError("connection refused")
+
+        cache = str(tmp_path / "manifest.yaml")
+        with pytest.raises(RuntimeError, match="Failed to download manifest"):
+            resolve_manifest_source("https://example.com/manifest.yaml", cache_path=cache)
+
+    @patch("provisioner.manifest.urllib.request.urlopen")
+    def test_url_http_error_raises_runtime_error(self, mock_urlopen, tmp_path):
+        import urllib.error
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.com/manifest.yaml", 404, "Not Found", {}, None,
+        )
+
+        cache = str(tmp_path / "manifest.yaml")
+        with pytest.raises(RuntimeError, match="Failed to download manifest"):
+            resolve_manifest_source("https://example.com/manifest.yaml", cache_path=cache)
+
+    @patch("provisioner.manifest.urllib.request.urlopen")
+    def test_downloaded_manifest_is_loadable(self, mock_urlopen, tmp_path):
+        """End-to-end: download URL then load_manifest on the result."""
+        yaml_content = b"version: 1\napt_packages:\n  - curl\n"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = yaml_content
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        cache = str(tmp_path / "manifest.yaml")
+        path = resolve_manifest_source("https://example.com/manifest.yaml", cache_path=cache)
+        m = load_manifest(path)
+        assert m.apt_packages == ["curl"]
+
+    @patch("provisioner.manifest.urllib.request.urlopen")
+    def test_write_failure_raises_runtime_error(self, mock_urlopen):
+        yaml_content = b"version: 1\n"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = yaml_content
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        with pytest.raises(RuntimeError, match="Failed to write manifest"):
+            resolve_manifest_source(
+                "https://example.com/manifest.yaml",
+                cache_path="/nonexistent_dir/sub/manifest.yaml",
+            )

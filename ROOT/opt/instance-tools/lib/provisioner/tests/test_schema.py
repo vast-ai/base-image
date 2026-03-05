@@ -107,7 +107,9 @@ class TestDefaults:
         m = validate_manifest({"version": 1})
         assert m.on_failure.action == "continue"
         assert m.on_failure.max_retries == 3
+        assert m.on_failure.retry_delay == 30
         assert m.on_failure.webhook == ""
+        assert m.on_failure.webhook_on_success is False
 
     def test_service_defaults(self):
         s = Service()
@@ -130,9 +132,7 @@ class TestDefaults:
 
     def test_conda_packages_defaults(self):
         m = validate_manifest({"version": 1})
-        assert m.conda_packages.packages == []
-        assert m.conda_packages.channels == []
-        assert m.conda_packages.args == ""
+        assert m.conda_packages == []
 
 
 # ---------- Nested construction ----------
@@ -200,14 +200,17 @@ class TestBuildNested:
         assert len(m.conditional_downloads[0].downloads) == 1
         assert len(m.conditional_downloads[0].else_downloads) == 1
 
-    def test_ignores_unknown_keys(self):
-        """Unknown top-level or nested keys should not cause errors."""
-        m = validate_manifest({
-            "version": 1,
-            "unknown_key": "ignored",
-            "settings": {"venv": "/venv/custom", "also_unknown": True},
-        })
+    def test_ignores_unknown_keys_with_warning(self, caplog):
+        """Unknown top-level keys should not cause errors but log a warning."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="provisioner"):
+            m = validate_manifest({
+                "version": 1,
+                "unknown_key": "ignored",
+                "settings": {"venv": "/venv/custom", "also_unknown": True},
+            })
         assert m.settings.venv == "/venv/custom"
+        assert any("unknown_key" in r.message.lower() for r in caplog.records)
 
     def test_pip_packages_list_format(self):
         m = validate_manifest({
@@ -238,14 +241,33 @@ class TestBuildNested:
         m = validate_manifest({
             "version": 1,
             "on_failure": {
-                "action": "retry",
+                "action": "destroy",
                 "max_retries": 5,
+                "retry_delay": 60,
                 "webhook": "https://hooks.example.com/fail",
             },
         })
-        assert m.on_failure.action == "retry"
+        assert m.on_failure.action == "destroy"
         assert m.on_failure.max_retries == 5
+        assert m.on_failure.retry_delay == 60
         assert m.on_failure.webhook == "https://hooks.example.com/fail"
+
+    def test_invalid_on_failure_action_rejected(self):
+        """A typo like 'destory' should raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid on_failure.action"):
+            validate_manifest({
+                "version": 1,
+                "on_failure": {"action": "destory"},
+            })
+
+    def test_valid_on_failure_actions_accepted(self):
+        """All valid actions should be accepted."""
+        for action in ("continue", "stop", "destroy"):
+            m = validate_manifest({
+                "version": 1,
+                "on_failure": {"action": action},
+            })
+            assert m.on_failure.action == action
 
     def test_write_files_construction(self):
         m = validate_manifest({
@@ -300,15 +322,24 @@ class TestBuildNested:
     def test_conda_packages_construction(self):
         m = validate_manifest({
             "version": 1,
-            "conda_packages": {
-                "packages": ["numpy=1.24", "scipy>=1.10"],
-                "channels": ["conda-forge", "nvidia"],
-                "args": "--no-update-deps",
-            },
+            "conda_packages": [
+                {
+                    "packages": ["numpy=1.24", "scipy>=1.10"],
+                    "channels": ["conda-forge", "nvidia"],
+                    "args": "--no-update-deps",
+                },
+                {
+                    "packages": ["pytorch"],
+                    "env": "/venv/conda-gpu",
+                },
+            ],
         })
-        assert m.conda_packages.packages == ["numpy=1.24", "scipy>=1.10"]
-        assert m.conda_packages.channels == ["conda-forge", "nvidia"]
-        assert m.conda_packages.args == "--no-update-deps"
+        assert len(m.conda_packages) == 2
+        assert m.conda_packages[0].packages == ["numpy=1.24", "scipy>=1.10"]
+        assert m.conda_packages[0].channels == ["conda-forge", "nvidia"]
+        assert m.conda_packages[0].args == "--no-update-deps"
+        assert m.conda_packages[1].packages == ["pytorch"]
+        assert m.conda_packages[1].env == "/venv/conda-gpu"
 
 
 # ---------- Backward compatibility ----------
@@ -331,6 +362,20 @@ class TestBackwardCompat:
         assert m.pip_packages[0].packages == ["numpy", "scipy"]
         assert m.pip_packages[0].args == "--no-cache-dir"
         assert len(m.pip_packages[0].requirements) == 2
+
+    def test_conda_packages_dict_wrapped_in_list(self):
+        """Old single-dict conda_packages format is auto-wrapped in a list."""
+        m = validate_manifest({
+            "version": 1,
+            "conda_packages": {
+                "packages": ["numpy=1.24", "scipy>=1.10"],
+                "channels": ["conda-forge"],
+            },
+        })
+        assert isinstance(m.conda_packages, list)
+        assert len(m.conda_packages) == 1
+        assert m.conda_packages[0].packages == ["numpy=1.24", "scipy>=1.10"]
+        assert m.conda_packages[0].channels == ["conda-forge"]
 
     def test_pip_packages_dict_with_venv_fields(self):
         """Old format doesn't have venv/python, they default to empty."""

@@ -19,10 +19,10 @@ def _clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("PROVISIONER_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("CONTAINER_ID", raising=False)
     monkeypatch.delenv("CONTAINER_API_KEY", raising=False)
+    monkeypatch.delenv("PROVISIONING_SCRIPT", raising=False)
 
-    # Redirect state and failure files to temp dirs (avoid writing to /)
+    # Redirect state dir to temp (avoid writing to /)
     monkeypatch.setattr("provisioner.state.STATE_DIR", str(tmp_path / "provisioner_state"))
-    monkeypatch.setattr("provisioner.failure.ATTEMPTS_FILE", str(tmp_path / "provisioner_attempts"))
 
     # Clean up provisioner logger handlers between tests
     import logging

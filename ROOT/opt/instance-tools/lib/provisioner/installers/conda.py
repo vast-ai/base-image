@@ -72,6 +72,7 @@ def ensure_conda_env(env_path: str, python_version: str = "") -> None:
 
 def install_conda_packages(
     config: CondaPackages,
+    default_conda_env: str = "",
     dry_run: bool = False,
 ) -> None:
     """Install conda packages into a conda prefix environment.
@@ -85,7 +86,7 @@ def install_conda_packages(
     packages = config.packages or []
     channels = config.channels or []
     extra_args = config.args or ""
-    env_path = config.env or ""
+    env_path = config.env or default_conda_env
 
     if not packages:
         log.info("No conda packages to install")

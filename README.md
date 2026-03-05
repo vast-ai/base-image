@@ -294,7 +294,7 @@ services:
       port: 18188
 ```
 
-The manifest runs at boot step 74, before the provisioning script (75). Both can be used together. On success, `/.provisioning_manifest_complete` is touched to skip re-provisioning on subsequent boots.
+The manifest runs at boot step 70. The `PROVISIONING_SCRIPT` is also handled by the provisioner (as Phase 9), so both can be used together. On success, `/.provisioning_complete` is touched to skip re-provisioning on subsequent boots.
 
 See the full [Provisioner Reference](ROOT/opt/instance-tools/lib/provisioner/README.md) for all available sections, options, and examples.
 

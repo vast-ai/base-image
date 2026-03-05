@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+
+log = logging.getLogger("provisioner")
+
+VALID_FAILURE_ACTIONS = frozenset({"continue", "stop", "destroy"})
 
 
 @dataclass
@@ -21,6 +26,7 @@ class ConcurrencySettings:
 @dataclass
 class Settings:
     venv: str = "/venv/main"
+    conda_env: str = ""
     log_file: str = "/var/log/portal/provisioning.log"
     concurrency: ConcurrencySettings = field(default_factory=ConcurrencySettings)
     retry: RetrySettings = field(default_factory=RetrySettings)
@@ -117,7 +123,9 @@ class Extension:
 class OnFailure:
     action: str = "continue"
     max_retries: int = 3
+    retry_delay: int = 30
     webhook: str = ""
+    webhook_on_success: bool = False
 
 
 @dataclass
@@ -128,7 +136,7 @@ class Manifest:
     write_files: list[FileWrite] = field(default_factory=list)
     apt_packages: list[str] = field(default_factory=list)
     pip_packages: list[PipPackages] = field(default_factory=list)
-    conda_packages: CondaPackages = field(default_factory=CondaPackages)
+    conda_packages: list[CondaPackages] = field(default_factory=list)
     git_repos: list[GitRepo] = field(default_factory=list)
     downloads: list[DownloadEntry] = field(default_factory=list)
     conditional_downloads: list[ConditionalDownload] = field(default_factory=list)
@@ -186,9 +194,30 @@ def validate_manifest(data: dict) -> Manifest:
     if version != 1:
         raise ValueError(f"Unsupported manifest version: {version} (expected 1)")
 
+    # Warn on unknown top-level keys
+    import dataclasses
+    known_keys = {f.name for f in dataclasses.fields(Manifest)}
+    for key in data:
+        if key not in known_keys:
+            log.warning("Unknown top-level manifest key '%s' -- ignored (typo?)", key)
+
     # Backward compat: wrap single pip_packages dict in a list
     pip = data.get("pip_packages")
     if isinstance(pip, dict):
         data = dict(data, pip_packages=[pip])
 
-    return _build_nested(Manifest, data)
+    # Backward compat: wrap single conda_packages dict in a list
+    conda = data.get("conda_packages")
+    if isinstance(conda, dict):
+        data = dict(data, conda_packages=[conda])
+
+    manifest = _build_nested(Manifest, data)
+
+    # Validate enum-like fields
+    if manifest.on_failure.action not in VALID_FAILURE_ACTIONS:
+        raise ValueError(
+            f"Invalid on_failure.action: '{manifest.on_failure.action}' "
+            f"(must be one of: {', '.join(sorted(VALID_FAILURE_ACTIONS))})"
+        )
+
+    return manifest

@@ -81,12 +81,23 @@ class TestRunExtensions:
             run_extensions([ext], manifest=Manifest(), dry_run=False)
 
     @patch("provisioner.extensions.importlib.import_module")
-    def test_import_error_propagates(self, mock_import):
-        """A missing module raises ImportError."""
+    def test_import_error_gives_descriptive_message(self, mock_import):
+        """A missing module raises RuntimeError with module name and cause."""
         mock_import.side_effect = ImportError("No module named 'missing'")
 
         ext = Extension(module="missing", config={}, enabled=True)
-        with pytest.raises(ImportError, match="missing"):
+        with pytest.raises(RuntimeError, match="Extension module 'missing' not found"):
+            run_extensions([ext], manifest=Manifest(), dry_run=False)
+
+    @patch("provisioner.extensions.importlib.import_module")
+    def test_missing_run_function_gives_descriptive_error(self, mock_import):
+        """A module without run() raises RuntimeError with clear message."""
+        import types
+        mock_mod = types.ModuleType("no_run_ext")
+        mock_import.return_value = mock_mod
+
+        ext = Extension(module="no_run_ext", config={}, enabled=True)
+        with pytest.raises(RuntimeError, match="has no run\\(\\) function"):
             run_extensions([ext], manifest=Manifest(), dry_run=False)
 
     @patch("provisioner.extensions.importlib.import_module")

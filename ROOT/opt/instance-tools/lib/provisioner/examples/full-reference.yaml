@@ -1,5 +1,7 @@
 # Full reference manifest - demonstrates every available field
 # This is not a real deployment; it's a schema reference with comments
+#
+# Sections are listed in execution phase order.
 
 version: 1
 
@@ -7,6 +9,7 @@ version: 1
 # All fields are optional with sensible defaults
 settings:
   venv: "/venv/main"                        # Default venv for pip installs
+  conda_env: ""                             # Default conda prefix env (empty = base environment)
   log_file: "/var/log/portal/provisioning.log"
   concurrency:
     hf_downloads: 3                         # Max parallel HuggingFace downloads
@@ -25,12 +28,51 @@ auth:
     token_env: "CIVITAI_TOKEN"              # Default: CIVITAI_TOKEN
 
 # ---- Failure handling ----
-# What to do when provisioning fails
+# Retries are always attempted on failure (in-process sleep + re-run).
+# The action controls what happens AFTER all retries are exhausted.
 on_failure:
-  action: retry                              # continue | retry | destroy | stop
-  max_retries: 3                             # Only for retry (default: 3)
-  webhook: "https://hooks.example.com/fail"  # Optional URL to POST failure info
-  # Env var PROVISIONER_WEBHOOK_URL overrides this webhook
+  action: continue                             # continue | destroy | stop (post-exhaustion)
+  max_retries: 3                               # Retry attempts before running action (default: 3)
+  retry_delay: 30                              # Seconds between retries (default: 30)
+  webhook: "https://hooks.example.com/fail"    # Optional URL to POST failure info
+  # Env vars override manifest values:
+  #   PROVISIONER_RETRY_MAX, PROVISIONER_RETRY_DELAY,
+  #   PROVISIONER_FAILURE_ACTION, PROVISIONER_WEBHOOK_URL,
+  #   PROVISIONER_LOG_FILE, PROVISIONER_VENV, PROVISIONER_CONDA_ENV
+
+# ---- Phase 1b: Extensions (manifest enrichment) ----
+# Custom Python modules that append items to the manifest (downloads, git_repos, etc.).
+# Extensions run immediately after manifest load, before any installation phase.
+# They do NOT install, download, or clone anything themselves.
+# Derivative images place extension packages under /opt/instance-tools/lib/
+# Each module must implement: run(config, context, dry_run) -> None
+extensions:
+  - module: provisioner_comfyui             # Importable Python module
+    config:                                  # Arbitrary dict passed to run()
+      workflows:
+        - https://example.com/workflow.json
+        - /workspace/workflows/my_workflow.json
+  - module: provisioner_other               # Another extension
+    enabled: false                           # Disabled, will be skipped
+
+# ---- Phase 2: Auth validation & conditional resolution ----
+# Conditional downloads are resolved based on token validity, then merged
+# into the main downloads list. env_merge parses env vars into downloads.
+conditional_downloads:
+  - when: hf_token_valid                    # Supported: hf_token_valid, civitai_token_valid
+    downloads:
+      - url: https://huggingface.co/org/gated-model/resolve/main/model.safetensors
+        dest: "${WORKSPACE:-/workspace}/models/gated.safetensors"
+    else_downloads:                         # Used when condition is false (optional)
+      - url: https://huggingface.co/org/open-model/resolve/main/model.safetensors
+        dest: "${WORKSPACE:-/workspace}/models/open.safetensors"
+
+# ---- Env merge ----
+# Parse env vars as "url|path;url|path" and add to downloads
+# Allows runtime injection of extra downloads without modifying the manifest
+env_merge:
+  HF_MODELS: downloads                     # Only "downloads" target is supported
+  CIVITAI_MODELS: downloads
 
 # ---- Phase 2b: Early file writes ----
 # Written immediately after auth validation, before apt/pip/git (fail-fast)
@@ -56,19 +98,21 @@ apt_packages:
   - ffmpeg
   - libsndfile1
 
-# ---- Phase 3b: Extensions (discovery) ----
-# Custom Python modules that discover additional resources (models, repos, packages).
-# Extensions run BEFORE git clones and downloads, so they can append to manifest lists.
-# Derivative images place extension packages under /opt/instance-tools/lib/
-# Each module must implement: run(config, context, dry_run) -> None
-extensions:
-  - module: provisioner_comfyui             # Importable Python module
-    config:                                  # Arbitrary dict passed to run()
-      workflows:
-        - https://example.com/workflow.json
-        - /workspace/workflows/my_workflow.json
-  - module: provisioner_other               # Another extension
-    enabled: false                           # Disabled, will be skipped
+# ---- Phase 4: Git repos ----
+# Cloned in parallel. Each repo's post_commands run in its directory
+# after clone+checkout (still within the parallel pool).
+# Use post_commands for requirements installs, patches, editable installs, etc.
+git_repos:
+  - url: https://github.com/org/repo
+    dest: "${WORKSPACE:-/workspace}/repo"
+    ref: "${VERSION:-main}"                 # Tag, branch, or commit (optional)
+    recursive: true                         # --recursive flag (default: true)
+    pull_if_exists: false                   # Git pull if dest already exists (default: false)
+    post_commands:                          # Shell commands run in repo dir after clone
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+      - "uv pip install --no-cache --python /venv/main/bin/python -e ."
+      - "sed -i 's/old/new/' config.yaml"
+      - "chmod +x scripts/*.sh"
 
 # ---- Phase 5: Pip packages ----
 # List of pip install blocks. Each block can target a different venv.
@@ -100,37 +144,31 @@ pip_packages:
       - wheel
 
 # ---- Phase 5b: Conda packages ----
+# List of conda install blocks. Each block can target a different conda prefix env.
 # Uses Miniforge3 at /opt/miniforge3/ (mamba preferred, falls back to conda).
 # /opt/miniforge3/bin/ is checked first, then PATH.
 # Version specifiers: = for exact, >=, <=, <, > (e.g. "numpy=1.24")
+#
+# Backward compatibility: a single dict (old format) is automatically wrapped in a list.
 conda_packages:
-  packages:
-    - "cudatoolkit=11.8"
-    - "nccl>=2.18"
-  channels:                                 # Extra channels (-c flags)
-    - conda-forge
-    - nvidia
-  env: "/venv/conda-ml"                     # Target conda prefix env (auto-created if missing)
-  python: "3.11"                            # Python version for env auto-creation
-  args: ""                                  # Extra args (e.g. "--no-update-deps")
-  # Without env, packages install into the base/active conda environment.
-  # Env existence is detected by the conda-meta/ directory.
+  - packages:
+      - "cudatoolkit=11.8"
+      - "nccl>=2.18"
+    channels:                               # Extra channels (-c flags)
+      - conda-forge
+      - nvidia
+    env: "/venv/conda-ml"                   # Target conda prefix env (auto-created if missing)
+    python: "3.11"                          # Python version for env auto-creation
+    args: ""                                # Extra args (e.g. "--no-update-deps")
+    # Without env, falls back to settings.conda_env. If that's also empty,
+    # packages install into the base/active conda environment.
 
-# ---- Phase 4: Git repos ----
-# Cloned in parallel. Each repo's post_commands run in its directory
-# after clone+checkout (still within the parallel pool).
-# Use post_commands for requirements installs, patches, editable installs, etc.
-git_repos:
-  - url: https://github.com/org/repo
-    dest: "${WORKSPACE:-/workspace}/repo"
-    ref: "${VERSION:-main}"                 # Tag, branch, or commit (optional)
-    recursive: true                         # --recursive flag (default: true)
-    pull_if_exists: false                   # Git pull if dest already exists (default: false)
-    post_commands:                          # Shell commands run in repo dir after clone
-      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
-      - "uv pip install --no-cache --python /venv/main/bin/python -e ."
-      - "sed -i 's/old/new/' config.yaml"
-      - "chmod +x scripts/*.sh"
+  - packages:                               # Second block targeting a different env
+      - "ffmpeg"
+    channels:
+      - conda-forge
+    env: "/venv/main"
+  # Env existence is detected by the conda-meta/ directory.
 
 # ---- Phase 6: Downloads ----
 # URL auto-detection: huggingface.co -> hf download, civitai.com -> wget+auth, other -> wget
@@ -160,24 +198,6 @@ downloads:
   # Generic wget
   - url: https://example.com/file.bin
     dest: "${WORKSPACE:-/workspace}/other/file.bin"
-
-# ---- Conditional downloads ----
-# Resolved at phase 2 based on token validity, merged into downloads list
-conditional_downloads:
-  - when: hf_token_valid                    # Supported: hf_token_valid, civitai_token_valid
-    downloads:
-      - url: https://huggingface.co/org/gated-model/resolve/main/model.safetensors
-        dest: "${WORKSPACE:-/workspace}/models/gated.safetensors"
-    else_downloads:                         # Used when condition is false (optional)
-      - url: https://huggingface.co/org/open-model/resolve/main/model.safetensors
-        dest: "${WORKSPACE:-/workspace}/models/open.safetensors"
-
-# ---- Env merge ----
-# Parse env vars as "url|path;url|path" and add to downloads
-# Allows runtime injection of extra downloads without modifying the manifest
-env_merge:
-  HF_MODELS: downloads                     # Only "downloads" target is supported
-  CIVITAI_MODELS: downloads
 
 # ---- Phase 7: Supervisor services ----
 # Generates startup script + supervisor .conf, then runs supervisorctl reread/update

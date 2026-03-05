@@ -5,10 +5,12 @@ version: 1
 
 settings:
   venv: "/venv/main"
+  conda_env: "/venv/main"
 
 on_failure:
-  action: retry
+  action: continue
   max_retries: 3
+  retry_delay: 30
 
 apt_packages:
   - ffmpeg
@@ -29,10 +31,10 @@ pip_packages:
       - supervisor-stdout
 
 conda_packages:
-  packages:
-    - nccl
-  channels:
-    - nvidia
+  - packages:
+      - nccl
+    channels:
+      - nvidia
 
 git_repos:
   - url: https://github.com/your-org/ml-backend

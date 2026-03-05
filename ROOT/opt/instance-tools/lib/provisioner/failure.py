@@ -1,7 +1,12 @@
 """Failure action dispatch for the provisioner.
 
-Supports: continue, retry, destroy, stop.
+Supports: continue, destroy, stop.
 Optional webhook notification on failure.
+
+The ``stop`` action uses a sentinel file (``/.provisioner_stopped``)
+to prevent restart loops: provisioner fails → stops instance → user
+restarts → provisioner fails again → stops again.  On second stop
+the sentinel already exists, so the command is skipped.
 """
 
 from __future__ import annotations
@@ -9,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pathlib
 import subprocess
 import time
 import urllib.request
@@ -17,7 +23,7 @@ from .schema import OnFailure
 
 log = logging.getLogger("provisioner")
 
-ATTEMPTS_FILE = "/.provisioner_attempts"
+STOP_SENTINEL = "/.provisioner_stopped"
 
 
 def _call_webhook(url: str, payload: dict) -> None:
@@ -34,30 +40,6 @@ def _call_webhook(url: str, payload: dict) -> None:
             log.info("Webhook response: %d", resp.status)
     except Exception as e:
         log.warning("Webhook call failed: %s", e)
-
-
-def _get_attempt_count() -> int:
-    """Read the current attempt count from the attempts file."""
-    try:
-        with open(ATTEMPTS_FILE) as f:
-            return int(f.read().strip())
-    except (FileNotFoundError, ValueError):
-        return 0
-
-
-def _increment_attempts() -> int:
-    """Increment and return the new attempt count."""
-    count = _get_attempt_count() + 1
-    with open(ATTEMPTS_FILE, "w") as f:
-        f.write(str(count))
-    return count
-
-
-def _check_retries(max_retries: int) -> bool:
-    """Check if we're under the retry limit. Returns True if should retry."""
-    count = _increment_attempts()
-    log.info("Retry attempt %d / %d", count, max_retries)
-    return count < max_retries
 
 
 def _vastai_command(action: str) -> None:
@@ -88,7 +70,7 @@ def handle_failure(
 ) -> None:
     """Dispatch failure action based on on_failure config.
 
-    Called when the provisioner finishes with errors.
+    Called when the provisioner finishes with errors and retries are exhausted.
     """
     action = on_failure.action
 
@@ -110,21 +92,39 @@ def handle_failure(
         log.info("on_failure=continue: returning exit code 1")
         return
 
-    elif action == "retry":
-        if _check_retries(on_failure.max_retries):
-            log.info("Will retry on next boot (attempt file: %s)", ATTEMPTS_FILE)
-        else:
-            log.warning("Max retries (%d) exceeded, falling through to continue",
-                        on_failure.max_retries)
-        return
-
     elif action == "destroy":
         log.warning("on_failure=destroy: destroying instance")
         _vastai_command("destroy")
 
     elif action == "stop":
+        if os.path.exists(STOP_SENTINEL):
+            log.warning("Instance was already stopped by provisioner, skipping to prevent restart loop")
+            return
         log.warning("on_failure=stop: stopping instance")
+        try:
+            pathlib.Path(STOP_SENTINEL).touch()
+        except OSError as e:
+            log.warning("Could not write stop sentinel %s: %s", STOP_SENTINEL, e)
         _vastai_command("stop")
 
     else:
         log.error("Unknown on_failure action: '%s', treating as 'continue'", action)
+
+
+def notify_success(on_failure: OnFailure, manifest_path: str) -> None:
+    """Send webhook notification on successful provisioning (opt-in)."""
+    if not on_failure.webhook_on_success:
+        return
+
+    webhook_url = os.environ.get("PROVISIONER_WEBHOOK_URL") or on_failure.webhook
+    if not webhook_url:
+        return
+
+    payload = {
+        "action": "success",
+        "manifest": manifest_path,
+        "error": "",
+        "container_id": os.environ.get("CONTAINER_ID", ""),
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _call_webhook(webhook_url, payload)

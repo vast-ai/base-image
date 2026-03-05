@@ -5,12 +5,18 @@ from __future__ import annotations
 import logging
 import os
 import re
+import tempfile
+import urllib.error
+import urllib.request
 
 import yaml
 
 from .schema import DownloadEntry, Manifest, validate_manifest
 
 log = logging.getLogger("provisioner")
+
+# Default download location for remote manifests (matches boot script convention)
+_DEFAULT_MANIFEST_CACHE = "/provisioning.yaml"
 
 # Matches ${VAR}, ${VAR:-default}, ${VAR:=default}
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -112,6 +118,47 @@ def resolve_conditionals(
 
     # Clear conditional_downloads after resolution
     manifest.conditional_downloads = []
+
+
+def _is_url(source: str) -> bool:
+    """Check if a source string looks like an HTTP(S) URL."""
+    return source.startswith("http://") or source.startswith("https://")
+
+
+def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CACHE) -> str:
+    """Resolve a manifest source (file path or URL) to a local file path.
+
+    If *source* is a URL, download it to *cache_path* and return that path.
+    If *source* is already a local path, return it unchanged.
+
+    Raises ``RuntimeError`` on download failure so the caller's retry loop
+    can re-attempt.
+    """
+    if not _is_url(source):
+        return source
+
+    log.info("Downloading manifest from %s", source)
+    try:
+        req = urllib.request.Request(source, headers={"User-Agent": "provisioner/1"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        raise RuntimeError(f"Failed to download manifest from {source}: {e}") from e
+
+    # Write atomically: temp file + rename to avoid partial reads
+    cache_dir = os.path.dirname(cache_path) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(dir=cache_dir, suffix=".yaml")
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        os.replace(tmp, cache_path)
+    except OSError as e:
+        raise RuntimeError(f"Failed to write manifest to {cache_path}: {e}") from e
+
+    log.info("Manifest saved to %s (%d bytes)", cache_path, len(data))
+    return cache_path
 
 
 def load_manifest(path: str) -> Manifest:

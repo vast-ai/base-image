@@ -1,4 +1,4 @@
-"""Tests for provisioner.failure -- failure actions, webhook, retry counter."""
+"""Tests for provisioner.failure -- failure actions, webhook, stop-once sentinel."""
 
 from __future__ import annotations
 
@@ -9,43 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from provisioner.failure import (
-    ATTEMPTS_FILE,
+    STOP_SENTINEL,
     _call_webhook,
-    _check_retries,
-    _get_attempt_count,
-    _increment_attempts,
     _vastai_command,
     handle_failure,
+    notify_success,
 )
 from provisioner.schema import OnFailure
-
-
-@pytest.fixture(autouse=True)
-def _use_tmp_attempts_file(tmp_path, monkeypatch):
-    """Redirect ATTEMPTS_FILE to a temp path."""
-    path = str(tmp_path / "provisioner_attempts")
-    monkeypatch.setattr("provisioner.failure.ATTEMPTS_FILE", path)
-    return path
-
-
-class TestAttemptCounter:
-    def test_initial_count_is_zero(self):
-        assert _get_attempt_count() == 0
-
-    def test_increment(self, _use_tmp_attempts_file):
-        assert _increment_attempts() == 1
-        assert _increment_attempts() == 2
-        assert _increment_attempts() == 3
-
-    def test_get_after_increment(self, _use_tmp_attempts_file):
-        _increment_attempts()
-        _increment_attempts()
-        assert _get_attempt_count() == 2
-
-    def test_check_retries_under_limit(self, _use_tmp_attempts_file):
-        assert _check_retries(3) is True  # attempt 1 < 3
-        assert _check_retries(3) is True  # attempt 2 < 3
-        assert _check_retries(3) is False  # attempt 3 >= 3
 
 
 class TestWebhook:
@@ -127,12 +97,6 @@ class TestHandleFailure:
         handle_failure(on_failure, "/path/manifest.yaml")
         mock_webhook.assert_not_called()
 
-    @patch("provisioner.failure._check_retries", return_value=True)
-    def test_retry_action(self, mock_retries):
-        on_failure = OnFailure(action="retry", max_retries=3)
-        handle_failure(on_failure, "/path/manifest.yaml")
-        mock_retries.assert_called_once_with(3)
-
     @patch("provisioner.failure._vastai_command")
     def test_destroy_action(self, mock_vastai):
         on_failure = OnFailure(action="destroy")
@@ -140,7 +104,8 @@ class TestHandleFailure:
         mock_vastai.assert_called_once_with("destroy")
 
     @patch("provisioner.failure._vastai_command")
-    def test_stop_action(self, mock_vastai):
+    def test_stop_action(self, mock_vastai, tmp_path, monkeypatch):
+        monkeypatch.setattr("provisioner.failure.STOP_SENTINEL", str(tmp_path / "sentinel"))
         on_failure = OnFailure(action="stop")
         handle_failure(on_failure, "/path/manifest.yaml")
         mock_vastai.assert_called_once_with("stop")
@@ -149,3 +114,79 @@ class TestHandleFailure:
         on_failure = OnFailure(action="invalid")
         # Should not raise
         handle_failure(on_failure, "/path/manifest.yaml")
+
+
+class TestStopOnceSentinel:
+    """Verify stop-once semantics via /.provisioner_stopped sentinel."""
+
+    @patch("provisioner.failure._vastai_command")
+    def test_stop_writes_sentinel(self, mock_vastai, tmp_path, monkeypatch):
+        """First stop should create sentinel and call _vastai_command."""
+        sentinel = str(tmp_path / "provisioner_stopped")
+        monkeypatch.setattr("provisioner.failure.STOP_SENTINEL", sentinel)
+        on_failure = OnFailure(action="stop")
+        handle_failure(on_failure, "/path/manifest.yaml")
+        mock_vastai.assert_called_once_with("stop")
+        assert os.path.exists(sentinel)
+
+    @patch("provisioner.failure._vastai_command")
+    def test_stop_skips_when_sentinel_exists(self, mock_vastai, tmp_path, monkeypatch):
+        """Second stop should skip _vastai_command when sentinel present."""
+        sentinel = str(tmp_path / "provisioner_stopped")
+        # Pre-create sentinel
+        open(sentinel, "w").close()
+        monkeypatch.setattr("provisioner.failure.STOP_SENTINEL", sentinel)
+        on_failure = OnFailure(action="stop")
+        handle_failure(on_failure, "/path/manifest.yaml")
+        mock_vastai.assert_not_called()
+
+    @patch("provisioner.failure._vastai_command")
+    def test_destroy_ignores_sentinel(self, mock_vastai, tmp_path, monkeypatch):
+        """Destroy should NOT check sentinel -- a destroyed instance can't restart."""
+        sentinel = str(tmp_path / "provisioner_stopped")
+        open(sentinel, "w").close()
+        monkeypatch.setattr("provisioner.failure.STOP_SENTINEL", sentinel)
+        on_failure = OnFailure(action="destroy")
+        handle_failure(on_failure, "/path/manifest.yaml")
+        mock_vastai.assert_called_once_with("destroy")
+
+    @patch("provisioner.failure._vastai_command")
+    def test_stop_still_fires_when_sentinel_touch_fails(self, mock_vastai, monkeypatch):
+        """If sentinel can't be written (e.g. read-only fs), stop command still fires."""
+        monkeypatch.setattr("provisioner.failure.STOP_SENTINEL", "/nonexistent_dir/sentinel")
+        on_failure = OnFailure(action="stop")
+        handle_failure(on_failure, "/path/manifest.yaml")
+        mock_vastai.assert_called_once_with("stop")
+
+
+class TestNotifySuccess:
+    """Verify opt-in success webhook."""
+
+    @patch("provisioner.failure._call_webhook")
+    def test_sends_webhook_when_enabled(self, mock_webhook):
+        on_failure = OnFailure(webhook="https://hooks.example.com", webhook_on_success=True)
+        notify_success(on_failure, "/path/manifest.yaml")
+        mock_webhook.assert_called_once()
+        payload = mock_webhook.call_args[0][1]
+        assert payload["action"] == "success"
+        assert payload["error"] == ""
+
+    @patch("provisioner.failure._call_webhook")
+    def test_skips_when_disabled(self, mock_webhook):
+        on_failure = OnFailure(webhook="https://hooks.example.com", webhook_on_success=False)
+        notify_success(on_failure, "/path/manifest.yaml")
+        mock_webhook.assert_not_called()
+
+    @patch("provisioner.failure._call_webhook")
+    def test_skips_when_no_webhook_url(self, mock_webhook):
+        on_failure = OnFailure(webhook_on_success=True)
+        notify_success(on_failure, "/path/manifest.yaml")
+        mock_webhook.assert_not_called()
+
+    @patch("provisioner.failure._call_webhook")
+    def test_env_url_overrides_manifest(self, mock_webhook, monkeypatch):
+        monkeypatch.setenv("PROVISIONER_WEBHOOK_URL", "https://env-hook.example.com")
+        on_failure = OnFailure(webhook="https://manifest-hook.example.com", webhook_on_success=True)
+        notify_success(on_failure, "/path/manifest.yaml")
+        url = mock_webhook.call_args[0][0]
+        assert url == "https://env-hook.example.com"

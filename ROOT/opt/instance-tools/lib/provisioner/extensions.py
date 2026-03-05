@@ -1,7 +1,9 @@
 """Extension loader and runner for the provisioner.
 
 Extensions are Python modules that implement a ``run()`` function.
-They are invoked in phase 6b, after downloads and before services.
+They are invoked in phase 1b, immediately after the manifest is loaded.
+Their sole purpose is to append items to the manifest's lists (downloads,
+git_repos, pip_packages, etc.) so that later phases handle the actual work.
 """
 
 from __future__ import annotations
@@ -46,7 +48,16 @@ def run_extensions(
             continue
 
         log.info("Running extension %s", ext.module)
-        mod = importlib.import_module(ext.module)
+        try:
+            mod = importlib.import_module(ext.module)
+        except ImportError as e:
+            raise RuntimeError(f"Extension module '{ext.module}' not found: {e}") from e
+
+        if not hasattr(mod, "run"):
+            raise RuntimeError(
+                f"Extension module '{ext.module}' has no run() function"
+            )
+
         ctx = ExtensionContext(
             manifest=manifest,
             log=logging.getLogger(f"provisioner.ext.{ext.module}"),
