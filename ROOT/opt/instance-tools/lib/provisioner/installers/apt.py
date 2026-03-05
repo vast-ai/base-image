@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-import subprocess
+
+from ..subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
 
@@ -24,15 +25,15 @@ def install_apt_packages(packages: list[str], dry_run: bool = False) -> None:
         return
 
     # Update package lists
-    subprocess.run(
+    run_cmd(
         ["apt-get", "update", "-qq"],
-        check=True,
+        label="apt-update",
     )
 
     # Install packages
-    subprocess.run(
+    run_cmd(
         ["apt-get", "install", "-y", "-qq", "--no-install-recommends"] + packages,
-        check=True,
+        label="apt",
     )
 
     log.info("APT packages installed successfully")

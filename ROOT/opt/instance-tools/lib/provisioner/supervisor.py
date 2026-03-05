@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 
 from .schema import Service
+from .subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
 
@@ -146,12 +146,14 @@ def register_services(services: list[Service], dry_run: bool = False) -> None:
 
     if not dry_run:
         log.info("Reloading supervisor configuration")
-        subprocess.run(
+        run_cmd(
             ["supervisorctl", "reread"],
+            label="supervisorctl",
             check=False,
         )
-        subprocess.run(
+        run_cmd(
             ["supervisorctl", "update"],
+            label="supervisorctl",
             check=False,
         )
         log.info("Supervisor services registered")

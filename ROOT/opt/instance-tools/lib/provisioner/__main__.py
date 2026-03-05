@@ -55,6 +55,7 @@ from .installers.conda import install_conda_packages
 from .installers.git import clone_git_repos
 from .installers.pip import install_pip_packages
 from .log import setup_logging
+from .subprocess_runner import run_cmd
 from .manifest import apply_env_merge, load_manifest, resolve_conditionals, resolve_manifest_source
 from .schema import CondaPackages, DownloadEntry, Manifest, PipPackages
 from .state import clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
@@ -405,15 +406,10 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
                 log.info("[DRY RUN] Would run: %s", cmd)
                 continue
             log.info("Running: %s", cmd)
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            if result.stdout:
-                for line in result.stdout.rstrip("\n").split("\n"):
-                    log.info("[post_command] %s", line)
-            if result.stderr:
-                for line in result.stderr.rstrip("\n").split("\n"):
-                    log.warning("[post_command] %s", line)
-            if result.returncode != 0:
-                log.error("Post command failed (exit %d): %s", result.returncode, cmd)
+            try:
+                run_cmd(cmd, shell=True, label="post_command")
+            except subprocess.CalledProcessError as e:
+                log.error("Post command failed (exit %d): %s", e.returncode, cmd)
                 return 1
 
         if not dry_run:
@@ -442,21 +438,12 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
                     subprocess.run(["dos2unix", script_path], capture_output=True)
                 os.chmod(script_path, 0o755)
 
-                # Execute and capture output
+                # Execute and stream output through logger
                 log.info("Running provisioning script: %s", script_path)
-                result = subprocess.run(
-                    [script_path],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.stdout:
-                    for line in result.stdout.rstrip("\n").split("\n"):
-                        log.info("[script] %s", line)
-                if result.stderr:
-                    for line in result.stderr.rstrip("\n").split("\n"):
-                        log.warning("[script] %s", line)
-                if result.returncode != 0:
-                    log.error("Provisioning script failed (exit %d)", result.returncode)
+                try:
+                    run_cmd([script_path], label="script")
+                except subprocess.CalledProcessError as e:
+                    log.error("Provisioning script failed (exit %d)", e.returncode)
                     return 1
 
                 mark_stage_complete("provisioning_script", script_hash)

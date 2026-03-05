@@ -11,6 +11,7 @@ import os
 import subprocess
 
 from ..concurrency import FileLock
+from ..subprocess_runner import run_cmd
 from ..schema import DownloadEntry, RetrySettings
 from .base import retry_with_backoff
 
@@ -93,7 +94,7 @@ def download_wget(
             if auth_header:
                 cmd.extend(["--header", auth_header])
 
-            result = subprocess.run(cmd)
+            result = run_cmd(cmd, label="wget", check=False)
             if result.returncode != 0:
                 # Clean up partial downloads
                 try:

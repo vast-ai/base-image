@@ -179,7 +179,7 @@ class TestRegisterServices:
         ]
         register_services(services, dry_run=True)
 
-    @patch("provisioner.supervisor.subprocess.run")
+    @patch("provisioner.supervisor.run_cmd")
     def test_writes_files(self, mock_run, tmp_path):
         script_dir = tmp_path / "supervisor-scripts"
         conf_dir = tmp_path / "supervisor" / "conf.d"
@@ -203,7 +203,7 @@ class TestRegisterServices:
             # supervisorctl reread + update
             assert mock_run.call_count == 2
 
-    @patch("provisioner.supervisor.subprocess.run")
+    @patch("provisioner.supervisor.run_cmd")
     @patch("provisioner.supervisor.os.chmod")
     @patch("provisioner.supervisor.os.makedirs")
     def test_writes_correct_paths(self, mock_makedirs, mock_chmod, mock_run, tmp_path):

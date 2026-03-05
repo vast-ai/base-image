@@ -6,9 +6,9 @@ import logging
 import os
 import shlex
 import shutil
-import subprocess
 
 from ..schema import PipPackages
+from ..subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
 
@@ -34,7 +34,7 @@ def ensure_venv(venv_path: str, python_version: str = "") -> None:
         python_bin = f"python{python_version}" if python_version else "python3"
         cmd = [python_bin, "-m", "venv", venv_path]
 
-    subprocess.run(cmd, check=True)
+    run_cmd(cmd, label="venv")
     log.info("Venv created: %s", venv_path)
 
 
@@ -113,7 +113,7 @@ def install_pip_packages(
             cmd.extend(shlex.split(extra_args))
         cmd.extend(packages)
 
-        subprocess.run(cmd, check=True)
+        run_cmd(cmd, label="pip")
         log.info("Pip packages installed successfully")
 
     # Install from requirements files
@@ -133,5 +133,5 @@ def install_pip_packages(
         if extra_args:
             cmd.extend(shlex.split(extra_args))
 
-        subprocess.run(cmd, check=True)
+        run_cmd(cmd, label="pip")
         log.info("Requirements installed: %s", req_file)

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 
 from ..schema import GitRepo
+from ..subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
 
@@ -25,7 +25,7 @@ def _clone_single(repo: GitRepo, dry_run: bool = False) -> None:
     if os.path.isdir(dest):
         if repo.pull_if_exists:
             log.info("Pulling existing repo: %s", dest)
-            subprocess.run(["git", "-C", dest, "pull"], check=True)
+            run_cmd(["git", "-C", dest, "pull"], label="git")
         else:
             log.info("Repo already exists: %s (skipping)", dest)
             return
@@ -35,18 +35,18 @@ def _clone_single(repo: GitRepo, dry_run: bool = False) -> None:
         if repo.recursive:
             cmd.append("--recursive")
         cmd.extend([repo.url, dest])
-        subprocess.run(cmd, check=True)
+        run_cmd(cmd, label="git")
 
     # Checkout specific ref if specified
     if repo.ref:
         log.info("Checking out ref: %s", repo.ref)
-        subprocess.run(["git", "-C", dest, "checkout", repo.ref], check=True)
+        run_cmd(["git", "-C", dest, "checkout", repo.ref], label="git")
 
     # Run post-clone commands
     if repo.post_commands:
-        for cmd in repo.post_commands:
-            log.info("Running post command in %s: %s", dest, cmd)
-            subprocess.run(cmd, shell=True, cwd=dest, check=True)
+        for post_cmd in repo.post_commands:
+            log.info("Running post command in %s: %s", dest, post_cmd)
+            run_cmd(post_cmd, shell=True, cwd=dest, label="git")
 
     log.info("Git repo ready: %s", dest)
 

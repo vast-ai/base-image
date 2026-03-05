@@ -585,13 +585,12 @@ class TestErrorHandling:
     @patch("provisioner.__main__.install_pip_packages")
     @patch("provisioner.__main__.run_parallel", return_value=[ValueError("download failed")])
     @patch("provisioner.__main__.register_services")
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd")
     def test_download_failure_aborts_post_commands(
-        self, mock_subproc, mock_svc, mock_parallel, mock_pip, mock_git, mock_apt,
+        self, mock_run_cmd, mock_svc, mock_parallel, mock_pip, mock_git, mock_apt,
         mock_civ, mock_hf, tmp_manifest,
     ):
         """Phase 6 failure should abort -- post_commands never run."""
-        mock_subproc.return_value = MagicMock(returncode=0)
         path = tmp_manifest({
             "version": 1,
             "downloads": [
@@ -601,7 +600,7 @@ class TestErrorHandling:
         })
         result = _load_and_run(path)
         assert result == 1
-        mock_subproc.assert_not_called()
+        mock_run_cmd.assert_not_called()
 
     @patch("provisioner.__main__.validate_hf_token", return_value=False)
     @patch("provisioner.__main__.validate_civitai_token", return_value=False)
@@ -633,13 +632,12 @@ class TestErrorHandling:
     @patch("provisioner.__main__.clone_git_repos")
     @patch("provisioner.__main__.install_pip_packages")
     @patch("provisioner.__main__.register_services", side_effect=RuntimeError("supervisor broke"))
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd")
     def test_service_failure_is_fatal(
-        self, mock_subproc, mock_svc, mock_pip, mock_git, mock_apt,
+        self, mock_run_cmd, mock_svc, mock_pip, mock_git, mock_apt,
         mock_civ, mock_hf, tmp_manifest,
     ):
         """Phase 7 failure should abort -- post_commands never run."""
-        mock_subproc.return_value = MagicMock(returncode=0)
         path = tmp_manifest({
             "version": 1,
             "services": [{"name": "app", "command": "echo", "workdir": "/tmp"}],
@@ -647,30 +645,26 @@ class TestErrorHandling:
         })
         result = _load_and_run(path)
         assert result == 1
-        mock_subproc.assert_not_called()
+        mock_run_cmd.assert_not_called()
 
     @patch("provisioner.__main__.validate_hf_token", return_value=False)
     @patch("provisioner.__main__.validate_civitai_token", return_value=False)
     @patch("provisioner.__main__.install_apt_packages")
     @patch("provisioner.__main__.clone_git_repos")
     @patch("provisioner.__main__.install_pip_packages")
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd", side_effect=subprocess.CalledProcessError(1, "false"))
     def test_post_command_failure_is_fatal(
-        self, mock_subproc, mock_pip, mock_git, mock_apt, mock_civ, mock_hf,
+        self, mock_run_cmd, mock_pip, mock_git, mock_apt, mock_civ, mock_hf,
         tmp_manifest,
     ):
         """A failing post_command should abort -- later commands do not run."""
-        mock_subproc.side_effect = [
-            MagicMock(returncode=1),  # first command fails
-            MagicMock(returncode=0),  # second command would succeed
-        ]
         path = tmp_manifest({
             "version": 1,
             "post_commands": ["false", "echo hello"],
         })
         result = _load_and_run(path)
         assert result == 1
-        assert mock_subproc.call_count == 1  # only first command ran
+        assert mock_run_cmd.call_count == 1  # only first command ran
 
     @patch("provisioner.__main__.validate_hf_token", return_value=False)
     @patch("provisioner.__main__.validate_civitai_token", return_value=False)
@@ -690,23 +684,22 @@ class TestErrorHandling:
     @patch("provisioner.__main__.install_apt_packages")
     @patch("provisioner.__main__.clone_git_repos")
     @patch("provisioner.__main__.install_pip_packages")
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd")
     def test_post_command_output_captured(
-        self, mock_subproc, mock_pip, mock_git, mock_apt, mock_civ, mock_hf,
+        self, mock_run_cmd, mock_pip, mock_git, mock_apt, mock_civ, mock_hf,
         tmp_manifest,
     ):
-        """Post commands capture stdout/stderr."""
-        mock_subproc.return_value = MagicMock(returncode=0, stdout="hello\n", stderr="warn\n")
+        """Post commands are routed through run_cmd for logging."""
         path = tmp_manifest({
             "version": 1,
             "post_commands": ["echo hello"],
         })
         result = _load_and_run(path)
         assert result == 0
-        mock_subproc.assert_called_once()
-        call_kwargs = mock_subproc.call_args
-        assert call_kwargs.kwargs.get("capture_output") is True
-        assert call_kwargs.kwargs.get("text") is True
+        mock_run_cmd.assert_called_once()
+        call_kwargs = mock_run_cmd.call_args
+        assert call_kwargs.kwargs.get("shell") is True
+        assert call_kwargs.kwargs.get("label") == "post_command"
 
 
 # ---------- Stage idempotency ----------
@@ -841,14 +834,13 @@ class TestProvisioningScript:
     @patch("provisioner.__main__.resolve_manifest_source", return_value="/tmp/test_script.sh")
     @patch("provisioner.__main__.shutil.which", return_value=None)
     @patch("provisioner.__main__.os.chmod")
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd", side_effect=subprocess.CalledProcessError(1, "/tmp/test_script.sh"))
     def test_script_execution_failure_returns_1(
-        self, mock_subproc, mock_chmod, mock_which, mock_resolve, mock_civ, mock_hf,
+        self, mock_run_cmd, mock_chmod, mock_which, mock_resolve, mock_civ, mock_hf,
         tmp_manifest, monkeypatch,
     ):
         """Non-zero exit from the script should return 1."""
         monkeypatch.setenv("PROVISIONING_SCRIPT", "https://example.com/setup.sh")
-        mock_subproc.return_value = MagicMock(returncode=1, stdout="", stderr="error\n")
         path = tmp_manifest({"version": 1})
         manifest = load_manifest(path)
         result = run(path, manifest)
@@ -859,38 +851,35 @@ class TestProvisioningScript:
     @patch("provisioner.__main__.resolve_manifest_source", return_value="/tmp/test_script.sh")
     @patch("provisioner.__main__.shutil.which", return_value=None)
     @patch("provisioner.__main__.os.chmod")
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd")
     def test_script_output_captured(
-        self, mock_subproc, mock_chmod, mock_which, mock_resolve, mock_civ, mock_hf,
+        self, mock_run_cmd, mock_chmod, mock_which, mock_resolve, mock_civ, mock_hf,
         tmp_manifest, monkeypatch,
     ):
-        """Script stdout/stderr should be captured."""
+        """Script output is routed through run_cmd for logging."""
         monkeypatch.setenv("PROVISIONING_SCRIPT", "https://example.com/setup.sh")
-        mock_subproc.return_value = MagicMock(returncode=0, stdout="hello\n", stderr="warn\n")
         path = tmp_manifest({"version": 1})
         manifest = load_manifest(path)
         result = run(path, manifest)
         assert result == 0
-        # Verify subprocess was called with capture_output
-        script_call = [c for c in mock_subproc.call_args_list if c.args and c.args[0] == ["/tmp/test_script.sh"]]
+        # Verify run_cmd was called for the script
+        script_call = [c for c in mock_run_cmd.call_args_list if c.args and c.args[0] == ["/tmp/test_script.sh"]]
         assert len(script_call) == 1
-        assert script_call[0].kwargs.get("capture_output") is True
-        assert script_call[0].kwargs.get("text") is True
+        assert script_call[0].kwargs.get("label") == "script"
 
     @patch("provisioner.__main__.validate_hf_token", return_value=False)
     @patch("provisioner.__main__.validate_civitai_token", return_value=False)
     @patch("provisioner.__main__.resolve_manifest_source", return_value="/tmp/test_script.sh")
     @patch("provisioner.__main__.shutil.which", return_value=None)
     @patch("provisioner.__main__.os.chmod")
-    @patch("provisioner.__main__.subprocess.run")
+    @patch("provisioner.__main__.run_cmd")
     def test_script_hash_idempotency(
-        self, mock_subproc, mock_chmod, mock_which, mock_resolve, mock_civ, mock_hf,
+        self, mock_run_cmd, mock_chmod, mock_which, mock_resolve, mock_civ, mock_hf,
         tmp_manifest, tmp_path, monkeypatch,
     ):
         """Second run with same PROVISIONING_SCRIPT should skip Phase 9."""
         monkeypatch.setenv("PROVISIONING_SCRIPT", "https://example.com/setup.sh")
         monkeypatch.setattr("provisioner.state.STATE_DIR", str(tmp_path / "state"))
-        mock_subproc.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
 
         path = tmp_manifest({"version": 1})
         manifest = load_manifest(path)
@@ -898,14 +887,14 @@ class TestProvisioningScript:
         # First run — script executes
         result = run(path, manifest)
         assert result == 0
-        script_calls = [c for c in mock_subproc.call_args_list if c.args and c.args[0] == ["/tmp/test_script.sh"]]
+        script_calls = [c for c in mock_run_cmd.call_args_list if c.args and c.args[0] == ["/tmp/test_script.sh"]]
         assert len(script_calls) == 1
 
         # Second run — script skipped (hash match)
-        mock_subproc.reset_mock()
+        mock_run_cmd.reset_mock()
         result = run(path, manifest)
         assert result == 0
-        script_calls = [c for c in mock_subproc.call_args_list if c.args and c.args[0] == ["/tmp/test_script.sh"]]
+        script_calls = [c for c in mock_run_cmd.call_args_list if c.args and c.args[0] == ["/tmp/test_script.sh"]]
         assert len(script_calls) == 0
 
     def test_script_only_mode_no_manifest(self, monkeypatch):

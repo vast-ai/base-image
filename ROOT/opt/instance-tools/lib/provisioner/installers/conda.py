@@ -12,9 +12,9 @@ import logging
 import os
 import shlex
 import shutil
-import subprocess
 
 from ..schema import CondaPackages
+from ..subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
 
@@ -66,7 +66,7 @@ def ensure_conda_env(env_path: str, python_version: str = "") -> None:
     if python_version:
         cmd.append(f"python={python_version}")
 
-    subprocess.run(cmd, check=True)
+    run_cmd(cmd, label="conda-env")
     log.info("Conda env created: %s", env_path)
 
 
@@ -123,5 +123,5 @@ def install_conda_packages(
 
     cmd.extend(packages)
 
-    subprocess.run(cmd, check=True)
+    run_cmd(cmd, label="conda")
     log.info("Conda packages installed successfully")

@@ -92,7 +92,7 @@ class TestInstallCondaPackages:
         )
         assert "/envs/myenv" in caplog.text
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_mamba)
     def test_prefers_mamba(self, mock_isfile, mock_access, mock_run):
@@ -105,7 +105,7 @@ class TestInstallCondaPackages:
         assert "numpy" in cmd
         assert "scipy" in cmd
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.shutil.which", side_effect=lambda x: "/usr/bin/conda" if x == "conda" else None)
     @patch("provisioner.installers.conda.os.access", return_value=False)
     @patch("provisioner.installers.conda.os.path.isfile", return_value=False)
@@ -115,7 +115,7 @@ class TestInstallCondaPackages:
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "/usr/bin/conda"
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     def test_channels(self, mock_isfile, mock_access, mock_run):
@@ -131,7 +131,7 @@ class TestInstallCondaPackages:
         assert cmd[c_indices[0] + 1] == "pytorch"
         assert cmd[c_indices[1] + 1] == "nvidia"
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     def test_extra_args(self, mock_isfile, mock_access, mock_run):
@@ -143,7 +143,7 @@ class TestInstallCondaPackages:
         cmd = mock_run.call_args[0][0]
         assert "--no-update-deps" in cmd
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     def test_version_specifiers(self, mock_isfile, mock_access, mock_run):
@@ -158,7 +158,7 @@ class TestInstallCondaPackages:
         assert "pandas<2.0" in cmd
 
     @patch("provisioner.installers.conda.ensure_conda_env")
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     def test_env_prefix(self, mock_isfile, mock_access, mock_run, mock_ensure):
@@ -171,7 +171,7 @@ class TestInstallCondaPackages:
         assert "/envs/myenv" in cmd
 
     @patch("provisioner.installers.conda.ensure_conda_env")
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     def test_env_with_python(self, mock_isfile, mock_access, mock_run, mock_ensure):
@@ -180,7 +180,7 @@ class TestInstallCondaPackages:
         install_conda_packages(config)
         mock_ensure.assert_called_once_with("/envs/myenv", "3.11")
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     def test_no_prefix_without_env(self, mock_isfile, mock_access, mock_run):
@@ -194,7 +194,7 @@ class TestInstallCondaPackages:
 # ---------- ensure_conda_env ----------
 
 class TestEnsureCondaEnv:
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     @patch("provisioner.installers.conda.os.path.isdir", return_value=False)
@@ -206,7 +206,7 @@ class TestEnsureCondaEnv:
         assert "-p" in cmd
         assert "/envs/myenv" in cmd
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_mamba)
     @patch("provisioner.installers.conda.os.path.isdir", return_value=False)
@@ -215,7 +215,7 @@ class TestEnsureCondaEnv:
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == f"{_MINIFORGE_BIN}/mamba"
 
-    @patch("provisioner.installers.conda.subprocess.run")
+    @patch("provisioner.installers.conda.run_cmd")
     @patch("provisioner.installers.conda.os.access", return_value=True)
     @patch("provisioner.installers.conda.os.path.isfile", side_effect=_isfile_conda)
     @patch("provisioner.installers.conda.os.path.isdir", return_value=False)
