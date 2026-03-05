@@ -432,7 +432,7 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
             else:
                 # Download script if URL, otherwise use local path
                 try:
-                    script_path = resolve_manifest_source(script_url, cache_path="/provisioning.sh")
+                    script_path = resolve_manifest_source(script_url, cache_path="/provisioning.sh", label="script")
                 except RuntimeError as e:
                     log.error("Failed to download provisioning script: %s", e)
                     return 1

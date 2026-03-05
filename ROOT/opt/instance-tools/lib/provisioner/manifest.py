@@ -125,11 +125,13 @@ def _is_url(source: str) -> bool:
     return source.startswith("http://") or source.startswith("https://")
 
 
-def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CACHE) -> str:
+def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CACHE, label: str = "manifest") -> str:
     """Resolve a manifest source (file path or URL) to a local file path.
 
     If *source* is a URL, download it to *cache_path* and return that path.
     If *source* is already a local path, return it unchanged.
+
+    *label* is used in log messages (e.g. "manifest", "script").
 
     Raises ``RuntimeError`` on download failure so the caller's retry loop
     can re-attempt.
@@ -137,13 +139,13 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
     if not _is_url(source):
         return source
 
-    log.info("Downloading manifest from %s", source)
+    log.info("Downloading %s from %s", label, source)
     try:
         req = urllib.request.Request(source, headers={"User-Agent": "provisioner/1"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        raise RuntimeError(f"Failed to download manifest from {source}: {e}") from e
+        raise RuntimeError(f"Failed to download {label} from {source}: {e}") from e
 
     # Write atomically: temp file + rename to avoid partial reads
     cache_dir = os.path.dirname(cache_path) or "."
@@ -155,9 +157,9 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
             os.close(fd)
         os.replace(tmp, cache_path)
     except OSError as e:
-        raise RuntimeError(f"Failed to write manifest to {cache_path}: {e}") from e
+        raise RuntimeError(f"Failed to write {label} to {cache_path}: {e}") from e
 
-    log.info("Manifest saved to %s (%d bytes)", cache_path, len(data))
+    log.info("%s saved to %s (%d bytes)", label.capitalize(), cache_path, len(data))
     return cache_path
 
 
