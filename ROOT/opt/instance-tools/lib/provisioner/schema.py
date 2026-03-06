@@ -26,7 +26,7 @@ class ConcurrencySettings:
 @dataclass
 class Settings:
     venv: str = "/venv/main"
-    conda_env: str = ""
+    conda_env: str = "/venv/main"
     log_file: str = "/var/log/portal/provisioning.log"
     concurrency: ConcurrencySettings = field(default_factory=ConcurrencySettings)
     retry: RetrySettings = field(default_factory=RetrySettings)

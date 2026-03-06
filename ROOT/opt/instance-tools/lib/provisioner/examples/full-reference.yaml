@@ -9,7 +9,7 @@ version: 1
 # All fields are optional with sensible defaults
 settings:
   venv: "/venv/main"                        # Default venv for pip installs
-  conda_env: ""                             # Default conda prefix env (empty = base environment)
+  conda_env: "/venv/main"                    # Default conda prefix env (same combined env as pip)
   log_file: "/var/log/portal/provisioning.log"
   concurrency:
     hf_downloads: 3                         # Max parallel HuggingFace downloads
@@ -163,8 +163,7 @@ conda_packages:
     env: "/venv/conda-ml"                   # Target conda prefix env (auto-created if missing)
     python: "3.11"                          # Python version for env auto-creation
     args: ""                                # Extra args (e.g. "--no-update-deps")
-    # Without env, falls back to settings.conda_env. If that's also empty,
-    # packages install into the base/active conda environment.
+    # Without env, falls back to settings.conda_env (default: /venv/main).
 
   - packages:                               # Second block targeting a different env
       - "ffmpeg"

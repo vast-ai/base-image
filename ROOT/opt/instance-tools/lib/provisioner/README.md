@@ -135,7 +135,7 @@ Every manifest starts with `version: 1`. All other sections are optional.
 ```yaml
 settings:
   venv: "/venv/main"
-  conda_env: "/venv/main"                    # default conda prefix env (empty = base environment)
+  conda_env: "/venv/main"                    # default conda prefix env (same combined env as pip)
   log_file: "/var/log/portal/provisioning.log"
   concurrency:
     hf_downloads: 3
@@ -146,7 +146,7 @@ settings:
     backoff_multiplier: 2     # exponential backoff (delays: 2s, 4s, 8s, 16s)
 ```
 
-All values shown are defaults. `venv` is the default target for pip installs when no block-level venv is specified. `conda_env` is the default target for conda installs when no block-level `env` is specified (empty means the base/active conda environment). `retry` controls download retry behavior.
+All values shown are defaults. `venv` is the default target for pip installs when no block-level venv is specified. `conda_env` is the default target for conda installs when no block-level `env` is specified. Both default to `/venv/main`, a combined Conda environment with uv and pip available inside. `retry` controls download retry behavior.
 
 ### auth
 
@@ -393,7 +393,7 @@ Uses the Miniforge3 installation at `/opt/miniforge3/`. Prefers `mamba` (faster 
 | `python` | `""` | Python version for env auto-creation |
 | `args` | `""` | Extra arguments |
 
-Without `env`, the `settings.conda_env` default is used. If that is also empty, packages install into the base/active conda environment. With `env`, the prefix is auto-created if the `conda-meta/` directory doesn't exist, using `{tool} create -y -p {path} [python={version}]`.
+Without `env`, the `settings.conda_env` default is used (`/venv/main`). With `env`, the prefix is auto-created if the `conda-meta/` directory doesn't exist, using `{tool} create -y -p {path} [python={version}]`.
 
 ### git_repos
 
