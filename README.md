@@ -297,7 +297,7 @@ See the full [Provisioner Reference](ROOT/opt/instance-tools/lib/provisioner/REA
 
 ### Provisioning Script (Imperative)
 
-For quick customizations without building a new image:
+For quick customizations without building a new image. When a manifest is also configured, `PROVISIONING_SCRIPT` runs as the final phase (Phase 9) of the provisioner — gaining automatic retries, failure actions, and webhook notifications. See the [Provisioner Reference](ROOT/opt/instance-tools/lib/provisioner/README.md#provisioning_script-phase-9) for details.
 
 ```bash
 #!/bin/bash
