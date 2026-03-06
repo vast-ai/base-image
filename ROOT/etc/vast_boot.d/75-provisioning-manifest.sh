@@ -40,7 +40,7 @@ if [[ -n "$MANIFEST_SOURCE" || -n "${PROVISIONING_SCRIPT:-}" ]] && [[ ! -f /.pro
     echo "*"
     echo "*****"
 
-    if provisioner $MANIFEST_SOURCE; then
+    if provisioner "$MANIFEST_SOURCE"; then
         touch /.provisioning_complete
         rm -f /.provisioning_failed
         echo "Provisioning complete!"

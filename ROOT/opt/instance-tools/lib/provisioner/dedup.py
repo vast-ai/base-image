@@ -30,7 +30,8 @@ def dedup_downloads(
 
     for entry in downloads:
         # Skip dedup for entries where dest is a directory (filename unknown)
-        if entry.dest.endswith("/"):
+        # or empty (HF cache mode — no local path to symlink)
+        if not entry.dest or entry.dest.endswith("/"):
             unique.append(entry)
             continue
 

@@ -246,8 +246,7 @@ For derivative images, you can add custom scripts to `/etc/vast_boot.d/` to hook
 ├── 35-sync-home-dirs.sh
 ├── ...
 ├── 65-supervisor-launch.sh
-├── 74-provisioning-manifest.sh  # Declarative provisioning (YAML)
-├── 75-provisioning-script.sh    # Imperative provisioning (shell)
+├── 75-provisioning-manifest.sh  # Provisioning (YAML manifest + legacy script)
 ├── 80-my-custom-script.sh       # Runs every boot
 └── first_boot/
     ├── 05-update-vast.sh        # Runs only on first boot
@@ -269,32 +268,30 @@ The provisioner lets you define instance setup declaratively in a YAML manifest 
 **Activation:** Set `PROVISIONING_MANIFEST` to a URL or local path, or bake a `/provisioning.yaml` file into your image. If `/provisioning.yaml` exists, it is used automatically — no environment variable needed.
 
 ```yaml
-# Example: Set up ComfyUI with models
-settings:
-  venv: /venv/main
+version: 1
 
 pip_packages:
-  - torch torchvision torchaudio --torch-backend=auto
-  - comfyui
+  - packages: [torch, torchvision, torchaudio]
+    args: "--torch-backend auto"
 
 git_repos:
   - url: https://github.com/comfyanonymous/ComfyUI
-    path: /opt/ComfyUI
+    dest: /workspace/ComfyUI
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
 
 downloads:
-  - source: huggingface
-    repo: stabilityai/stable-diffusion-xl-base-1.0
-    dest: /opt/ComfyUI/models/checkpoints/
+  - url: https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
+    dest: /workspace/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors
 
 services:
   - name: comfyui
-    command: python /opt/ComfyUI/main.py --listen 127.0.0.1 --port 18188
-    portal:
-      name: ComfyUI
-      port: 18188
+    portal_search_term: "ComfyUI"
+    workdir: /workspace/ComfyUI
+    command: "python main.py --listen 127.0.0.1 --port 18188"
 ```
 
-The manifest runs at boot step 70. The `PROVISIONING_SCRIPT` is also handled by the provisioner (as Phase 9), so both can be used together. On success, `/.provisioning_complete` is touched to skip re-provisioning on subsequent boots.
+The manifest runs at boot step 75 via `75-provisioning-manifest.sh`. The `PROVISIONING_SCRIPT` is also handled by the provisioner (as Phase 9), so both can be used together. On success, `/.provisioning_complete` is touched to skip re-provisioning on subsequent boots.
 
 See the full [Provisioner Reference](ROOT/opt/instance-tools/lib/provisioner/README.md) for all available sections, options, and examples.
 
