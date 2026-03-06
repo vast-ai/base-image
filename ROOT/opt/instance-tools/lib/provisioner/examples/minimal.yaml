@@ -1,0 +1,16 @@
+# Minimal manifest - just a single app with no model downloads
+# Good starting point for simple Gradio/Streamlit applications
+
+version: 1
+
+git_repos:
+  - url: https://github.com/your-org/your-app
+    dest: "${WORKSPACE:-/workspace}/your-app"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+services:
+  - name: your-app
+    portal_search_term: "Your App"
+    workdir: "${WORKSPACE:-/workspace}/your-app"
+    command: "python app.py --port 7860"

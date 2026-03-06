@@ -105,6 +105,13 @@ mkdir -p /opt/instance-tools/bin/
 . /opt/portal-aio/venv/bin/activate
 uv pip install -r /opt/portal-aio/requirements.txt
 deactivate
+
+# Install the declarative provisioner into its own venv
+uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11
+. /opt/instance-tools/provisioner/venv/bin/activate
+uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt
+deactivate
+
 wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}
 chmod +x /opt/portal-aio/tunnel_manager/cloudflared
 # Make these portal-provided tools easily reachable

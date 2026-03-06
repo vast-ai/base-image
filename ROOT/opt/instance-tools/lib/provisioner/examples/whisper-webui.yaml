@@ -1,0 +1,40 @@
+# Whisper WebUI + API provisioning manifest
+# Equivalent of provisioning_scripts/whisper-webui-api.sh
+#
+# Env vars used:
+#   WORKSPACE        - Base workspace directory (default: /workspace)
+#   APP_REPO_URL     - Git repo URL (default: https://github.com/jhj0517/Whisper-WebUI)
+#   APP_REF          - Git ref to checkout (default: master)
+#   WHISPER_UI_ARGS  - CLI args for WebUI (default: --whisper_type whisper --server_port 7860)
+#   WHISPER_API_ARGS - CLI args for API (default: --port 8000)
+
+version: 1
+
+settings:
+  venv: "/venv/main"
+
+pip_packages:
+  - tool: uv
+    packages:
+      - torch
+      - torchaudio
+    args: "--torch-backend auto"
+
+git_repos:
+  - url: "${APP_REPO_URL:-https://github.com/jhj0517/Whisper-WebUI}"
+    dest: "${WORKSPACE:-/workspace}/Whisper-WebUI"
+    ref: "${APP_REF:-master}"
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+      - "uv pip install --no-cache --python /venv/main/bin/python -r backend/requirements-backend.txt"
+
+services:
+  - name: whisper-webui
+    portal_search_term: "Whisper WebUI"
+    workdir: "${WORKSPACE:-/workspace}/Whisper-WebUI"
+    command: "python app.py ${WHISPER_UI_ARGS:---whisper_type whisper --server_port 7860}"
+
+  - name: whisper-api
+    portal_search_term: "Whisper API"
+    workdir: "${WORKSPACE:-/workspace}/Whisper-WebUI"
+    command: "uvicorn backend.main:app ${WHISPER_API_ARGS:---port 8000}"

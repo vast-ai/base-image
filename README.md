@@ -224,6 +224,7 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 |----------|-------------|
 | `BOOT_SCRIPT` | URL to a custom boot script that **replaces** the entire default startup routine |
 | `HOTFIX_SCRIPT` | URL to a script that runs very early in boot, before most initialization—use to patch broken containers |
+| `PROVISIONING_MANIFEST` | URL or local path to a declarative YAML manifest processed by the [provisioner](ROOT/opt/instance-tools/lib/provisioner/README.md) |
 | `PROVISIONING_SCRIPT` | URL to a script that runs after Supervisor starts—use to install packages and configure applications |
 | `SERVERLESS` | Set to `true` to skip update checks for faster cold starts |
 
@@ -231,7 +232,8 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 1. `BOOT_SCRIPT` (if set, replaces everything below)
 2. `HOTFIX_SCRIPT` (runs first, can modify any part of startup)
 3. Normal boot sequence (environment setup, workspace sync, TLS certs, Supervisor)
-4. `PROVISIONING_SCRIPT` (runs after Supervisor, installs your customizations)
+4. `PROVISIONING_MANIFEST` (runs after Supervisor, declarative setup via provisioner)
+5. `PROVISIONING_SCRIPT` (runs after manifest, imperative customizations)
 
 ### Custom Boot Scripts
 
@@ -244,7 +246,7 @@ For derivative images, you can add custom scripts to `/etc/vast_boot.d/` to hook
 ├── 35-sync-home-dirs.sh
 ├── ...
 ├── 65-supervisor-launch.sh
-├── 75-provisioning-script.sh
+├── 75-provisioning-manifest.sh  # Provisioning (YAML manifest + legacy script)
 ├── 80-my-custom-script.sh       # Runs every boot
 └── first_boot/
     ├── 05-update-vast.sh        # Runs only on first boot
@@ -259,9 +261,43 @@ Key ordering points:
 - Scripts at `75-*` or later run after Supervisor is running
 - First-boot scripts (in `first_boot/`) are sourced at position `25-*`
 
-### Provisioning Script Example
+### Provisioning Manifest (Declarative)
 
-For quick customizations without building a new image:
+The provisioner lets you define instance setup declaratively in a YAML manifest instead of writing shell scripts. It handles execution order, parallelism, idempotency, and failure recovery automatically.
+
+**Activation:** Set `PROVISIONING_MANIFEST` to a URL or local path, or bake a `/provisioning.yaml` file into your image. If `/provisioning.yaml` exists, it is used automatically — no environment variable needed.
+
+```yaml
+version: 1
+
+pip_packages:
+  - packages: [torch, torchvision, torchaudio]
+    args: "--torch-backend auto"
+
+git_repos:
+  - url: https://github.com/comfyanonymous/ComfyUI
+    dest: /workspace/ComfyUI
+    post_commands:
+      - "uv pip install --no-cache --python /venv/main/bin/python -r requirements.txt"
+
+downloads:
+  - url: https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
+    dest: /workspace/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors
+
+services:
+  - name: comfyui
+    portal_search_term: "ComfyUI"
+    workdir: /workspace/ComfyUI
+    command: "python main.py --listen 127.0.0.1 --port 18188"
+```
+
+The manifest runs at boot step 75 via `75-provisioning-manifest.sh`. The `PROVISIONING_SCRIPT` is also handled by the provisioner (as Phase 9), so both can be used together. On success, `/.provisioning_complete` is touched to skip re-provisioning on subsequent boots.
+
+See the full [Provisioner Reference](ROOT/opt/instance-tools/lib/provisioner/README.md) for all available sections, options, and examples.
+
+### Provisioning Script (Imperative)
+
+For quick customizations without building a new image. When a manifest is also configured, `PROVISIONING_SCRIPT` runs as the final phase (Phase 9) of the provisioner — gaining automatic retries, failure actions, and webhook notifications. See the [Provisioner Reference](ROOT/opt/instance-tools/lib/provisioner/README.md#provisioning_script-phase-9) for details.
 
 ```bash
 #!/bin/bash
@@ -418,6 +454,7 @@ The logging utilities in `/opt/supervisor-scripts/utils/` handle:
 |----------|-------------|
 | `BOOT_SCRIPT` | URL to custom boot script (replaces default startup) |
 | `HOTFIX_SCRIPT` | URL to early-run patch script |
+| `PROVISIONING_MANIFEST` | URL or local path to a declarative YAML [provisioning manifest](ROOT/opt/instance-tools/lib/provisioner/README.md) |
 | `PROVISIONING_SCRIPT` | URL to post-Supervisor setup script |
 | `SERVERLESS` | Set to `true` for faster cold starts |
 
