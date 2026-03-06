@@ -48,6 +48,26 @@ class FileLock:
         return False
 
 
+def cleanup_lockfiles(paths: list[str]) -> None:
+    """Remove .lock files created by FileLock for the given file paths.
+
+    Called after provisioning completes successfully. Silently ignores
+    missing files.
+    """
+    removed = 0
+    for path in paths:
+        lockfile = f"{path}.lock"
+        try:
+            os.remove(lockfile)
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.debug("Could not remove lockfile %s: %s", lockfile, e)
+    if removed:
+        log.info("Cleaned up %d download lockfile(s)", removed)
+
+
 def run_parallel(
     fn: Callable[..., Any],
     items: list[Any],

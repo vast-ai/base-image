@@ -44,7 +44,7 @@ import time
 import urllib.parse
 
 from .auth import validate_civitai_token, validate_hf_token
-from .concurrency import run_parallel
+from .concurrency import cleanup_lockfiles, run_parallel
 from .dedup import create_symlinks, dedup_downloads, dedup_git_repos
 from .extensions import run_extensions
 from .downloaders.huggingface import download_hf
@@ -460,6 +460,11 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
                     return 1
 
                 mark_stage_complete("provisioning_script", script_hash)
+
+    # Cleanup: remove .lock files left by download file locking
+    if not dry_run:
+        lock_paths = [d.dest for d in manifest.downloads if d.dest and not d.dest.endswith("/")]
+        cleanup_lockfiles(lock_paths)
 
     log.info("Provisioning complete!")
     return 0
