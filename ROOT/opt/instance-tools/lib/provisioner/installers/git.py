@@ -12,7 +12,12 @@ log = logging.getLogger("provisioner")
 
 
 def _clone_single(repo: GitRepo, dry_run: bool = False) -> None:
-    """Clone or update a single git repository, then run post commands."""
+    """Clone or update a single git repository and checkout ref.
+
+    Post commands are NOT run here — they are executed sequentially by
+    ``clone_git_repos`` after all parallel clones finish, to avoid race
+    conditions (e.g. concurrent pip installs into the same venv).
+    """
     dest = repo.dest
 
     if dry_run:
@@ -42,13 +47,19 @@ def _clone_single(repo: GitRepo, dry_run: bool = False) -> None:
         log.info("Checking out ref: %s", repo.ref)
         run_cmd(["git", "-C", dest, "checkout", repo.ref], label="git")
 
-    # Run post-clone commands
-    if repo.post_commands:
-        for post_cmd in repo.post_commands:
-            log.info("Running post command in %s: %s", dest, post_cmd)
-            run_cmd(post_cmd, shell=True, cwd=dest, label="git")
-
     log.info("Git repo ready: %s", dest)
+
+
+def _run_post_commands(repo: GitRepo, dry_run: bool = False) -> None:
+    """Run a repo's post_commands sequentially in its directory."""
+    if not repo.post_commands:
+        return
+    for post_cmd in repo.post_commands:
+        if dry_run:
+            log.info("[DRY RUN] Would run post command in %s: %s", repo.dest, post_cmd)
+            continue
+        log.info("Running post command in %s: %s", repo.dest, post_cmd)
+        run_cmd(post_cmd, shell=True, cwd=repo.dest, label="git")
 
 
 def clone_git_repos(
@@ -56,10 +67,11 @@ def clone_git_repos(
     max_workers: int = 4,
     dry_run: bool = False,
 ) -> None:
-    """Clone multiple git repositories in parallel.
+    """Clone multiple git repositories in parallel, then run post commands sequentially.
 
-    Each repo's post_commands run immediately after its clone+checkout,
-    within the parallel pool.
+    Clones and checkouts run in a thread pool for speed (network I/O bound).
+    Post commands run sequentially afterward to avoid race conditions — e.g.
+    multiple repos installing pip packages into the same venv concurrently.
     """
     if not repos:
         log.info("No git repos to clone")
@@ -74,3 +86,7 @@ def clone_git_repos(
     failed = [r for r in results if r is not None]
     if failed:
         raise RuntimeError(f"{len(failed)} git clone(s) failed")
+
+    # Run post commands sequentially after all clones succeed
+    for repo in repos:
+        _run_post_commands(repo, dry_run=dry_run)

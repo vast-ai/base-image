@@ -86,12 +86,6 @@ class ConditionalDownload:
 
 
 @dataclass
-class ServiceEnvVar:
-    name: str = ""
-    value: str = ""
-
-
-@dataclass
 class Service:
     name: str = ""
     portal_search_term: str = ""

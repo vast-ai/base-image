@@ -13,13 +13,14 @@ from provisioner.manifest import (
     _expand_recursive,
     _is_url,
     _parse_env_merge_entries,
+    apply_env_conventions,
     apply_env_merge,
     expand_env,
     load_manifest,
     resolve_conditionals,
     resolve_manifest_source,
 )
-from provisioner.schema import DownloadEntry, validate_manifest
+from provisioner.schema import CondaPackages, DownloadEntry, Manifest, PipPackages, validate_manifest
 
 
 # ---------- expand_env ----------
@@ -454,3 +455,125 @@ class TestResolveManifestSource:
                 "https://example.com/manifest.yaml",
                 cache_path="/nonexistent_dir/sub/manifest.yaml",
             )
+
+
+# ---------- apply_env_conventions ----------
+
+class TestApplyEnvConventions:
+    def _manifest(self, **kwargs):
+        return validate_manifest({"version": 1, **kwargs})
+
+    def test_provisioning_downloads(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://a.com/m.bin|/models/m.bin;https://b.com/n.bin|/models/n.bin")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.downloads) == 2
+        assert m.downloads[0].url == "https://a.com/m.bin"
+        assert m.downloads[0].dest == "/models/m.bin"
+        assert m.downloads[1].url == "https://b.com/n.bin"
+
+    def test_provisioning_git_repos_full(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo|/workspace/repo|v2.0")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.git_repos) == 1
+        assert m.git_repos[0].url == "https://github.com/org/repo"
+        assert m.git_repos[0].dest == "/workspace/repo"
+        assert m.git_repos[0].ref == "v2.0"
+
+    def test_provisioning_git_repos_url_only(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo")
+        monkeypatch.delenv("WORKSPACE", raising=False)
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.git_repos) == 1
+        assert m.git_repos[0].url == "https://github.com/org/repo"
+        assert m.git_repos[0].dest == "/workspace/repo"
+        assert m.git_repos[0].ref == ""
+
+    def test_provisioning_git_repos_url_only_with_workspace(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/my-app.git")
+        monkeypatch.setenv("WORKSPACE", "/data")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.git_repos[0].dest == "/data/my-app"
+
+    def test_provisioning_git_repos_url_and_dest(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo|/workspace/repo")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.git_repos) == 1
+        assert m.git_repos[0].dest == "/workspace/repo"
+        assert m.git_repos[0].ref == ""
+
+    def test_provisioning_apt(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_APT", "ffmpeg;libgl1;htop")
+        m = self._manifest(apt_packages=["vim"])
+        apply_env_conventions(m)
+        assert m.apt_packages == ["vim", "ffmpeg", "libgl1", "htop"]
+
+    def test_provisioning_pip(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_PIP", "transformers>=4.0;accelerate;torch")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.pip_packages) == 1
+        assert isinstance(m.pip_packages[0], PipPackages)
+        assert m.pip_packages[0].packages == ["transformers>=4.0", "accelerate", "torch"]
+
+    def test_provisioning_conda(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_CONDA", "numpy;scipy;cudatoolkit=11.8")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.conda_packages) == 1
+        assert isinstance(m.conda_packages[0], CondaPackages)
+        assert m.conda_packages[0].packages == ["numpy", "scipy", "cudatoolkit=11.8"]
+
+    def test_provisioning_post_commands(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_POST_COMMANDS", "chmod +x /opt/run.sh;ln -s /a /b")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.post_commands == ["chmod +x /opt/run.sh", "ln -s /a /b"]
+
+    def test_empty_env_var_noop(self, monkeypatch):
+        # Ensure unset vars don't add anything
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert len(m.downloads) == 0
+        assert len(m.git_repos) == 0
+        assert len(m.apt_packages) == 0
+        assert len(m.pip_packages) == 0
+        assert len(m.conda_packages) == 0
+        assert len(m.post_commands) == 0
+
+    def test_multiple_vars(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_APT", "ffmpeg;curl")
+        monkeypatch.setenv("PROVISIONING_PIP", "torch;numpy")
+        monkeypatch.setenv("PROVISIONING_POST_COMMANDS", "echo done")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.apt_packages == ["ffmpeg", "curl"]
+        assert len(m.pip_packages) == 1
+        assert m.pip_packages[0].packages == ["torch", "numpy"]
+        assert m.post_commands == ["echo done"]
+
+    def test_appends_to_existing(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://new.com/f|/new/f")
+        monkeypatch.setenv("PROVISIONING_APT", "htop")
+        monkeypatch.setenv("PROVISIONING_POST_COMMANDS", "echo new")
+        m = self._manifest(
+            downloads=[{"url": "https://existing.com/x", "dest": "/d/x"}],
+            apt_packages=["vim"],
+            post_commands=["echo old"],
+        )
+        apply_env_conventions(m)
+        assert len(m.downloads) == 2
+        assert m.downloads[0].url == "https://existing.com/x"
+        assert m.downloads[1].url == "https://new.com/f"
+        assert m.apt_packages == ["vim", "htop"]
+        assert m.post_commands == ["echo old", "echo new"]
+
+    def test_comments_and_empty_entries_skipped(self, monkeypatch):
+        monkeypatch.setenv("PROVISIONING_APT", ";;#comment;ffmpeg;;#another;curl;")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.apt_packages == ["ffmpeg", "curl"]

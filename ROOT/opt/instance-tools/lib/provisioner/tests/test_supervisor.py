@@ -90,6 +90,17 @@ class TestGenerateStartupScript:
         assert 'export A="1"' in script
         assert 'export B="2"' in script
 
+    def test_env_var_shell_escaping(self):
+        """Values with shell-special characters must be escaped."""
+        svc = Service(
+            name="a", command="echo", workdir="/",
+            environment={
+                "TRICKY": 'has "quotes" and $VAR and `cmd` and back\\slash',
+            },
+        )
+        script = _generate_startup_script(svc)
+        assert r'export TRICKY="has \"quotes\" and \$VAR and \`cmd\` and back\\slash"' in script
+
     def test_no_env_vars(self):
         svc = Service(name="a", command="echo", workdir="/")
         script = _generate_startup_script(svc)

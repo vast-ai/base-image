@@ -30,6 +30,7 @@ The manifest argument is optional. If omitted, the provisioner checks for `PROVI
   - [env_merge](#env_merge)
   - [services](#services)
   - [post_commands](#post_commands)
+- [Convention Environment Variables](#convention-environment-variables)
 - [Environment Variable Expansion](#environment-variable-expansion)
 - [Idempotency](#idempotency)
 - [Failure Handling](#failure-handling)
@@ -134,7 +135,7 @@ Every manifest starts with `version: 1`. All other sections are optional.
 ```yaml
 settings:
   venv: "/venv/main"
-  conda_env: ""                    # default conda prefix env (empty = base environment)
+  conda_env: "/venv/main"                    # default conda prefix env (empty = base environment)
   log_file: "/var/log/portal/provisioning.log"
   concurrency:
     hf_downloads: 3
@@ -194,7 +195,7 @@ Set `max_retries: 0` to skip the retry loop and go straight to the action on fir
 }
 ```
 
-**Environment variable overrides:** All `PROVISIONER_*` env vars override manifest values, letting operators tune behavior without editing manifests:
+**Environment variable overrides:** All `PROVISIONER_*` env vars override manifest values, letting operators tune behavior without editing manifests. For `PROVISIONING_*` data injection vars (downloads, apt, pip, etc.), see [Convention Environment Variables](#convention-environment-variables).
 
 | Env var | Overrides | Notes |
 |---------|-----------|-------|
@@ -304,7 +305,7 @@ def run(config: dict, context: ExtensionContext, dry_run: bool = False) -> None:
 
 **Error handling:** Extension failure is **fail-fast** — if an extension raises, the provisioner aborts before any other phase runs. This prevents partial provisioning when discovery fails.
 
-**Built-in extension — `provisioner_comfyui`:** Parses ComfyUI workflow JSON files (GUI format) to automatically discover required models and custom nodes. For each workflow URL, it downloads the JSON, extracts model download URLs from `nodes[].properties.models[]`, resolves custom node git repos via the [ComfyUI Registry API](https://registry.comfy.org), and appends them to `manifest.downloads` and `manifest.git_repos`. Workflows are also saved to `{comfyui_dir}/user/default/workflows/` via `write_files_late`.
+**Built-in extension — `provisioner_comfyui`:** Parses ComfyUI workflow JSON files (GUI format) to automatically discover required models and custom nodes. For each workflow URL, it downloads the JSON, extracts model download URLs from `nodes[].properties.models[]`, resolves custom node git repos via the [ComfyUI Registry API](https://registry.comfy.org), and appends them to `manifest.downloads` and `manifest.git_repos`. Workflows are also saved to `{comfyui_dir}/user/default/workflows/` via `write_files_late`. Additional workflow URLs can be provided at runtime via `PROVISIONING_COMFYUI_WORKFLOWS` (semicolon-delimited).
 
 ```yaml
 extensions:
@@ -359,13 +360,6 @@ pip_packages:
 
 **Auto-venv creation:** When `venv` or `python` is explicitly set, the provisioner creates the venv if it doesn't exist (using `uv venv` or `python -m venv`). The default `/venv/main` is assumed to pre-exist in the base image.
 
-**Backward compatibility:** A single dict (old format) is automatically wrapped in a list:
-```yaml
-# This still works:
-pip_packages:
-  packages: [torch]
-```
-
 ### conda_packages
 
 A list of install blocks. Each block can target a different conda prefix environment.
@@ -401,13 +395,6 @@ Uses the Miniforge3 installation at `/opt/miniforge3/`. Prefers `mamba` (faster 
 
 Without `env`, the `settings.conda_env` default is used. If that is also empty, packages install into the base/active conda environment. With `env`, the prefix is auto-created if the `conda-meta/` directory doesn't exist, using `{tool} create -y -p {path} [python={version}]`.
 
-**Backward compatibility:** A single dict (old format) is automatically wrapped in a list:
-```yaml
-# This still works:
-conda_packages:
-  packages: [numpy]
-```
-
 ### git_repos
 
 ```yaml
@@ -423,7 +410,7 @@ git_repos:
       - "sed -i 's/old/new/' config.yaml"
 ```
 
-All repos are cloned **in parallel** (4 workers). Each repo's `post_commands` run in its directory immediately after clone+checkout, within the parallel pool.
+All repos are cloned **in parallel** (4 workers). After all clones complete, each repo's `post_commands` run **sequentially** to avoid race conditions (e.g. multiple repos installing pip packages into the same venv concurrently).
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -481,7 +468,7 @@ Downloads run in two independent parallel pools:
 | `huggingface.co/org/repo` with `dest` | Download full repo to directory (`--local-dir`) |
 | `huggingface.co/org/repo` without `dest` | Download full repo to HF cache (`$HF_HOME`) |
 
-**HF cache mode** (no `dest`): `hf download` manages its own cache at `$HF_HOME` (default `~/.cache/huggingface/hub`). This is the standard approach for inference engines like vLLM that load models from cache by repo ID. The cache handles deduplication, symlinks, and resumption automatically.
+**HF cache mode** (no `dest`): `hf download` manages its own cache at `$HF_HOME` (default `/workspace/.hf_home`). This is the standard approach for inference engines like vLLM that load models from cache by repo ID. The cache handles deduplication, symlinks, and resumption automatically.
 
 **Trailing `/` on dest:** For wget downloads, the provisioner resolves the filename from the server's `Content-Disposition` header (falling back to the URL's last path segment) and appends it to the directory path. For HF single-file downloads, the filename is taken from the URL.
 
@@ -560,7 +547,7 @@ Generates two files per service, then reloads supervisor:
 | `command` | `""` | Launch command -- must be the last line in the script |
 | `pre_commands` | `[]` | Shell commands run after cd/env exports, before the launch command |
 | `wait_for_provisioning` | `true` | Poll-wait for `/.provisioning` to be removed before starting |
-| `environment` | `{}` | Extra env vars exported in the startup script |
+| `environment` | `{}` | Extra env vars exported in the startup script (values support `${VAR}` expansion) |
 
 **Generated startup script structure:**
 
@@ -621,6 +608,57 @@ PROVISIONING_SCRIPT=https://example.com/setup.sh
 
 This replaces the legacy `75-provisioning-script.sh` boot script. Existing scripts work without modification — they gain retries, failure actions, webhook notifications, and unified logging automatically.
 
+## Convention Environment Variables
+
+`PROVISIONING_*` env vars inject resources directly into the manifest without requiring any `env_merge` declarations. They append to (not replace) any existing manifest entries. This is the simplest way to add resources at deploy time.
+
+**Naming convention:** `PROVISIONING_*` = what to provision (data injection). `PROVISIONER_*` = how to provision (settings overrides — see [on_failure](#on_failure)).
+
+| Env var | Target | Format | Example |
+|---------|--------|--------|---------|
+| `PROVISIONING_DOWNLOADS` | `downloads` | `url\|dest;...` | `https://x.com/m.bin\|/models/m.bin;https://y.com/n.bin\|/models/n.bin` |
+| `PROVISIONING_GIT_REPOS` | `git_repos` | `url\|dest\|ref;...` (dest + ref optional) | `https://github.com/org/repo\|/workspace/repo\|v2.0` |
+| `PROVISIONING_APT` | `apt_packages` | `pkg;pkg;...` | `ffmpeg;libgl1;htop` |
+| `PROVISIONING_PIP` | `pip_packages` | `spec;spec;...` | `transformers>=4.0;accelerate;torch` |
+| `PROVISIONING_CONDA` | `conda_packages` | `spec;spec;...` | `numpy;scipy;cudatoolkit=11.8` |
+| `PROVISIONING_POST_COMMANDS` | `post_commands` | `cmd;cmd;...` | `chmod +x /opt/run.sh;ln -s /a /b` |
+
+**Delimiter convention:** `;` separates entries, `|` separates fields within an entry (consistent with `PORTAL_CONFIG` and `env_merge`).
+
+**Parsing rules:**
+- Empty entries and entries starting with `#` are skipped
+- Whitespace around delimiters is trimmed
+- Pip packages are appended as a single `PipPackages` block using the default venv
+- Conda packages are appended as a single `CondaPackages` block
+- Git repos: `url` is required; `dest` and `ref` are optional (omit trailing `|`). When `dest` is omitted, the repo is cloned to `${WORKSPACE:-/workspace}/{repo_name}`
+
+**Examples:**
+
+```bash
+# Add model downloads
+PROVISIONING_DOWNLOADS="https://hf.co/org/model/resolve/main/a.safetensors|/workspace/models/a.safetensors;https://hf.co/org/model/resolve/main/b.safetensors|/workspace/models/b.safetensors"
+
+# Clone repos (url only — dest derived automatically)
+PROVISIONING_GIT_REPOS="https://github.com/org/app"
+
+# Clone with dest and ref
+PROVISIONING_GIT_REPOS="https://github.com/org/app|/workspace/app|v2.0;https://github.com/org/lib|/workspace/lib"
+
+# Install system packages
+PROVISIONING_APT="ffmpeg;libgl1;htop"
+
+# Install Python packages (uses default venv)
+PROVISIONING_PIP="transformers>=4.0;accelerate;torch"
+
+# Install conda packages
+PROVISIONING_CONDA="numpy;scipy;cudatoolkit=11.8"
+
+# Run commands after everything else
+PROVISIONING_POST_COMMANDS="chmod +x /opt/run.sh;ln -sf /models /workspace/app/models"
+```
+
+**Comparison with `env_merge`:** Convention env vars don't require any manifest declaration — they work with a bare `version: 1` manifest.
+
 ## Environment Variable Expansion
 
 All string values in the manifest support bash-style variable expansion, applied recursively before any processing:
@@ -629,12 +667,12 @@ All string values in the manifest support bash-style variable expansion, applied
 |--------|----------|
 | `${VAR}` | Value of `$VAR`, or empty string if unset |
 | `${VAR:-default}` | Value of `$VAR`, or `default` if unset |
-| `${VAR:=default}` | Same as `:-` |
+| `${VAR:=default}` | Same as `:-` (no actual assignment occurs — both forms expand identically) |
 
 ```yaml
 # Common patterns:
 dest: "${WORKSPACE:-/workspace}/ComfyUI"
-ref: "${COMFYUI_VERSION:-main}"
+ref: "${COMFYUI_VERSION:-master}"
 command: "python app.py ${APP_ARGS:---port 7860 --host 0.0.0.0}"
 ```
 
@@ -691,7 +729,7 @@ provisioner [manifest.yaml | URL] [--dry-run] [--force]
 |----------|-------------|
 | `manifest` | Path to YAML manifest file **or** HTTP(S) URL (optional if `PROVISIONING_SCRIPT` is set) |
 | `--dry-run` | Print what would be done without executing anything |
-| `--force` | Clear all cached state and re-run every phase |
+| `--force` | Clear `/.provisioner_state/` and re-run every phase |
 
 The `bin/provisioner` wrapper script activates the provisioner's own venv and sets `PYTHONPATH`, so the command is available directly:
 

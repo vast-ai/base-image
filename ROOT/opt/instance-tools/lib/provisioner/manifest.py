@@ -11,7 +11,7 @@ import urllib.request
 
 import yaml
 
-from .schema import DownloadEntry, Manifest, validate_manifest
+from .schema import CondaPackages, DownloadEntry, GitRepo, Manifest, PipPackages, validate_manifest
 
 log = logging.getLogger("provisioner")
 
@@ -161,6 +161,112 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
 
     log.info("%s saved to %s (%d bytes)", label.capitalize(), cache_path, len(data))
     return cache_path
+
+
+def _parse_env_flat_list(value: str) -> list[str]:
+    """Parse a semicolon-separated flat list, stripping whitespace and skipping empties/comments."""
+    items = []
+    for raw in value.split(";"):
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        items.append(raw)
+    return items
+
+
+def _repo_dest_from_url(url: str) -> str:
+    """Derive a default clone destination from a git URL.
+
+    ``https://github.com/org/repo`` → ``${WORKSPACE:-/workspace}/repo``
+    ``https://github.com/org/repo.git`` → ``${WORKSPACE:-/workspace}/repo``
+    """
+    import urllib.parse as up
+    name = os.path.basename(up.urlparse(url).path)
+    if name.endswith(".git"):
+        name = name[:-4]
+    workspace = os.environ.get("WORKSPACE", "/workspace")
+    return f"{workspace}/{name}" if name else ""
+
+
+def _parse_env_git_repos(value: str) -> list[GitRepo]:
+    """Parse semicolon-separated 'url|dest|ref' entries (dest and ref optional).
+
+    When *dest* is omitted the repo is cloned into
+    ``${WORKSPACE:-/workspace}/{repo_name}``.
+    """
+    repos = []
+    for raw in value.split(";"):
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        parts = raw.split("|")
+        url = parts[0].strip()
+        dest = parts[1].strip() if len(parts) > 1 else ""
+        ref = parts[2].strip() if len(parts) > 2 else ""
+        if url:
+            if not dest:
+                dest = _repo_dest_from_url(url)
+            repos.append(GitRepo(url=url, dest=dest, ref=ref))
+    return repos
+
+
+# Map of PROVISIONING_* env vars to manifest target fields
+_ENV_CONVENTIONS = {
+    "PROVISIONING_DOWNLOADS": "downloads",
+    "PROVISIONING_GIT_REPOS": "git_repos",
+    "PROVISIONING_APT": "apt_packages",
+    "PROVISIONING_PIP": "pip_packages",
+    "PROVISIONING_CONDA": "conda_packages",
+    "PROVISIONING_POST_COMMANDS": "post_commands",
+}
+
+
+def apply_env_conventions(manifest: Manifest) -> None:
+    """Inject resources from PROVISIONING_* convention env vars into the manifest.
+
+    Each env var maps to a specific manifest field.  Values are parsed
+    according to the field type and appended to existing entries.
+    """
+    for env_var, target in _ENV_CONVENTIONS.items():
+        value = os.environ.get(env_var, "")
+        if not value:
+            continue
+
+        if target == "downloads":
+            entries = _parse_env_merge_entries(value)
+            if entries:
+                log.info("env convention: added %d downloads from $%s", len(entries), env_var)
+                manifest.downloads.extend(entries)
+
+        elif target == "git_repos":
+            repos = _parse_env_git_repos(value)
+            if repos:
+                log.info("env convention: added %d git repos from $%s", len(repos), env_var)
+                manifest.git_repos.extend(repos)
+
+        elif target == "apt_packages":
+            pkgs = _parse_env_flat_list(value)
+            if pkgs:
+                log.info("env convention: added %d apt packages from $%s", len(pkgs), env_var)
+                manifest.apt_packages.extend(pkgs)
+
+        elif target == "pip_packages":
+            pkgs = _parse_env_flat_list(value)
+            if pkgs:
+                log.info("env convention: added %d pip packages from $%s", len(pkgs), env_var)
+                manifest.pip_packages.append(PipPackages(packages=pkgs))
+
+        elif target == "conda_packages":
+            pkgs = _parse_env_flat_list(value)
+            if pkgs:
+                log.info("env convention: added %d conda packages from $%s", len(pkgs), env_var)
+                manifest.conda_packages.append(CondaPackages(packages=pkgs))
+
+        elif target == "post_commands":
+            cmds = _parse_env_flat_list(value)
+            if cmds:
+                log.info("env convention: added %d post commands from $%s", len(cmds), env_var)
+                manifest.post_commands.extend(cmds)
 
 
 def load_manifest(path: str) -> Manifest:

@@ -72,7 +72,12 @@ def write_files(
             f.write(entry.content)
 
         # Set permissions
-        mode = int(entry.permissions, 8)
+        try:
+            mode = int(entry.permissions, 8)
+        except ValueError:
+            log.warning("Invalid octal permission '%s' for %s, defaulting to 0644",
+                        entry.permissions, entry.path)
+            mode = 0o644
         os.chmod(entry.path, mode)
 
         # Set ownership if specified

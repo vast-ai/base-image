@@ -20,6 +20,12 @@ def _clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("CONTAINER_ID", raising=False)
     monkeypatch.delenv("CONTAINER_API_KEY", raising=False)
     monkeypatch.delenv("PROVISIONING_SCRIPT", raising=False)
+    monkeypatch.delenv("PROVISIONING_DOWNLOADS", raising=False)
+    monkeypatch.delenv("PROVISIONING_GIT_REPOS", raising=False)
+    monkeypatch.delenv("PROVISIONING_APT", raising=False)
+    monkeypatch.delenv("PROVISIONING_PIP", raising=False)
+    monkeypatch.delenv("PROVISIONING_CONDA", raising=False)
+    monkeypatch.delenv("PROVISIONING_POST_COMMANDS", raising=False)
 
     # Redirect state dir to temp (avoid writing to /)
     monkeypatch.setattr("provisioner.state.STATE_DIR", str(tmp_path / "provisioner_state"))

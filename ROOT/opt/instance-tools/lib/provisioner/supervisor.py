@@ -14,6 +14,18 @@ from .subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
 
+
+def _shell_escape(value: str) -> str:
+    """Escape characters that are special inside double-quoted shell strings."""
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+
+
 _STARTUP_SCRIPT_TEMPLATE = """\
 #!/bin/bash
 
@@ -79,7 +91,7 @@ def _generate_startup_script(service: Service) -> str:
     # Environment variable exports
     env_lines = []
     for key, value in service.environment.items():
-        env_lines.append(f'export {key}="{value}"')
+        env_lines.append(f'export {key}="{_shell_escape(value)}"')
     env_exports = "\n".join(env_lines) if env_lines else "# (none)"
 
     # Pre-launch commands

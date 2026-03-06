@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from provisioner.installers.apt import install_apt_packages
-from provisioner.installers.git import _clone_single, clone_git_repos
+from provisioner.installers.git import _clone_single, _run_post_commands, clone_git_repos
 from provisioner.installers.pip import ensure_venv, install_pip_packages
 from provisioner.schema import GitRepo, PipPackages
 
@@ -324,27 +324,21 @@ class TestCloneSingle:
 
     @patch("provisioner.installers.git.run_cmd")
     @patch("provisioner.installers.git.os.path.isdir", return_value=False)
-    def test_post_commands_run_after_clone(self, mock_isdir, mock_run):
+    def test_clone_does_not_run_post_commands(self, mock_isdir, mock_run):
+        """_clone_single no longer runs post_commands (they run sequentially after all clones)."""
         repo = GitRepo(
             url="https://github.com/a/b",
             dest="/workspace/b",
             post_commands=["sed -i 's/foo/bar/' config.yaml", "chmod +x run.sh"],
         )
         _clone_single(repo)
-        # clone + 2 post commands = 3 calls
-        assert mock_run.call_count == 3
-        # Post commands run with shell=True and cwd=dest
-        post1 = mock_run.call_args_list[1]
-        assert post1[0][0] == "sed -i 's/foo/bar/' config.yaml"
-        assert post1[1]["shell"] is True
-        assert post1[1]["cwd"] == "/workspace/b"
-        post2 = mock_run.call_args_list[2]
-        assert post2[0][0] == "chmod +x run.sh"
+        # Only clone, no post commands
+        assert mock_run.call_count == 1
 
     @patch("provisioner.installers.git.run_cmd")
     @patch("provisioner.installers.git.os.path.isdir", return_value=False)
-    def test_post_commands_with_ref(self, mock_isdir, mock_run):
-        """Post commands run after checkout."""
+    def test_clone_with_ref_no_post_commands(self, mock_isdir, mock_run):
+        """Clone + checkout only, post_commands handled separately."""
         repo = GitRepo(
             url="https://github.com/a/b",
             dest="/workspace/b",
@@ -352,10 +346,9 @@ class TestCloneSingle:
             post_commands=["echo done"],
         )
         _clone_single(repo)
-        # clone + checkout + 1 post command = 3 calls
-        assert mock_run.call_count == 3
+        # clone + checkout = 2 calls, no post command
+        assert mock_run.call_count == 2
         assert "checkout" in mock_run.call_args_list[1][0][0]
-        assert mock_run.call_args_list[2][0][0] == "echo done"
 
     def test_post_commands_dry_run(self, caplog):
         import logging
@@ -369,6 +362,41 @@ class TestCloneSingle:
         assert "echo hello" in caplog.text
 
 
+class TestRunPostCommands:
+    @patch("provisioner.installers.git.run_cmd")
+    def test_runs_commands_sequentially(self, mock_run):
+        repo = GitRepo(
+            url="https://github.com/a/b",
+            dest="/workspace/b",
+            post_commands=["sed -i 's/foo/bar/' config.yaml", "chmod +x run.sh"],
+        )
+        _run_post_commands(repo)
+        assert mock_run.call_count == 2
+        post1 = mock_run.call_args_list[0]
+        assert post1[0][0] == "sed -i 's/foo/bar/' config.yaml"
+        assert post1[1]["shell"] is True
+        assert post1[1]["cwd"] == "/workspace/b"
+        post2 = mock_run.call_args_list[1]
+        assert post2[0][0] == "chmod +x run.sh"
+
+    @patch("provisioner.installers.git.run_cmd")
+    def test_no_commands_is_noop(self, mock_run):
+        repo = GitRepo(url="https://github.com/a/b", dest="/workspace/b")
+        _run_post_commands(repo)
+        mock_run.assert_not_called()
+
+    def test_dry_run(self, caplog):
+        import logging
+        caplog.set_level(logging.INFO)
+        repo = GitRepo(
+            url="https://github.com/a/b",
+            dest="/workspace/b",
+            post_commands=["echo hello"],
+        )
+        _run_post_commands(repo, dry_run=True)
+        assert "echo hello" in caplog.text
+
+
 class TestCloneGitRepos:
     def test_empty_list(self):
         clone_git_repos([])
@@ -377,14 +405,16 @@ class TestCloneGitRepos:
         repos = [GitRepo(url="https://github.com/a/b", dest="/d")]
         clone_git_repos(repos, dry_run=True)
 
+    @patch("provisioner.installers.git._run_post_commands")
     @patch("provisioner.installers.git._clone_single")
-    def test_parallel_execution(self, mock_clone):
+    def test_parallel_clone_sequential_post(self, mock_clone, mock_post):
         repos = [
-            GitRepo(url="https://github.com/a/b", dest="/d/a"),
-            GitRepo(url="https://github.com/c/d", dest="/d/c"),
+            GitRepo(url="https://github.com/a/b", dest="/d/a", post_commands=["echo a"]),
+            GitRepo(url="https://github.com/c/d", dest="/d/c", post_commands=["echo c"]),
         ]
         clone_git_repos(repos)
         assert mock_clone.call_count == 2
+        assert mock_post.call_count == 2
 
     @patch("provisioner.installers.git._clone_single", side_effect=RuntimeError("fail"))
     def test_raises_on_failure(self, mock_clone):

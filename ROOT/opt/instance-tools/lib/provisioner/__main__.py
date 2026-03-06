@@ -45,6 +45,7 @@ import urllib.parse
 
 from .auth import validate_civitai_token, validate_hf_token
 from .concurrency import run_parallel
+from .dedup import create_symlinks, dedup_downloads, dedup_git_repos
 from .extensions import run_extensions
 from .downloaders.huggingface import download_hf
 from .downloaders.wget import download_wget
@@ -56,7 +57,7 @@ from .installers.git import clone_git_repos
 from .installers.pip import install_pip_packages
 from .log import setup_logging
 from .subprocess_runner import run_cmd
-from .manifest import apply_env_merge, load_manifest, resolve_conditionals, resolve_manifest_source
+from .manifest import apply_env_conventions, apply_env_merge, load_manifest, resolve_conditionals, resolve_manifest_source
 from .schema import CondaPackages, DownloadEntry, Manifest, PipPackages
 from .state import clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
 from .supervisor import register_services
@@ -206,6 +207,9 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
     # Merge env var downloads
     apply_env_merge(manifest)
 
+    # Merge PROVISIONING_* convention env vars
+    apply_env_conventions(manifest)
+
     # Phase 2b: Write early files
     log.info("--- Phase 2b: Early file writes ---")
     wf_hash_data = json.dumps(
@@ -242,6 +246,7 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
 
     # Phase 4: Clone git repos (parallel)
     log.info("--- Phase 4: Git repos ---")
+    # Hash on original list so adding/removing a duplicate dest invalidates cache
     git_hash_data = json.dumps(
         sorted(
             [(r.url, r.dest, r.ref, r.recursive, r.pull_if_exists, r.post_commands) for r in manifest.git_repos],
@@ -252,11 +257,14 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
     if not dry_run and is_stage_complete("git", git_hash):
         log.info("Git repos unchanged, skipping")
     else:
+        # Dedup: resolve dest collisions and collapse duplicates
+        unique_repos, git_symlinks = dedup_git_repos(manifest.git_repos)
         try:
             clone_git_repos(
-                manifest.git_repos,
+                unique_repos,
                 dry_run=dry_run,
             )
+            create_symlinks(git_symlinks, dry_run=dry_run)
             if not dry_run:
                 mark_stage_complete("git", git_hash)
         except Exception as e:
@@ -307,6 +315,7 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
 
     # Phase 6: Download files (parallel, two pools)
     log.info("--- Phase 6: Downloads ---")
+    # Hash on original list so adding/removing a duplicate dest invalidates cache
     dl_hash_data = json.dumps(
         sorted([(d.url, d.dest) for d in manifest.downloads], key=lambda t: t[0])
     )
@@ -314,7 +323,9 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
     if not dry_run and is_stage_complete("downloads", dl_hash):
         log.info("Downloads unchanged, skipping")
     else:
-        hf_downloads, wget_downloads = _classify_downloads(manifest.downloads)
+        # Dedup: same URL, multiple dests → download once, symlink the rest
+        unique_downloads, dl_symlinks = dedup_downloads(manifest.downloads)
+        hf_downloads, wget_downloads = _classify_downloads(unique_downloads)
         retry = manifest.settings.retry
         civitai_token = os.environ.get(civitai_token_env, "")
         concurrency = manifest.settings.concurrency
@@ -351,6 +362,8 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
 
         if dl_failed:
             return 1
+
+        create_symlinks(dl_symlinks, dry_run=dry_run)
 
         if not dry_run:
             mark_stage_complete("downloads", dl_hash)
