@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from typing import Optional, List
+from typing import Optional, List, Union
 from collections import deque
 import yaml
 import json
@@ -479,7 +479,7 @@ async def get_applications(request: Request) -> JSONResponse:
 
     return JSONResponse(applications)
 
-async def _tunnel_proxy(method: str, path: str) -> dict:
+async def _tunnel_proxy(method: str, path: str):
     """Proxy a request to the tunnel manager service."""
     url = f"{tunnel_manager}{path}"
     async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
@@ -491,7 +491,7 @@ async def _tunnel_proxy(method: str, path: str) -> dict:
         return response.json()
 
 @app.get("/get-direct-url/{port}")
-async def get_direct_url(port: int) -> dict:
+async def get_direct_url(port: int):
     try:
         result = await _tunnel_proxy("GET", f"/get-direct-url/{port}")
         return result
@@ -501,9 +501,11 @@ async def get_direct_url(port: int) -> dict:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.get("/get-existing-quick-tunnel/{target_url:path}")
-async def get_existing_quick_tunnel(target_url: str) -> HTMLResponse:
+async def get_existing_quick_tunnel(target_url: str):
     try:
         result = await _tunnel_proxy("GET", f"/get-quick-tunnel-if-exists/{target_url}")
         return HTMLResponse(result['tunnel_url'])
@@ -513,9 +515,11 @@ async def get_existing_quick_tunnel(target_url: str) -> HTMLResponse:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.get("/get-existing-named-tunnel/{port}")
-async def get_existing_named_tunnel(port: int) -> HTMLResponse:
+async def get_existing_named_tunnel(port: int):
     try:
         result = await _tunnel_proxy("GET", f"/get-named-tunnel/{port}")
         return HTMLResponse(result['tunnel_url'])
@@ -525,9 +529,11 @@ async def get_existing_named_tunnel(port: int) -> HTMLResponse:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.get("/get-all-quick-tunnels")
-async def get_all_quick_tunnels() -> dict:
+async def get_all_quick_tunnels():
     try:
         result = await _tunnel_proxy("GET", "/get-all-quick-tunnels")
         return result
@@ -537,9 +543,11 @@ async def get_all_quick_tunnels() -> dict:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.get("/get-named-tunnels")
-async def get_named_tunnels() -> dict:
+async def get_named_tunnels():
     try:
         result = await _tunnel_proxy("GET", "/get-named-tunnels")
         return result
@@ -549,9 +557,11 @@ async def get_named_tunnels() -> dict:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.post("/start-quick-tunnel/{target_url:path}")
-async def start_quick_tunnel(target_url: str) -> dict:
+async def start_quick_tunnel(target_url: str):
     try:
         result = await _tunnel_proxy("GET", f"/get-quick-tunnel/{target_url}")
         return result
@@ -561,9 +571,11 @@ async def start_quick_tunnel(target_url: str) -> dict:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.post("/stop-quick-tunnel/{target_url:path}")
-async def stop_quick_tunnel(target_url: str) -> dict:
+async def stop_quick_tunnel(target_url: str):
     try:
         result = await _tunnel_proxy("POST", f"/stop-quick-tunnel/{target_url}")
         return result
@@ -573,9 +585,11 @@ async def stop_quick_tunnel(target_url: str) -> dict:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.post("/refresh-quick-tunnel/{target_url:path}")
-async def refresh_quick_tunnel(target_url: str) -> dict:
+async def refresh_quick_tunnel(target_url: str):
     try:
         result = await _tunnel_proxy("POST", f"/refresh-quick-tunnel/{target_url}")
         return result
@@ -585,6 +599,8 @@ async def refresh_quick_tunnel(target_url: str) -> dict:
         raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
     except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 async def set_external_ip(forwarded_host: Optional[str]) -> None:
     try:
