@@ -686,15 +686,26 @@ async def supervisor_stop_process(name: str):
 async def supervisor_restart_process(name: str):
     try:
         proxy = _get_supervisor_proxy()
-        # Stop first, ignore error if already stopped
-        try:
-            await asyncio.to_thread(proxy.supervisor.stopProcess, name)
-        except xmlrpc.client.Fault:
-            pass
-        await asyncio.to_thread(proxy.supervisor.startProcess, name)
+        # Check the process exists first
+        all_info = await asyncio.to_thread(proxy.supervisor.getAllProcessInfo)
+        if not any(p["name"] == name for p in all_info):
+            raise HTTPException(status_code=404, detail=f"Process '{name}' not found")
+
+        # Use supervisorctl restart in a fully detached subprocess.
+        # This is critical for self-restart (instance_portal): the XML-RPC
+        # stop+start approach fails because stopping the portal kills this
+        # very process before startProcess can execute.
+        # start_new_session=True puts the child in its own process group so
+        # it survives killasgroup=true in the supervisor config.
+        subprocess.Popen(
+            ["supervisorctl", "restart", name],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         return {"status": "ok", "name": name, "action": "restart"}
-    except xmlrpc.client.Fault as e:
-        raise HTTPException(status_code=400, detail=e.faultString)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 

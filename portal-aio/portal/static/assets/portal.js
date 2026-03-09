@@ -1109,6 +1109,11 @@ window.InstancePortal = (function() {
                     const err = await response.json().catch(() => ({}));
                     throw new Error(err.detail || `Failed to ${action} ${name}`);
                 }
+                // If restarting the portal itself, refresh so the 503 handler shows the placeholder
+                if (name === 'instance_portal' && action === 'restart') {
+                    setTimeout(() => window.location.reload(), 1000);
+                    return;
+                }
                 window.app.showToast(`${name}: ${action} successful`, 'success');
             } catch (e) {
                 window.app.showToast(e.message, 'error');
@@ -1249,9 +1254,12 @@ window.InstancePortal = (function() {
                     const info = isRunning && proc.pid ? `PID ${proc.pid}` + (uptime ? ` · ${uptime}` : '') : '';
 
                     // Determine which buttons to show
+                    // Disable all buttons when process is in a transitional state
+                    const transitional = pending || ['STARTING', 'STOPPING', 'BACKOFF'].includes(proc.state);
                     let actions = '';
-                    if (pending) {
-                        actions = `<button class="service-btn" disabled>${this._spinnerSvg} ${pendingLabels[pending] || pending}</button>`;
+                    if (transitional) {
+                        const label = pending ? (pendingLabels[pending] || pending.toUpperCase()) : proc.state;
+                        actions = `<button class="service-btn" disabled>${this._spinnerSvg} ${label}</button>`;
                     } else if (isRunning) {
                         const stopBtn = proc.unstoppable ? '' : `
                             <button class="service-btn danger" onclick="window.app.services.stop('${proc.name}')" title="Stop">
