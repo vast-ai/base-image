@@ -1,0 +1,4 @@
+name: Promote Base Image
+
+on:
+  workflow_dispatch:

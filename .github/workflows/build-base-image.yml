@@ -1,0 +1,4 @@
+name: Build Base Image
+
+on:
+  workflow_dispatch:
