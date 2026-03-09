@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from typing import Optional, List, Union
+from typing import Optional, List
 from collections import deque
 import yaml
 import json
@@ -655,7 +655,8 @@ async def get_supervisor_processes():
                 "unstoppable": proc["name"] in UNSTOPPABLE_PROCESSES,
             })
         return result
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get supervisor processes: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
 @app.post("/supervisor/process/{name}/start")
@@ -666,7 +667,8 @@ async def supervisor_start_process(name: str):
         return {"status": "ok", "name": name, "action": "start"}
     except xmlrpc.client.Fault as e:
         raise HTTPException(status_code=400, detail=e.faultString)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to start process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
 @app.post("/supervisor/process/{name}/stop")
@@ -679,7 +681,8 @@ async def supervisor_stop_process(name: str):
         return {"status": "ok", "name": name, "action": "stop"}
     except xmlrpc.client.Fault as e:
         raise HTTPException(status_code=400, detail=e.faultString)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to stop process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
 @app.post("/supervisor/process/{name}/restart")
@@ -706,29 +709,29 @@ async def supervisor_restart_process(name: str):
         return {"status": "ok", "name": name, "action": "restart"}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to restart process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
 
 async def set_external_ip(forwarded_host: Optional[str]) -> None:
+    if not forwarded_host:
+        return
     try:
         ip, port = forwarded_host.split(":")
-        ip_obj = ipaddress.IPv4Address(ip)
+        ipaddress.IPv4Address(ip)  # validate
         if port != os.environ.get("VAST_TCP_PORT_1111"):
             return
         async with httpx.AsyncClient() as client:
-            response = await client.put(f"{tunnel_manager}/set-public-ip/{ip}")
+            await client.put(f"{tunnel_manager}/set-public-ip/{ip}")
     except Exception:
         return
-
-    return
 
 
 ## Log reader functions
 # Constants
 MAX_LINES = 500  # Maximum lines to keep in buffer
 POLL_INTERVAL = 0.2  # File polling interval in seconds
-LOG_DIRECTORY = "/var/log/portal"  # Default directory to monitor
 
 # State for WebSocket and monitoring
 websocket_clients = set()  # Set of connected WebSocket clients
@@ -834,21 +837,21 @@ async def broadcast_message(message: str, msg_type: str = "append", filename: st
     html_content = ansi_to_html(message)
     json_msg = json.dumps({"type": msg_type, "html": html_content, "file": filename})
 
+    clients = list(websocket_clients)
     send_tasks = []
-    for client in websocket_clients:
+    for client in clients:
         task = asyncio.create_task(send_to_client(client, json_msg))
         send_tasks.append(task)
 
     results = await asyncio.gather(*send_tasks, return_exceptions=True)
 
     disconnected_clients = set()
-    for client, result in zip(websocket_clients, results):
+    for client, result in zip(clients, results):
         if isinstance(result, Exception):
             logger.error(f"Error sending to client {id(client)}: {result}")
             disconnected_clients.add(client)
 
-    for client in disconnected_clients:
-        websocket_clients.remove(client)
+    websocket_clients.difference_update(disconnected_clients)
 
 async def send_to_client(client: WebSocket, content: str) -> bool:
     """Helper function to send content to a single client"""
@@ -967,10 +970,11 @@ async def _emit_line(filename: str, text: str, msg_type: str) -> None:
     if msg_type == "overwrite":
         # Replace last entry in file-specific buffer (avoid filling buffer with
         # hundreds of intermediate progress-bar states)
-        if file_specific_buffers.get(filename):
-            file_specific_buffers[filename][-1] = text
+        buf = file_specific_buffers.get(filename)
+        if buf:
+            buf[-1] = text
         else:
-            file_specific_buffers[filename].append(text)
+            file_specific_buffers.setdefault(filename, deque(maxlen=MAX_LINES)).append(text)
         # For chronological buffer: also replace last entry to avoid pollution,
         # but only if that last entry actually belongs to this file's overwrite
         # sequence.  We approximate by checking if the buffer is non-empty.

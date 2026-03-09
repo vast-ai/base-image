@@ -3,7 +3,7 @@
 # Only attempt portal upgrade if PORTAL_VERSION is set in the image
 if [[ -z "${PORTAL_VERSION}" ]]; then
     echo "PORTAL_VERSION not set, skipping portal update check"
-    exit 0
+    return 0
 fi
 
 REPO="${PORTAL_REPO:-vast-ai/base-image}"
@@ -11,7 +11,7 @@ LATEST_VERSION=$(curl -sf --max-time 10 https://api.github.com/repos/$REPO/relea
 
 if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
     echo "Could not fetch latest portal version from GitHub, skipping update"
-    exit 0
+    return 0
 fi
 
 # Normalize: ensure both have 'v' prefix for comparison
@@ -20,7 +20,7 @@ CURRENT="$PORTAL_VERSION"
 
 if [[ "$CURRENT" == "$LATEST_VERSION" ]]; then
     echo "Portal is up to date ($CURRENT)"
-    exit 0
+    return 0
 fi
 
 echo "Portal update available: $CURRENT -> $LATEST_VERSION"

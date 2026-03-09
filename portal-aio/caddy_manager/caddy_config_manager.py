@@ -107,7 +107,7 @@ def generate_caddyfile(config):
     # Escape passwords for use in CEL expression strings (backtick-delimited).
     # Backslashes and double-quotes must be escaped for CEL string literals.
     def cel_escape(s):
-        return s.replace('\\', '\\\\').replace('"', '\\"')
+        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
 
     cel_web_password = cel_escape(web_password)
     cel_open_button_token = cel_escape(open_button_token)
@@ -293,7 +293,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     # Escape passwords for Caddy double-quoted string contexts (Set-Cookie headers)
     def caddy_quote_escape(s):
-        return s.replace('\\', '\\\\').replace('"', '\\"')
+        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
 
     safe_password = caddy_quote_escape(password)
     safe_open_button_token = caddy_quote_escape(open_button_token)

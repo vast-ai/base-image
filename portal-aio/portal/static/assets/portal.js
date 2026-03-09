@@ -13,7 +13,7 @@ window.InstancePortal = (function() {
                 this.updateAllUI();
                 
                 // Optionally set up a refresh interval
-                setInterval(() => this.refreshData(), 30000);
+                this._refreshInterval = setInterval(() => this.refreshData(), 30000);
             } catch (error) {
                 console.error('Error initializing applications:', error);
             }
@@ -1094,7 +1094,7 @@ window.InstancePortal = (function() {
                 if (!response.ok) return;
                 this._data = await response.json();
             } catch (e) {
-                // Supervisor may not be available
+                console.warn('Supervisor not available:', e.message);
             }
         },
 
@@ -2077,8 +2077,11 @@ window.InstancePortal = (function() {
             this.handleRoute();
             // Remove the loading screen
             this.hideLoader();
-            // Listen for hash changes
-            window.addEventListener('hashchange', this.handleRoute);
+            // Listen for hash changes (guard against duplicate registration)
+            if (!this._hashListenerAdded) {
+                this._hashListenerAdded = true;
+                window.addEventListener('hashchange', this.handleRoute);
+            }
         },
 
         hideLoader: function() {
@@ -2205,10 +2208,13 @@ window.InstancePortal = (function() {
                 // Remove the loading screen
                 this.hideLoader();
 
-                // Listen for hash changes
-                window.addEventListener('hashchange', this.handleRoute);
+                // Listen for hash changes (guard against duplicate registration)
+                if (!this._hashListenerAdded) {
+                    this._hashListenerAdded = true;
+                    window.addEventListener('hashchange', this.handleRoute);
+                }
             }
-            
+
             return this;
         }
     };

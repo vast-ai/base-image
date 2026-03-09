@@ -7,7 +7,10 @@ _collect_descendants() {
     done
 }
 
+_cleanup_done=0
 cleanup() {
+    [[ $_cleanup_done -eq 1 ]] && return
+    _cleanup_done=1
     local exit_code=$?
     # Collect the full process tree before killing anything
     local pids=$(_collect_descendants $$)
