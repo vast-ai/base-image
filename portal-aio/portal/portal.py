@@ -20,6 +20,9 @@ import logging
 import time
 import ipaddress
 import subprocess
+import socket
+import xmlrpc.client
+import http.client
 import GPUtil
 import psutil
 
@@ -601,6 +604,100 @@ async def refresh_quick_tunnel(target_url: str):
         raise HTTPException(status_code=500, detail="Error communicating with the API")
     except Exception:
         raise HTTPException(status_code=500, detail="Unhandled error response from API")
+
+## Supervisor process management via XML-RPC
+
+SUPERVISOR_SOCK = "/var/run/supervisor.sock"
+_unstoppable_env = os.environ.get("PORTAL_UNSTOPPABLE", "")
+UNSTOPPABLE_PROCESSES = frozenset(
+    {"instance_portal"} | {s.strip() for s in _unstoppable_env.split(",") if s.strip()}
+)
+
+class _UnixStreamHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection over a Unix domain socket."""
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(SUPERVISOR_SOCK)
+
+class _UnixStreamTransport(xmlrpc.client.Transport):
+    def make_connection(self, host):
+        return _UnixStreamHTTPConnection(host)
+
+def _get_supervisor_proxy() -> xmlrpc.client.ServerProxy:
+    return xmlrpc.client.ServerProxy(
+        "http://localhost",
+        transport=_UnixStreamTransport(),
+    )
+
+def _is_launch_managed() -> bool:
+    """Check if /.launch exists (Vast manages jupyter directly)."""
+    return os.path.isfile("/.launch")
+
+@app.get("/supervisor/processes")
+async def get_supervisor_processes():
+    try:
+        proxy = _get_supervisor_proxy()
+        all_info = await asyncio.to_thread(proxy.supervisor.getAllProcessInfo)
+        launch_managed = _is_launch_managed()
+        result = []
+        for proc in all_info:
+            # Hide jupyter when /.launch is present (Vast manages it directly)
+            if launch_managed and proc["name"] == "jupyter":
+                continue
+            result.append({
+                "name": proc["name"],
+                "group": proc["group"],
+                "state": proc["statename"],
+                "description": proc.get("description", ""),
+                "pid": proc.get("pid", 0),
+                "start": proc.get("start", 0),
+                "now": proc.get("now", 0),
+                "unstoppable": proc["name"] in UNSTOPPABLE_PROCESSES,
+            })
+        return result
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+@app.post("/supervisor/process/{name}/start")
+async def supervisor_start_process(name: str):
+    try:
+        proxy = _get_supervisor_proxy()
+        await asyncio.to_thread(proxy.supervisor.startProcess, name)
+        return {"status": "ok", "name": name, "action": "start"}
+    except xmlrpc.client.Fault as e:
+        raise HTTPException(status_code=400, detail=e.faultString)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+@app.post("/supervisor/process/{name}/stop")
+async def supervisor_stop_process(name: str):
+    if name in UNSTOPPABLE_PROCESSES:
+        raise HTTPException(status_code=403, detail=f"Process '{name}' cannot be stopped")
+    try:
+        proxy = _get_supervisor_proxy()
+        await asyncio.to_thread(proxy.supervisor.stopProcess, name)
+        return {"status": "ok", "name": name, "action": "stop"}
+    except xmlrpc.client.Fault as e:
+        raise HTTPException(status_code=400, detail=e.faultString)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+@app.post("/supervisor/process/{name}/restart")
+async def supervisor_restart_process(name: str):
+    try:
+        proxy = _get_supervisor_proxy()
+        # Stop first, ignore error if already stopped
+        try:
+            await asyncio.to_thread(proxy.supervisor.stopProcess, name)
+        except xmlrpc.client.Fault:
+            pass
+        await asyncio.to_thread(proxy.supervisor.startProcess, name)
+        return {"status": "ok", "name": name, "action": "restart"}
+    except xmlrpc.client.Fault as e:
+        raise HTTPException(status_code=400, detail=e.faultString)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
 
 async def set_external_ip(forwarded_host: Optional[str]) -> None:
     try:

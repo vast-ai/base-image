@@ -51,6 +51,14 @@ body {
     display: flex;
 }
 
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 49;
+}
+
 .sidebar {
     width: 250px;
     background-color: var(--bg-secondary);
@@ -307,8 +315,8 @@ button {
 .grid {
     display: grid;
     gap: 1.5rem;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-    max-width: 1760px;
+    grid-template-columns: repeat(4, 1fr);
+    align-items: start;
 }
 
 .card {
@@ -753,10 +761,10 @@ button {
 /* Tools Page Styles */
 .tools-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(auto-fill, auto auto 1fr);
     gap: 1.5rem;
     padding: 1rem 0;
-    max-width: 1760px;
 }
 
 .tool-card {
@@ -764,11 +772,13 @@ button {
     border-radius: 0.5rem;
     padding: 1.5rem;
     box-shadow: var(--card-shadow);
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-row: span 3;
+    grid-template-rows: subgrid;
     gap: 1rem;
     transition: all 0.3s ease;
 }
+
 
 .tool-card-header {
     display: flex;
@@ -796,8 +806,20 @@ button {
 
 .tool-card-actions {
     display: flex;
+    flex-direction: column;
     gap: 0.75rem;
-    margin-top: auto;
+    align-self: start;
+}
+
+/* Side-by-side only on very wide screens */
+@media (min-width: 1850px) {
+    .tool-card-actions {
+        flex-direction: row;
+    }
+
+    .tool-card-actions .tool-card-btn {
+        flex: 1;
+    }
 }
 
 .tool-card-btn {
@@ -807,6 +829,8 @@ button {
     font-weight: 600;
     text-decoration: none;
     transition: all 0.2s;
+    text-align: center;
+    display: block;
 }
 
 .tool-card-btn:not(.secondary) {
@@ -887,6 +911,24 @@ button {
 }
 
 /* Mobile Styles */
+@media (max-width: 1400px) {
+    .grid, .tools-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 1050px) {
+    .grid, .tools-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 700px) {
+    .grid, .tools-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 @media (max-width: 768px) {
     .sidebar {
         transform: translateX(-100%);
@@ -896,6 +938,10 @@ button {
         transform: translateX(0);
     }
 
+    body.sidebar-open .sidebar-overlay {
+        display: block;
+    }
+
     .mobile-header {
         display: block;
     }
@@ -903,10 +949,6 @@ button {
     .main-content {
         margin-left: 0;
         padding-top: 4rem;
-    }
-
-    .grid {
-        grid-template-columns: 1fr;
     }
 
     .tunnel-form {
@@ -937,7 +979,230 @@ button {
         flex-direction: column;
     }
 
-    .tools-grid {
-        grid-template-columns: 1fr;
+
+
+    .services-header {
+        display: none;
+    }
+
+    .service-item {
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+        gap: 0.5rem 1rem;
+        padding: 0.75rem 1rem;
+    }
+
+    .service-item .service-info {
+        display: none;
+    }
+
+    .service-item .service-name {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .service-item > div:nth-child(2) {
+        grid-column: 2;
+        grid-row: 1;
+        justify-self: end;
+    }
+
+    .service-item .service-actions {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        justify-content: flex-start;
+    }
+}
+
+/* Services page */
+.services-list {
+    background: var(--bg-secondary);
+    border-radius: 0.5rem;
+    box-shadow: var(--card-shadow);
+    overflow: hidden;
+}
+
+.services-header {
+    display: grid;
+    grid-template-columns: minmax(140px, 1.2fr) minmax(100px, 0.8fr) 1.5fr minmax(140px, 1fr);
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    background-color: color-mix(in srgb, var(--bg-primary) 80%, transparent);
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.service-item {
+    display: grid;
+    grid-template-columns: minmax(140px, 1.2fr) minmax(100px, 0.8fr) 1.5fr minmax(140px, 1fr);
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+    align-items: center;
+}
+
+.service-item:last-child {
+    border-bottom: none;
+}
+
+/* App card when supervisor process is stopped — matches Instance Portal disabled style */
+.card.service-stopped {
+    transition: opacity 0.3s;
+}
+
+.card.service-stopped .launch-btn {
+    background-color: rgba(47, 73, 208, 0.3);
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* Spinner for pending actions */
+.service-spinner {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.service-name {
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.service-name .protected-badge {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    background: var(--border-color);
+    color: var(--text-secondary);
+    font-weight: 400;
+    flex-shrink: 0;
+}
+
+.status-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: 1rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+    letter-spacing: 0.03em;
+    width: fit-content;
+}
+
+.status-badge.running {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+}
+
+.status-badge.stopped, .status-badge.exited {
+    background: rgba(107, 114, 128, 0.15);
+    color: #9ca3af;
+}
+
+.status-badge.fatal, .status-badge.backoff {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.status-badge.starting, .status-badge.stopping {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.service-info {
+    font-size: 0.85rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.service-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.service-btn {
+    font-size: 0.75rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: 0.375rem;
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-primary);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.service-btn:hover {
+    background: var(--accent-color);
+    color: white;
+    border-color: var(--accent-color);
+}
+
+.service-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.service-btn.danger:hover {
+    background: #ef4444;
+    border-color: #ef4444;
+}
+
+.service-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Mid-size: two-row layout — name+status on row 1, buttons on row 2 */
+@media (max-width: 1024px) {
+    .services-header {
+        display: none;
+    }
+
+    .service-item {
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+        gap: 0.5rem 1rem;
+    }
+
+    .service-item .service-info {
+        display: none;
+    }
+
+    .service-item .service-name {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .service-item > div:nth-child(2) {
+        grid-column: 2;
+        grid-row: 1;
+        justify-self: end;
+    }
+
+    .service-item .service-actions {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        justify-content: flex-start;
     }
 }

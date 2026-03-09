@@ -83,6 +83,15 @@
                     </div>
                 </div>
             </a>
+            <a class="nav-item" data-page="services-page" href="#/services">
+                <div class="nav-item-content">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+                    <div>
+                        <span class="nav-label">Supervisor</span>
+                        <span class="nav-subtitle">Process Management</span>
+                    </div>
+                </div>
+            </a>
             <a class="nav-item" data-page="logs-page" href="#/logs">
                 <div class="nav-item-content">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>
@@ -103,6 +112,7 @@
             </a>
         </nav>
     </aside>
+    <div class="sidebar-overlay" onclick="window.app.toggleSidebar()"></div>
 
     <main class="main-content">
         <div class="mobile-header">
@@ -155,6 +165,20 @@
             </div>
         </div>
         
+        <!-- Services Page -->
+        <div id="services-page" class="page-container" style="display: none;">
+            <div class="services-list">
+                <div class="services-header">
+                    <div>Process</div>
+                    <div>Status</div>
+                    <div class="service-info-col">Info</div>
+                    <div>Actions</div>
+                </div>
+                <div id="services-table-body" class="service-items">
+                </div>
+            </div>
+        </div>
+
         <!-- Logs Page -->
         <div id="logs-page" class="page-container" style="display: none;">
             <div class="logs-header">

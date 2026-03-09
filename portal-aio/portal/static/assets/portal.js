@@ -790,17 +790,12 @@ window.InstancePortal = (function() {
             if (this._statusCheckInterval) {
                 clearInterval(this._statusCheckInterval);
             }
-            
-            // Setup new interval
+
+            // Setup new interval — check status and re-fetch tunnel list
             this._statusCheckInterval = setInterval(async () => {
+                await this.fetch();
                 const statusChanges = await this.checkAllTunnelStatus();
-                // If any status changed, update the UI
-                if (statusChanges.named.includes('active') || 
-                    statusChanges.named.includes('error') ||
-                    statusChanges.quick.includes('active') || 
-                    statusChanges.quick.includes('error')) {
-                    this.ui.renderTunnelTable();
-                }
+                this.ui.renderTunnelTable();
             }, interval);
         },
         
@@ -1086,7 +1081,204 @@ window.InstancePortal = (function() {
             },
         }
     };
-    
+
+    // ─── Services (Supervisor Process Management) ────────────────────
+    const services = {
+        _data: [],
+        _pollInterval: null,
+        _pending: {},  // name -> action being performed
+
+        fetch: async function() {
+            try {
+                const response = await fetch('/supervisor/processes');
+                if (!response.ok) return;
+                this._data = await response.json();
+            } catch (e) {
+                // Supervisor may not be available
+            }
+        },
+
+        action: async function(name, action) {
+            this._pending[name] = action;
+            this.ui.render();
+            try {
+                const response = await fetch(`/supervisor/process/${encodeURIComponent(name)}/${action}`, {
+                    method: 'POST'
+                });
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `Failed to ${action} ${name}`);
+                }
+                window.app.showToast(`${name}: ${action} successful`, 'success');
+            } catch (e) {
+                window.app.showToast(e.message, 'error');
+            } finally {
+                delete this._pending[name];
+                // Refresh after a short delay to let supervisor settle
+                setTimeout(() => this.refresh(), 500);
+            }
+        },
+
+        start: function(name) { return this.action(name, 'start'); },
+        stop: function(name) { return this.action(name, 'stop'); },
+        restart: function(name) { return this.action(name, 'restart'); },
+
+        // Match supervisor process names to portal app names
+        // e.g. "jupyter" matches "Jupyter", "instance_portal" matches "Instance Portal"
+        _matchesApp: function(procName, appName) {
+            const normalized = procName.replace(/_/g, ' ').toLowerCase();
+            return appName.toLowerCase() === normalized ||
+                   appName.toLowerCase().includes(normalized) ||
+                   normalized.includes(appName.toLowerCase());
+        },
+
+        getAppState: function(appName) {
+            for (const proc of this._data) {
+                if (this._matchesApp(proc.name, appName)) {
+                    return proc.state;
+                }
+            }
+            return null;
+        },
+
+        updateAppCards: function() {
+            if (!this._data.length) return;
+            const appGrid = document.getElementById('app-grid');
+            if (!appGrid) return;
+            const cards = Array.from(appGrid.querySelectorAll('.card[data-app-id]'));
+            let needsReorder = false;
+
+            cards.forEach(card => {
+                const appName = card.getAttribute('data-app-id');
+                const state = this.getAppState(appName);
+                const isStopped = state && state !== 'RUNNING' && state !== 'STARTING';
+                const wasStopped = card.classList.contains('service-stopped');
+
+                if (isStopped && !wasStopped) needsReorder = true;
+                if (!isStopped && wasStopped) needsReorder = true;
+
+                if (isStopped) {
+                    card.classList.add('service-stopped');
+                    const btn = card.querySelector('.launch-btn');
+                    if (btn && !btn.hasAttribute('data-original-text')) {
+                        btn.setAttribute('data-original-text', btn.textContent.trim());
+                        btn.textContent = 'Service Stopped';
+                        btn.disabled = true;
+                    }
+                } else {
+                    card.classList.remove('service-stopped');
+                    const btn = card.querySelector('.launch-btn');
+                    if (btn && btn.hasAttribute('data-original-text')) {
+                        btn.textContent = btn.getAttribute('data-original-text');
+                        btn.removeAttribute('data-original-text');
+                        // Don't re-enable Instance Portal's button
+                        if (appName !== 'Instance Portal') btn.disabled = false;
+                    }
+                }
+            });
+
+            // Move stopped cards to end of grid
+            if (needsReorder) {
+                const running = [];
+                const stopped = [];
+                cards.forEach(card => {
+                    if (card.classList.contains('service-stopped')) {
+                        stopped.push(card);
+                    } else {
+                        running.push(card);
+                    }
+                });
+                running.concat(stopped).forEach(card => appGrid.appendChild(card));
+            }
+        },
+
+        refresh: async function() {
+            await this.fetch();
+            this.ui.render();
+            this.updateAppCards();
+        },
+
+        init: async function() {
+            await this.fetch();
+            this.ui.render();
+            this.updateAppCards();
+            this._pollInterval = setInterval(() => this.refresh(), 10000);
+        },
+
+        ui: {
+            _formatUptime: function(startTs, nowTs) {
+                if (!startTs || startTs === 0) return '';
+                const secs = nowTs - startTs;
+                if (secs < 60) return `${secs}s`;
+                if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+                const h = Math.floor(secs / 3600);
+                const m = Math.floor((secs % 3600) / 60);
+                return `${h}h ${m}m`;
+            },
+
+            _spinnerSvg: '<svg class="service-spinner" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>',
+
+            render: function() {
+                const tbody = document.getElementById('services-table-body');
+                if (!tbody) return;
+
+                if (services._data.length === 0) {
+                    tbody.innerHTML = '<div class="service-item" style="justify-content: center; color: var(--text-secondary);">No supervisor processes found</div>';
+                    return;
+                }
+
+                // Sort: running first, then fatal/backoff, then stopped/exited last
+                const stateOrder = (s) => {
+                    if (s === 'RUNNING' || s === 'STARTING') return 0;
+                    if (s === 'FATAL' || s === 'BACKOFF') return 1;
+                    return 2; // STOPPED, EXITED, STOPPING, UNKNOWN
+                };
+                const sorted = [...services._data].sort((a, b) => {
+                    const diff = stateOrder(a.state) - stateOrder(b.state);
+                    if (diff !== 0) return diff;
+                    return a.name.localeCompare(b.name);
+                });
+
+                tbody.innerHTML = sorted.map(proc => {
+                    const pending = services._pending[proc.name];
+                    const stateClass = pending ? 'starting' : proc.state.toLowerCase();
+                    const pendingLabels = {start: 'STARTING', stop: 'STOPPING', restart: 'RESTARTING'};
+                    const stateLabel = pending ? (pendingLabels[pending] || pending.toUpperCase()) : proc.state;
+                    const isRunning = proc.state === 'RUNNING';
+                    const uptime = isRunning ? this._formatUptime(proc.start, proc.now) : '';
+                    const info = isRunning && proc.pid ? `PID ${proc.pid}` + (uptime ? ` · ${uptime}` : '') : '';
+
+                    // Determine which buttons to show
+                    let actions = '';
+                    if (pending) {
+                        actions = `<button class="service-btn" disabled>${this._spinnerSvg} ${pendingLabels[pending] || pending}</button>`;
+                    } else if (isRunning) {
+                        const stopBtn = proc.unstoppable ? '' : `
+                            <button class="service-btn danger" onclick="window.app.services.stop('${proc.name}')" title="Stop">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
+                                Stop</button>`;
+                        actions = `
+                            <button class="service-btn" onclick="window.app.services.restart('${proc.name}')" title="Restart">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                                Restart</button>${stopBtn}`;
+                    } else {
+                        actions = `
+                            <button class="service-btn" onclick="window.app.services.start('${proc.name}')" title="Start">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                Start</button>`;
+                    }
+
+                    return `<div class="service-item">
+                        <div class="service-name">${proc.name}</div>
+                        <div><span class="status-badge ${stateClass}">${stateLabel}</span></div>
+                        <div class="service-info">${info}</div>
+                        <div class="service-actions">${actions}</div>
+                    </div>`;
+                }).join('');
+            }
+        }
+    };
+
     const systemMetrics = {
         // DOM element IDs
         elements: {
@@ -1920,6 +2112,10 @@ window.InstancePortal = (function() {
                 case 'tunnels-page':
                     pageTitle.textContent = 'Tunnels (Open New Ports)';
                     break;
+                case 'services-page':
+                    pageTitle.textContent = 'Supervisor';
+                    services.refresh();
+                    break;
                 case 'logs-page':
                     pageTitle.textContent = 'Instance Logs';
                     this.logManager.scrollToBottom();
@@ -1980,6 +2176,10 @@ window.InstancePortal = (function() {
             this.tunnels = tunnels;
             await tunnels.init();
     
+            // Load supervisor services
+            this.services = services;
+            services.init();
+
             // Begin fetching logs immediately with returned reference
             this.logManager = logManager;
             logManager.init();
