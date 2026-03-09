@@ -246,6 +246,8 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+ENV PORTAL_VERSION=v2.0.6
+
 # Install the declarative provisioner into its own venv
 RUN \
     set -euo pipefail && \
