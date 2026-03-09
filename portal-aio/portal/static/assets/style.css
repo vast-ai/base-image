@@ -119,12 +119,11 @@ body {
     transition: width 0.3s ease;
 }
 
-.stat-fill[style*="width: 8"] {
+.stat-fill[data-level="warning"] {
     background-color: var(--stat-warning);
 }
 
-.stat-fill[style*="width: 9"],
-.stat-fill[style*="width: 100"] {
+.stat-fill[data-level="critical"] {
     background-color: var(--stat-critical);
 }
 
@@ -292,6 +291,7 @@ button {
     flex: 1;
     padding: 2rem;
     min-height: 100vh;
+    max-width: 1800px;
 }
 
 .page-header {
@@ -308,6 +308,7 @@ button {
     display: grid;
     gap: 1.5rem;
     grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    max-width: 1760px;
 }
 
 .card {
@@ -717,7 +718,7 @@ button {
     word-wrap: break-word;
 }
 
-.logs-viewer span {
+.logs-viewer > span {
     display: block;
     width: 100%;
     overflow-wrap: break-word;
@@ -725,14 +726,6 @@ button {
     /* margin-bottom: 0.5rem;
     line-height: 1.5; */
 }
-.logs-viewer span.warning {
-    color: #e5c07b;
-}
-
-.logs-viewer span.error {
-    color: #e06c75;
-}
-
 #pause-button {
     position: absolute;
     height: 30px;
@@ -763,6 +756,7 @@ button {
     grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
     gap: 1.5rem;
     padding: 1rem 0;
+    max-width: 1760px;
 }
 
 .tool-card {
@@ -873,6 +867,24 @@ button {
     margin-right: 10px;
 }
 
+
+/* WebSocket connection status indicator */
+.ws-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    background-color: var(--stat-critical);
+    transition: background-color 0.3s;
+    align-self: center;
+    flex-shrink: 0;
+}
+.ws-status-dot.connected {
+    background-color: var(--stat-good);
+}
+.ws-status-dot.reconnecting {
+    background-color: var(--stat-warning);
+}
 
 /* Mobile Styles */
 @media (max-width: 768px) {

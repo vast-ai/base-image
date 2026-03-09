@@ -322,23 +322,19 @@ window.InstancePortal = (function() {
                             success = true;
                         } else {
                             if (attempt < MAX_RETRIES) {
-                                console.log(`Tunnels server not available for ${appName} direct URL (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                             } else {
                                 app.direct_url = null;
                                 app.direct_url_error = 'Failed to retrieve direct URL';
-                                console.log(`Tunnels server not available for ${appName} direct URL. Giving up after ${MAX_RETRIES} attempts.`);
                             }
                         }
                     } catch (error) {
                         if (attempt < MAX_RETRIES) {
-                            console.log(`Tunnels server not available for ${appName} direct URL (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                         } else {
                             console.error(`Error fetching direct URL for ${appName}:`, error);
                             app.direct_url = null;
                             app.direct_url_error = 'Connection error';
-                            console.log(`Tunnels server not available for ${appName} direct URL. Giving up after ${MAX_RETRIES} attempts.`);
                         }
                     }
                 }
@@ -449,7 +445,6 @@ window.InstancePortal = (function() {
                     
                     // Don't retry if it's a 404 - that means the resource doesn't exist
                     if (response.status === 404) {
-                        console.log('Named tunnels endpoint not found (404). Not retrying.');
                         return [];
                     }
                     
@@ -468,10 +463,8 @@ window.InstancePortal = (function() {
                     return Object.values(this.named_tunnels);
                 } catch (error) {
                     if (attempt < MAX_RETRIES) {
-                        console.log(`Tunnels server not available for named tunnels (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                     } else {
-                        console.log(`Tunnels server not available for named tunnels. Giving up after ${MAX_RETRIES} attempts.`);
                         return [];
                     }
                 }
@@ -501,11 +494,9 @@ window.InstancePortal = (function() {
                     return Object.values(this.quick_tunnels);
                 } catch (error) {
                     if (attempt < MAX_RETRIES) {
-                        console.log(`Tunnels server not available for quick tunnels (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                     } else {
-                        console.log(`Tunnels server not available for quick tunnels. Giving up after ${MAX_RETRIES} attempts.`);
-                        console.error('Error details:', error);
+                        console.error('Error fetching quick tunnels:', error);
                         return [];
                     }
                 }
@@ -525,7 +516,6 @@ window.InstancePortal = (function() {
 
         // Create a new quick tunnel (public API method)
         createQuickTunnel: async function(targetUrl) {
-            console.log(targetUrl);
             document.querySelector('.tunnel-loading').classList.add('show');
             try {
                 const validUrl = window.app.url.validate(targetUrl); // Assuming this function exists
@@ -538,9 +528,7 @@ window.InstancePortal = (function() {
                 }
                 
                 const data = await response.json();
-                console.log(data);
-                console.log('Tunnel created:', data.tunnel_url);
-                
+
                 // Create a tunnel object using the factory
                 const newTunnel = this._createTunnelObject('quick', validUrl, data.tunnel_url);
                 
@@ -572,7 +560,7 @@ window.InstancePortal = (function() {
                 
                 if (isActive) {
                     // Success - tunnel is active
-                    console.log(`Tunnel ${tunnel.tunnelUrl} is now active after ${attempts} attempts`);
+                    // Tunnel is active
                 } else if (tunnel.status === 'error' && attempts >= maxAttempts) {
                     // Failed after max attempts
                     console.error(`Tunnel ${tunnel.tunnelUrl} failed to activate after ${maxAttempts} attempts`);
@@ -600,8 +588,6 @@ window.InstancePortal = (function() {
                 }
                 
                 const data = await response.json();
-                console.log('Tunnel stopped:', targetUrl);
-                
                 // Completely remove the tunnel from our tracking
                 if (this.quick_tunnels[targetUrl]) {
                     delete this.quick_tunnels[targetUrl];
@@ -628,8 +614,7 @@ window.InstancePortal = (function() {
                 }
                 
                 const data = await response.json();
-                console.log('Tunnel refreshed:', data.tunnel_url);
-                
+
                 // Update the existing tunnel
                 if (this.quick_tunnels[targetUrl]) {
                     this.quick_tunnels[targetUrl].tunnelUrl = data.tunnel_url;
@@ -1146,8 +1131,10 @@ window.InstancePortal = (function() {
                 const gpuMemoryUsed = this.data.gpu.memory_used / 1024; // Convert to GB
                 const gpuMemoryTotal = this.data.gpu.memory_total / 1024; // Convert to GB
                 
-                document.getElementById(this.elements.gpuFill).style.width = `${gpuLoad}%`;
-                document.getElementById(this.elements.gpuTooltip).textContent = 
+                const gpuEl = document.getElementById(this.elements.gpuFill);
+                gpuEl.style.width = `${gpuLoad}%`;
+                gpuEl.setAttribute('data-level', gpuLoad >= 90 ? 'critical' : gpuLoad >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.gpuTooltip).textContent =
                     `Load: ${Math.round(gpuLoad)}% | Memory: ${gpuMemoryUsed.toFixed(1)}/${gpuMemoryTotal.toFixed(1)} GB`;
             }
             
@@ -1157,8 +1144,10 @@ window.InstancePortal = (function() {
                 const ramUsed = this.data.ram.used / (1024 * 1024 * 1024); // Convert to GB
                 const ramTotal = this.data.ram.total / (1024 * 1024 * 1024); // Convert to GB
                 
-                document.getElementById(this.elements.ramFill).style.width = `${ramPercent}%`;
-                document.getElementById(this.elements.ramTooltip).textContent = 
+                const ramEl = document.getElementById(this.elements.ramFill);
+                ramEl.style.width = `${ramPercent}%`;
+                ramEl.setAttribute('data-level', ramPercent >= 90 ? 'critical' : ramPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.ramTooltip).textContent =
                     `${ramUsed.toFixed(1)}/${ramTotal.toFixed(1)} GB (${ramPercent.toFixed(2)}%)`;
             }
             
@@ -1168,8 +1157,10 @@ window.InstancePortal = (function() {
                 const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // Convert to GB
                 const diskTotal = this.data.disk.total / (1024 * 1024 * 1024); // Convert to GB
                 
-                document.getElementById(this.elements.diskFill).style.width = `${diskPercent}%`;
-                document.getElementById(this.elements.diskTooltip).textContent = 
+                const diskEl = document.getElementById(this.elements.diskFill);
+                diskEl.style.width = `${diskPercent}%`;
+                diskEl.setAttribute('data-level', diskPercent >= 90 ? 'critical' : diskPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.diskTooltip).textContent =
                     `${Math.round(diskUsed)}/${Math.round(diskTotal)} GB (${diskPercent.toFixed(2)}%)`;
             }
         },
@@ -1221,6 +1212,7 @@ window.InstancePortal = (function() {
         isPaused: false,
         webSocket: null,
         maxLogLines: 300,
+        lastSpanByFile: {},  // file -> last <span> element for per-file overwrite tracking
         
         // Connection management
         reconnectTimer: null,
@@ -1230,6 +1222,21 @@ window.InstancePortal = (function() {
         reconnectAttempts: 0,
         maxReconnectAttempts: 10,
         
+        updateConnectionStatus: function(status) {
+            const dot = document.getElementById('ws-status');
+            if (!dot) return;
+            dot.className = 'ws-status-dot';
+            if (status === 'connected') {
+                dot.classList.add('connected');
+                dot.title = 'Connected';
+            } else if (status === 'reconnecting') {
+                dot.classList.add('reconnecting');
+                dot.title = 'Reconnecting...';
+            } else {
+                dot.title = 'Disconnected';
+            }
+        },
+
         // Toggle pause state
         togglePause: function() {
             this.isPaused = !this.isPaused;
@@ -1345,29 +1352,60 @@ window.InstancePortal = (function() {
             }
         },
         
-        // Append log message to the console
-        appendLog: function(html) {
+        // Append log message to the console (new line)
+        appendLog: function(html, file) {
             if (this.isPaused) return;
-            
+
             const logConsole = document.getElementById(this.elements.logConsole);
             if (!logConsole) return;
-            
-            // Create a temporary container
+
+            const span = document.createElement('span');
+            span.innerHTML = html;
+            logConsole.appendChild(span);
+            if (file) this.lastSpanByFile[file] = span;
+
+            while (logConsole.childElementCount > this.maxLogLines) {
+                logConsole.removeChild(logConsole.firstChild);
+            }
+
+            this.scrollToBottom();
+        },
+
+        // Overwrite the last span for a specific file (progress bar update)
+        overwriteLog: function(html, file) {
+            if (this.isPaused) return;
+
+            const logConsole = document.getElementById(this.elements.logConsole);
+            if (!logConsole) return;
+
+            const target = file ? this.lastSpanByFile[file] : null;
+            if (target && target.parentNode === logConsole) {
+                target.innerHTML = html;
+            } else {
+                this.appendLog(html, file);
+                return;
+            }
+
+            this.scrollToBottom();
+        },
+
+        appendSystemMessage: function(html) {
+            if (this.isPaused) return;
+
+            const logConsole = document.getElementById(this.elements.logConsole);
+            if (!logConsole) return;
+
             const temp = document.createElement('div');
             temp.innerHTML = html;
-            
-            // Add the log entry to the console
             if (temp.firstChild) {
                 logConsole.appendChild(temp.firstChild);
-                
-                // Remove old entries to keep memory usage reasonable
-                while (logConsole.childElementCount > this.maxLogLines) {
-                    logConsole.removeChild(logConsole.firstChild);
-                }
-                
-                // Scroll to bottom
-                this.scrollToBottom();
             }
+
+            while (logConsole.childElementCount > this.maxLogLines) {
+                logConsole.removeChild(logConsole.firstChild);
+            }
+
+            this.scrollToBottom();
         },
         
         // Setup connection monitoring
@@ -1383,7 +1421,6 @@ window.InstancePortal = (function() {
                 if (this.webSocket && this.webSocket.readyState === WebSocket.OPEN) {
                     try {
                         this.webSocket.send("ping");
-                        console.debug("Sent ping to server");
                     } catch (error) {
                         console.error("Error sending ping:", error);
                     }
@@ -1400,10 +1437,11 @@ window.InstancePortal = (function() {
                 
                 // If no heartbeat in 30 seconds, connection is stale
                 if (elapsed > 30000) {
+                    this.updateConnectionStatus('reconnecting');
                     console.warn(`No heartbeat for ${elapsed/1000}s, reconnecting...`);
-                    
+
                     // Add visual indicator
-                    this.appendLog(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection stale, reconnecting...</div>`);
+                    this.appendSystemMessage(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection stale, reconnecting...</div>`);
                     
                     // Force reconnection
                     this.reconnect();
@@ -1430,8 +1468,6 @@ window.InstancePortal = (function() {
             this.disconnect();
             
             try {
-                console.log('Connecting to WebSocket...');
-                
                 // Calculate protocol (wss:// for https, ws:// for http)
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const host = window.location.host;
@@ -1448,7 +1484,7 @@ window.InstancePortal = (function() {
                 
                 // Connection opened
                 this.webSocket.addEventListener('open', (event) => {
-                    console.log('WebSocket connected successfully');
+                    this.updateConnectionStatus('connected');
                     this.lastHeartbeat = Date.now();
                     this.reconnectAttempts = 0;
                     
@@ -1457,7 +1493,7 @@ window.InstancePortal = (function() {
                     
                     // Add a system message
                     const now = new Date().toLocaleTimeString();
-                    this.appendLog(`<div style="color:green;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">WebSocket connected at ${now}</div>`);
+                    this.appendSystemMessage(`<div style="color:green;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">WebSocket connected at ${now}</div>`);
                 });
                 
                 // Listen for messages
@@ -1469,32 +1505,43 @@ window.InstancePortal = (function() {
                     
                     // Handle heartbeat message
                     if (data === 'heartbeat') {
-                        console.debug('Received heartbeat');
                         return;
                     }
                     
                     // Handle pong message
                     if (data === 'pong') {
-                        console.debug('Received pong');
                         return;
                     }
                     
                     // Handle regular log messages
                     if (!this.isPaused && data) {
-                        this.appendLog(data);
+                        try {
+                            const msg = JSON.parse(data);
+                            const file = msg.file || '';
+                            if (msg.type === 'overwrite') {
+                                this.overwriteLog(msg.html, file);
+                            } else if (msg.type === 'system') {
+                                this.appendSystemMessage(msg.html);
+                            } else {
+                                this.appendLog(msg.html, file);
+                            }
+                        } catch (e) {
+                            // Fallback for non-JSON messages (legacy)
+                            this.appendLog(data, '');
+                        }
                     }
                 });
                 
                 // Connection closed
                 this.webSocket.addEventListener('close', (event) => {
-                    console.log(`WebSocket closed: code=${event.code}, reason=${event.reason || 'none'}`);
-                    
+                    this.updateConnectionStatus('disconnected');
+
                     // Clean up
                     this.clearConnectionMonitoring();
                     
                     // Add visual indicator
                     const now = new Date().toLocaleTimeString();
-                    this.appendLog(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection closed at ${now}</div>`);
+                    this.appendSystemMessage(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection closed at ${now}</div>`);
                     
                     // Schedule reconnection
                     this.scheduleReconnect();
@@ -1502,18 +1549,19 @@ window.InstancePortal = (function() {
                 
                 // Connection error
                 this.webSocket.addEventListener('error', (error) => {
+                    this.updateConnectionStatus('disconnected');
                     console.error('WebSocket error:', error);
-                    
+
                     // Add visual indicator
                     const now = new Date().toLocaleTimeString();
-                    this.appendLog(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection error at ${now}</div>`);
+                    this.appendSystemMessage(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection error at ${now}</div>`);
                     
                     // Error is followed by close event which will handle reconnection
                 });
                 
             } catch (error) {
                 console.error('Failed to create WebSocket:', error);
-                this.appendLog(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Failed to create WebSocket: ${error.message}</div>`);
+                this.appendSystemMessage(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Failed to create WebSocket: ${error.message}</div>`);
                 this.scheduleReconnect();
             }
         },
@@ -1521,7 +1569,7 @@ window.InstancePortal = (function() {
         // Immediate reconnect
         reconnect: function() {
             this.disconnect();
-            console.log('Forcing immediate reconnection');
+            this.updateConnectionStatus('reconnecting');
             setTimeout(() => this.connect(), 100); // Small delay to ensure clean disconnect
         },
         
@@ -1535,7 +1583,7 @@ window.InstancePortal = (function() {
             // Check max reconnect attempts
             if (this.reconnectAttempts >= this.maxReconnectAttempts) {
                 console.error(`Maximum reconnect attempts reached (${this.maxReconnectAttempts})`);
-                this.appendLog(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Maximum reconnect attempts reached. Please refresh the page.</div>`);
+                this.appendSystemMessage(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Maximum reconnect attempts reached. Please refresh the page.</div>`);
                 return;
             }
             
@@ -1545,8 +1593,7 @@ window.InstancePortal = (function() {
             const delay = Math.floor(baseDelay * jitter);
             
             this.reconnectAttempts++;
-            
-            console.log(`Reconnecting in ${delay/1000} seconds (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            this.updateConnectionStatus('reconnecting');
             
             // Schedule reconnection
             this.reconnectTimer = setTimeout(() => {
@@ -1603,7 +1650,6 @@ window.InstancePortal = (function() {
             // Handle visibility change to reconnect when tab becomes visible
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'visible') {
-                    console.log('Page visible, checking connection');
                     
                     // Check if we need to reconnect
                     const stale = !this.webSocket || 
@@ -1611,7 +1657,6 @@ window.InstancePortal = (function() {
                                   (Date.now() - this.lastHeartbeat > 10000);
                     
                     if (stale) {
-                        console.log('Connection stale, reconnecting...');
                         this.reconnect();
                     }
                 }
@@ -1881,7 +1926,6 @@ window.InstancePortal = (function() {
                     await new Promise(resolve => setTimeout(resolve, 5000));
                 }
                 catch(e) {
-                    console.log("Failed to redirect: " + e);
                     return false;
                 }
             }
