@@ -83,6 +83,8 @@ tunnel_manager=os.environ.get("TUNNEL_MANAGER", "http://localhost:11112")
 @asynccontextmanager
 async def lifespan(app):
     # Startup
+    # Prime psutil CPU counter so first real poll returns a meaningful value
+    psutil.cpu_percent(interval=None)
     app.state.monitor_task = asyncio.create_task(
         monitor_log_directory("/var/log/portal")
     )
@@ -325,6 +327,126 @@ def get_container_memory_stats() -> Optional[dict]:
         'used': usage,
         'percent': percent
     }
+
+
+# --- CPU metrics ---
+
+# State for delta-based CPU measurement (cgroups)
+_cpu_prev: dict = {'timestamp': 0.0, 'usage': 0, 'percent': 0.0}
+
+def get_cpu_quota_cores() -> float:
+    """Get the CPU quota in fractional cores from cgroups (for % normalization).
+    Returns the quota as a float (e.g. 19.2), or falls back to os.cpu_count()."""
+    try:
+        # cgroups v2: cpu.max → "quota period"
+        with open('/sys/fs/cgroup/cpu.max', 'r') as f:
+            parts = f.read().strip().split()
+            if parts[0] != 'max':
+                return max(1.0, int(parts[0]) / int(parts[1]))
+    except Exception:
+        pass
+    try:
+        # cgroups v1: cpu.cfs_quota_us / cpu.cfs_period_us
+        for prefix in ('/sys/fs/cgroup/cpu/', '/sys/fs/cgroup/cpu,cpuacct/'):
+            quota_path = prefix + 'cpu.cfs_quota_us'
+            period_path = prefix + 'cpu.cfs_period_us'
+            if os.path.exists(quota_path):
+                with open(quota_path, 'r') as f:
+                    quota = int(f.read().strip())
+                if quota == -1:
+                    break  # no limit
+                with open(period_path, 'r') as f:
+                    period = int(f.read().strip())
+                return max(1.0, quota / period)
+    except Exception:
+        pass
+    return float(os.cpu_count() or 1)
+
+
+def get_container_cpu_usage() -> Optional[dict]:
+    """Get CPU usage for the container using cgroups delta measurement."""
+    global _cpu_prev
+
+    now = time.monotonic()
+    usage_ns = None
+
+    # cgroups v2: cpu.stat contains usage_usec
+    try:
+        with open('/sys/fs/cgroup/cpu.stat', 'r') as f:
+            for line in f:
+                if line.startswith('usage_usec'):
+                    usage_ns = int(line.split()[1]) * 1000
+                    break
+    except Exception:
+        pass
+
+    # cgroups v1: cpuacct.usage in nanoseconds
+    if usage_ns is None:
+        for prefix in ('/sys/fs/cgroup/cpuacct/', '/sys/fs/cgroup/cpu,cpuacct/'):
+            path = prefix + 'cpuacct.usage'
+            try:
+                with open(path, 'r') as f:
+                    usage_ns = int(f.read().strip())
+                break
+            except Exception:
+                continue
+
+    if usage_ns is None:
+        return None
+
+    # Use quota (fractional cores) for percentage normalization,
+    # but os.cpu_count() for the user-visible core count.
+    quota_cores = get_cpu_quota_cores()
+
+    elapsed = now - _cpu_prev['timestamp']
+    if _cpu_prev['timestamp'] > 0 and elapsed > 0.5:
+        delta_usage = usage_ns - _cpu_prev['usage']
+        delta_time_ns = elapsed * 1e9
+        percent = (delta_usage / delta_time_ns) * 100.0 / quota_cores
+        _cpu_prev['percent'] = max(0.0, min(percent, 100.0))
+
+    _cpu_prev['timestamp'] = now
+    _cpu_prev['usage'] = usage_ns
+
+    return {
+        'percent': round(_cpu_prev['percent'], 1),
+        'count': os.cpu_count() or 1
+    }
+
+
+def get_cpu_stats() -> dict:
+    """Get CPU usage, preferring container cgroup metrics when available."""
+    if is_in_container():
+        container_cpu = get_container_cpu_usage()
+        if container_cpu is not None:
+            return container_cpu
+    # VM / host fallback
+    return {
+        'percent': psutil.cpu_percent(interval=None),
+        'count': psutil.cpu_count() or 1
+    }
+
+
+# --- Workspace volume metrics ---
+
+def get_workspace_volume_info() -> Optional[dict]:
+    """Get disk usage for $WORKSPACE, only if it's on a separate mounted volume."""
+    workspace = os.environ.get('WORKSPACE')
+    if not workspace or not os.path.isdir(workspace):
+        return None
+    try:
+        # Different st_dev means a separate filesystem / mount
+        if os.stat('/').st_dev == os.stat(workspace).st_dev:
+            return None
+        usage = psutil.disk_usage(workspace)
+        return {
+            'path': workspace,
+            'total': usage.total,
+            'used': usage.used,
+            'percent': usage.percent
+        }
+    except Exception:
+        return None
 
 
 templates.env.filters["strip_port"] = strip_port
@@ -905,6 +1027,14 @@ async def get_system_metrics() -> JSONResponse:
     
     # Add container detection info
     metrics['environment'] = 'container' if is_in_container() else 'host'
+
+    # CPU metrics
+    metrics['cpu'] = get_cpu_stats()
+
+    # Workspace volume (only if mounted as a separate filesystem)
+    volume_info = get_workspace_volume_info()
+    if volume_info:
+        metrics['volume'] = volume_info
     
     # Get GPU metrics from both NVIDIA and AMD sources
     all_gpus = []

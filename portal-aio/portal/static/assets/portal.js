@@ -1092,17 +1092,24 @@ window.InstancePortal = (function() {
         elements: {
             gpuFill: 'gpu-fill',
             gpuTooltip: 'gpu-tooltip',
+            cpuFill: 'cpu-fill',
+            cpuTooltip: 'cpu-tooltip',
             ramFill: 'ram-fill',
             ramTooltip: 'ram-tooltip',
             diskFill: 'disk-fill',
-            diskTooltip: 'disk-tooltip'
+            diskTooltip: 'disk-tooltip',
+            volumeStat: 'volume-stat',
+            volumeFill: 'volume-fill',
+            volumeTooltip: 'volume-tooltip'
         },
-        
+
         // Data storage
         data: {
             gpu: null,
+            cpu: null,
             ram: null,
-            disk: null
+            disk: null,
+            volume: null
         },
         
         // Fetch metrics from API
@@ -1138,30 +1145,59 @@ window.InstancePortal = (function() {
                     `Load: ${Math.round(gpuLoad)}% | Memory: ${gpuMemoryUsed.toFixed(1)}/${gpuMemoryTotal.toFixed(1)} GB`;
             }
             
+            // Update CPU metrics
+            if (this.data.cpu) {
+                const cpuPercent = this.data.cpu.percent;
+                const cpuCount = this.data.cpu.count;
+
+                const cpuEl = document.getElementById(this.elements.cpuFill);
+                cpuEl.style.width = `${cpuPercent}%`;
+                cpuEl.setAttribute('data-level', cpuPercent >= 90 ? 'critical' : cpuPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.cpuTooltip).textContent =
+                    `${cpuPercent.toFixed(1)}% (${cpuCount} core${cpuCount !== 1 ? 's' : ''})`;
+            }
+
             // Update RAM metrics
             if (this.data.ram) {
                 const ramPercent = this.data.ram.percent;
-                const ramUsed = this.data.ram.used / (1024 * 1024 * 1024); // Convert to GB
-                const ramTotal = this.data.ram.total / (1024 * 1024 * 1024); // Convert to GB
-                
+                const ramUsed = this.data.ram.used / 1e9; // Convert to GB (decimal)
+                const ramTotal = this.data.ram.total / 1e9;
+
                 const ramEl = document.getElementById(this.elements.ramFill);
                 ramEl.style.width = `${ramPercent}%`;
                 ramEl.setAttribute('data-level', ramPercent >= 90 ? 'critical' : ramPercent >= 80 ? 'warning' : 'good');
                 document.getElementById(this.elements.ramTooltip).textContent =
-                    `${ramUsed.toFixed(1)}/${ramTotal.toFixed(1)} GB (${ramPercent.toFixed(2)}%)`;
+                    `${ramUsed.toFixed(1)}/${ramTotal.toFixed(1)} GB (${ramPercent.toFixed(1)}%)`;
             }
-            
+
             // Update Disk metrics
             if (this.data.disk) {
                 const diskPercent = this.data.disk.percent;
-                const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // Convert to GB
-                const diskTotal = this.data.disk.total / (1024 * 1024 * 1024); // Convert to GB
-                
+                const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // GiB to match df -h
+                const diskTotal = this.data.disk.total / (1024 * 1024 * 1024);
+
                 const diskEl = document.getElementById(this.elements.diskFill);
                 diskEl.style.width = `${diskPercent}%`;
                 diskEl.setAttribute('data-level', diskPercent >= 90 ? 'critical' : diskPercent >= 80 ? 'warning' : 'good');
                 document.getElementById(this.elements.diskTooltip).textContent =
-                    `${Math.round(diskUsed)}/${Math.round(diskTotal)} GB (${diskPercent.toFixed(2)}%)`;
+                    `${Math.round(diskUsed)}/${Math.round(diskTotal)} GB (${diskPercent.toFixed(1)}%)`;
+            }
+
+            // Update Volume metrics (shown only when $WORKSPACE is a mounted volume)
+            const volumeStatEl = document.getElementById(this.elements.volumeStat);
+            if (this.data.volume) {
+                volumeStatEl.style.display = '';
+                const volPercent = this.data.volume.percent;
+                const volUsed = this.data.volume.used / (1024 * 1024 * 1024); // GiB to match df -h
+                const volTotal = this.data.volume.total / (1024 * 1024 * 1024);
+
+                const volEl = document.getElementById(this.elements.volumeFill);
+                volEl.style.width = `${volPercent}%`;
+                volEl.setAttribute('data-level', volPercent >= 90 ? 'critical' : volPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.volumeTooltip).textContent =
+                    `${Math.round(volUsed)}/${Math.round(volTotal)} GB (${volPercent.toFixed(1)}%)`;
+            } else if (volumeStatEl) {
+                volumeStatEl.style.display = 'none';
             }
         },
         

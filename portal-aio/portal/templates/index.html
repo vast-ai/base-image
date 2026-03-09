@@ -34,6 +34,13 @@
                     <div id="gpu-tooltip" class="stat-tooltip">Loading...</div>
                 </div>
                 <div class="stat-item">
+                    <div class="stat-label">CPU</div>
+                    <div class="stat-bar">
+                        <div id="cpu-fill" class="stat-fill" style="width: 0%"></div>
+                    </div>
+                    <div id="cpu-tooltip" class="stat-tooltip">Loading...</div>
+                </div>
+                <div class="stat-item">
                     <div class="stat-label">Memory</div>
                     <div class="stat-bar">
                         <div id="ram-fill" class="stat-fill" style="width: 0%"></div>
@@ -41,11 +48,18 @@
                     <div id="ram-tooltip" class="stat-tooltip">Loading...</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-label">Disk</div>
+                    <div class="stat-label">Container Disk</div>
                     <div class="stat-bar">
                         <div id="disk-fill" class="stat-fill" style="width: 0%"></div>
                     </div>
                     <div id="disk-tooltip" class="stat-tooltip">Loading...</div>
+                </div>
+                <div id="volume-stat" class="stat-item" style="display: none;">
+                    <div class="stat-label">Volume</div>
+                    <div class="stat-bar">
+                        <div id="volume-fill" class="stat-fill" style="width: 0%"></div>
+                    </div>
+                    <div id="volume-tooltip" class="stat-tooltip">Loading...</div>
                 </div>
             </div>
         </div>
