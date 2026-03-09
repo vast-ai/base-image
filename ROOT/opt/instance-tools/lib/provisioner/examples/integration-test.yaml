@@ -1,0 +1,119 @@
+# Integration test manifest — uses real repos and models
+# Designed to run quickly for validation on a real instance
+#
+#   provisioner examples/integration-test.yaml --dry-run   # verify parsing
+#   provisioner examples/integration-test.yaml             # full run
+#   provisioner examples/integration-test.yaml --force     # re-run all phases
+
+version: 1
+
+settings:
+  venv: "/venv/main"
+  log_file: "/var/log/portal/provisioning.log"
+  concurrency:
+    hf_downloads: 2
+    wget_downloads: 3
+
+on_failure:
+  action: continue
+  max_retries: 1
+  retry_delay: 5
+
+# --- Early file writes ---
+write_files:
+  - path: "${WORKSPACE:-/workspace}/test-downloads/early-config.txt"
+    content: |
+      provisioner_integration_test=true
+      written_by=write_files
+    permissions: "0644"
+
+# --- APT packages ---
+apt_packages:
+  - joe
+  - nmon
+
+# --- Pip packages ---
+pip_packages:
+  # Install into the default /venv/main
+  - packages:
+      - httpx
+      - pyyaml
+
+  # Create a fresh venv and install into it
+  - venv: "/venv/test-isolated"
+    packages:
+      - cowsay
+      - rich
+
+# --- Conda packages ---
+# Install into conda prefix envs (list of blocks, like pip_packages)
+conda_packages:
+  - packages:
+      - jinja2
+    channels:
+      - conda-forge
+    env: "/venv/conda-test"
+
+  - packages:
+      - markupsafe
+    channels:
+      - conda-forge
+    env: "/venv/conda-test2"
+
+# --- Git repos ---
+git_repos:
+  # Small utility repo (~50 files)
+  - url: https://github.com/astral-sh/ruff-pre-commit
+    dest: "${WORKSPACE:-/workspace}/test-repos/ruff-pre-commit"
+
+  # Small Python project with requirements
+  - url: https://github.com/httpie/cli
+    dest: "${WORKSPACE:-/workspace}/test-repos/httpie"
+    recursive: false
+    post_commands:
+      - "ls -la README.md"
+
+# --- Downloads ---
+downloads:
+  # Single small model file (~500KB safetensors)
+  - url: https://huggingface.co/hf-internal-testing/tiny-random-bert/resolve/main/model.safetensors
+    dest: "${WORKSPACE:-/workspace}/test-downloads/tiny-bert/model.safetensors"
+
+  # Small full repo download (~2MB, tiny test model)
+  - url: https://huggingface.co/hf-internal-testing/tiny-random-gpt2
+    dest: "${WORKSPACE:-/workspace}/test-downloads/tiny-gpt2"
+
+# --- Late file writes ---
+write_files_late:
+  - path: "${WORKSPACE:-/workspace}/test-downloads/manifest-test.txt"
+    content: |
+      This file was written by the provisioner integration test.
+      If you can read this, write_files_late is working.
+
+# --- Post commands ---
+# Validate that all phases executed correctly
+post_commands:
+  # Phase 2b: Early file write
+  - "test -f ${WORKSPACE:-/workspace}/test-downloads/early-config.txt && echo 'PASS: early file write' || echo 'FAIL: early file write missing'"
+  # Phase 3: APT packages
+  - "command -v joe && echo 'PASS: apt joe' || echo 'FAIL: apt joe missing'"
+  - "command -v nmon && echo 'PASS: apt nmon' || echo 'FAIL: apt nmon missing'"
+  # Phase 5: Pip packages (default venv)
+  - "/venv/main/bin/python -c 'import httpx; print(\"PASS: pip httpx\")' || echo 'FAIL: pip httpx missing'"
+  - "/venv/main/bin/python -c 'import yaml; print(\"PASS: pip pyyaml\")' || echo 'FAIL: pip pyyaml missing'"
+  # Phase 5: Pip packages (isolated venv)
+  - "/venv/test-isolated/bin/python -c 'import cowsay; print(\"PASS: pip cowsay (isolated)\")' || echo 'FAIL: pip cowsay missing'"
+  - "/venv/test-isolated/bin/python -c 'import rich; print(\"PASS: pip rich (isolated)\")' || echo 'FAIL: pip rich missing'"
+  # Phase 5b: Conda packages (two envs)
+  - "/venv/conda-test/bin/python -c 'import jinja2; print(\"PASS: conda jinja2\")' || echo 'FAIL: conda jinja2 missing'"
+  - "/venv/conda-test2/bin/python -c 'import markupsafe; print(\"PASS: conda markupsafe\")' || echo 'FAIL: conda markupsafe missing'"
+  # Phase 4: Git repos
+  - "test -d ${WORKSPACE:-/workspace}/test-repos/ruff-pre-commit/.git && echo 'PASS: git ruff-pre-commit' || echo 'FAIL: git ruff-pre-commit missing'"
+  - "test -d ${WORKSPACE:-/workspace}/test-repos/httpie/.git && echo 'PASS: git httpie' || echo 'FAIL: git httpie missing'"
+  # Phase 6: Downloads
+  - "test -f ${WORKSPACE:-/workspace}/test-downloads/tiny-bert/model.safetensors && echo 'PASS: download tiny-bert' || echo 'FAIL: download tiny-bert missing'"
+  - "test -d ${WORKSPACE:-/workspace}/test-downloads/tiny-gpt2 && echo 'PASS: download tiny-gpt2' || echo 'FAIL: download tiny-gpt2 missing'"
+  # Phase 7b: Late file write
+  - "test -f ${WORKSPACE:-/workspace}/test-downloads/manifest-test.txt && echo 'PASS: late file write' || echo 'FAIL: late file write missing'"
+  # Summary
+  - "echo '--- Integration test provisioning complete ---'"

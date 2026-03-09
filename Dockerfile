@@ -246,6 +246,14 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install the declarative provisioner into its own venv
+RUN \
+    set -euo pipefail && \
+    uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11 && \
+    . /opt/instance-tools/provisioner/venv/bin/activate && \
+    uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt && \
+    deactivate
+
 # Populate the system Python environment with useful tools.  Add jupyter to speed up instance creation and install tensorboard as it is quite useful if training
 # These are in the system and not the venv because we want that to be as clean as possible
 RUN \
