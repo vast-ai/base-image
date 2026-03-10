@@ -42,6 +42,8 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
+# Enable expect/unbuffer to find its Tcl libraries
+ENV TCLLIBPATH=/usr/lib/tcltk/x86_64-linux-gnu
 # Expose all toolklit features
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
@@ -100,6 +102,7 @@ RUN \
         git-lfs \
         man \
         tzdata \
+        expect \
         # Display
         fonts-dejavu \
         fonts-freefont-ttf \
@@ -245,8 +248,6 @@ RUN \
     ln -s /opt/portal-aio/tunnel_manager/cloudflared /opt/instance-tools/bin/cloudflared && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
-ENV PORTAL_VERSION=v2.0.6
 
 # Install the declarative provisioner into its own venv
 RUN \
