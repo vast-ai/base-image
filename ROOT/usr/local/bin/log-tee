@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Filtering tee: raw output to log file, cleaned output to stdout.
+
+Reads stdin and writes two streams:
+  - Log file (argument): raw bytes preserved (ANSI, \r, cursor-up) for the portal
+  - Stdout: ANSI/CSI sequences stripped, lone \r converted to \n
+
+Usage: log-tee /var/log/portal/proc.log
+"""
+
+import os
+import re
+import sys
+
+# CSI sequences: ESC[ ... final byte.  Also bare ESC sequences.
+_CSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^[]?")
+
+
+def _clean(text: str) -> str:
+    """Strip ANSI escapes, collapse \\r\\n → \\n, convert lone \\r → \\n."""
+    text = _CSI_RE.sub("", text)
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
+    return text
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        sys.stderr.write("Usage: log-tee <logfile>\n")
+        sys.exit(1)
+
+    logfile = sys.argv[1]
+    log_fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    stdout_fd = sys.stdout.fileno()
+    stdin_fd = sys.stdin.fileno()
+
+    # Incremental UTF-8 decoder for multi-byte chars split across reads
+    import codecs
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+    # Buffer a trailing \r across reads so \r\n split across chunks
+    # doesn't produce a spurious extra newline.
+    pending_cr = False
+
+    while True:
+        try:
+            data = os.read(stdin_fd, 8192)
+        except OSError:
+            break
+        if not data:
+            break
+
+        # Raw bytes to log file (portal needs them)
+        try:
+            os.write(log_fd, data)
+        except OSError:
+            pass
+
+        # Decode, clean, write to stdout
+        text = decoder.decode(data)
+        if pending_cr:
+            text = "\r" + text
+            pending_cr = False
+        if text.endswith("\r"):
+            text = text[:-1]
+            pending_cr = True
+        if text:
+            cleaned = _clean(text)
+            if cleaned:
+                try:
+                    os.write(stdout_fd, cleaned.encode("utf-8"))
+                except OSError:
+                    pass
+
+    # Flush remaining bytes from decoder and any pending \r
+    remaining = decoder.decode(b"", final=True)
+    if pending_cr:
+        remaining = "\r" + remaining
+    if remaining:
+        cleaned = _clean(remaining)
+        if cleaned:
+            try:
+                os.write(stdout_fd, cleaned.encode("utf-8"))
+            except OSError:
+                pass
+
+    os.close(log_fd)
+
+
+if __name__ == "__main__":
+    main()
