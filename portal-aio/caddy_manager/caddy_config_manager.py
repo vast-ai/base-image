@@ -1,5 +1,4 @@
 import os
-import re
 import yaml
 import subprocess
 import time

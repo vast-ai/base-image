@@ -104,6 +104,10 @@ async def lifespan(app):
     # Shutdown
     if hasattr(app.state, 'monitor_task'):
         app.state.monitor_task.cancel()
+        try:
+            await app.state.monitor_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(lifespan=lifespan)
 
@@ -1129,13 +1133,12 @@ async def _emit_line(filename: str, text: str, msg_type: str) -> None:
 async def _emit_block(filename: str, lines: list[str]) -> None:
     """Store and broadcast a multi-line progress block."""
     global _chrono_last_file
-    html_lines = [ansi_to_html(line) for line in lines if line]
-    if not html_lines:
+    html_lines = [ansi_to_html(line) for line in lines]
+    if not any(lines):
         return
 
     state = _file_term_state.get(filename)
-    non_empty = [l for l in lines if l]
-    new_size = len(non_empty)
+    new_size = len(lines)
 
     # Replace previous block entries in file-specific buffer
     prev_size = _file_block_sizes.get(filename, 0)
@@ -1146,8 +1149,8 @@ async def _emit_block(filename: str, lines: list[str]) -> None:
     else:
         buf = deque(maxlen=MAX_LINES)
         file_specific_buffers[filename] = buf
-    for line in non_empty:
-        buf.append(line)
+    for line in lines:
+        buf.append(line or "")
 
     # If a different file wrote last, this file no longer owns tail entries
     if state and _chrono_last_file != filename:
@@ -1159,8 +1162,8 @@ async def _emit_block(filename: str, lines: list[str]) -> None:
     chrono_owned = state.chrono_tag if state else 0
     for _ in range(min(chrono_owned, len(chronological_log_buffer))):
         chronological_log_buffer.pop()
-    for line in non_empty:
-        chronological_log_buffer.append(line)
+    for line in lines:
+        chronological_log_buffer.append(line or "")
     if state:
         state.chrono_tag = new_size
 

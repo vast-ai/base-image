@@ -1,5 +1,16 @@
 // Create a namespace for your application
 window.InstancePortal = (function() {
+    // Escape strings for safe HTML interpolation
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+    // Escape strings for safe use inside JS string literals in onclick attributes
+    function escapeAttr(str) {
+        return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    }
+
     const applications = {
         // Store for application data
         _data: {},
@@ -1261,25 +1272,26 @@ window.InstancePortal = (function() {
                         const label = pending ? (pendingLabels[pending] || pending.toUpperCase()) : proc.state;
                         actions = `<button class="service-btn" disabled>${this._spinnerSvg} ${label}</button>`;
                     } else if (isRunning) {
-                        const stopBtn = proc.unstoppable ? '' : `
-                            <button class="service-btn danger" onclick="window.app.services.stop('${proc.name}')" title="Stop">
+                        const safeName = escapeAttr(proc.name);
+                    const stopBtn = proc.unstoppable ? '' : `
+                            <button class="service-btn danger" onclick="window.app.services.stop('${safeName}')" title="Stop">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
                                 Stop</button>`;
                         actions = `
-                            <button class="service-btn" onclick="window.app.services.restart('${proc.name}')" title="Restart">
+                            <button class="service-btn" onclick="window.app.services.restart('${safeName}')" title="Restart">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                                 Restart</button>${stopBtn}`;
                     } else {
                         actions = `
-                            <button class="service-btn" onclick="window.app.services.start('${proc.name}')" title="Start">
+                            <button class="service-btn" onclick="window.app.services.start('${safeName}')" title="Start">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                                 Start</button>`;
                     }
 
                     return `<div class="service-item">
-                        <div class="service-name">${proc.name}</div>
-                        <div><span class="status-badge ${stateClass}">${stateLabel}</span></div>
-                        <div class="service-info">${info}</div>
+                        <div class="service-name">${escapeHtml(proc.name)}</div>
+                        <div><span class="status-badge ${escapeAttr(stateClass)}">${escapeHtml(stateLabel)}</span></div>
+                        <div class="service-info">${escapeHtml(info)}</div>
                         <div class="service-actions">${actions}</div>
                     </div>`;
                 }).join('');
