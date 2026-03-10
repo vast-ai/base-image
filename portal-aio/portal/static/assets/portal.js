@@ -967,7 +967,7 @@ window.InstancePortal = (function() {
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
                                 Copy URL
                             </button>
-                            <button class="advanced-toggle manage-toggle" data-target="${tunnel.targetUrl}">
+                            <button class="manage-toggle" data-target="${tunnel.targetUrl}">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon">
                                     <circle cx="12" cy="12" r="3"></circle>
                                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -1383,6 +1383,17 @@ window.InstancePortal = (function() {
                     `${Math.round(diskUsed)}/${Math.round(diskTotal)} GB (${diskPercent.toFixed(1)}%)`;
             }
 
+            // Adapt UI based on environment (container vs VM)
+            if (this.data.environment) {
+                const isVM = this.data.environment !== 'container';
+                // Hide supervisor tab in VM mode (no supervisor available)
+                const servicesNav = document.querySelector('[data-page="services-page"]');
+                if (servicesNav) servicesNav.style.display = isVM ? 'none' : '';
+                // Rename "Container Disk" to "Disk" in VM mode
+                const diskLabel = document.querySelector('#disk-fill')?.closest('.stat-item')?.querySelector('.stat-label');
+                if (diskLabel) diskLabel.textContent = isVM ? 'Disk' : 'Container Disk';
+            }
+
             // Update Volume metrics (shown only when $WORKSPACE is a mounted volume)
             const volumeStatEl = document.getElementById(this.elements.volumeStat);
             if (this.data.volume) {
@@ -1448,7 +1459,7 @@ window.InstancePortal = (function() {
         isPaused: false,
         webSocket: null,
         maxLogLines: 300,
-        lastSpanByFile: {},  // file -> last <span> element for per-file overwrite tracking
+        lastSpansByFile: {},  // file -> [span, ...] array for per-file overwrite tracking
         
         // Connection management
         reconnectTimer: null,
@@ -1588,6 +1599,40 @@ window.InstancePortal = (function() {
             }
         },
         
+        // Collect all actively-tracked spans (progress bars, blocks)
+        _getActiveSpans: function() {
+            const active = new Set();
+            for (const file in this.lastSpansByFile) {
+                const spans = this.lastSpansByFile[file];
+                if (spans) {
+                    for (const s of spans) active.add(s);
+                }
+            }
+            return active;
+        },
+
+        // Trim log console to maxLogLines, skipping actively-tracked spans
+        // (progress bars / blocks). Active spans are pinned at the bottom.
+        _trimLog: function(logConsole) {
+            const excess = logConsole.childElementCount - this.maxLogLines;
+            if (excess <= 0) return;
+            const active = this._getActiveSpans();
+            let removed = 0;
+            // Limit iterations to avoid infinite loops if all spans are active
+            let maxIter = excess + active.size;
+            while (logConsole.childElementCount > this.maxLogLines && maxIter-- > 0) {
+                const first = logConsole.firstChild;
+                if (!first) break;
+                if (active.has(first)) {
+                    // Pin: move active span to the bottom instead of removing
+                    logConsole.appendChild(first);
+                } else {
+                    logConsole.removeChild(first);
+                    removed++;
+                }
+            }
+        },
+
         // Append log message to the console (new line)
         appendLog: function(html, file) {
             if (this.isPaused) return;
@@ -1598,12 +1643,9 @@ window.InstancePortal = (function() {
             const span = document.createElement('span');
             span.innerHTML = html;
             logConsole.appendChild(span);
-            if (file) this.lastSpanByFile[file] = span;
+            if (file) this.lastSpansByFile[file] = [span];
 
-            while (logConsole.childElementCount > this.maxLogLines) {
-                logConsole.removeChild(logConsole.firstChild);
-            }
-
+            this._trimLog(logConsole);
             this.scrollToBottom();
         },
 
@@ -1614,7 +1656,8 @@ window.InstancePortal = (function() {
             const logConsole = document.getElementById(this.elements.logConsole);
             if (!logConsole) return;
 
-            const target = file ? this.lastSpanByFile[file] : null;
+            const spans = file ? this.lastSpansByFile[file] : null;
+            const target = spans && spans.length > 0 ? spans[spans.length - 1] : null;
             if (target && target.parentNode === logConsole) {
                 target.innerHTML = html;
             } else {
@@ -1622,6 +1665,45 @@ window.InstancePortal = (function() {
                 return;
             }
 
+            this.scrollToBottom();
+        },
+
+        // Overwrite a multi-line block for a specific file (nested progress bars)
+        overwriteBlock: function(htmlLines, file) {
+            if (this.isPaused) return;
+            const logConsole = document.getElementById(this.elements.logConsole);
+            if (!logConsole) return;
+
+            const existing = this.lastSpansByFile[file];
+            if (existing && existing.length > 0 && existing[0].parentNode === logConsole) {
+                // Shrink excess spans
+                while (existing.length > htmlLines.length) {
+                    logConsole.removeChild(existing.pop());
+                }
+                // Update existing spans
+                for (let i = 0; i < existing.length; i++) {
+                    existing[i].innerHTML = htmlLines[i];
+                }
+                // Grow: add new spans after last existing
+                const anchor = existing[existing.length - 1].nextSibling;
+                while (existing.length < htmlLines.length) {
+                    const span = document.createElement('span');
+                    span.innerHTML = htmlLines[existing.length];
+                    logConsole.insertBefore(span, anchor);
+                    existing.push(span);
+                }
+            } else {
+                // Create fresh block
+                const spans = htmlLines.map(html => {
+                    const span = document.createElement('span');
+                    span.innerHTML = html;
+                    logConsole.appendChild(span);
+                    return span;
+                });
+                this.lastSpansByFile[file] = spans;
+            }
+
+            this._trimLog(logConsole);
             this.scrollToBottom();
         },
 
@@ -1637,10 +1719,7 @@ window.InstancePortal = (function() {
                 logConsole.appendChild(temp.firstChild);
             }
 
-            while (logConsole.childElementCount > this.maxLogLines) {
-                logConsole.removeChild(logConsole.firstChild);
-            }
-
+            this._trimLog(logConsole);
             this.scrollToBottom();
         },
         
@@ -1754,7 +1833,9 @@ window.InstancePortal = (function() {
                         try {
                             const msg = JSON.parse(data);
                             const file = msg.file || '';
-                            if (msg.type === 'overwrite') {
+                            if (msg.type === 'overwrite_block') {
+                                this.overwriteBlock(msg.lines, file);
+                            } else if (msg.type === 'overwrite') {
                                 this.overwriteLog(msg.html, file);
                             } else if (msg.type === 'system') {
                                 this.appendSystemMessage(msg.html);
@@ -2145,7 +2226,11 @@ window.InstancePortal = (function() {
         },
 
         handleRoute: function() {
-            const hash = window.location.hash.slice(2) || 'apps';
+            let hash = window.location.hash.slice(2) || 'apps';
+            // Redirect away from services page in VM mode (no supervisor)
+            if (hash === 'services' && appUI.systemMetrics?.data?.environment !== 'container') {
+                hash = 'apps';
+            }
             appUI.showPage(`${hash}-page`);
         },
 

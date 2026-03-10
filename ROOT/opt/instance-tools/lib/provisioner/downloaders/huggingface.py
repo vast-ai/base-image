@@ -20,6 +20,7 @@ import tempfile
 
 from ..concurrency import FileLock
 from ..schema import DownloadEntry, RetrySettings
+from ..subprocess_runner import run_cmd
 from .base import retry_with_backoff
 
 log = logging.getLogger("provisioner")
@@ -73,9 +74,9 @@ def _download_repo(
         cmd = ["hf", "download", repo]
         if dest:
             cmd += ["--local-dir", dest]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            log.warning("hf download stderr: %s", result.stderr.strip())
+        try:
+            run_cmd(cmd, label="hf", check=True)
+        except subprocess.CalledProcessError:
             return False
         if cache_mode:
             log.info("Successfully downloaded repo %s to HF cache", repo)
@@ -110,9 +111,9 @@ def _download_file(
 
         def _do_download() -> bool:
             cmd = ["hf", "download", repo, file_path, "--revision", revision]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                log.warning("hf download stderr: %s", result.stderr.strip())
+            try:
+                run_cmd(cmd, label="hf", check=True)
+            except subprocess.CalledProcessError:
                 return False
             log.info("Successfully downloaded %s/%s to HF cache", repo, file_path)
             return True
@@ -152,11 +153,9 @@ def _download_file(
                     "--local-dir", tmp_dir,
                     "--cache-dir", os.path.join(tmp_dir, ".cache"),
                 ]
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True,
-                )
-                if result.returncode != 0:
-                    log.warning("hf download stderr: %s", result.stderr.strip())
+                try:
+                    run_cmd(cmd, label="hf", check=True)
+                except subprocess.CalledProcessError:
                     return False
 
                 downloaded = os.path.join(tmp_dir, file_path)

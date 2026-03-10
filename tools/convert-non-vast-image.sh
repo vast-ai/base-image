@@ -59,6 +59,7 @@ apt-get install --no-install-recommends -y \
     iputils-ping \
     traceroute \
     dos2unix \
+    expect \
     rsync \
     rclone \
     zip \

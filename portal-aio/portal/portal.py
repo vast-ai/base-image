@@ -40,10 +40,19 @@ _ANSI_BG_COLORS = {
 # \r and \n are already consumed by _process_chunk before text reaches here.
 _CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x0d\x0e-\x1a\x7f]')
 
+# Strip cursor movement, erase, and other non-SGR CSI sequences.
+# These are interpreted by _process_chunk(); they must not appear in HTML.
+_CSI_NON_SGR_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-ln-z]')
+
+# Tokenizer for _process_chunk: splits on ANSI CSI sequences, \r\n, \r, \n
+_CHUNK_TOKEN_RE = re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\r\n|\r|\n)')
+
 def ansi_to_html(text: str) -> str:
     """Convert ANSI escape codes to HTML spans. HTML-escapes text content.
     Strips stray control characters (SI, SO, BEL, etc.) that are invisible
     in a real terminal but render as garbage in HTML."""
+    # Strip non-SGR CSI sequences (cursor movement, erase, etc.)
+    text = _CSI_NON_SGR_RE.sub('', text)
     # Split on ANSI sequences, escape text parts, convert codes to spans
     parts = re.split(r'(\x1b\[[0-9;]*m)', text)
     result = []
@@ -278,23 +287,62 @@ def is_in_container() -> bool:
     return os.path.exists('/sys/fs/cgroup/memory/memory.limit_in_bytes') or os.path.exists('/sys/fs/cgroup/memory.max')
 
 def get_container_memory_limit() -> Optional[int]:
-    """Get memory limit allocated to the container"""
+    """Get memory limit allocated to the container.
+
+    Prefers the soft limit (memory.soft_limit_in_bytes / memory.low) when
+    set, as platforms like Vast.ai use the soft limit for the user's actual
+    RAM allocation while setting a much higher hard limit that includes
+    swap headroom.
+
+    Returns None when the limit looks like 'no real limit' — either the
+    sentinel value ``max`` (v2) or a value larger than the host's physical
+    RAM.
+    """
     try:
-        # cgroups v1
+        host_ram = psutil.virtual_memory().total
+    except Exception:
+        host_ram = 0
+
+    def _is_real_limit(value: int) -> bool:
+        if value <= 0 or value >= 10**15:
+            return False
+        if host_ram and value >= host_ram:
+            return False
+        return True
+
+    # --- cgroups v1 ---
+    # Try soft limit first (the user's actual allocation on Vast.ai)
+    try:
+        with open('/sys/fs/cgroup/memory/memory.soft_limit_in_bytes', 'r') as f:
+            soft = int(f.read().strip())
+            if _is_real_limit(soft):
+                return soft
+    except Exception:
+        pass
+
+    try:
         with open('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'r') as f:
             limit = int(f.read().strip())
-            # Very large values typically indicate no limit
-            return limit if limit < 10**15 else None
+            if _is_real_limit(limit):
+                return limit
     except Exception:
+        pass
+
+    # --- cgroups v2 ---
+    # Try memory.low (soft) first, then memory.max (hard)
+    for path in ('/sys/fs/cgroup/memory.low', '/sys/fs/cgroup/memory.max'):
         try:
-            # cgroups v2
-            with open('/sys/fs/cgroup/memory.max', 'r') as f:
+            with open(path, 'r') as f:
                 value = f.read().strip()
-                if value == 'max':
-                    return None
-                return int(value)
+                if value in ('max', '0'):
+                    continue
+                limit = int(value)
+                if _is_real_limit(limit):
+                    return limit
         except Exception:
-            return None
+            pass
+
+    return None
 
 def get_container_memory_usage() -> Optional[int]:
     """Get current memory usage of the container"""
@@ -397,8 +445,9 @@ def get_container_cpu_usage() -> Optional[dict]:
     if usage_ns is None:
         return None
 
-    # Use quota (fractional cores) for percentage normalization,
-    # but os.cpu_count() for the user-visible core count.
+    # Use quota (fractional cores) for both % normalization and the
+    # user-visible core count.  os.cpu_count() reports the host's total
+    # cores which is misleading inside a container with a CPU quota.
     quota_cores = get_cpu_quota_cores()
 
     elapsed = now - _cpu_prev['timestamp']
@@ -413,7 +462,7 @@ def get_container_cpu_usage() -> Optional[dict]:
 
     return {
         'percent': round(_cpu_prev['percent'], 1),
-        'count': os.cpu_count() or 1
+        'count': int(quota_cores)
     }
 
 
@@ -610,7 +659,7 @@ async def refresh_quick_tunnel(target_url: str):
 SUPERVISOR_SOCK = "/var/run/supervisor.sock"
 _unstoppable_env = os.environ.get("PORTAL_UNSTOPPABLE", "")
 UNSTOPPABLE_PROCESSES = frozenset(
-    {"instance_portal"} | {s.strip() for s in _unstoppable_env.split(",") if s.strip()}
+    {"instance_portal", "caddy", "tunnel_manager"} | {s.strip() for s in _unstoppable_env.split(",") if s.strip()}
 )
 
 class _UnixStreamHTTPConnection(http.client.HTTPConnection):
@@ -643,6 +692,10 @@ async def get_supervisor_processes():
         for proc in all_info:
             # Hide jupyter when /.launch is present (Vast manages it directly)
             if launch_managed and proc["name"] == "jupyter":
+                continue
+            # Hide processes that skipped startup (not in portal.yaml)
+            skip_marker = f"/tmp/supervisor-skip/{proc['name']}"
+            if os.path.isfile(skip_marker):
                 continue
             result.append({
                 "name": proc["name"],
@@ -730,7 +783,7 @@ async def set_external_ip(forwarded_host: Optional[str]) -> None:
 
 ## Log reader functions
 # Constants
-MAX_LINES = 500  # Maximum lines to keep in buffer
+MAX_LINES = 750  # Maximum lines to keep in buffer
 POLL_INTERVAL = 0.2  # File polling interval in seconds
 
 # State for WebSocket and monitoring
@@ -740,11 +793,22 @@ chronological_log_buffer = deque(maxlen=MAX_LINES)  # Single buffer for all logs
 file_specific_buffers = {}  # Filename -> Deque (for debugging/specific file views if needed)
 file_positions = {}  # Filename -> Last position
 file_mtimes = {}    # Filename -> Last modification time
-monitor_task = None  # Main monitoring task
+file_inodes = {}    # Filename -> Last inode number
 
 # Per-file terminal emulation state (persists across chunk reads)
-_file_line_buffers: dict[str, str] = {}   # Accumulated text for current incomplete line
-_file_line_active: dict[str, bool] = {}   # Whether client has a live span for this file's current line
+class _FileTermState:
+    __slots__ = ('lines', 'cursor_row', 'emitted_up_to', 'line_active', 'in_block', 'chrono_tag')
+    def __init__(self):
+        self.lines: list[str] = [""]   # Virtual screen lines
+        self.cursor_row: int = 0       # Current cursor row
+        self.emitted_up_to: int = 0    # Rows [0..emitted_up_to) already sent as 'append'
+        self.line_active: bool = False  # Client has a live span for current partial line
+        self.in_block: bool = False    # Cursor-up seen → block mode
+        self.chrono_tag: int = 0       # Count of entries owned at tail of chronological_log_buffer
+
+_file_term_state: dict[str, _FileTermState] = {}
+_file_block_sizes: dict[str, int] = {}
+_chrono_last_file: str = ""  # Which file last wrote to chronological_log_buffer
 
 # Dedicated task for each client to handle heartbeats and messages
 async def client_handler(websocket: WebSocket, client_id: int) -> None:
@@ -867,10 +931,16 @@ async def tail_log_file(filepath: str) -> None:
         if not os.path.exists(filepath):
             return
 
-        current_size = os.path.getsize(filepath)
-        current_mtime = os.path.getmtime(filepath)
+        stat = os.stat(filepath)
+        current_size = stat.st_size
+        current_mtime = stat.st_mtime
+        current_inode = stat.st_ino
         last_position = file_positions.get(filename, None)
         last_mtime = file_mtimes.get(filename, 0)
+        last_inode = file_inodes.get(filename, None)
+
+        # Detect file replacement (new inode = mv + recreate)
+        replaced = last_inode is not None and current_inode != last_inode
 
         # First time seeing this file
         if last_position is None:
@@ -891,16 +961,22 @@ async def tail_log_file(filepath: str) -> None:
 
             file_positions[filename] = current_size
             file_mtimes[filename] = current_mtime
+            file_inodes[filename] = current_inode
 
-        # File has been modified since last check
-        elif current_mtime > last_mtime or current_size != last_position:
-            logger.debug(f"File {filename} changed: size={current_size}, last_pos={last_position}")
-
-            if current_size < last_position:
+        # File replaced (different inode) or modified since last check
+        elif replaced or current_mtime > last_mtime or current_size != last_position:
+            if replaced:
+                logger.info(f"File {filename} was replaced (new inode)")
+                last_position = 0
+                _file_term_state.pop(filename, None)
+                _file_block_sizes.pop(filename, None)
+            elif current_size < last_position:
                 logger.info(f"File {filename} was truncated")
                 last_position = 0
-                _file_line_buffers.pop(filename, None)
-                _file_line_active.pop(filename, None)
+                _file_term_state.pop(filename, None)
+                _file_block_sizes.pop(filename, None)
+            else:
+                logger.debug(f"File {filename} changed: size={current_size}, last_pos={last_position}")
 
             async with aiofiles.open(filepath, 'rb') as file:
                 if last_position > 0:
@@ -912,61 +988,119 @@ async def tail_log_file(filepath: str) -> None:
 
             file_positions[filename] = current_size
             file_mtimes[filename] = current_mtime
+            file_inodes[filename] = current_inode
 
     except Exception as e:
         logger.error(f"Error tailing {filepath}: {e}")
 
 
 async def _process_chunk(text: str, filename: str) -> None:
-    """Process a chunk of text with terminal-like \\r and \\n handling.
+    """Process a chunk of text with terminal-like \\r, \\n, and cursor-up handling.
 
     Maintains per-file state across calls so partial lines are not flushed
-    prematurely. \\r means 'cursor back to start of line' (next content
-    overwrites), \\n means 'line complete, advance'.
+    prematurely.  Supports \\x1b[A (cursor up) for nested progress bars (tqdm).
+
+    Lines are kept between chunks so cursor-up in a later chunk can reference
+    lines written in an earlier chunk.
     """
-    buf = _file_line_buffers.get(filename, "")
-    line_active = _file_line_active.get(filename, False)
+    state = _file_term_state.get(filename)
+    if state is None:
+        state = _FileTermState()
+        _file_term_state[filename] = state
 
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch == '\r':
-            # \r\n is a regular newline
-            if i + 1 < len(text) and text[i + 1] == '\n':
-                if buf:
-                    await _emit_line(filename, buf, "overwrite" if line_active else "append")
-                    buf = ""
-                line_active = False
-                i += 2
-                continue
-            # Pure \r — emit what we have, stay on same line for overwrite
-            if buf:
-                await _emit_line(filename, buf, "overwrite" if line_active else "append")
-                line_active = True   # client now has a span for this line
-                buf = ""
-        elif ch == '\n':
-            # Line complete
-            if buf:
-                await _emit_line(filename, buf, "overwrite" if line_active else "append")
-                buf = ""
-            line_active = False
+    parts = _CHUNK_TOKEN_RE.split(text)
+
+    had_cursor_up = False
+    for part in parts:
+        if not part:
+            continue
+
+        if part == '\r\n' or part == '\n':
+            # Line complete — advance cursor
+            state.cursor_row += 1
+            if state.cursor_row >= len(state.lines):
+                state.lines.append("")
+        elif part == '\r':
+            # Carriage return — clear current line for overwrite
+            state.lines[state.cursor_row] = ""
+        elif part.startswith('\x1b['):
+            # CSI sequence
+            body = part[2:]
+            letter = body[-1]
+            param_str = body[:-1]
+            if letter == 'A':
+                # Cursor up
+                n = int(param_str) if param_str else 1
+                state.cursor_row = max(0, state.cursor_row - n)
+                state.in_block = True
+                had_cursor_up = True
+            # K (erase line), other CSI: ignore
         else:
-            buf += ch
-        i += 1
+            # Plain text — append to current line
+            state.lines[state.cursor_row] += part
 
-    # If there's pending content, emit a preview so partial lines are visible
-    # in real time (e.g. curl dots appearing progressively).  We keep buf
-    # intact so the next chunk continues accumulating on the same line.
-    if buf:
-        await _emit_line(filename, buf, "overwrite" if line_active else "append")
-        line_active = True
+    # --- Emission ---
+    if state.in_block:
+        if had_cursor_up:
+            # Still actively using cursor-up: emit all lines as a block
+            await _emit_block(filename, state.lines)
+        else:
+            # No cursor-up this chunk — progress bars finished, transition
+            # back to line mode.  Flush remaining block lines as appends.
+            await _emit_block(filename, state.lines)
+            state.in_block = False
+            state.emitted_up_to = state.cursor_row
+            state.line_active = False
+            state.chrono_tag = 0
+            _file_block_sizes.pop(filename, None)
 
-    _file_line_buffers[filename] = buf
-    _file_line_active[filename] = line_active
+        # Trim old lines in block mode to prevent unbounded growth.
+        # Keep a window around the cursor so cursor-up still works.
+        if len(state.lines) > 400:
+            # Keep the last 200 lines (enough for any progress bar block)
+            keep = 200
+            trim = len(state.lines) - keep
+            state.lines = state.lines[trim:]
+            state.cursor_row = max(0, state.cursor_row - trim)
+            state.emitted_up_to = max(0, state.emitted_up_to - trim)
+    else:
+        # Single-line mode — backward compatible
+        # Emit newly completed lines (emitted_up_to .. cursor_row)
+        for i in range(state.emitted_up_to, state.cursor_row):
+            line = state.lines[i] if i < len(state.lines) else ""
+            if line or state.line_active:
+                if i == state.emitted_up_to and state.line_active:
+                    # First completed line overwrites the partial preview
+                    await _emit_line(filename, line, "overwrite")
+                elif line:
+                    await _emit_line(filename, line, "append")
+                state.line_active = False
+        state.emitted_up_to = state.cursor_row
+
+        # Preview current (incomplete) line
+        current = state.lines[state.cursor_row] if state.cursor_row < len(state.lines) else ""
+        if current:
+            msg_type = "overwrite" if state.line_active else "append"
+            await _emit_line(filename, current, msg_type)
+            state.line_active = True
+
+        # Trim old completed lines to prevent unbounded growth
+        if state.emitted_up_to > 200:
+            trim = state.emitted_up_to
+            state.lines = state.lines[trim:]
+            state.cursor_row -= trim
+            state.emitted_up_to = 0
 
 
 async def _emit_line(filename: str, text: str, msg_type: str) -> None:
     """Store a line in buffers and broadcast to clients."""
+    global _chrono_last_file
+    state = _file_term_state.get(filename)
+
+    # If a different file wrote last, this file no longer owns tail entries
+    if state and _chrono_last_file != filename:
+        state.chrono_tag = 0
+
     if msg_type == "overwrite":
         # Replace last entry in file-specific buffer (avoid filling buffer with
         # hundreds of intermediate progress-bar states)
@@ -975,18 +1109,78 @@ async def _emit_line(filename: str, text: str, msg_type: str) -> None:
             buf[-1] = text
         else:
             file_specific_buffers.setdefault(filename, deque(maxlen=MAX_LINES)).append(text)
-        # For chronological buffer: also replace last entry to avoid pollution,
-        # but only if that last entry actually belongs to this file's overwrite
-        # sequence.  We approximate by checking if the buffer is non-empty.
-        if chronological_log_buffer:
+        # Replace the last chronological entry only if this file owns it
+        if state and state.chrono_tag > 0 and chronological_log_buffer:
             chronological_log_buffer[-1] = text
         else:
             chronological_log_buffer.append(text)
+            if state:
+                state.chrono_tag = 1
     else:
         file_specific_buffers[filename].append(text)
         chronological_log_buffer.append(text)
+        if state:
+            state.chrono_tag = 1
 
+    _chrono_last_file = filename
     await broadcast_message(text, msg_type, filename)
+
+
+async def _emit_block(filename: str, lines: list[str]) -> None:
+    """Store and broadcast a multi-line progress block."""
+    global _chrono_last_file
+    html_lines = [ansi_to_html(line) for line in lines if line]
+    if not html_lines:
+        return
+
+    state = _file_term_state.get(filename)
+    non_empty = [l for l in lines if l]
+    new_size = len(non_empty)
+
+    # Replace previous block entries in file-specific buffer
+    prev_size = _file_block_sizes.get(filename, 0)
+    buf = file_specific_buffers.get(filename)
+    if buf is not None:
+        for _ in range(min(prev_size, len(buf))):
+            buf.pop()
+    else:
+        buf = deque(maxlen=MAX_LINES)
+        file_specific_buffers[filename] = buf
+    for line in non_empty:
+        buf.append(line)
+
+    # If a different file wrote last, this file no longer owns tail entries
+    if state and _chrono_last_file != filename:
+        state.chrono_tag = 0
+
+    # Replace only the entries this file owns at the tail of the
+    # chronological buffer (tracked via chrono_tag) to avoid
+    # destroying interleaved entries from other files.
+    chrono_owned = state.chrono_tag if state else 0
+    for _ in range(min(chrono_owned, len(chronological_log_buffer))):
+        chronological_log_buffer.pop()
+    for line in non_empty:
+        chronological_log_buffer.append(line)
+    if state:
+        state.chrono_tag = new_size
+
+    _chrono_last_file = filename
+    _file_block_sizes[filename] = new_size
+
+    json_msg = json.dumps({
+        "type": "overwrite_block",
+        "lines": html_lines,
+        "file": filename
+    })
+
+    clients = list(websocket_clients)
+    if not clients:
+        return
+    send_tasks = [asyncio.create_task(send_to_client(c, json_msg)) for c in clients]
+    results = await asyncio.gather(*send_tasks, return_exceptions=True)
+    disconnected = {c for c, r in zip(clients, results) if isinstance(r, Exception)}
+    websocket_clients.difference_update(disconnected)
+
 
 # Main monitoring loop
 async def monitor_log_directory(directory: str) -> None:
@@ -1009,8 +1203,10 @@ async def monitor_log_directory(directory: str) -> None:
                     logger.info(f"File {filename} was removed, cleaning up")
                     file_positions.pop(filename, None)
                     file_mtimes.pop(filename, None)
-                    _file_line_buffers.pop(filename, None)
-                    _file_line_active.pop(filename, None)
+                    file_inodes.pop(filename, None)
+                    file_specific_buffers.pop(filename, None)
+                    _file_term_state.pop(filename, None)
+                    _file_block_sizes.pop(filename, None)
             
             # Small delay before next poll
             await asyncio.sleep(POLL_INTERVAL)
@@ -1047,34 +1243,6 @@ async def websocket_logs(websocket: WebSocket) -> None:
     finally:
         # Ensure client is removed
         remove_client(websocket, client_id)
-
-# Cleanup function to cancel all tasks
-async def cleanup_tasks() -> None:
-    """Clean up all tasks on shutdown"""
-    global monitor_task
-    
-    # Cancel monitor task
-    if monitor_task:
-        logger.info("Cancelling monitor task")
-        monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
-    
-    # Cancel all client tasks
-    for client_id, task in list(client_tasks.items()):
-        logger.info(f"Cancelling client task {client_id}")
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    
-    # Clear collections
-    websocket_clients.clear()
-    client_tasks.clear()
-    logger.info("All tasks cleaned up")
 
 @app.websocket("/ws-logs")
 async def logs_websocket(websocket: WebSocket) -> None:
