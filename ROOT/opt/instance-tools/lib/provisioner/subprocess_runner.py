@@ -19,7 +19,7 @@ log = logging.getLogger("provisioner")
 _write_lock = threading.Lock()
 
 # ANSI CSI sequences and bare ESC sequences.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^[]?")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^\[[]")
 
 # Environment variables that leak the provisioner's own virtualenv into
 # child processes.  Stripping them ensures that child scripts (especially
@@ -56,17 +56,18 @@ def _clean_for_terminal(text: str) -> str:
 
 
 def _get_log_streams() -> list[tuple]:
-    """Return (stream, is_file) tuples from the provisioner logger's handlers.
+    """Return (stream, is_portal) tuples from the provisioner logger's handlers.
 
-    FileHandler streams get raw output (portal needs ANSI/\\r for progress bars).
-    StreamHandler streams get cleaned output (Vast log viewer needs plain text).
+    Portal FileHandler streams (tagged with handler.portal=True) get raw output
+    (portal needs ANSI/\\r for progress bars).  All other streams (stdout
+    StreamHandler, clean FileHandler) get cleaned output.
     """
     streams = []
     for handler in log.handlers:
         stream = getattr(handler, "stream", None)
         if stream and hasattr(stream, "write"):
-            is_file = isinstance(handler, logging.FileHandler)
-            streams.append((stream, is_file))
+            is_portal = getattr(handler, "portal", False)
+            streams.append((stream, is_portal))
     return streams
 
 
@@ -158,9 +159,9 @@ def run_cmd(
                 pending_cr = True
             cleaned = None
             with _write_lock:
-                for stream, is_file in streams:
+                for stream, is_portal in streams:
                     try:
-                        if is_file:
+                        if is_portal:
                             stream.write(text)
                         else:
                             if cleaned is None:
@@ -183,9 +184,9 @@ def run_cmd(
         if remaining:
             cleaned = None
             with _write_lock:
-                for stream, is_file in streams:
+                for stream, is_portal in streams:
                     try:
-                        if is_file:
+                        if is_portal:
                             stream.write(remaining)
                         else:
                             if cleaned is None:
