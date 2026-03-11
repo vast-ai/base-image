@@ -883,18 +883,17 @@ file_inodes = {}    # Filename -> Last inode number
 
 # Per-file terminal emulation state (persists across chunk reads)
 class _FileTermState:
-    __slots__ = ('lines', 'cursor_row', 'emitted_up_to', 'line_active', 'in_block', 'chrono_tag')
+    __slots__ = ('lines', 'cursor_row', 'emitted_up_to', 'line_active', 'in_block', 'pending_cr')
     def __init__(self):
         self.lines: list[str] = [""]   # Virtual screen lines
         self.cursor_row: int = 0       # Current cursor row
         self.emitted_up_to: int = 0    # Rows [0..emitted_up_to) already sent as 'append'
         self.line_active: bool = False  # Client has a live span for current partial line
         self.in_block: bool = False    # Cursor-up seen → block mode
-        self.chrono_tag: int = 0       # Count of entries owned at tail of chronological_log_buffer
+        self.pending_cr: bool = False  # \r at end of last chunk (may be start of \r\n)
 
 _file_term_state: dict[str, _FileTermState] = {}
 _file_block_sizes: dict[str, int] = {}
-_chrono_last_file: str = ""  # Which file last wrote to chronological_log_buffer
 
 # Dedicated task for each client to handle heartbeats and messages
 async def client_handler(websocket: WebSocket, client_id: int) -> None:
@@ -1094,6 +1093,11 @@ async def _process_chunk(text: str, filename: str) -> None:
         state = _FileTermState()
         _file_term_state[filename] = state
 
+    # If previous chunk ended with \r, prepend it so the split sees it
+    if state.pending_cr:
+        text = '\r' + text
+        state.pending_cr = False
+
     parts = _CHUNK_TOKEN_RE.split(text)
 
     had_cursor_up = False
@@ -1117,6 +1121,9 @@ async def _process_chunk(text: str, filename: str) -> None:
                     break
             if next_part in ('\n', '\r\n'):
                 pass  # skip — the following \n/\r\n will commit the line
+            elif next_part is None:
+                # \r at end of chunk — may be start of \r\n split across reads
+                state.pending_cr = True
             else:
                 state.lines[state.cursor_row] = ""
         elif part.startswith('\x1b['):
@@ -1153,7 +1160,6 @@ async def _process_chunk(text: str, filename: str) -> None:
             state.in_block = False
             state.emitted_up_to = state.cursor_row
             state.line_active = False
-            state.chrono_tag = 0
             _file_block_sizes.pop(filename, None)
 
         # Trim old lines in block mode to prevent unbounded growth.
@@ -1195,47 +1201,36 @@ async def _process_chunk(text: str, filename: str) -> None:
 
 
 async def _emit_line(filename: str, text: str, msg_type: str) -> None:
-    """Store a line in buffers and broadcast to clients."""
-    global _chrono_last_file
-    state = _file_term_state.get(filename)
+    """Store a line in buffers and broadcast to clients.
 
-    # If a different file wrote last, this file no longer owns tail entries
-    if state and _chrono_last_file != filename:
-        state.chrono_tag = 0
-
+    "overwrite" messages update the per-file buffer and are broadcast live
+    to connected clients, but are NOT stored in the chronological buffer.
+    This prevents hundreds of intermediate progress-bar states from stacking
+    up when multiple log files are active and interleaving writes.
+    When the line completes it is emitted as "append" and stored normally.
+    """
     if msg_type == "overwrite":
-        # Replace last entry in file-specific buffer (avoid filling buffer with
-        # hundreds of intermediate progress-bar states)
+        # Replace last entry in file-specific buffer
         buf = file_specific_buffers.get(filename)
         if buf:
             buf[-1] = text
         else:
             file_specific_buffers.setdefault(filename, deque(maxlen=MAX_LINES)).append(text)
-        # Replace the last chronological entry only if this file owns it
-        if state and state.chrono_tag > 0 and chronological_log_buffer:
-            chronological_log_buffer[-1] = text
-        else:
-            chronological_log_buffer.append(text)
-            if state:
-                state.chrono_tag = 1
+        # Skip chronological buffer — live clients get the broadcast,
+        # new clients will see the final state when it becomes an "append".
     else:
         file_specific_buffers[filename].append(text)
         chronological_log_buffer.append(text)
-        if state:
-            state.chrono_tag = 1
 
-    _chrono_last_file = filename
     await broadcast_message(text, msg_type, filename)
 
 
 async def _emit_block(filename: str, lines: list[str]) -> None:
     """Store and broadcast a multi-line progress block."""
-    global _chrono_last_file
     html_lines = [ansi_to_html(line) for line in lines]
     if not any(lines):
         return
 
-    state = _file_term_state.get(filename)
     new_size = len(lines)
 
     # Replace previous block entries in file-specific buffer
@@ -1250,22 +1245,9 @@ async def _emit_block(filename: str, lines: list[str]) -> None:
     for line in lines:
         buf.append(line or "")
 
-    # If a different file wrote last, this file no longer owns tail entries
-    if state and _chrono_last_file != filename:
-        state.chrono_tag = 0
+    # Skip chronological buffer for block updates — live clients get the
+    # broadcast, new clients see the final state when block mode ends.
 
-    # Replace only the entries this file owns at the tail of the
-    # chronological buffer (tracked via chrono_tag) to avoid
-    # destroying interleaved entries from other files.
-    chrono_owned = state.chrono_tag if state else 0
-    for _ in range(min(chrono_owned, len(chronological_log_buffer))):
-        chronological_log_buffer.pop()
-    for line in lines:
-        chronological_log_buffer.append(line or "")
-    if state:
-        state.chrono_tag = new_size
-
-    _chrono_last_file = filename
     _file_block_sizes[filename] = new_size
 
     json_msg = json.dumps({
