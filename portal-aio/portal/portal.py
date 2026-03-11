@@ -479,7 +479,7 @@ def get_cpu_quota_cores() -> float:
         with open('/sys/fs/cgroup/cpu.max', 'r') as f:
             parts = f.read().strip().split()
             if parts[0] != 'max':
-                return max(1.0, int(parts[0]) / int(parts[1]))
+                return max(0.01, int(parts[0]) / int(parts[1]))
     except Exception:
         pass
     try:
@@ -494,7 +494,7 @@ def get_cpu_quota_cores() -> float:
                     break  # no limit
                 with open(period_path, 'r') as f:
                     period = int(f.read().strip())
-                return max(1.0, quota / period)
+                return max(0.01, quota / period)
     except Exception:
         pass
     return float(os.cpu_count() or 1)

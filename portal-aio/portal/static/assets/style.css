@@ -800,7 +800,6 @@ button {
 .tools-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    grid-template-rows: repeat(auto-fill, auto auto 1fr);
     gap: 1.5rem;
     padding: 1rem 0;
 }
@@ -812,9 +811,14 @@ button {
     box-shadow: var(--card-shadow);
     display: grid;
     grid-row: span 3;
-    grid-template-rows: subgrid;
+    grid-template-rows: auto auto 1fr;
     gap: 1rem;
     transition: all 0.3s ease;
+}
+@supports (grid-template-rows: subgrid) {
+    .tool-card {
+        grid-template-rows: subgrid;
+    }
 }
 
 

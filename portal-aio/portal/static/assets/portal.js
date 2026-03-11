@@ -1268,11 +1268,11 @@ window.InstancePortal = (function() {
                     // Disable all buttons when process is in a transitional state
                     const transitional = pending || ['STARTING', 'STOPPING', 'BACKOFF'].includes(proc.state);
                     let actions = '';
+                    const safeName = escapeAttr(proc.name);
                     if (transitional) {
                         const label = pending ? (pendingLabels[pending] || pending.toUpperCase()) : proc.state;
                         actions = `<button class="service-btn" disabled>${this._spinnerSvg} ${label}</button>`;
                     } else if (isRunning) {
-                        const safeName = escapeAttr(proc.name);
                     const stopBtn = proc.unstoppable ? '' : `
                             <button class="service-btn danger" onclick="window.app.services.stop('${safeName}')" title="Stop">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
@@ -2218,7 +2218,7 @@ window.InstancePortal = (function() {
                     break;
                 case 'services-page':
                     pageTitle.textContent = 'Supervisor';
-                    services.refresh();
+                    services.refresh().catch(e => console.error('services refresh failed:', e));
                     break;
                 case 'logs-page':
                     pageTitle.textContent = 'Instance Logs';

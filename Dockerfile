@@ -42,8 +42,9 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
-# Enable expect/unbuffer to find its Tcl libraries
-ENV TCLLIBPATH=/usr/lib/tcltk/x86_64-linux-gnu
+# Enable expect/unbuffer to find its Tcl libraries (multiarch-safe)
+RUN ln -sf /usr/lib/tcltk/$(dpkg-architecture -qDEB_HOST_MULTIARCH) /usr/lib/tcltk/default
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 # Expose all toolklit features
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 

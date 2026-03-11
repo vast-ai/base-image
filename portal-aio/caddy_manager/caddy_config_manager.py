@@ -106,7 +106,7 @@ def generate_caddyfile(config):
     # Escape passwords for use in CEL expression strings (backtick-delimited).
     # Backslashes and double-quotes must be escaped for CEL string literals.
     def cel_escape(s):
-        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
+        return s.replace('\\', '\\\\').replace('`', '\\`').replace('"', '\\"').replace('\r', '').replace('\n', '')
 
     cel_web_password = cel_escape(web_password)
     cel_open_button_token = cel_escape(open_button_token)
