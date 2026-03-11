@@ -33,13 +33,13 @@ find "${STCONFDIR}" "${STDATADIR}" -name "LOCK" -delete 2>/dev/null
 
 # Only generate config/certs on first run
 if [[ ! -f "${STCONFDIR}/config.xml" ]]; then
-    /opt/syncthing/syncthing generate
+    /opt/syncthing/syncthing generate --config="${STCONFDIR}" --data="${STDATADIR}"
     # Apply initial configuration
     sed -i 's|<listenAddress>default</listenAddress>|<listenAddress>dynamic+https://relays.syncthing.net/endpoint</listenAddress>|' "${STCONFDIR}/config.xml"
     sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' "${STCONFDIR}/config.xml"
 fi
 
-pty /opt/syncthing/syncthing serve \
+/opt/syncthing/syncthing serve \
     --no-restart \
     --no-browser \
     --gui-address="${GUI_ADDR}" \

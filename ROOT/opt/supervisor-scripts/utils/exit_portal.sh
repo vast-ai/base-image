@@ -14,10 +14,12 @@ done
 # Check for $search_term in the portal config
 if ! grep -qiE "^[^#].*${search_term}" /etc/portal.yaml; then
     echo "Skipping ${PROC_NAME} startup (not in /etc/portal.yaml)"
-    mkdir -p /tmp/supervisor-skip
-    echo "${search_term}" > "/tmp/supervisor-skip/${PROC_NAME}"
+    if [[ -n "${PROC_NAME}" ]]; then
+        mkdir -p /tmp/supervisor-skip
+        echo "${search_term}" > "/tmp/supervisor-skip/${PROC_NAME}"
+    fi
     sleep 6
     exit 0
 fi
 # Clear skip marker if process is configured
-rm -f "/tmp/supervisor-skip/${PROC_NAME}"
+[[ -n "${PROC_NAME}" ]] && rm -f "/tmp/supervisor-skip/${PROC_NAME}"
