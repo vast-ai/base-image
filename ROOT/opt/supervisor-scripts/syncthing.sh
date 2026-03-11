@@ -39,7 +39,7 @@ if [[ ! -f "${STCONFDIR}/config.xml" ]]; then
     sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' "${STCONFDIR}/config.xml"
 fi
 
-/opt/syncthing/syncthing serve \
+pty /opt/syncthing/syncthing serve \
     --no-restart \
     --no-browser \
     --gui-address="${GUI_ADDR}" \
