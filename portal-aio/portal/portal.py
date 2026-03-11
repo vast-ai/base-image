@@ -139,7 +139,8 @@ def load_config() -> dict:
         time.sleep(1)
 
     with open(yaml_path, 'r') as file:
-        config_applications = yaml.safe_load(file)['applications']
+        data = yaml.safe_load(file) or {}
+        config_applications = data.get('applications', {})
         return hydrate_applications(config_applications)
 
 def hydrate_applications(applications: dict) -> dict:
@@ -1053,7 +1054,10 @@ async def _process_chunk(text: str, filename: str) -> None:
             param_str = body[:-1]
             if letter == 'A':
                 # Cursor up
-                n = int(param_str) if param_str else 1
+                try:
+                    n = int(param_str) if param_str else 1
+                except ValueError:
+                    n = 1
                 state.cursor_row = max(0, state.cursor_row - n)
                 state.in_block = True
                 had_cursor_up = True
@@ -1321,7 +1325,7 @@ async def download_logs(filename: str = None) -> StreamingResponse:
         return StreamingResponse(
             zip_buffer,
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+            headers={"Content-Disposition": f'attachment; filename="{os.path.basename(zip_filename).replace(chr(34), "_")}"'}
         )
     
     except Exception as e:

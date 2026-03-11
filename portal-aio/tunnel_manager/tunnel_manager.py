@@ -18,11 +18,6 @@ public_ipaddr = None
 app = FastAPI()
 
 
-@app.on_event("startup")
-async def _suppress_access_logs():
-    """Suppress uvicorn access logs after uvicorn has configured its loggers."""
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
 CLOUDFLARED_BIN = "/opt/portal-aio/tunnel_manager/cloudflared"
 CF_TUNNEL_TOKEN = os.environ.get('CF_TUNNEL_TOKEN')
 cloudflared_account_process: Optional[asyncio.subprocess.Process] = None
@@ -38,7 +33,8 @@ def load_config():
     yaml_path = '/etc/portal.yaml'
     if os.path.exists(yaml_path):
         with open(yaml_path, 'r') as file:
-            config_applications = yaml.safe_load(file)['applications']
+            data = yaml.safe_load(file) or {}
+            config_applications = data.get('applications', {})
             return hydrate_applications(config_applications)
         
 def hydrate_applications(applications):
@@ -448,6 +444,8 @@ async def get_named_tunnel(port: int):
 
 @app.on_event("startup")
 async def startup_event():
+    # Suppress uvicorn access logs after uvicorn has configured its loggers.
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     try:
         # Monitor quick tunnels in case user kills them
         monitor_task = asyncio.create_task(monitor_processes())

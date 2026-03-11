@@ -35,7 +35,7 @@ find "${STCONFDIR}" "${STDATADIR}" -name "LOCK" -delete 2>/dev/null
 if [[ ! -f "${STCONFDIR}/config.xml" ]]; then
     /opt/syncthing/syncthing generate
     # Apply initial configuration
-    sed -i '/^\s*<listenAddress>/d' "${STCONFDIR}/config.xml"
+    sed -i 's|<listenAddress>default</listenAddress>|<listenAddress>dynamic+https://relays.syncthing.net/endpoint</listenAddress>|' "${STCONFDIR}/config.xml"
     sed -i 's/<natEnabled>true<\/natEnabled>/<natEnabled>false<\/natEnabled>/' "${STCONFDIR}/config.xml"
 fi
 
@@ -56,7 +56,10 @@ fi
 # Apply runtime configuration (idempotent set operations)
 run_with_retry $CLI config gui insecure-admin-access set true
 run_with_retry $CLI config gui insecure-skip-host-check set true
-# Use 'set' instead of 'add' to avoid duplicates on restart
-run_with_retry $CLI config options raw-listen-addresses set "tcp://0.0.0.0:${VAST_TCP_PORT_72299}" "dynamic+https://relays.syncthing.net/endpoint"
+# Add TCP listener for the dynamic port (relay address is set in config.xml)
+LISTEN_ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"
+if ! run_with_retry $CLI config options raw-listen-addresses list | grep -qF "$LISTEN_ADDR"; then
+    run_with_retry $CLI config options raw-listen-addresses add "$LISTEN_ADDR"
+fi
 
 wait $syncthing_pid

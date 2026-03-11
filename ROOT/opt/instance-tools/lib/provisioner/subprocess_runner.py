@@ -109,19 +109,27 @@ def run_cmd(
     except OSError:
         if master_fd is not None:
             os.close(master_fd)
+        if slave_fd is not None:
+            os.close(slave_fd)
         master_fd = slave_fd = None
 
     use_pty = master_fd is not None
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=slave_fd if use_pty else subprocess.PIPE,
-        stderr=slave_fd if use_pty else subprocess.STDOUT,
-        text=not use_pty,
-        cwd=cwd,
-        shell=shell,
-        env=child_env,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=slave_fd if use_pty else subprocess.PIPE,
+            stderr=slave_fd if use_pty else subprocess.STDOUT,
+            text=not use_pty,
+            cwd=cwd,
+            shell=shell,
+            env=child_env,
+        )
+    except Exception:
+        if use_pty:
+            os.close(master_fd)
+            os.close(slave_fd)
+        raise
 
     if use_pty:
         os.close(slave_fd)

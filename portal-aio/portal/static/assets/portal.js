@@ -169,7 +169,7 @@ window.InstancePortal = (function() {
                 // UI rendering methods
                 app.renderUI = function() {
                     // Find all elements for this app
-                    const elements = document.querySelectorAll(`[data-app-id="${appName}"]`);
+                    const elements = document.querySelectorAll(`[data-app-id="${CSS.escape(appName)}"]`);
                     
                     elements.forEach(el => {
                         // For advanced details, update the content
@@ -192,7 +192,7 @@ window.InstancePortal = (function() {
                                 <div>Port: ${this.external_port}${this.mapped_port ? " → " + this.mapped_port : ""}</div>
                                 <div class="ip-info">IP: <a href="${this.direct_url_full}" target="_blank">${this.direct_url.split('//')[1].split(':')[0]}</a></div>
                             </div>
-                            <button class="copy-btn" onclick="window.app.url.copy('${this.direct_url_full}')">
+                            <button class="copy-btn" onclick="window.app.url.copy('${escapeAttr(this.direct_url_full)}')">
                                 Copy URL
                             </button>
                         </div>
@@ -206,7 +206,7 @@ window.InstancePortal = (function() {
                                     <div>Port: ${this.external_port} → Named Tunnel</div>
                                     <div class="ip-info">Link: <a href="${this.named_tunnel_url}" target="_blank">Secure Tunnel Link</a></div>
                                 </div>
-                                <button class="copy-btn" onclick="window.app.url.copy('${this.named_tunnel_url}')">
+                                <button class="copy-btn" onclick="window.app.url.copy('${escapeAttr(this.named_tunnel_url)}')">
                                     Copy URL
                                 </button>
                             </div>
@@ -220,7 +220,7 @@ window.InstancePortal = (function() {
                                     <div>Port: ${this.external_port} → Quick Tunnel</div>
                                     <div class="ip-info">Link: <a href="${this.quick_tunnel_url}" target="_blank">Secure Tunnel Link</a></div>
                                 </div>
-                                <button class="copy-btn" onclick="window.app.url.copy('${this.quick_tunnel_url}')">
+                                <button class="copy-btn" onclick="window.app.url.copy('${escapeAttr(this.quick_tunnel_url)}')">
                                     Copy URL
                                 </button>
                             </div>
