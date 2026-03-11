@@ -27,13 +27,16 @@ import GPUtil
 import psutil
 
 # ANSI color maps
+# Tuned for the dark log viewer background (--logs-bg ~#0b0f19).
+# Standard colors (30-37) are lifted from pure CGA values so they remain
+# legible on dark surfaces; bright colors (90-97) are softened to avoid glare.
 _ANSI_FG_COLORS = {
-    30: '#000', 31: '#c00', 32: '#0a0', 33: '#c50', 34: '#00c', 35: '#c0c', 36: '#0cc', 37: '#ccc',
-    90: '#555', 91: '#f55', 92: '#5f5', 93: '#ff5', 94: '#55f', 95: '#f5f', 96: '#5ff', 97: '#fff',
+    30: '#4b5563', 31: '#f87171', 32: '#4ade80', 33: '#fbbf24', 34: '#60a5fa', 35: '#c084fc', 36: '#22d3ee', 37: '#d1d5db',
+    90: '#9ca3af', 91: '#fca5a5', 92: '#86efac', 93: '#fde68a', 94: '#93bbfd', 95: '#d8b4fe', 96: '#67e8f9', 97: '#f3f4f6',
 }
 _ANSI_BG_COLORS = {
-    40: '#000', 41: '#c00', 42: '#0a0', 43: '#c50', 44: '#00c', 45: '#c0c', 46: '#0cc', 47: '#ccc',
-    100: '#555', 101: '#f55', 102: '#5f5', 103: '#ff5', 104: '#55f', 105: '#f5f', 106: '#5ff', 107: '#fff',
+    40: '#1f2937', 41: '#991b1b', 42: '#166534', 43: '#92400e', 44: '#1e3a5f', 45: '#6b21a8', 46: '#155e75', 47: '#4b5563',
+    100: '#374151', 101: '#f87171', 102: '#4ade80', 103: '#fbbf24', 104: '#60a5fa', 105: '#c084fc', 106: '#22d3ee', 107: '#e5e7eb',
 }
 
 # Regex to strip C0/C1 control characters except tab (\x09).
@@ -85,9 +88,13 @@ def ansi_to_html(text: str) -> str:
     return ''.join(result)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.INFO,
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("log_monitor")
+
+# Suppress noisy request logs (httpx at module load, uvicorn.access in lifespan
+# after uvicorn has configured its loggers)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 tunnel_manager=os.environ.get("TUNNEL_MANAGER", "http://localhost:11112")
 
@@ -95,6 +102,8 @@ tunnel_manager=os.environ.get("TUNNEL_MANAGER", "http://localhost:11112")
 @asynccontextmanager
 async def lifespan(app):
     # Startup
+    # Suppress uvicorn access logs (must be done here, after uvicorn configures its loggers)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     # Prime psutil CPU counter so first real poll returns a meaningful value
     psutil.cpu_percent(interval=None)
     app.state.monitor_task = asyncio.create_task(
@@ -1015,7 +1024,7 @@ async def _process_chunk(text: str, filename: str) -> None:
     parts = _CHUNK_TOKEN_RE.split(text)
 
     had_cursor_up = False
-    for part in parts:
+    for i, part in enumerate(parts):
         if not part:
             continue
 
@@ -1025,8 +1034,18 @@ async def _process_chunk(text: str, filename: str) -> None:
             if state.cursor_row >= len(state.lines):
                 state.lines.append("")
         elif part == '\r':
-            # Carriage return — clear current line for overwrite
-            state.lines[state.cursor_row] = ""
+            # Peek ahead: if next non-empty part is \n or \r\n, this \r
+            # is just part of a line ending (PTY onlcr artifact), not an
+            # overwrite.  Only clear the line for lone \r (progress bars).
+            next_part = None
+            for j in range(i + 1, len(parts)):
+                if parts[j]:
+                    next_part = parts[j]
+                    break
+            if next_part in ('\n', '\r\n'):
+                pass  # skip — the following \n/\r\n will commit the line
+            else:
+                state.lines[state.cursor_row] = ""
         elif part.startswith('\x1b['):
             # CSI sequence
             body = part[2:]
@@ -1038,6 +1057,9 @@ async def _process_chunk(text: str, filename: str) -> None:
                 state.cursor_row = max(0, state.cursor_row - n)
                 state.in_block = True
                 had_cursor_up = True
+            elif letter == 'm':
+                # SGR (color/style) — preserve in line content
+                state.lines[state.cursor_row] += part
             # K (erase line), other CSI: ignore
         else:
             # Plain text — append to current line

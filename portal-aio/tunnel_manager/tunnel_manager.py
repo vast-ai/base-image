@@ -11,10 +11,17 @@ import aiohttp
 from urllib.parse import urlparse
 from cachetools import TTLCache
 import ipaddress
+import logging
 
 cloudflare_metrics = os.environ.get("CLOUDFLARE_METRICS", "localhost:11113")
 public_ipaddr = None
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def _suppress_access_logs():
+    """Suppress uvicorn access logs after uvicorn has configured its loggers."""
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 CLOUDFLARED_BIN = "/opt/portal-aio/tunnel_manager/cloudflared"
 CF_TUNNEL_TOKEN = os.environ.get('CF_TUNNEL_TOKEN')

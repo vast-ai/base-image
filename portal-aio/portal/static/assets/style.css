@@ -47,6 +47,7 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     background-color: var(--bg-primary);
+    color: var(--text-primary);
     min-height: 100vh;
     display: flex;
 }
@@ -1135,22 +1136,44 @@ button {
 
 .status-badge.running {
     background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
+    color: #059669;
 }
 
 .status-badge.stopped, .status-badge.exited {
     background: rgba(107, 114, 128, 0.15);
-    color: #9ca3af;
+    color: #6b7280;
 }
 
 .status-badge.fatal, .status-badge.backoff {
     background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    color: #dc2626;
 }
 
 .status-badge.starting, .status-badge.stopping {
     background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
+    color: #d97706;
+}
+
+@media (prefers-color-scheme: dark) {
+    .status-badge.running {
+        background: rgba(16, 185, 129, 0.12);
+        color: #6ee7b7;
+    }
+
+    .status-badge.stopped, .status-badge.exited {
+        background: rgba(107, 114, 128, 0.12);
+        color: #9ca3af;
+    }
+
+    .status-badge.fatal, .status-badge.backoff {
+        background: rgba(239, 68, 68, 0.12);
+        color: #fca5a5;
+    }
+
+    .status-badge.starting, .status-badge.stopping {
+        background: rgba(245, 158, 11, 0.12);
+        color: #fcd34d;
+    }
 }
 
 .service-info {
