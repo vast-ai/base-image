@@ -1142,10 +1142,11 @@ window.InstancePortal = (function() {
         // Match supervisor process names to portal app names
         // e.g. "jupyter" matches "Jupyter", "instance_portal" matches "Instance Portal"
         _matchesApp: function(procName, appName) {
-            const normalized = procName.replace(/_/g, ' ').toLowerCase();
-            return appName.toLowerCase() === normalized ||
-                   appName.toLowerCase().includes(normalized) ||
-                   normalized.includes(appName.toLowerCase());
+            const normalized = procName.replace(/[_-]/g, ' ').toLowerCase();
+            const appNorm = appName.toLowerCase();
+            return appNorm === normalized ||
+                   appNorm.includes(normalized) ||
+                   normalized.includes(appNorm);
         },
 
         getAppState: function(appName) {
