@@ -1,27 +1,62 @@
 #!/usr/bin/env python3
-"""Filtering tee: raw output to log file, cleaned output to stdout.
+"""Filtering tee: splits stdin into three output streams.
 
-Reads stdin and writes two streams:
-  - Log file (argument): raw bytes preserved (ANSI, \r, cursor-up) for the portal
-  - Stdout: ANSI/CSI sequences stripped, lone \r converted to \n
+  - Portal log file (argument): cursor/erase sequences stripped, colors and
+    \\r preserved (portal viewer gets colored text with working progress bars)
+  - Clean log file (auto-derived): all ANSI stripped, \\r converted to \\n
+    (human-readable plain text at /var/log/<name>.log)
+  - Stdout: same as clean log (for Vast native log viewer)
+
+The clean log path is derived by removing '/portal' from the directory.
+E.g. /var/log/portal/vllm.log -> /var/log/vllm.log
 
 Usage: log-tee /var/log/portal/proc.log
 """
 
+import codecs
 import os
 import re
 import sys
 
-# CSI sequences: ESC[ ... final byte.  Also bare ESC sequences.
-_CSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^[]?")
+# All CSI sequences + bare ESC (for stdout/clean log — strip everything)
+_ALL_CSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^\[[]")
+
+# Cursor movement / erase sequences only (for portal log — keep colors)
+# Matches CSI sequences ending with anything EXCEPT 'm' (SGR/color)
+_CURSOR_RE = re.compile(r"\x1b\[[0-9;]*[A-LN-Za-ln-z]|\x1b[^\[[]")
 
 
-def _clean(text: str) -> str:
-    """Strip ANSI escapes, collapse \\r\\n → \\n, convert lone \\r → \\n."""
-    text = _CSI_RE.sub("", text)
+def _strip_cursor(text: str) -> str:
+    """Strip cursor movement/erase sequences, keep color (SGR) codes."""
+    return _CURSOR_RE.sub("", text)
+
+
+def _clean_for_stdout(text: str) -> str:
+    """Strip all ANSI escapes, collapse \\r\\n -> \\n, convert lone \\r -> \\n."""
+    text = _ALL_CSI_RE.sub("", text)
     text = text.replace("\r\n", "\n")
     text = text.replace("\r", "\n")
     return text
+
+
+def _derive_clean_path(portal_path: str) -> str | None:
+    """Derive a clean log path from the portal log path.
+
+    /var/log/portal/vllm.log -> /var/log/vllm.log
+    Returns None if the path doesn't contain '/portal/'.
+    """
+    d, basename = os.path.split(portal_path)
+    if os.path.basename(d) == "portal":
+        return os.path.join(os.path.dirname(d), basename)
+    return None
+
+
+def _write(fd: int, data: bytes) -> None:
+    """Write all bytes to fd, ignoring errors."""
+    try:
+        os.write(fd, data)
+    except OSError:
+        pass
 
 
 def main() -> None:
@@ -29,17 +64,23 @@ def main() -> None:
         sys.stderr.write("Usage: log-tee <logfile>\n")
         sys.exit(1)
 
-    logfile = sys.argv[1]
-    log_fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    portal_path = sys.argv[1]
+    portal_fd = os.open(portal_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     stdout_fd = sys.stdout.fileno()
     stdin_fd = sys.stdin.fileno()
 
+    # Open clean log file if path is derivable
+    clean_path = _derive_clean_path(portal_path)
+    clean_fd = None
+    if clean_path:
+        os.makedirs(os.path.dirname(clean_path), exist_ok=True)
+        clean_fd = os.open(clean_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+
     # Incremental UTF-8 decoder for multi-byte chars split across reads
-    import codecs
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     # Buffer a trailing \r across reads so \r\n split across chunks
-    # doesn't produce a spurious extra newline.
+    # doesn't produce a spurious extra newline on stdout/clean log.
     pending_cr = False
 
     while True:
@@ -50,41 +91,48 @@ def main() -> None:
         if not data:
             break
 
-        # Raw bytes to log file (portal needs them)
-        try:
-            os.write(log_fd, data)
-        except OSError:
-            pass
-
-        # Decode, clean, write to stdout
         text = decoder.decode(data)
+
+        # Portal log: strip cursor/erase, keep colors + \r
+        portal_text = _strip_cursor(text)
+        if portal_text:
+            _write(portal_fd, portal_text.encode("utf-8"))
+
+        # Stdout + clean log: strip all ANSI, convert \r to \n
+        stdout_text = text
         if pending_cr:
-            text = "\r" + text
+            stdout_text = "\r" + stdout_text
             pending_cr = False
-        if text.endswith("\r"):
-            text = text[:-1]
+        if stdout_text.endswith("\r"):
+            stdout_text = stdout_text[:-1]
             pending_cr = True
-        if text:
-            cleaned = _clean(text)
+        if stdout_text:
+            cleaned = _clean_for_stdout(stdout_text)
             if cleaned:
-                try:
-                    os.write(stdout_fd, cleaned.encode("utf-8"))
-                except OSError:
-                    pass
+                encoded = cleaned.encode("utf-8")
+                _write(stdout_fd, encoded)
+                if clean_fd is not None:
+                    _write(clean_fd, encoded)
 
     # Flush remaining bytes from decoder and any pending \r
     remaining = decoder.decode(b"", final=True)
+    if remaining:
+        portal_text = _strip_cursor(remaining)
+        if portal_text:
+            _write(portal_fd, portal_text.encode("utf-8"))
     if pending_cr:
         remaining = "\r" + remaining
     if remaining:
-        cleaned = _clean(remaining)
+        cleaned = _clean_for_stdout(remaining)
         if cleaned:
-            try:
-                os.write(stdout_fd, cleaned.encode("utf-8"))
-            except OSError:
-                pass
+            encoded = cleaned.encode("utf-8")
+            _write(stdout_fd, encoded)
+            if clean_fd is not None:
+                _write(clean_fd, encoded)
 
-    os.close(log_fd)
+    os.close(portal_fd)
+    if clean_fd is not None:
+        os.close(clean_fd)
 
 
 if __name__ == "__main__":
