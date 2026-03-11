@@ -159,6 +159,77 @@ def hydrate_applications(applications: dict) -> dict:
 def strip_port(host: str) -> str:
     return host.split(':')[0]
 
+_PORTAL_LINKS_YAML = "/etc/portal-links.yaml"
+
+def _parse_yaml_link(item: dict) -> dict | None:
+    """Parse a single link entry from the YAML file."""
+    if not isinstance(item, dict) or not item.get("label") or not item.get("url"):
+        return None
+    link = {
+        "label": str(item["label"]),
+        "url": str(item["url"]),
+        "description": str(item.get("description", "")),
+        "icon": str(item.get("icon", "link")),
+        "button_text": str(item.get("button_text", "Open")),
+        "position": str(item.get("position", "after")),
+        "links": [],
+    }
+    for extra in item.get("links", []) or []:
+        if isinstance(extra, dict) and extra.get("label") and extra.get("url"):
+            link["links"].append({
+                "label": str(extra["label"]),
+                "url": str(extra["url"]),
+            })
+    return link
+
+def get_extra_links() -> dict:
+    """Build before/after extra-links from the YAML file and env var overlay.
+
+    1. ``/etc/portal-links.yaml`` — baked into the image at build time.
+       Derivative images drop their own version via ``COPY ./ROOT /``;
+       the portal update script never touches this path so it is safe.
+       Supports ``icon``, ``button_text``, ``links`` (secondary buttons),
+       and ``position`` (``before`` or ``after`` the built-in cards).
+    2. ``PORTAL_LINKS`` env var — ``Label|URL|Description,...`` entries
+       always appended after built-in cards (description is optional).
+
+    Returns ``{"before": [...], "after": [...]}``.
+    """
+    before: list[dict] = []
+    after: list[dict] = []
+
+    # --- YAML defaults ---
+    if os.path.isfile(_PORTAL_LINKS_YAML):
+        try:
+            with open(_PORTAL_LINKS_YAML, "r") as f:
+                data = yaml.safe_load(f)
+            for item in (data or []):
+                link = _parse_yaml_link(item)
+                if link:
+                    if link["position"] == "before":
+                        before.append(link)
+                    else:
+                        after.append(link)
+        except Exception as e:
+            print(f"WARNING: Failed to parse {_PORTAL_LINKS_YAML}: {e}")
+
+    # --- Environment overlay (always appended after) ---
+    raw = os.environ.get("PORTAL_LINKS", "").strip()
+    if raw:
+        for entry in raw.split(","):
+            parts = entry.strip().split("|", 2)
+            if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+                after.append({
+                    "label": parts[0].strip(),
+                    "url": parts[1].strip(),
+                    "description": parts[2].strip() if len(parts) > 2 else "",
+                    "icon": "link",
+                    "button_text": "Open",
+                    "links": [],
+                })
+
+    return {"before": before, "after": after}
+
 def get_instance_properties() -> dict:
     return {
         "id": os.environ.get("CONTAINER_ID",""),
@@ -529,6 +600,7 @@ async def read_root(request: Request, token: Optional[str] = None) -> HTMLRespon
     return templates.TemplateResponse("index.html", {
         "request": request,
         "instance": get_instance_properties(),
+        "extra_links": get_extra_links(),  # {"before": [...], "after": [...]}
         })
 
 @app.get("/health")

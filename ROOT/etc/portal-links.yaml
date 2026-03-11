@@ -1,0 +1,30 @@
+# Extra links for the portal's Tools & Help page.
+# Derivative images can replace this file via COPY ./ROOT /
+# without risk of it being overwritten by portal updates.
+#
+# Format:
+#   - label: Link Title                    # required
+#     url: https://example.com             # required
+#     description: Optional text           # optional
+#     icon: cube                           # optional (default: link)
+#     button_text: Launch                  # optional (default: Open)
+#     position: before                     # optional: before | after (default: after)
+#     links:                               # optional secondary buttons
+#       - label: Docs
+#         url: https://docs.example.com
+#
+# Available icons:
+#   link (default), book, code, terminal, cube, globe, tool, tag, grid,
+#   gpu, rocket, image, download, star, zap, database
+#
+# Additional links can also be added at runtime via the PORTAL_LINKS
+# environment variable:  Label|URL|Description,Label|URL|Description,...
+# (env var entries are always appended after the built-in cards)
+
+# --- Base image ships with no extra links by default ---
+# Uncomment or add entries as needed:
+# - label: My Custom Tool
+#   url: https://example.com
+#   description: A helpful tool for your workflow
+#   icon: rocket
+#   position: before
