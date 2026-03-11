@@ -1144,6 +1144,7 @@ async def _process_chunk(text: str, filename: str) -> None:
                     n = int(param_str) if param_str else 1
                 except ValueError:
                     n = 1
+                n = min(n, 500)
                 state.cursor_row = max(0, state.cursor_row - n)
                 state.in_block = True
                 had_cursor_up = True
@@ -1153,6 +1154,7 @@ async def _process_chunk(text: str, filename: str) -> None:
                     n = int(param_str) if param_str else 1
                 except ValueError:
                     n = 1
+                n = min(n, 500)
                 state.cursor_row += n
                 while state.cursor_row >= len(state.lines):
                     state.lines.append("")
@@ -1253,7 +1255,7 @@ async def _emit_line(filename: str, text: str, msg_type: str) -> None:
         # Skip chronological buffer — live clients get the broadcast,
         # new clients will see the final state when it becomes an "append".
     else:
-        file_specific_buffers[filename].append(text)
+        file_specific_buffers.setdefault(filename, deque(maxlen=MAX_LINES)).append(text)
         chronological_log_buffer.append(text)
 
     await broadcast_message(text, msg_type, filename)

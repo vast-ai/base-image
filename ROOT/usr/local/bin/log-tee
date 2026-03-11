@@ -19,11 +19,11 @@ import re
 import sys
 
 # All CSI sequences + bare ESC (for stdout/clean log — strip everything)
-_ALL_CSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^\[[]")
+_ALL_CSI_RE = re.compile(r"\x1b\[\??[0-9;]*[A-Za-z]|\x1b[^\[[]")
 
 # Cursor movement / erase sequences only (for portal log — keep colors)
 # Matches CSI sequences ending with anything EXCEPT 'm' (SGR/color)
-_CURSOR_RE = re.compile(r"\x1b\[[0-9;]*[A-LN-Za-ln-z]|\x1b[^\[[]")
+_CURSOR_RE = re.compile(r"\x1b\[\??[0-9;]*[A-LN-Za-ln-z]|\x1b[^\[[]")
 
 
 def _strip_cursor(text: str) -> str:
