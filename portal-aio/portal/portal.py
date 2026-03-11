@@ -45,10 +45,11 @@ _CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x0d\x0e-\x1a\x7f]')
 
 # Strip cursor movement, erase, and other non-SGR CSI sequences.
 # These are interpreted by _process_chunk(); they must not appear in HTML.
-_CSI_NON_SGR_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-ln-z]')
+_CSI_NON_SGR_RE = re.compile(r'\x1b\[\??[0-9;]*[A-Za-ln-z]')
 
-# Tokenizer for _process_chunk: splits on ANSI CSI sequences, \r\n, \r, \n
-_CHUNK_TOKEN_RE = re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\r\n|\r|\n)')
+# Tokenizer for _process_chunk: splits on ANSI CSI sequences (including
+# DEC private-mode sequences like \x1b[?25l), \r\n, \r, \n
+_CHUNK_TOKEN_RE = re.compile(r'(\x1b\[\??[0-9;]*[A-Za-z]|\r\n|\r|\n)')
 
 def ansi_to_html(text: str) -> str:
     """Convert ANSI escape codes to HTML spans. HTML-escapes text content.
@@ -871,6 +872,9 @@ async def set_external_ip(forwarded_host: Optional[str]) -> None:
 # Constants
 MAX_LINES = 750  # Maximum lines to keep in buffer
 POLL_INTERVAL = 0.2  # File polling interval in seconds
+LOG_MAX_SIZE = 5 * 1024 * 1024   # Rotate log files larger than 5 MB
+LOG_KEEP_SIZE = 1 * 1024 * 1024  # Keep the last 1 MB after rotation
+LOG_ROTATE_INTERVAL = 30         # Check sizes every N seconds
 
 # State for WebSocket and monitoring
 websocket_clients = set()  # Set of connected WebSocket clients
@@ -1131,8 +1135,11 @@ async def _process_chunk(text: str, filename: str) -> None:
             body = part[2:]
             letter = body[-1]
             param_str = body[:-1]
-            if letter == 'A':
-                # Cursor up
+            # Strip DEC private-mode prefix (e.g. \x1b[?25l)
+            if param_str.startswith('?'):
+                pass  # ignore show/hide cursor, etc.
+            elif letter == 'A' or letter == 'F':
+                # Cursor up (A) / Cursor previous line (F)
                 try:
                     n = int(param_str) if param_str else 1
                 except ValueError:
@@ -1140,10 +1147,37 @@ async def _process_chunk(text: str, filename: str) -> None:
                 state.cursor_row = max(0, state.cursor_row - n)
                 state.in_block = True
                 had_cursor_up = True
+            elif letter == 'B' or letter == 'E':
+                # Cursor down (B) / Cursor next line (E)
+                try:
+                    n = int(param_str) if param_str else 1
+                except ValueError:
+                    n = 1
+                state.cursor_row += n
+                while state.cursor_row >= len(state.lines):
+                    state.lines.append("")
+            elif letter == 'G':
+                # Cursor horizontal absolute — move to column N.
+                # We don't track columns; treat as \r (column 1).
+                state.lines[state.cursor_row] = ""
+            elif letter == 'K':
+                # Erase in line: 0/default = cursor→end, 1 = start→cursor,
+                # 2 = entire line.  We don't track column position, so all
+                # variants clear the whole line.
+                state.lines[state.cursor_row] = ""
+            elif letter == 'J':
+                # Erase in display — clear visible lines below cursor
+                try:
+                    p = int(param_str) if param_str else 0
+                except ValueError:
+                    p = 0
+                if p in (0, 2):
+                    for r in range(state.cursor_row, len(state.lines)):
+                        state.lines[r] = ""
             elif letter == 'm':
                 # SGR (color/style) — preserve in line content
                 state.lines[state.cursor_row] += part
-            # K (erase line), other CSI: ignore
+            # Other CSI (cursor show/hide, etc.): ignore
         else:
             # Plain text — append to current line
             state.lines[state.cursor_row] += part
@@ -1265,21 +1299,75 @@ async def _emit_block(filename: str, lines: list[str]) -> None:
     websocket_clients.difference_update(disconnected)
 
 
+def _rotate_single_file(filepath: str) -> None:
+    """Truncate a single log file, keeping the last LOG_KEEP_SIZE bytes.
+
+    Atomically replaces the file via write-to-temp + rename so readers
+    see a clean inode change and re-read from the start.
+    """
+    size = os.path.getsize(filepath)
+    if size <= LOG_MAX_SIZE:
+        return
+    logger.info(f"Rotating {filepath}: {size / 1024 / 1024:.1f} MB > {LOG_MAX_SIZE / 1024 / 1024:.0f} MB limit")
+    with open(filepath, "rb") as f:
+        f.seek(max(0, size - LOG_KEEP_SIZE))
+        tail = f.read()
+    # Skip a partial first line
+    nl = tail.find(b"\n")
+    if nl >= 0:
+        tail = tail[nl + 1:]
+    tmp = filepath + ".rotate"
+    with open(tmp, "wb") as f:
+        f.write(tail)
+    os.replace(tmp, filepath)
+    logger.info(f"Rotated {filepath}: kept {len(tail)} bytes")
+
+
+def _rotate_log_file(filepath: str) -> None:
+    """Rotate a portal log file and its corresponding clean log in /var/log/.
+
+    The provisioner logging creates paired files:
+      /var/log/portal/X.log  (raw ANSI for the portal)
+      /var/log/X.log          (clean text for external logging)
+    Both are rotated together to keep disk usage bounded.
+
+    After rotation, updates the file tracking state so tail_log_file
+    doesn't re-read the kept tail as new data.
+    """
+    try:
+        _rotate_single_file(filepath)
+        # Update tracking so we don't re-read the kept tail
+        filename = os.path.basename(filepath)
+        stat = os.stat(filepath)
+        file_positions[filename] = stat.st_size
+        file_mtimes[filename] = stat.st_mtime
+        file_inodes[filename] = stat.st_ino
+        # Also rotate the companion clean log (e.g. /var/log/portal/X.log → /var/log/X.log)
+        directory, basename = os.path.split(filepath)
+        if os.path.basename(directory) == "portal":
+            clean_path = os.path.join(os.path.dirname(directory), basename)
+            if os.path.exists(clean_path):
+                _rotate_single_file(clean_path)
+    except Exception as e:
+        logger.error(f"Failed to rotate {filepath}: {e}")
+
+
 # Main monitoring loop
 async def monitor_log_directory(directory: str) -> None:
     """Main task to monitor log directory and tail files"""
     logger.info(f"Starting log monitoring in {directory}")
-    
+    last_rotate_check = 0.0
+
     while True:
         try:
             # Get current log files
             log_files = await get_log_files(directory)
-            
+
             # Monitor each file
             for log_file in log_files:
                 filepath = os.path.join(directory, log_file)
                 await tail_log_file(filepath)
-                
+
             # Clean up deleted files
             for filename in list(file_positions.keys()):
                 if filename not in log_files:
@@ -1290,10 +1378,17 @@ async def monitor_log_directory(directory: str) -> None:
                     file_specific_buffers.pop(filename, None)
                     _file_term_state.pop(filename, None)
                     _file_block_sizes.pop(filename, None)
-            
+
+            # Periodically check log file sizes and rotate if needed
+            now = asyncio.get_event_loop().time()
+            if now - last_rotate_check > LOG_ROTATE_INTERVAL:
+                last_rotate_check = now
+                for log_file in log_files:
+                    _rotate_log_file(os.path.join(directory, log_file))
+
             # Small delay before next poll
             await asyncio.sleep(POLL_INTERVAL)
-            
+
         except asyncio.CancelledError:
             logger.info("Monitor task cancelled")
             break

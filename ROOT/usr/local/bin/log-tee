@@ -51,12 +51,44 @@ def _derive_clean_path(portal_path: str) -> str | None:
     return None
 
 
+_LOG_MAX_SIZE = 5 * 1024 * 1024   # Rotate files larger than 5 MB
+_LOG_KEEP_SIZE = 1 * 1024 * 1024  # Keep the last 1 MB after rotation
+_ROTATE_CHECK = 512 * 1024        # Check size every 512 KB written
+
+
 def _write(fd: int, data: bytes) -> None:
     """Write all bytes to fd, ignoring errors."""
     try:
         os.write(fd, data)
     except OSError:
         pass
+
+
+def _rotate_fd(fd: int, path: str) -> int:
+    """Rotate a log file if it exceeds _LOG_MAX_SIZE, returning the new fd.
+
+    Reads the last _LOG_KEEP_SIZE bytes, atomically replaces the file,
+    and reopens it.  Returns the original fd unchanged if no rotation
+    is needed or if rotation fails.
+    """
+    try:
+        size = os.fstat(fd).st_size
+        if size <= _LOG_MAX_SIZE:
+            return fd
+        with open(path, "rb") as f:
+            f.seek(max(0, size - _LOG_KEEP_SIZE))
+            tail = f.read()
+        nl = tail.find(b"\n")
+        if nl >= 0:
+            tail = tail[nl + 1:]
+        tmp = path + ".rotate"
+        with open(tmp, "wb") as f:
+            f.write(tail)
+        os.replace(tmp, path)
+        os.close(fd)
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError:
+        return fd
 
 
 def main() -> None:
@@ -82,6 +114,9 @@ def main() -> None:
     # Buffer a trailing \r across reads so \r\n split across chunks
     # doesn't produce a spurious extra newline on stdout/clean log.
     pending_cr = False
+
+    # Track bytes written for periodic rotation checks
+    bytes_since_check = 0
 
     while True:
         try:
@@ -113,6 +148,14 @@ def main() -> None:
                 _write(stdout_fd, encoded)
                 if clean_fd is not None:
                     _write(clean_fd, encoded)
+
+        # Periodic rotation check
+        bytes_since_check += len(data)
+        if bytes_since_check >= _ROTATE_CHECK:
+            bytes_since_check = 0
+            portal_fd = _rotate_fd(portal_fd, portal_path)
+            if clean_fd is not None and clean_path is not None:
+                clean_fd = _rotate_fd(clean_fd, clean_path)
 
     # Flush remaining bytes from decoder and any pending \r
     remaining = decoder.decode(b"", final=True)
