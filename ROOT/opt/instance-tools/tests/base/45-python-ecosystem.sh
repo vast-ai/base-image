@@ -13,11 +13,24 @@ echo "  uv: $(uv --version 2>&1)"
 # Main venv (skip-if-absent)
 if [[ -d /venv/main ]]; then
     source /venv/main/bin/activate 2>/dev/null || test_fail "cannot activate /venv/main"
+    venv_version=$(python --version 2>&1 | grep -oP '[0-9]+\.[0-9]+')
     echo "  venv python: $(python --version 2>&1)"
     python -m pip --version &>/dev/null || echo "  WARN: pip not available in venv"
+    # If PYTHON_VERSION is set, venv python should match (major.minor)
+    if [[ -n "${PYTHON_VERSION:-}" ]]; then
+        expected=$(echo "$PYTHON_VERSION" | grep -oP '^[0-9]+\.[0-9]+')
+        if [[ "$venv_version" == "$expected" ]]; then
+            echo "  PYTHON_VERSION=${PYTHON_VERSION} matches venv (${venv_version})"
+        else
+            test_fail "PYTHON_VERSION=${PYTHON_VERSION} (${expected}) does not match venv python (${venv_version})"
+        fi
+    fi
     deactivate 2>/dev/null
 else
     echo "  absent (ok): /venv/main"
+    if [[ -n "${PYTHON_VERSION:-}" ]]; then
+        echo "  WARN: PYTHON_VERSION=${PYTHON_VERSION} set but /venv/main does not exist"
+    fi
 fi
 
 # Miniforge/conda (skip-if-absent)
