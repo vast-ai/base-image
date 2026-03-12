@@ -24,9 +24,21 @@ START_EPOCH=$(date +%s)
 
 # ── Manual mode detection ────────────────────────────────────────────
 
-MANUAL=false
+# Auto-detect manual mode: if run from a TTY (interactive shell), default to manual.
+# The boot script backgrounds us (no TTY), so automated mode only activates that way.
+# --manual / --auto flags override the auto-detection.
 if [[ "${1:-}" == "--manual" ]]; then
     MANUAL=true
+elif [[ "${1:-}" == "--auto" ]]; then
+    MANUAL=false
+elif [[ -t 0 || -t 1 ]]; then
+    # stdin or stdout is a terminal — someone ran this interactively
+    MANUAL=true
+else
+    MANUAL=false
+fi
+
+if [[ "$MANUAL" == "true" ]]; then
     echo "Running in manual mode (no HTTP server, no webhook, no instance stop)"
 fi
 

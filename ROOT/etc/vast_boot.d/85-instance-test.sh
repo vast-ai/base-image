@@ -11,4 +11,4 @@ if [[ "${INSTANCE_TEST,,}" != "true" ]]; then
 fi
 
 echo "Starting instance test runner in background..."
-/opt/instance-tools/tests/runner.sh &
+/opt/instance-tools/tests/runner.sh --auto &
