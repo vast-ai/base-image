@@ -142,8 +142,14 @@ check_jupyter_functional() {
 
     local base_url="${proto}://127.0.0.1:${port}"
 
+    # Build token query param if available
+    local token_param=""
+    if [[ -n "${JUPYTER_TOKEN:-}" ]]; then
+        token_param="?token=${JUPYTER_TOKEN}"
+    fi
+
     # Root page — follows redirects (jupyter redirects / → /lab or /tree)
-    body=$(curl -s $curl_opts "${base_url}/" 2>/dev/null)
+    body=$(curl -s $curl_opts "${base_url}/${token_param}" 2>/dev/null)
     if [[ -n "$body" ]]; then
         echo "  jupyter (${label}): / returns content"
     else
@@ -152,12 +158,12 @@ check_jupyter_functional() {
     fi
 
     # /api/kernelspecs — list available kernel specs
-    kernelspecs=$(curl -s $curl_opts "${base_url}/api/kernelspecs" 2>/dev/null)
+    kernelspecs=$(curl -s $curl_opts "${base_url}/api/kernelspecs${token_param}" 2>/dev/null)
     if echo "$kernelspecs" | python3 -c "import sys,json; d=json.load(sys.stdin); d['kernelspecs']" 2>/dev/null; then
         count=$(echo "$kernelspecs" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['kernelspecs']))")
         echo "  jupyter (${label}): ${count} kernel spec(s) available"
     else
-        echo "  WARN: jupyter /api/kernelspecs not accessible (auth may be required)"
+        echo "  WARN: jupyter /api/kernelspecs not accessible"
     fi
 }
 
