@@ -207,22 +207,8 @@ if [[ "$MANUAL" == "false" ]]; then
     start_results_server
 fi
 
-# Wait for provisioning to finish (automated mode only)
-if [[ "$MANUAL" == "false" ]]; then
-    echo "Waiting for provisioning to complete..."
-    prov_wait=0
-    prov_timeout="${INSTANCE_TEST_PROV_TIMEOUT:-600}"
-    while [[ -f /.provisioning ]]; do
-        sleep 5
-        prov_wait=$((prov_wait + 5))
-        if [[ $prov_wait -ge $prov_timeout ]]; then
-            echo "WARNING: /.provisioning still exists after ${prov_timeout}s — proceeding anyway"
-            break
-        fi
-    done
-    echo "Provisioning done, waiting for services to stabilize..."
-    sleep 10
-fi
+# No blind provisioning wait — test 12-provisioning.sh handles monitoring.
+# Tests before 12 run immediately; tests after 12 run once provisioning is confirmed.
 
 # Discover tests
 mapfile -t ALL_TESTS < <(discover_tests)
@@ -257,9 +243,11 @@ for i in "${!ALL_TESTS[@]}"; do
     write_results "running"
 
     test_start=$(date +%s)
+    # Per-test timeout: check for TEST_TIMEOUT in script header, default 120s.
+    # The provisioning test needs much longer than other tests.
+    test_timeout=$(grep -oP '^# TEST_TIMEOUT=\K\d+' "$test_path" 2>/dev/null || echo "120")
     set +e
-    # Run test with its name exported, timeout after 120s
-    TEST_NAME="$test_name" timeout 120 bash "$test_path" 2>&1
+    TEST_NAME="$test_name" timeout "$test_timeout" bash "$test_path" 2>&1
     rc=$?
     set -e
     test_end=$(date +%s)
@@ -277,7 +265,7 @@ for i in "${!ALL_TESTS[@]}"; do
         124)
             TEST_STATES[$i]="failed"
             has_failure=true
-            echo "  → FAILED (timeout after 120s)"
+            echo "  → FAILED (timeout after ${test_timeout}s)"
             ;;
         *)
             TEST_STATES[$i]="failed"
