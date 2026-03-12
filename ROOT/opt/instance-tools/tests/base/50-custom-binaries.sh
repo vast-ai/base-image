@@ -3,9 +3,20 @@
 source "$(dirname "$0")/../lib.sh"
 
 # Always-expected commands
-for cmd in uv supervisorctl jq git-lfs; do
+for cmd in uv supervisorctl jq git-lfs vastai; do
     assert_command_exists "$cmd"
 done
+
+# Vast CLI: verify it can query this instance
+if [[ -n "${CONTAINER_ID:-}" && -n "${CONTAINER_API_KEY:-}" ]]; then
+    if vastai show instance "$CONTAINER_ID" --api-key "$CONTAINER_API_KEY" &>/dev/null; then
+        echo "  vastai: show instance ${CONTAINER_ID} succeeded"
+    else
+        test_fail "vastai show instance ${CONTAINER_ID} failed"
+    fi
+else
+    echo "  WARN: CONTAINER_ID or CONTAINER_API_KEY not set, skipping vastai query"
+fi
 
 # Skip-if-absent binaries — check what IS present
 declare -A OPTIONAL_BINS=(
