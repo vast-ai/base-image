@@ -67,22 +67,34 @@ fi
 #   3. cuInit(0) succeeds when loaded from the compat dir (datacenter GPUs only)
 #   4. DISABLE_FORWARD_COMPAT is not "true"
 #
+# IMPORTANT: Within the same CUDA major version, minor version compatibility
+# is guaranteed by NVIDIA. A 12.8 driver can run 12.9 toolkit code without
+# forward compat libs. Forward compat is only *required* across major versions.
+#
 # We test against native_driver_cuda (not effective_cuda) to detect whether
 # forward compat was needed and correctly applied.
 
 compat_conf="/etc/ld.so.conf.d/0-compat-cuda.conf"
 compat_dir="/usr/local/cuda-${latest_cuda}/compat"
 toolkit_needs_compat=$(awk "BEGIN {print ($latest_cuda > $native_driver_cuda) ? 1 : 0}" 2>/dev/null || echo "0")
+native_major=${native_driver_cuda%%.*}
+latest_major=${latest_cuda%%.*}
 
 if [[ "$toolkit_needs_compat" == "1" ]]; then
-    echo "  latest CUDA ${latest_cuda} > native driver max ${native_driver_cuda}: forward compat needed"
+    if [[ "$native_major" == "$latest_major" ]]; then
+        echo "  latest CUDA ${latest_cuda} > native driver max ${native_driver_cuda} (same major — minor compat ok)"
+    else
+        echo "  latest CUDA ${latest_cuda} > native driver max ${native_driver_cuda}: forward compat required (major version mismatch)"
+    fi
 
     if [[ "${DISABLE_FORWARD_COMPAT:-false}" == "true" ]]; then
         echo "  DISABLE_FORWARD_COMPAT=true — forward compat intentionally disabled"
-        if awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+        if [[ "$native_major" == "$latest_major" ]]; then
+            echo "  same major version (${native_major}) — minor compat sufficient"
+        elif awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
-            test_fail "forward compat disabled but selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
+            test_fail "forward compat disabled but selected CUDA ${selected_cuda} > native max ${native_driver_cuda} (major version mismatch)"
         fi
     elif [[ -d "$compat_dir" ]] && compgen -G "$compat_dir/libcuda.so.*" > /dev/null; then
         # Compat libs exist — check if they were activated
@@ -117,19 +129,23 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
             # Compat libs exist but weren't activated — cuInit likely failed (consumer GPU)
             echo "  compat libs present at ${compat_dir} but not activated"
             echo "  (consumer GPU or cuInit failed — expected on non-datacenter hardware)"
-            if awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+            if [[ "$native_major" == "$latest_major" ]]; then
+                echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
+            elif awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
                 echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
             else
-                test_fail "compat not activated but selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
+                test_fail "compat not activated and major version mismatch: selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
             fi
         fi
     else
         # No compat libs at all
         echo "  no compat libs in ${compat_dir}"
-        if awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+        if [[ "$native_major" == "$latest_major" ]]; then
+            echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
+        elif awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
-            test_fail "no compat libs and selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
+            test_fail "no compat libs and major version mismatch: selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
         fi
     fi
 else
