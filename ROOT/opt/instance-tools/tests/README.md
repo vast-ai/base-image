@@ -78,7 +78,7 @@ Tests execute in filename sort order. The numbering creates two phases:
 | 10–11 | Pre-provisioning | Supervisor alive, instance identity/API, basic infrastructure |
 | 12 | **Provisioning gate** | Monitors provisioning for activity; blocks until done or hung |
 | 15–60 | Post-provisioning | Boot markers, portal, caddy, networking, filesystem, users, python, binaries, env, GPU/CUDA |
-| 65–85 | Service validation | Supervisor service states, logging, cron, serverless negative checks |
+| 65–85 | Service validation | Supervisor service states, functional HTTP checks, logging, cron, serverless negative checks |
 
 **Why ordering matters:** Provisioning (step 12) can register new supervisor services, install packages, and download models. Tests that check service states or installed software must run after it.
 
