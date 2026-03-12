@@ -1,6 +1,41 @@
 #!/bin/bash
-# Test: conditional services match portal.yaml configuration.
+# Test: supervisor service states and conditional services.
+# Runs after provisioning (12) since provisioning can register new services.
 source "$(dirname "$0")/../lib.sh"
+
+# ── Core services (always expected on base image) ─────────────────────
+
+# Verify each installed .conf appears in supervisorctl status
+sup_status=$(supervisorctl status 2>/dev/null)
+for conf in /etc/supervisor/conf.d/*.conf; do
+    [[ -f "$conf" ]] || continue
+    name=$(basename "$conf" .conf)
+    if ! echo "$sup_status" | grep -q "^${name} "; then
+        echo "  WARN: ${name}.conf exists but not in supervisorctl status"
+    fi
+done
+
+if is_serverless; then
+    # Serverless: caddy/portal/jupyter/tensorboard/syncthing/tunnel_manager should be stopped
+    for name in caddy instance_portal jupyter tensorboard syncthing tunnel_manager; do
+        if [[ -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
+            assert_service_stopped "$name"
+        fi
+    done
+    # cron still runs in serverless
+    if [[ -f /etc/supervisor/conf.d/cron.conf ]]; then
+        assert_service_running "cron"
+    fi
+    test_pass "serverless: services correctly stopped, cron running"
+fi
+
+# Non-serverless: assert core services running
+for name in instance_portal caddy cron; do
+    if [[ -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
+        assert_service_running "$name"
+        echo "  ${name}: RUNNING"
+    fi
+done
 
 # ── Jupyter (special case: .launch vs supervisor) ─────────────────────
 
@@ -109,4 +144,4 @@ for entry in "${SERVICES[@]}"; do
     fi
 done
 
-test_pass "conditional services match configuration"
+test_pass "all service states verified"
