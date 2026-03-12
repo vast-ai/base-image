@@ -38,32 +38,27 @@ is_excluded() {
 
 auth_modified=false
 if [[ -z "${WEB_PASSWORD:-}" ]]; then
-    echo "  WEB_PASSWORD not set — creating test credentials"
-    test_web_user="${WEB_USERNAME:-testuser}"
     test_web_pass="testpass_$(openssl rand -hex 8)"
+    echo "  WEB_PASSWORD not set — creating test password"
 
-    # Write to /etc/environment so caddy picks them up on restart
-    sed -i '/^WEB_USERNAME=/d' /etc/environment 2>/dev/null
+    # Only set WEB_PASSWORD; leave WEB_USERNAME alone (config manager defaults to vastai)
     sed -i '/^WEB_PASSWORD=/d' /etc/environment 2>/dev/null
-    echo "WEB_USERNAME=\"${test_web_user}\"" >> /etc/environment
     echo "WEB_PASSWORD=\"${test_web_pass}\"" >> /etc/environment
-
-    # Export for this test
-    export WEB_USERNAME="$test_web_user"
     export WEB_PASSWORD="$test_web_pass"
 
-    # Restart caddy to regenerate Caddyfile with new credentials
-    echo "  restarting caddy to pick up WEB_USERNAME/WEB_PASSWORD..."
+    # Restart caddy to regenerate Caddyfile with new password
+    echo "  restarting caddy to pick up WEB_PASSWORD..."
     supervisorctl restart caddy &>/dev/null
     sleep 2
     auth_modified=true
 else
     echo "  WEB_PASSWORD present"
-    if [[ -n "${WEB_USERNAME:-}" ]]; then
-        echo "  WEB_USERNAME=${WEB_USERNAME}"
-    else
-        echo "  WEB_USERNAME not set (default: vastai)"
-    fi
+fi
+
+if [[ -n "${WEB_USERNAME:-}" ]]; then
+    echo "  WEB_USERNAME=${WEB_USERNAME}"
+else
+    echo "  WEB_USERNAME not set (default: vastai)"
 fi
 
 # ── Find an external port to test against ────────────────────────────
@@ -89,7 +84,6 @@ done
 
 if [[ ${#all_caddy_ports[@]} -eq 0 ]]; then
     if $auth_modified; then
-        sed -i '/^WEB_USERNAME=/d' /etc/environment
         sed -i '/^WEB_PASSWORD=/d' /etc/environment
         supervisorctl restart caddy &>/dev/null
     fi
@@ -153,8 +147,8 @@ if [[ -n "${WEB_PASSWORD:-}" ]]; then
     fi
 fi
 
-# ── Test 4: Basic auth with username:WEB_PASSWORD → 200 ──────────────
-# When WEB_USERNAME is not set, the config manager defaults to "vastai"
+# ── Test 4: Basic auth — correct credentials ─────────────────────────
+# Config manager uses WEB_USERNAME (default: vastai) with WEB_PASSWORD.
 
 basic_user="${WEB_USERNAME:-vastai}"
 status=$($curl_base -o /dev/null -w '%{http_code}' \
@@ -163,26 +157,30 @@ status=$($curl_base -o /dev/null -w '%{http_code}' \
 if [[ "$status" == "200" || "$status" == "302" ]]; then
     echo "  basic auth ${basic_user}:WEB_PASSWORD → ${status} (correct)"
 else
-    fail_later "basic-auth-webpass" "expected 200/302, got ${status}"
+    fail_later "basic-auth" "expected 200/302 for ${basic_user}:WEB_PASSWORD, got ${status}"
 fi
 
-# ── Test 5: Basic auth with username:OPEN_BUTTON_TOKEN ────────────────
-# Basic auth password is bcrypt-hashed WEB_PASSWORD. OBT only works
-# as a basic auth password when WEB_PASSWORD == OBT.
-# Bearer accepts both tokens regardless.
+# ── Test 5: Basic auth — wrong username rejected ─────────────────────
 
-if [[ "${WEB_PASSWORD}" == "${OPEN_BUTTON_TOKEN}" ]]; then
-    echo "  skip: basic auth with OBT (same as WEB_PASSWORD, already tested)"
+wrong_user="wronguser_$$"
+status=$($curl_base -o /dev/null -w '%{http_code}' \
+    -u "${wrong_user}:${WEB_PASSWORD}" \
+    "${proto}://127.0.0.1:${test_port}/" 2>/dev/null)
+if [[ "$status" == "401" ]]; then
+    echo "  basic auth ${wrong_user}:WEB_PASSWORD → 401 (correct)"
 else
+    fail_later "basic-auth-wrong-user" "expected 401 for wrong username, got ${status}"
+fi
+
+# If WEB_USERNAME is set to something other than vastai, verify vastai is also rejected
+if [[ -n "${WEB_USERNAME:-}" && "${WEB_USERNAME}" != "vastai" ]]; then
     status=$($curl_base -o /dev/null -w '%{http_code}' \
-        -u "${basic_user}:${OPEN_BUTTON_TOKEN}" \
+        -u "vastai:${WEB_PASSWORD}" \
         "${proto}://127.0.0.1:${test_port}/" 2>/dev/null)
     if [[ "$status" == "401" ]]; then
-        echo "  basic auth ${basic_user}:OPEN_BUTTON_TOKEN → 401 (correct, WEB_PASSWORD differs)"
-    elif [[ "$status" == "200" || "$status" == "302" ]]; then
-        echo "  WARN: basic auth ${basic_user}:OPEN_BUTTON_TOKEN → ${status} (unexpected)"
+        echo "  basic auth vastai:WEB_PASSWORD → 401 (correct, username is ${WEB_USERNAME})"
     else
-        echo "  basic auth ${basic_user}:OPEN_BUTTON_TOKEN → ${status}"
+        fail_later "basic-auth-default-user" "expected 401 for vastai when WEB_USERNAME=${WEB_USERNAME}, got ${status}"
     fi
 fi
 
@@ -341,8 +339,7 @@ echo "  checked ${port_check_count} port mapping(s)"
 # ── Cleanup: remove test credentials if we created them ──────────────
 
 if $auth_modified; then
-    echo "  cleaning up test credentials and restarting caddy..."
-    sed -i '/^WEB_USERNAME=/d' /etc/environment
+    echo "  cleaning up test password and restarting caddy..."
     sed -i '/^WEB_PASSWORD=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
     sleep 2
