@@ -85,7 +85,16 @@ check_jupyter() {
     fi
 
     if is_serverless; then
-        # Already checked above via check_stopped
+        # Our supervisor jupyter service is correctly stopped (checked above).
+        # But .launch may still be running jupyter if the template was configured
+        # with jupyter launch mode — that's a platform-level concern, not ours.
+        if [[ -n "${JUPYTER_TOKEN:-}" ]] || [[ -n "${JUPYTER_DIR:-}" ]] || [[ -n "${JUPYTER_TYPE:-}" ]]; then
+            echo "  WARN: serverless instance has JUPYTER_* env vars set — template may be configured for jupyter launch mode"
+            if pgrep -f "jupyter" &>/dev/null; then
+                echo "  WARN: .launch-managed jupyter is running (platform-managed, not our service)"
+            fi
+        fi
+        # Supervisor jupyter already checked via check_stopped in core section
         return
     fi
 
