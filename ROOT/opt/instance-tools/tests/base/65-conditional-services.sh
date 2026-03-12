@@ -3,9 +3,15 @@
 # Runs after provisioning (12) since provisioning can register new services.
 source "$(dirname "$0")/../lib.sh"
 
-# ── Core services (always expected on base image) ─────────────────────
+# Collect failures instead of exiting on first one
+FAILURES=()
+fail_later() {
+    FAILURES+=("$1")
+    echo "  FAIL: $1"
+}
 
-# Verify each installed .conf appears in supervisorctl status
+# ── Verify .conf files are registered ─────────────────────────────────
+
 sup_status=$(supervisorctl status 2>/dev/null)
 for conf in /etc/supervisor/conf.d/*.conf; do
     [[ -f "$conf" ]] || continue
@@ -15,36 +21,72 @@ for conf in /etc/supervisor/conf.d/*.conf; do
     fi
 done
 
+# ── Helper: check service state ──────────────────────────────────────
+
+check_running() {
+    local name="$1"
+    local status
+    status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
+    if [[ "$status" == "RUNNING" ]]; then
+        echo "  ${name}: RUNNING"
+    else
+        fail_later "service not running: ${name} (status: ${status:-unknown})"
+    fi
+}
+
+check_stopped() {
+    local name="$1"
+    local status
+    status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
+    case "$status" in
+        STOPPED|EXITED|FATAL)
+            echo "  ${name}: correctly stopped (${status})"
+            ;;
+        *)
+            fail_later "service should be stopped: ${name} (status: ${status:-unknown})"
+            ;;
+    esac
+}
+
+# ── Core services ─────────────────────────────────────────────────────
+
+# Track which services we've already checked to avoid duplicates
+declare -A CHECKED=()
+
 if is_serverless; then
     # Serverless: caddy/portal/jupyter/tensorboard/syncthing/tunnel_manager should be stopped
     for name in caddy instance_portal jupyter tensorboard syncthing tunnel_manager; do
         if [[ -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
-            assert_service_stopped "$name"
+            check_stopped "$name"
+            CHECKED[$name]=1
         fi
     done
     # cron still runs in serverless
     if [[ -f /etc/supervisor/conf.d/cron.conf ]]; then
-        assert_service_running "cron"
+        check_running "cron"
+        CHECKED[cron]=1
     fi
-    test_pass "serverless: services correctly stopped, cron running"
+else
+    # Non-serverless: assert core services running
+    for name in instance_portal caddy cron; do
+        if [[ -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
+            check_running "$name"
+            CHECKED[$name]=1
+        fi
+    done
 fi
-
-# Non-serverless: assert core services running
-for name in instance_portal caddy cron; do
-    if [[ -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
-        assert_service_running "$name"
-        echo "  ${name}: RUNNING"
-    fi
-done
 
 # ── Jupyter (special case: .launch vs supervisor) ─────────────────────
 
 check_jupyter() {
-    # .launch manages jupyter in SSH/Jupyter run modes (most common).
-    # Supervisor manages it in docker entrypoint mode or with JUPYTER_OVERRIDE=true.
     local launch_manages=false
     if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
         launch_manages=true
+    fi
+
+    if is_serverless; then
+        # Already checked above via check_stopped
+        return
     fi
 
     if $launch_manages; then
@@ -52,18 +94,17 @@ check_jupyter() {
         if pgrep -f "jupyter" &>/dev/null; then
             echo "  jupyter: .launch-managed process running"
         else
-            test_fail "jupyter: .launch should be managing jupyter but no jupyter process found"
+            fail_later "jupyter: .launch should be managing jupyter but no process found"
         fi
         if ss -tln | grep -q ":8080 "; then
             echo "  jupyter: listening on port 8080"
+            if ss -tln | grep ":8080 " | grep -q "0.0.0.0:"; then
+                echo "  jupyter: bound to all interfaces"
+            else
+                echo "  WARN: jupyter on port 8080 but not bound to 0.0.0.0"
+            fi
         else
-            test_fail "jupyter: .launch-managed jupyter not listening on port 8080"
-        fi
-        # Verify it's bound to all interfaces (0.0.0.0), not just localhost
-        if ss -tln | grep ":8080 " | grep -q "0.0.0.0:"; then
-            echo "  jupyter: bound to all interfaces"
-        else
-            echo "  WARN: jupyter on port 8080 but not bound to 0.0.0.0"
+            fail_later "jupyter: .launch-managed jupyter not listening on port 8080"
         fi
         # Supervisor jupyter should have exited since .launch is managing
         if [[ -f /etc/supervisor/conf.d/jupyter.conf ]]; then
@@ -79,25 +120,15 @@ check_jupyter() {
             esac
         fi
     elif [[ -f /etc/supervisor/conf.d/jupyter.conf ]]; then
-        # Supervisor-managed jupyter (docker entrypoint mode)
-        if portal_has_entry "jupyter" && ! is_serverless; then
-            assert_service_running "jupyter"
+        if portal_has_entry "jupyter"; then
+            check_running "jupyter"
             if wait_for_port 18080 10; then
                 echo "  jupyter: supervisor-managed, port 18080 listening"
             else
                 echo "  WARN: jupyter running but port 18080 not listening yet"
             fi
         else
-            local sup_status
-            sup_status=$(supervisorctl status jupyter 2>/dev/null | awk '{print $2}')
-            case "$sup_status" in
-                STOPPED|EXITED|FATAL)
-                    echo "  jupyter: correctly stopped"
-                    ;;
-                *)
-                    test_fail "jupyter should be stopped but is: ${sup_status:-unknown}"
-                    ;;
-            esac
+            check_stopped "jupyter"
         fi
     else
         echo "  skip: jupyter (no .launch jupyter and no supervisor conf)"
@@ -105,10 +136,10 @@ check_jupyter() {
 }
 
 check_jupyter
+CHECKED[jupyter]=1
 
 # ── Other conditional services ────────────────────────────────────────
 
-# Service name, portal search term, internal port
 declare -a SERVICES=(
     "tensorboard:tensorboard:16006"
     "syncthing:syncthing:18384"
@@ -118,30 +149,31 @@ declare -a SERVICES=(
 for entry in "${SERVICES[@]}"; do
     IFS=: read -r name search_term port <<< "$entry"
 
-    # Only check services whose .conf exists
+    if [[ -n "${CHECKED[$name]:-}" ]]; then
+        continue
+    fi
+
     if [[ ! -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
         echo "  skip: ${name} (.conf not installed)"
         continue
     fi
 
     if portal_has_entry "$search_term" && ! is_serverless; then
-        assert_service_running "$name"
+        check_running "$name"
         if wait_for_port "$port" 10; then
-            echo "  ${name}: running, port ${port} listening"
+            echo "  ${name}: port ${port} listening"
         else
             echo "  WARN: ${name} running but port ${port} not listening yet"
         fi
     else
-        status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
-        case "$status" in
-            STOPPED|EXITED|FATAL)
-                echo "  ${name}: correctly stopped"
-                ;;
-            *)
-                test_fail "service ${name} should be stopped but is: ${status:-unknown}"
-                ;;
-        esac
+        check_stopped "$name"
     fi
 done
+
+# ── Report ────────────────────────────────────────────────────────────
+
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+    test_fail "${#FAILURES[@]} service(s) in wrong state: ${FAILURES[*]}"
+fi
 
 test_pass "all service states verified"
