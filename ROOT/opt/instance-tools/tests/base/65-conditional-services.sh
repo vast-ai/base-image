@@ -6,8 +6,9 @@ source "$(dirname "$0")/../lib.sh"
 # Collect failures instead of exiting on first one
 FAILURES=()
 fail_later() {
-    FAILURES+=("$1")
-    echo "  FAIL: $1"
+    local name="$1" detail="$2"
+    FAILURES+=("$name")
+    echo "  FAIL: ${name}: ${detail}"
 }
 
 # ── Verify .conf files are registered ─────────────────────────────────
@@ -30,7 +31,7 @@ check_running() {
     if [[ "$status" == "RUNNING" ]]; then
         echo "  ${name}: RUNNING"
     else
-        fail_later "service not running: ${name} (status: ${status:-unknown})"
+        fail_later "$name" "expected RUNNING, got ${status:-unknown}"
     fi
 }
 
@@ -43,7 +44,7 @@ check_stopped() {
             echo "  ${name}: correctly stopped (${status})"
             ;;
         *)
-            fail_later "service should be stopped: ${name} (status: ${status:-unknown})"
+            fail_later "$name" "expected stopped, got ${status:-unknown}"
             ;;
     esac
 }
@@ -103,7 +104,7 @@ check_jupyter() {
         if pgrep -f "jupyter" &>/dev/null; then
             echo "  jupyter: .launch-managed process running"
         else
-            fail_later "jupyter: .launch should be managing jupyter but no process found"
+            fail_later "jupyter" ".launch should be managing it but no process found"
         fi
         if ss -tln | grep -q ":8080 "; then
             echo "  jupyter: listening on port 8080"
@@ -113,7 +114,7 @@ check_jupyter() {
                 echo "  WARN: jupyter on port 8080 but not bound to 0.0.0.0"
             fi
         else
-            fail_later "jupyter: .launch-managed jupyter not listening on port 8080"
+            fail_later "jupyter" ".launch-managed but not listening on port 8080"
         fi
         # Supervisor jupyter should have exited since .launch is managing
         if [[ -f /etc/supervisor/conf.d/jupyter.conf ]]; then
@@ -182,7 +183,8 @@ done
 # ── Report ────────────────────────────────────────────────────────────
 
 if [[ ${#FAILURES[@]} -gt 0 ]]; then
-    test_fail "${#FAILURES[@]} service(s) in wrong state: ${FAILURES[*]}"
+    joined=$(printf '%s, ' "${FAILURES[@]}")
+    test_fail "${#FAILURES[@]} service(s) in wrong state: ${joined%, }"
 fi
 
 test_pass "all service states verified"
