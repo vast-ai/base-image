@@ -1,5 +1,8 @@
 #!/bin/bash
 # Test: logging infrastructure.
+#
+# log-tee writes colored output to /var/log/portal/ (for the portal web UI)
+# and a clean (ANSI-stripped) copy to /var/log/ (for CLI/log aggregation).
 source "$(dirname "$0")/../lib.sh"
 
 is_serverless && test_skip "logging not applicable in serverless mode"
@@ -23,17 +26,24 @@ else
     echo "  WARN: no .log files found in /var/log/portal/"
 fi
 
-# Check /var/log/ for ANSI escape codes in log files (sign of unbuffered color output)
-ansi_files=0
+# Every portal log should have a clean copy in /var/log/
+missing_clean=0
 for logfile in /var/log/portal/*.log; do
     [[ -f "$logfile" ]] || continue
-    if grep -Pq '\x1b\[' "$logfile" 2>/dev/null; then
-        echo "  WARN: ANSI escape codes in $(basename "$logfile")"
-        ansi_files=$((ansi_files + 1))
+    name=$(basename "$logfile")
+    if [[ -f "/var/log/${name}" ]]; then
+        # Clean copy must not contain ANSI escape codes
+        if grep -Pq '\x1b\[' "/var/log/${name}" 2>/dev/null; then
+            test_fail "ANSI escape codes in clean log /var/log/${name}"
+        fi
+    else
+        echo "  WARN: /var/log/portal/${name} has no clean copy at /var/log/${name}"
+        missing_clean=$((missing_clean + 1))
     fi
 done
-if [[ "$ansi_files" -eq 0 ]]; then
-    echo "  log files clean of ANSI escape codes"
+
+if [[ "$missing_clean" -eq 0 ]]; then
+    echo "  all portal logs have clean copies in /var/log/"
 fi
 
 test_pass "logging infrastructure verified"
