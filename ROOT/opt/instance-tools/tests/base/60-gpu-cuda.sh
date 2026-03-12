@@ -11,9 +11,21 @@ nvidia-smi &>/dev/null || test_fail "nvidia-smi failed"
 gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
 compute_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1)
 driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
-driver_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
 
-echo "  GPU: ${gpu_name} (CC ${compute_cap}, Driver ${driver_ver}, Max CUDA ${driver_cuda})"
+# nvidia-smi reports the *effective* CUDA version, which includes compat libs if loaded.
+# To get the native driver CUDA max, we must bypass any compat libs in the linker path
+# by pointing LD_LIBRARY_PATH at the system libcuda directory.
+system_libcuda_dir=$(dirname "$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)" 2>/dev/null)
+if [[ -n "$system_libcuda_dir" && -d "$system_libcuda_dir" ]]; then
+    native_driver_cuda=$(LD_LIBRARY_PATH="$system_libcuda_dir" nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+else
+    native_driver_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+fi
+# Also grab the effective (possibly compat-enhanced) version for reference
+effective_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+
+echo "  GPU: ${gpu_name} (CC ${compute_cap}, Driver ${driver_ver})"
+echo "  native driver CUDA: ${native_driver_cuda}, effective: ${effective_cuda}"
 
 # ── CUDA toolkit selection ────────────────────────────────────────────
 
@@ -27,7 +39,6 @@ done
 
 if [[ ${#cuda_versions[@]} -eq 0 ]]; then
     echo "  no CUDA toolkits installed (skip toolkit/compat checks)"
-    # Still check basic driver-level functionality
     python3 -c "import ctypes; ctypes.CDLL('libcuda.so.1')" 2>/dev/null \
         && echo "  python ctypes: libcuda.so.1 loadable" \
         || echo "  WARN: python cannot load libcuda.so.1"
@@ -50,31 +61,28 @@ fi
 
 # ── Forward compatibility validation ──────────────────────────────────
 
-# Forward compat is enabled when:
-#   1. The latest installed CUDA version > driver's max CUDA
-#   2. The compat libs in cuda-X.Y/compat/ load successfully (datacenter GPUs)
-#   3. /etc/ld.so.conf.d/0-compat-cuda.conf exists pointing to compat dir
+# Forward compat is attempted by 05-configure-cuda.sh when:
+#   1. The latest installed CUDA toolkit > native driver CUDA max
+#   2. Compat libs exist in cuda-X.Y/compat/
+#   3. cuInit(0) succeeds when loaded from the compat dir (datacenter GPUs only)
+#   4. DISABLE_FORWARD_COMPAT is not "true"
 #
-# Forward compat is NOT expected when:
-#   - Driver already supports the latest toolkit (latest_cuda <= driver_cuda)
-#   - No compat libs exist for the latest toolkit
-#   - Consumer GPU that doesn't support forward compat (cuInit fails)
-#   - DISABLE_FORWARD_COMPAT=true
+# We test against native_driver_cuda (not effective_cuda) to detect whether
+# forward compat was needed and correctly applied.
 
 compat_conf="/etc/ld.so.conf.d/0-compat-cuda.conf"
 compat_dir="/usr/local/cuda-${latest_cuda}/compat"
-toolkit_needs_compat=$(awk "BEGIN {print ($latest_cuda > $driver_cuda) ? 1 : 0}" 2>/dev/null || echo "0")
+toolkit_needs_compat=$(awk "BEGIN {print ($latest_cuda > $native_driver_cuda) ? 1 : 0}" 2>/dev/null || echo "0")
 
 if [[ "$toolkit_needs_compat" == "1" ]]; then
-    echo "  latest CUDA ${latest_cuda} > driver max ${driver_cuda}: forward compat needed"
+    echo "  latest CUDA ${latest_cuda} > native driver max ${native_driver_cuda}: forward compat needed"
 
     if [[ "${DISABLE_FORWARD_COMPAT:-false}" == "true" ]]; then
         echo "  DISABLE_FORWARD_COMPAT=true — forward compat intentionally disabled"
-        # Selected CUDA should be <= driver max
-        if awk "BEGIN {exit !($selected_cuda <= $driver_cuda)}"; then
-            echo "  selected CUDA ${selected_cuda} <= driver max ${driver_cuda}: correct fallback"
+        if awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+            echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
-            test_fail "forward compat disabled but selected CUDA ${selected_cuda} > driver max ${driver_cuda}"
+            test_fail "forward compat disabled but selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
         fi
     elif [[ -d "$compat_dir" ]] && compgen -G "$compat_dir/libcuda.so.*" > /dev/null; then
         # Compat libs exist — check if they were activated
@@ -90,6 +98,12 @@ if [[ "$toolkit_needs_compat" == "1" ]]; then
             else
                 test_fail "compat conf exists but libs not in ldconfig cache (ldconfig may not have run)"
             fi
+            # Effective CUDA should now be >= latest toolkit
+            if [[ "$effective_cuda" == "$latest_cuda" ]]; then
+                echo "  effective CUDA ${effective_cuda} matches latest toolkit"
+            else
+                echo "  WARN: effective CUDA ${effective_cuda} != latest ${latest_cuda}"
+            fi
             # Verify cuInit works through compat
             if LD_LIBRARY_PATH="$compat_dir" python3 -c "
 import ctypes, sys
@@ -103,24 +117,23 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
             # Compat libs exist but weren't activated — cuInit likely failed (consumer GPU)
             echo "  compat libs present at ${compat_dir} but not activated"
             echo "  (consumer GPU or cuInit failed — expected on non-datacenter hardware)"
-            # Should have fallen back to compatible version
-            if awk "BEGIN {exit !($selected_cuda <= $driver_cuda)}"; then
-                echo "  selected CUDA ${selected_cuda} <= driver max ${driver_cuda}: correct fallback"
+            if awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+                echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
             else
-                test_fail "compat not activated but selected CUDA ${selected_cuda} > driver max ${driver_cuda}"
+                test_fail "compat not activated but selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
             fi
         fi
     else
         # No compat libs at all
         echo "  no compat libs in ${compat_dir}"
-        if awk "BEGIN {exit !($selected_cuda <= $driver_cuda)}"; then
-            echo "  selected CUDA ${selected_cuda} <= driver max ${driver_cuda}: correct fallback"
+        if awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+            echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
-            test_fail "no compat libs and selected CUDA ${selected_cuda} > driver max ${driver_cuda}"
+            test_fail "no compat libs and selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
         fi
     fi
 else
-    echo "  latest CUDA ${latest_cuda} <= driver max ${driver_cuda}: no forward compat needed"
+    echo "  latest CUDA ${latest_cuda} <= native driver max ${native_driver_cuda}: no forward compat needed"
     if [[ -f "$compat_conf" ]]; then
         echo "  WARN: forward compat conf exists but shouldn't be needed"
     fi
@@ -128,14 +141,12 @@ fi
 
 # ── Standard CUDA checks ─────────────────────────────────────────────
 
-# nvcc available
 if command -v nvcc &>/dev/null; then
     echo "  nvcc: $(nvcc --version 2>&1 | grep -oP 'release \K[0-9.]+' || nvcc --version 2>&1 | tail -1)"
 else
     echo "  WARN: nvcc not found in PATH"
 fi
 
-# CUDA libs in ldconfig
 if [[ -f /etc/ld.so.conf.d/10-cuda.conf ]]; then
     echo "  10-cuda.conf: $(cat /etc/ld.so.conf.d/10-cuda.conf)"
 else
@@ -148,16 +159,14 @@ else
     echo "  WARN: libcudart not in ldconfig cache"
 fi
 
-# Python can load libcuda
 python3 -c "import ctypes; ctypes.CDLL('libcuda.so.1')" 2>/dev/null \
     && echo "  python ctypes: libcuda.so.1 loadable" \
     || echo "  WARN: python cannot load libcuda.so.1"
 
-# OpenCL ICD
 if [[ -f /etc/OpenCL/vendors/nvidia.icd ]]; then
     echo "  OpenCL ICD present"
 else
     echo "  absent (ok): OpenCL ICD"
 fi
 
-test_pass "GPU and CUDA verified (selected: ${selected_cuda}, compat: ${toolkit_needs_compat})"
+test_pass "GPU/CUDA verified (selected: ${selected_cuda}, native: ${native_driver_cuda}, effective: ${effective_cuda})"
