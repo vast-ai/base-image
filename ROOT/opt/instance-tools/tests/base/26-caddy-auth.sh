@@ -166,6 +166,11 @@ elif [[ -n "$test_port" ]]; then
         "?token=${OPEN_BUTTON_TOKEN:0:8}... (query param)" "302|200" \
         "${base_url}/?token=${OPEN_BUTTON_TOKEN}"
 
+    # Wrong query param token → 401
+    http_check \
+        "?token=WRONG_TOKEN (query param)" 401 \
+        "${base_url}/?token=wrong_token_value"
+
     # Wrong bearer → 401
     http_check \
         "bearer WRONG_TOKEN" 401 \
