@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Filtering tee: splits stdin into three output streams.
+
+  - Portal log file (argument): cursor/erase sequences stripped, colors and
+    \\r preserved (portal viewer gets colored text with working progress bars)
+  - Clean log file (auto-derived): all ANSI stripped, \\r converted to \\n
+    (human-readable plain text at /var/log/<name>.log)
+  - Stdout: same as clean log (for Vast native log viewer)
+
+The clean log path is derived by removing '/portal' from the directory.
+E.g. /var/log/portal/vllm.log -> /var/log/vllm.log
+
+Usage: log-tee /var/log/portal/proc.log
+"""
+
+import codecs
+import os
+import re
+import sys
+
+# All CSI sequences + bare ESC (for stdout/clean log — strip everything)
+_ALL_CSI_RE = re.compile(r"\x1b\[\??[0-9;]*[A-Za-z]|\x1b[^\[[]")
+
+# Cursor movement / erase sequences only (for portal log — keep colors)
+# Matches CSI sequences ending with anything EXCEPT 'm' (SGR/color)
+_CURSOR_RE = re.compile(r"\x1b\[\??[0-9;]*[A-LN-Za-ln-z]|\x1b[^\[[]")
+
+
+def _strip_cursor(text: str) -> str:
+    """Strip cursor movement/erase sequences, keep color (SGR) codes."""
+    return _CURSOR_RE.sub("", text)
+
+
+def _clean_for_stdout(text: str) -> str:
+    """Strip all ANSI escapes, collapse \\r\\n -> \\n, convert lone \\r -> \\n."""
+    text = _ALL_CSI_RE.sub("", text)
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
+    return text
+
+
+def _derive_clean_path(portal_path: str) -> str | None:
+    """Derive a clean log path from the portal log path.
+
+    /var/log/portal/vllm.log -> /var/log/vllm.log
+    Returns None if the path doesn't contain '/portal/'.
+    """
+    d, basename = os.path.split(portal_path)
+    if os.path.basename(d) == "portal":
+        return os.path.join(os.path.dirname(d), basename)
+    return None
+
+
+_LOG_MAX_SIZE = 5 * 1024 * 1024   # Rotate files larger than 5 MB
+_LOG_KEEP_SIZE = 1 * 1024 * 1024  # Keep the last 1 MB after rotation
+_ROTATE_CHECK = 512 * 1024        # Check size every 512 KB written
+
+
+def _write(fd: int, data: bytes) -> None:
+    """Write all bytes to fd, ignoring errors."""
+    try:
+        os.write(fd, data)
+    except OSError:
+        pass
+
+
+def _rotate_fd(fd: int, path: str) -> int:
+    """Rotate a log file if it exceeds _LOG_MAX_SIZE, returning the new fd.
+
+    Reads the last _LOG_KEEP_SIZE bytes, atomically replaces the file,
+    and reopens it.  Returns the original fd unchanged if no rotation
+    is needed or if rotation fails.
+    """
+    try:
+        size = os.fstat(fd).st_size
+        if size <= _LOG_MAX_SIZE:
+            return fd
+        with open(path, "rb") as f:
+            f.seek(max(0, size - _LOG_KEEP_SIZE))
+            tail = f.read()
+        nl = tail.find(b"\n")
+        if nl >= 0:
+            tail = tail[nl + 1:]
+        tmp = path + ".rotate"
+        with open(tmp, "wb") as f:
+            f.write(tail)
+        os.replace(tmp, path)
+        os.close(fd)
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError:
+        return fd
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        sys.stderr.write("Usage: log-tee <logfile>\n")
+        sys.exit(1)
+
+    portal_path = sys.argv[1]
+    portal_fd = os.open(portal_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    stdout_fd = sys.stdout.fileno()
+    stdin_fd = sys.stdin.fileno()
+
+    # Open clean log file if path is derivable
+    clean_path = _derive_clean_path(portal_path)
+    clean_fd = None
+    if clean_path:
+        os.makedirs(os.path.dirname(clean_path), exist_ok=True)
+        clean_fd = os.open(clean_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+
+    # Incremental UTF-8 decoder for multi-byte chars split across reads
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+    # Buffer a trailing \r across reads so \r\n split across chunks
+    # doesn't produce a spurious extra newline on stdout/clean log.
+    pending_cr = False
+
+    # Track bytes written for periodic rotation checks
+    bytes_since_check = 0
+
+    while True:
+        try:
+            data = os.read(stdin_fd, 8192)
+        except OSError:
+            break
+        if not data:
+            break
+
+        text = decoder.decode(data)
+
+        # Portal log: strip cursor/erase, keep colors + \r
+        portal_text = _strip_cursor(text)
+        if portal_text:
+            _write(portal_fd, portal_text.encode("utf-8"))
+
+        # Stdout + clean log: strip all ANSI, convert \r to \n
+        stdout_text = text
+        if pending_cr:
+            stdout_text = "\r" + stdout_text
+            pending_cr = False
+        if stdout_text.endswith("\r"):
+            stdout_text = stdout_text[:-1]
+            pending_cr = True
+        if stdout_text:
+            cleaned = _clean_for_stdout(stdout_text)
+            if cleaned:
+                encoded = cleaned.encode("utf-8")
+                _write(stdout_fd, encoded)
+                if clean_fd is not None:
+                    _write(clean_fd, encoded)
+
+        # Periodic rotation check
+        bytes_since_check += len(data)
+        if bytes_since_check >= _ROTATE_CHECK:
+            bytes_since_check = 0
+            portal_fd = _rotate_fd(portal_fd, portal_path)
+            if clean_fd is not None and clean_path is not None:
+                clean_fd = _rotate_fd(clean_fd, clean_path)
+
+    # Flush remaining bytes from decoder and any pending \r
+    remaining = decoder.decode(b"", final=True)
+    if remaining:
+        portal_text = _strip_cursor(remaining)
+        if portal_text:
+            _write(portal_fd, portal_text.encode("utf-8"))
+    if pending_cr:
+        remaining = "\r" + remaining
+    if remaining:
+        cleaned = _clean_for_stdout(remaining)
+        if cleaned:
+            encoded = cleaned.encode("utf-8")
+            _write(stdout_fd, encoded)
+            if clean_fd is not None:
+                _write(clean_fd, encoded)
+
+    os.close(portal_fd)
+    if clean_fd is not None:
+        os.close(clean_fd)
+
+
+if __name__ == "__main__":
+    main()

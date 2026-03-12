@@ -18,6 +18,6 @@ done
 # Launch Forge
 cd ${WORKSPACE}/stable-diffusion-webui-forge
 LD_PRELOAD=libtcmalloc_minimal.so.4 \
-        python launch.py \
+        pty python launch.py \
         ${FORGE_ARGS:---port 17860}
 

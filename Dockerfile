@@ -42,6 +42,9 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
+# Enable expect/unbuffer to find its Tcl libraries (multiarch-safe)
+RUN mkdir -p /usr/lib/tcltk && ln -sf /usr/lib/tcltk/$(uname -m)-linux-gnu /usr/lib/tcltk/default
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 # Expose all toolklit features
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
@@ -100,6 +103,7 @@ RUN \
         git-lfs \
         man \
         tzdata \
+        expect \
         # Display
         fonts-dejavu \
         fonts-freefont-ttf \

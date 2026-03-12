@@ -24,4 +24,4 @@ set -- "$type" \
   "--ServerApp.preferred_dir=${JUPYTER_DIR:-${WORKSPACE:-/}}" \
   "$@"
 
-"$JUPYTER_BIN" "$@" 2>&1 | tee >(grep -v "health.ico" >> /var/log/portal/jupyter.log)
+exec "$JUPYTER_BIN" "$@"

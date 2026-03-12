@@ -75,15 +75,8 @@ if [[ ! -d /opt/portal-aio/venv/ ]]; then
 fi
 /opt/portal-aio/venv/bin/pip install -r /opt/portal-aio/requirements.txt
 
-# Update version environment variable
-echo "Updating PORTAL_VERSION environment variable..."
-if grep -q "PORTAL_VERSION" /etc/environment; then
-    # Update existing entry
-    sed -i "s/PORTAL_VERSION=.*/PORTAL_VERSION=$TARGET_VERSION/" /etc/environment
-else
-    # Add new entry
-    echo "PORTAL_VERSION=\"$TARGET_VERSION\"" >> /etc/environment
-fi
+# Write the VERSION file — this is the source of truth for the installed version
+echo "$TARGET_VERSION" > /opt/portal-aio/VERSION
 
 echo "Update completed successfully!"
 echo "Portal updated to version $TARGET_VERSION"

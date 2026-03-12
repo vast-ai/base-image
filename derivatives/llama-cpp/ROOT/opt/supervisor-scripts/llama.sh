@@ -10,7 +10,7 @@ echo "Starting Llama.cpp"
 
 cd "${WORKSPACE}/"
 if [[ -n "${LLAMA_MODEL:-}" ]]; then
-  llama-server -hf "$LLAMA_MODEL" ${LLAMA_ARGS:---port 18000} 2>&1
+  pty llama-server -hf "$LLAMA_MODEL" ${LLAMA_ARGS:---port 18000} 2>&1
 else
   echo "Model not specified.  Exiting"
   sleep 6
