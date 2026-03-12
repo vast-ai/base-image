@@ -171,6 +171,32 @@ elif [[ -n "$test_port" ]]; then
         "?token=WRONG_TOKEN (query param)" 401 \
         "${base_url}/?token=wrong_token_value"
 
+    # Cookie auth: capture cookie from ?token= redirect, then use it
+    cookie_name="${VAST_CONTAINERLABEL:-C.unknown}_auth_token"
+    cookie_val=$(curl -s --max-time 5 ${tls_flag:-} -D- -o /dev/null \
+        "${base_url}/?token=${OPEN_BUTTON_TOKEN}" 2>/dev/null \
+        | grep -oP "${cookie_name}=\K[^;]+")
+    if [[ -n "$cookie_val" ]]; then
+        echo "  cookie received: ${cookie_name}=${cookie_val:0:8}..."
+
+        # Valid cookie → 200
+        http_check \
+            "cookie ${cookie_name}=${cookie_val:0:8}..." "200|302" \
+            -b "${cookie_name}=${cookie_val}" "${base_url}/"
+
+        # Fake cookie value → 401
+        http_check \
+            "cookie ${cookie_name}=FAKE_VALUE" 401 \
+            -b "${cookie_name}=fake_cookie_value" "${base_url}/"
+
+        # Wrong cookie name, correct value → 401
+        http_check \
+            "cookie wrong_name=${cookie_val:0:8}..." 401 \
+            -b "wrong_cookie_name=${cookie_val}" "${base_url}/"
+    else
+        fail_later "cookie-auth" "?token= did not return a Set-Cookie header"
+    fi
+
     # Wrong bearer → 401
     http_check \
         "bearer WRONG_TOKEN" 401 \
