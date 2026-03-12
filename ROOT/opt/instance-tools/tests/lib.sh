@@ -50,6 +50,23 @@ portal_has_entry() {
     [[ -f /etc/portal.yaml ]] && grep -qiE "^[^#].*${1}" /etc/portal.yaml
 }
 
+# ── Instance metadata (written by 11-instance-metadata.sh) ───────────
+
+INSTANCE_METADATA="/tmp/instance-test-metadata.json"
+
+# Read a field from the cached instance metadata JSON.
+# Returns empty string if metadata file doesn't exist or field is missing.
+instance_field() {
+    local field="$1"
+    [[ -f "$INSTANCE_METADATA" ]] || return 0
+    python3 -c "
+import json, sys
+d = json.load(open('${INSTANCE_METADATA}'))
+v = d.get('${field}', '')
+print('' if v is None else v)
+" 2>/dev/null
+}
+
 # ── Wait helpers ─────────────────────────────────────────────────────
 
 wait_for_url() {
