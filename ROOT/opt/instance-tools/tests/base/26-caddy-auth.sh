@@ -175,6 +175,37 @@ elif [[ -n "$test_port" ]]; then
     http_check \
         "basic nobody:wrongpassword" 401 \
         -u "nobody:wrongpassword" "${base_url}/"
+
+    # ── Custom WEB_USERNAME test ─────────────────────────────────────
+    # If WEB_USERNAME was not already set, temporarily set one to verify
+    # that caddy uses it and rejects the default vastai.
+
+    if [[ -z "${WEB_USERNAME:-}" ]]; then
+        echo ""
+        echo "  -- custom WEB_USERNAME test --"
+        test_web_user="testadmin_$$"
+        echo "  setting WEB_USERNAME=${test_web_user} and restarting caddy..."
+        sed -i '/^WEB_USERNAME=/d' /etc/environment 2>/dev/null
+        echo "WEB_USERNAME=\"${test_web_user}\"" >> /etc/environment
+        supervisorctl restart caddy &>/dev/null
+        sleep 2
+
+        # Custom user + WEB_PASSWORD → should work
+        http_check \
+            "basic ${test_web_user}:${WEB_PASSWORD:0:8}..." "200|302" \
+            -u "${test_web_user}:${WEB_PASSWORD}" "${base_url}/"
+
+        # Default vastai + WEB_PASSWORD → should be rejected
+        http_check \
+            "basic vastai:${WEB_PASSWORD:0:8}... (should reject)" 401 \
+            -u "vastai:${WEB_PASSWORD}" "${base_url}/"
+
+        # Restore: remove custom username and restart
+        sed -i '/^WEB_USERNAME=/d' /etc/environment
+        supervisorctl restart caddy &>/dev/null
+        sleep 2
+        echo "  WEB_USERNAME removed, caddy restored"
+    fi
 fi
 
 # ── Auth on additional ports ─────────────────────────────────────────
