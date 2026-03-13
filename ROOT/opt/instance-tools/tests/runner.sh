@@ -399,7 +399,8 @@ for i in "${!ALL_TESTS[@]}"; do
     # Per-test timeout: check for TEST_TIMEOUT in script header, fall back to DEFAULT_TEST_TIMEOUT.
     test_timeout=$(grep -oP '^# TEST_TIMEOUT=\K\d+' "$test_path" 2>/dev/null || echo "$DEFAULT_TEST_TIMEOUT")
     set +e
-    TEST_NAME="$test_name" timeout "$test_timeout" bash "$test_path" 2>&1 | log_output
+    # Run test with clean shell options — don't leak errexit/nounset via SHELLOPTS.
+    TEST_NAME="$test_name" timeout "$test_timeout" env -u SHELLOPTS bash "$test_path" 2>&1 | log_output
     rc=${PIPESTATUS[0]}
     set -e
     test_end=$(date +%s)
@@ -416,7 +417,7 @@ for i in "${!ALL_TESTS[@]}"; do
             has_failure=true
             echo "  → FAILED [FATAL] (${TEST_DURATIONS[$i]}s)" | log_output
             # Mark remaining tests as skipped
-            for j in $(seq $((i + 1)) $((${#ALL_TESTS[@]} - 1))); do
+            for ((j=i+1; j<${#ALL_TESTS[@]}; j++)); do
                 TEST_STATES[$j]="skipped"
             done
             echo "  aborting suite — fatal failure in ${test_name}" | log_output

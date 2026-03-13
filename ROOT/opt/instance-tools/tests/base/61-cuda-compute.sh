@@ -7,7 +7,9 @@ source "$(dirname "$0")/../lib.sh"
 has_gpu || test_skip "no GPU detected"
 
 # All CUDA operations use the driver API via Python ctypes — no pip packages needed.
-python3 << 'CUDA_TEST' || test_fail "CUDA compute test failed"
+# Python exits 77 to signal skip (e.g. libcuda not loadable), 1 for failure.
+set +e
+python3 << 'CUDA_TEST'
 import ctypes
 import ctypes.util
 import sys
@@ -151,6 +153,14 @@ for ctx in contexts:
 
 print("  all contexts destroyed", flush=True)
 CUDA_TEST
+cuda_rc=$?
+set -e
+
+if [[ $cuda_rc -eq 77 ]]; then
+    test_skip "CUDA driver not loadable"
+elif [[ $cuda_rc -ne 0 ]]; then
+    test_fail "CUDA compute test failed (exit code ${cuda_rc})"
+fi
 
 gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
 if [[ "$gpu_count" -gt 1 ]]; then

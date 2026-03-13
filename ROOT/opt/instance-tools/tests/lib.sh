@@ -53,7 +53,8 @@ has_gpu() {
 }
 
 is_serverless() {
-    [[ "${SERVERLESS,,}" == "true" ]]
+    local val="${SERVERLESS:-}"
+    [[ "${val,,}" == "true" ]]
 }
 
 is_vast_image() {
