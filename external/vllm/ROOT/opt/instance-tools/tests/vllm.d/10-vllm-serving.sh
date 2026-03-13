@@ -297,8 +297,11 @@ if [[ -f /etc/supervisor/conf.d/model-ui.conf ]] && ! is_serverless; then
 fi
 
 # ── Inference check ───────────────────────────────────────────────────
-# VLLM_TEST_ENDPOINT controls which endpoint to test (default: chat).
-# Set to "none" to skip.  Override via env var for non-chat models.
+# VLLM_TEST_ENDPOINT controls inference testing:
+#   "chat"  (default) — test via /v1/chat/completions
+#   "none"  — skip inference test (for embedding/reranker models)
+# Future: additional endpoints (e.g. "completions", "embeddings") can be
+# added here as new branches.
 
 echo ""
 echo "  -- inference --"

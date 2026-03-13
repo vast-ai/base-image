@@ -5,7 +5,7 @@
 #   1. base/*.sh    — base image tests (always present)
 #   2. *.d/*.sh     — derivative image tests (dropped by derivative images)
 #
-# Each test script must exit: 0 (pass), 1 (fail), 77 (skip).
+# Each test script must exit: 0 (pass), 1 (fail), 2 (fatal — aborts suite), 77 (skip).
 #
 # Results are written to RESULTS_FILE as JSON, updated after each test.
 # The runner itself exits 0 if all tests pass, 1 if any fail.

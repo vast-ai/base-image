@@ -22,10 +22,10 @@ tests/
 Discovers and executes test scripts in sort order. Writes JSON results to `/var/log/test-results.json` after each test, enabling real-time monitoring.
 
 **Modes:**
-- **Automated** — launched by boot script (`/etc/vast_boot.d/85-instance-test.sh`) when `INSTANCE_TEST=true`. Starts an HTTP/SSE results server on port 10199, posts results to webhook, stops the instance after completion.
+- **Automated** — launched by boot script (`/etc/vast_boot.d/85-instance-test.sh`) when `INSTANCE_TEST=true`. Starts an HTTP/SSE results server on port 10199, waits for a client to connect, posts results to optional webhook on completion. The test *client* (`run_test.py`) handles instance stop/destroy.
 - **Manual** — auto-detected when run from a TTY (interactive shell). No HTTP server, no webhook, no instance stop. Can also be forced with `--manual` / `--auto` flags.
 
-**Per-test timeout:** Each test gets 120s by default. Override with a `# TEST_TIMEOUT=N` comment on line 2 of the test script (see `12-provisioning.sh`).
+**Per-test timeout:** Each test gets 3600s (1 hour) by default, configurable via `INSTANCE_TEST_DEFAULT_TIMEOUT`. Override per-test with a `# TEST_TIMEOUT=N` comment in the script header (see `12-provisioning.sh`).
 
 **Results JSON format:**
 ```json
@@ -40,8 +40,12 @@ Discovers and executes test scripts in sort order. Writes JSON results to `/var/
 ```
 
 **Results endpoints (automated mode):**
-- `GET :10199/test-status` — JSON snapshot
-- `GET :10199/test-stream` — SSE stream (pushes on every state change)
+- `GET :10199/test-status` — JSON snapshot of current results
+- `GET :10199/test-stream` — SSE stream of test output lines
+- `GET :10199/test-stream?log=1` — SSE stream with system log lines interleaved
+- `POST :10199/test-start` — Signal client connected (triggers test start)
+
+SSE events: `output` (test lines), `log` (system log lines with `src` and optional `overwrite` for progress bars), `result` (final JSON). Heartbeat comments (`: heartbeat`) sent every 5s to keep connections alive.
 
 ### Library (`lib.sh`)
 
@@ -51,13 +55,19 @@ Sourced by every test. Provides:
 |----------|------|-------------|
 | `test_pass "msg"` | Exit | Report success, exit 0 |
 | `test_fail "msg"` | Exit | Report failure, exit 1 |
+| `test_fatal "msg"` | Exit | Report failure and abort suite, exit 2 |
 | `test_skip "msg"` | Exit | Report skip, exit 77 |
+| `fail_later "label" "msg"` | Deferred | Record failure without exiting |
+| `report_failures` | Deferred | Exit with failure if any `fail_later` calls were made |
 | `has_gpu` | Predicate | `nvidia-smi` succeeds |
 | `is_serverless` | Predicate | `$SERVERLESS` is "true" |
+| `is_vast_image` | Predicate | `$IMAGE_TYPE` is "vast" |
 | `portal_has_entry "term"` | Predicate | grep for term in `/etc/portal.yaml` |
+| `version_gt A B` | Predicate | Dotted version comparison (e.g. `12.10` > `12.9`) |
 | `instance_field "key"` | Query | Read field from cached API metadata JSON |
 | `wait_for_url URL [timeout]` | Wait | Poll for HTTP 200 |
 | `wait_for_port PORT [timeout]` | Wait | Poll for TCP listener |
+| `wait_for_caddy [port] [proto]` | Wait | Poll for Caddy (accepts 401 as responsive) |
 | `assert_file_exists PATH` | Assert | |
 | `assert_dir_exists PATH` | Assert | |
 | `assert_file_mode PATH OCTAL` | Assert | `stat -c '%a'` comparison (use `440` not `0440`) |
@@ -109,7 +119,7 @@ test_pass "description of what passed"
 
 1. **Source `lib.sh`** — always the first non-comment line.
 
-2. **Exit codes** — `test_pass` (0), `test_fail` (1), `test_skip` (77). The runner interprets these. Never `exit` directly.
+2. **Exit codes** — `test_pass` (0), `test_fail` (1), `test_fatal` (2, aborts entire suite), `test_skip` (77). The runner interprets these. Never `exit` directly.
 
 3. **Skip, don't fail on absent features** — if a feature may not exist on all images (e.g. `/venv/main`, `/opt/nvm`, specific binaries), check for its presence and skip that check gracefully. Only fail if something that *should* be there is broken.
 
@@ -146,9 +156,11 @@ The runner discovers `*.d/` directories automatically. Tests within each directo
 |----------|---------|-------------|
 | `INSTANCE_TEST` | — | Set to "true" to launch runner from boot script |
 | `INSTANCE_TEST_RESULTS` | `/var/log/test-results.json` | Results file path |
+| `INSTANCE_TEST_LOG` | `/var/log/test-output.log` | Test output log path |
 | `INSTANCE_TEST_PORT` | `10199` | HTTP results server port |
+| `INSTANCE_TEST_DEFAULT_TIMEOUT` | `3600` | Per-test timeout in seconds (overridable per-test via `# TEST_TIMEOUT=N`) |
+| `INSTANCE_TEST_SYSTEM_LOG` | — | Comma-separated log file paths to stream to client (e.g. `/var/log/portal/vllm.log`) |
 | `INSTANCE_TEST_WEBHOOK` | — | URL to POST results JSON to on completion |
-| `INSTANCE_TEST_PROV_TIMEOUT` | — | (deprecated, now in test 12) |
 
 ### Provisioning test configuration
 | Variable | Default | Description |
