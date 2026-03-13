@@ -13,7 +13,8 @@ body=$(curl -sf http://127.0.0.1:11111/ 2>/dev/null)
 
 # Check /get-applications returns valid JSON
 config=$(curl -sf http://127.0.0.1:11111/get-applications 2>/dev/null) || test_fail "/get-applications request failed"
-# Verify it starts with { or [ (basic JSON check)
-[[ "$config" == "{"* ]] || [[ "$config" == "["* ]] || test_fail "/get-applications did not return valid JSON"
+# Verify it is valid JSON
+echo "$config" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null \
+    || test_fail "/get-applications did not return valid JSON"
 
 test_pass "portal responds on :11111 with valid HTML and JSON apps"

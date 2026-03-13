@@ -76,7 +76,7 @@ fi
 
 compat_conf="/etc/ld.so.conf.d/0-compat-cuda.conf"
 compat_dir="/usr/local/cuda-${latest_cuda}/compat"
-toolkit_needs_compat=$(awk "BEGIN {print ($latest_cuda > $native_driver_cuda) ? 1 : 0}" 2>/dev/null || echo "0")
+toolkit_needs_compat=$(version_gt "$latest_cuda" "$native_driver_cuda" && echo "1" || echo "0")
 native_major=${native_driver_cuda%%.*}
 latest_major=${latest_cuda%%.*}
 
@@ -91,7 +91,7 @@ if [[ "$toolkit_needs_compat" == "1" ]]; then
         echo "  DISABLE_FORWARD_COMPAT=true — forward compat intentionally disabled"
         if [[ "$native_major" == "$latest_major" ]]; then
             echo "  same major version (${native_major}) — minor compat sufficient"
-        elif awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+        elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
             test_fail "forward compat disabled but selected CUDA ${selected_cuda} > native max ${native_driver_cuda} (major version mismatch)"
@@ -131,7 +131,7 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
             echo "  (consumer GPU or cuInit failed — expected on non-datacenter hardware)"
             if [[ "$native_major" == "$latest_major" ]]; then
                 echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
-            elif awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+            elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
                 echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
             else
                 test_fail "compat not activated and major version mismatch: selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"
@@ -142,7 +142,7 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
         echo "  no compat libs in ${compat_dir}"
         if [[ "$native_major" == "$latest_major" ]]; then
             echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
-        elif awk "BEGIN {exit !($selected_cuda <= $native_driver_cuda)}"; then
+        elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
             test_fail "no compat libs and major version mismatch: selected CUDA ${selected_cuda} > native max ${native_driver_cuda}"

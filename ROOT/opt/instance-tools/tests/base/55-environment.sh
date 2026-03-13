@@ -24,4 +24,34 @@ assert_file_exists /etc/environment
 (source /etc/environment 2>/dev/null) || test_fail "/etc/environment is not sourceable"
 grep -q "PATH=" /etc/environment || test_fail "/etc/environment missing PATH"
 
+# HF_HOME should be set by boot scripts (10-prep-env.sh)
+if [[ -n "${HF_HOME:-}" ]]; then
+    echo "  HF_HOME=${HF_HOME}"
+    [[ -d "$HF_HOME" ]] || echo "  WARN: HF_HOME directory does not exist yet"
+elif is_vast_image; then
+    test_fail "HF_HOME not set (required for IMAGE_TYPE=vast)"
+else
+    echo "  WARN: HF_HOME not set"
+fi
+
+# DATA_DIRECTORY should match WORKSPACE
+if [[ -n "${DATA_DIRECTORY:-}" ]]; then
+    echo "  DATA_DIRECTORY=${DATA_DIRECTORY}"
+elif is_vast_image; then
+    test_fail "DATA_DIRECTORY not set (required for IMAGE_TYPE=vast)"
+else
+    echo "  WARN: DATA_DIRECTORY not set"
+fi
+
+# Umask — Dockerfile sets 002 in .bashrc for group-writable files
+tmpfile=$(mktemp -p "${WORKSPACE:-/tmp}" .umask-test-XXXXXX)
+file_perms=$(stat -c '%a' "$tmpfile")
+rm -f "$tmpfile"
+echo "  new file permissions: ${file_perms} (umask $(umask))"
+if [[ "$file_perms" == "664" ]]; then
+    echo "  umask enforcement: correct (664)"
+else
+    echo "  WARN: expected 664, got ${file_perms} (umask may not be 002)"
+fi
+
 test_pass "environment variables verified"

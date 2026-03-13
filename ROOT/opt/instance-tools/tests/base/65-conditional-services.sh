@@ -3,13 +3,7 @@
 # Runs after provisioning (12) since provisioning can register new services.
 source "$(dirname "$0")/../lib.sh"
 
-# Collect failures instead of exiting on first one
-FAILURES=()
-fail_later() {
-    local name="$1" detail="$2"
-    FAILURES+=("$name")
-    echo "  FAIL: ${name}: ${detail}"
-}
+# FAILURES and fail_later/report_failures come from lib.sh
 
 # ── Verify .conf files are registered ─────────────────────────────────
 
@@ -182,9 +176,6 @@ done
 
 # ── Report ────────────────────────────────────────────────────────────
 
-if [[ ${#FAILURES[@]} -gt 0 ]]; then
-    joined=$(printf '%s, ' "${FAILURES[@]}")
-    test_fail "${#FAILURES[@]} service(s) in wrong state: ${joined%, }"
-fi
+report_failures
 
 test_pass "all service states verified"

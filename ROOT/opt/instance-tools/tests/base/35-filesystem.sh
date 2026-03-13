@@ -14,7 +14,7 @@ assert_file_mode /var/log/portal 1777
 # Workspace
 assert_dir_exists "${WORKSPACE:-/workspace}"
 
-# Skip-if-absent paths — check what IS present, don't fail on missing
+# Paths required for IMAGE_TYPE=vast, optional for external images
 for path in \
     /opt/portal-aio \
     /opt/syncthing \
@@ -26,6 +26,9 @@ for path in \
     if [[ -e "$path" ]]; then
         echo "  present: $path"
     else
+        if is_vast_image; then
+            test_fail "${path} not found (required for IMAGE_TYPE=vast)"
+        fi
         echo "  absent (ok): $path"
     fi
 done

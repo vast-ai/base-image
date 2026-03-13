@@ -4,6 +4,7 @@
 # Provides:
 #   test_pass "message"   — report success
 #   test_fail "message"   — report failure (exits 1)
+#   test_fatal "message"  — report failure and abort suite (exits 2)
 #   test_skip "message"   — report skip   (exits 77)
 #   wait_for_url URL [timeout_s] — wait for HTTP 200
 #   wait_for_port PORT [timeout_s] — wait for TCP port to be listening
@@ -17,7 +18,11 @@
 #   assert_user_exists USERNAME [UID]
 #   has_gpu          — predicate (return 0/1)
 #   is_serverless    — predicate (return 0/1)
+#   is_vast_image    — predicate (return 0/1): IMAGE_TYPE=vast
 #   portal_has_entry — predicate (return 0/1)
+#   version_gt A B   — predicate: version A > B (dotted integers)
+#   fail_later MSG   — record failure without exiting (call report_failures at end)
+#   report_failures  — exit with failure if any fail_later calls were made
 
 TEST_NAME="${TEST_NAME:-$(basename "$0" .sh)}"
 
@@ -29,6 +34,11 @@ test_pass() {
 test_fail() {
     echo "FAIL: ${TEST_NAME}: ${1:-assertion failed}"
     exit 1
+}
+
+test_fatal() {
+    echo "FATAL: ${TEST_NAME}: ${1:-fatal failure}"
+    exit 2
 }
 
 test_skip() {
@@ -46,8 +56,44 @@ is_serverless() {
     [[ "${SERVERLESS,,}" == "true" ]]
 }
 
+is_vast_image() {
+    [[ "${IMAGE_TYPE:-}" == "vast" ]]
+}
+
 portal_has_entry() {
     [[ -f /etc/portal.yaml ]] && grep -qiE "^[^#].*${1}" /etc/portal.yaml
+}
+
+# Compare dotted version strings as integers (e.g. "12.10" > "12.9").
+# Returns 0 (true) if $1 > $2, 1 (false) otherwise.
+version_gt() {
+    local IFS=.
+    local a=($1) b=($2)
+    (( a[0] > b[0] || (a[0] == b[0] && a[1] > b[1]) ))
+}
+
+# ── Deferred failure pattern ─────────────────────────────────────────
+# Use these when a test needs to check multiple things before exiting.
+# Call fail_later() for each sub-check failure, then report_failures at the end.
+#
+# Usage:
+#   FAILURES=()   # (automatically initialized by fail_later if unset)
+#   fail_later "label" "expected X, got Y"
+#   ...more checks...
+#   report_failures
+
+FAILURES=()
+fail_later() {
+    FAILURES+=("$1")
+    echo "  FAIL: $1: $2"
+}
+
+report_failures() {
+    if [[ ${#FAILURES[@]} -gt 0 ]]; then
+        local joined
+        joined=$(printf '%s, ' "${FAILURES[@]}")
+        test_fail "${#FAILURES[@]} check(s) failed: ${joined%, }"
+    fi
 }
 
 # ── Instance metadata (written by 11-instance-metadata.sh) ───────────
@@ -61,13 +107,34 @@ instance_field() {
     [[ -f "$INSTANCE_METADATA" ]] || return 0
     python3 -c "
 import json, sys
-d = json.load(open('${INSTANCE_METADATA}'))
-v = d.get('${field}', '')
+d = json.load(open(sys.argv[1]))
+v = d.get(sys.argv[2], '')
 print('' if v is None else v)
-" 2>/dev/null
+" "$INSTANCE_METADATA" "$field" 2>/dev/null
 }
 
 # ── Wait helpers ─────────────────────────────────────────────────────
+
+wait_for_caddy() {
+    local port="${1:-2019}"  # default: caddy admin API (always available)
+    local proto="${2:-http}"
+    local curl_flags="-sf -o /dev/null --max-time 2"
+    [[ "$proto" == "https" ]] && curl_flags+=" -k"
+    for _ in $(seq 1 30); do
+        if curl $curl_flags "${proto}://127.0.0.1:${port}/" 2>/dev/null; then
+            return 0
+        fi
+        # Also accept 401 (auth required) as "responsive"
+        local code
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+            $([[ "$proto" == "https" ]] && echo "-k") \
+            "${proto}://127.0.0.1:${port}/" 2>/dev/null)
+        [[ "$code" =~ ^[0-9]+$ && "$code" != "000" ]] && return 0
+        sleep 1
+    done
+    echo "  WARN: caddy not responding on ${proto}://${port} after 30s"
+    return 1
+}
 
 wait_for_url() {
     local url="$1"

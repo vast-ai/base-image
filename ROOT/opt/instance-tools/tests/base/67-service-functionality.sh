@@ -4,11 +4,7 @@
 # Runs after 65-conditional-services.sh (which validates state).
 source "$(dirname "$0")/../lib.sh"
 
-FAILURES=()
-fail_later() {
-    FAILURES+=("$1")
-    echo "  FAIL: $1: $2"
-}
+# FAILURES and fail_later/report_failures come from lib.sh
 
 service_running() {
     local name="$1"
@@ -191,9 +187,6 @@ fi
 
 # ── Report ───────────────────────────────────────────────────────────
 
-if [[ ${#FAILURES[@]} -gt 0 ]]; then
-    joined=$(printf '%s, ' "${FAILURES[@]}")
-    test_fail "${#FAILURES[@]} service(s) failed functional checks: ${joined%, }"
-fi
+report_failures
 
 test_pass "running services respond correctly"

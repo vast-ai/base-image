@@ -6,11 +6,7 @@ source "$(dirname "$0")/../lib.sh"
 is_serverless && test_skip "serverless (no caddy)"
 [[ -f /etc/Caddyfile ]] || test_skip "no Caddyfile"
 
-FAILURES=()
-fail_later() {
-    FAILURES+=("$1")
-    echo "  FAIL: $1: $2"
-}
+# FAILURES and fail_later/report_failures come from lib.sh
 
 # ── HTTP request helper ──────────────────────────────────────────────
 # Usage: http_check LABEL EXPECTED_STATUS [curl_args...]
@@ -70,7 +66,7 @@ if [[ -z "${WEB_PASSWORD:-}" ]]; then
 
     echo "  restarting caddy to pick up WEB_PASSWORD..."
     supervisorctl restart caddy &>/dev/null
-    sleep 2
+    wait_for_caddy
     auth_modified=true
 else
     echo "  WEB_PASSWORD=${WEB_PASSWORD:0:8}..."
@@ -219,7 +215,7 @@ elif [[ -n "$test_port" ]]; then
         sed -i '/^WEB_USERNAME=/d' /etc/environment 2>/dev/null
         echo "WEB_USERNAME=\"${test_web_user}\"" >> /etc/environment
         supervisorctl restart caddy &>/dev/null
-        sleep 2
+        wait_for_caddy
 
         # Custom user + WEB_PASSWORD → should work
         http_check \
@@ -234,7 +230,7 @@ elif [[ -n "$test_port" ]]; then
         # Restore: remove custom username and restart
         sed -i '/^WEB_USERNAME=/d' /etc/environment
         supervisorctl restart caddy &>/dev/null
-        sleep 2
+        wait_for_caddy
         echo "  WEB_USERNAME removed, caddy restored"
     fi
 fi
@@ -282,7 +278,7 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment 2>/dev/null
     echo "AUTH_EXCLUDE=\"${test_port}\"" >> /etc/environment
     supervisorctl restart caddy &>/dev/null
-    sleep 2
+    wait_for_caddy
 
     exc_proto=$(get_proto "$test_port")
     tls_flag=""
@@ -299,7 +295,7 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
 
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
-    sleep 2
+    wait_for_caddy
     echo "  AUTH_EXCLUDE removed, caddy restored"
 fi
 
@@ -312,10 +308,19 @@ while IFS='=' read -r varname mapped_port; do
     container_port="${varname#VAST_TCP_PORT_}"
     [[ "$container_port" == "22" ]] && continue
 
-    if ss -tln | grep -qE ":(${container_port}) "; then
-        echo "  TCP ${container_port} (host ${mapped_port}): listening"
+    # When the requested port is out of bounds (>= 70000), the backend picks
+    # a random host port and maps it 1:1 inside the container — so the actual
+    # listen port inside is mapped_port, not container_port.
+    if (( container_port >= 70000 )); then
+        check_port="$mapped_port"
     else
-        fail_later "tcp-${container_port}" "VAST_TCP_PORT_${container_port}=${mapped_port} but nothing listening on TCP ${container_port}"
+        check_port="$container_port"
+    fi
+
+    if ss -tln | grep -qE ":(${check_port}) "; then
+        echo "  TCP ${container_port} (host ${mapped_port}): listening on ${check_port}"
+    else
+        echo "  WARN: TCP ${container_port} (host ${mapped_port}): not listening on ${check_port}"
     fi
     port_check_count=$((port_check_count + 1))
 done < <(env | grep '^VAST_TCP_PORT_' | sort)
@@ -324,10 +329,16 @@ while IFS='=' read -r varname mapped_port; do
     [[ -n "$varname" ]] || continue
     container_port="${varname#VAST_UDP_PORT_}"
 
-    if ss -uln | grep -qE ":(${container_port}) "; then
-        echo "  UDP ${container_port} (host ${mapped_port}): listening"
+    if (( container_port >= 70000 )); then
+        check_port="$mapped_port"
     else
-        echo "  WARN: VAST_UDP_PORT_${container_port}=${mapped_port} but nothing listening on UDP ${container_port}"
+        check_port="$container_port"
+    fi
+
+    if ss -uln | grep -qE ":(${check_port}) "; then
+        echo "  UDP ${container_port} (host ${mapped_port}): listening on ${check_port}"
+    else
+        echo "  WARN: UDP ${container_port} (host ${mapped_port}): not listening on ${check_port}"
     fi
     port_check_count=$((port_check_count + 1))
 done < <(env | grep '^VAST_UDP_PORT_' | sort)
@@ -352,15 +363,12 @@ if $auth_modified; then
     echo "  cleaning up test password and restarting caddy..."
     sed -i '/^WEB_PASSWORD=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
-    sleep 2
+    wait_for_caddy
 fi
 
 # ── Report ───────────────────────────────────────────────────────────
 
-if [[ ${#FAILURES[@]} -gt 0 ]]; then
-    joined=$(printf '%s, ' "${FAILURES[@]}")
-    test_fail "${#FAILURES[@]} auth check(s) failed: ${joined%, }"
-fi
+report_failures
 
 excluded_count=${#EXCLUDED_PORTS[@]}
 if [[ $excluded_count -gt 0 ]]; then

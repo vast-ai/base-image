@@ -36,7 +36,7 @@ if [[ -f /.provisioning_failed ]]; then
         echo "  last 5 lines of provisioning log:"
         tail -5 "$PROV_LOG" | sed 's/^/    /'
     fi
-    test_fail "provisioning failed"
+    test_fatal "provisioning failed"
 fi
 
 # Not in progress and not configured — nothing to do
@@ -99,7 +99,7 @@ while [[ -f /.provisioning ]]; do
             echo "  last 10 lines of provisioning log:"
             tail -10 "$PROV_LOG" | sed 's/^/    /'
         fi
-        test_fail "provisioning timed out after ${PROV_TIMEOUT}s"
+        test_fatal "provisioning timed out after ${PROV_TIMEOUT}s"
     fi
 
     # Detect activity: log growth, log mtime change, or active processes
@@ -128,7 +128,7 @@ while [[ -f /.provisioning ]]; do
     stall_duration=$((now - last_activity))
 
     # Progress report every 30s
-    if (( elapsed % 30 < POLL_INTERVAL )); then
+    if (( elapsed % 30 == 0 )); then
         echo "  [${elapsed}s] log=${cur_log_size}B procs=${active_procs} stall=${stall_duration}s"
     fi
 
@@ -141,7 +141,7 @@ while [[ -f /.provisioning ]]; do
             echo "  last 10 lines of provisioning log:"
             tail -10 "$PROV_LOG" | sed 's/^/    /'
         fi
-        test_fail "provisioning appears hung (no activity for ${stall_duration}s)"
+        test_fatal "provisioning appears hung (no activity for ${stall_duration}s)"
     fi
 done
 
@@ -166,7 +166,7 @@ if [[ -f /.provisioning_failed ]]; then
         echo "  last 5 lines of provisioning log:"
         tail -5 "$PROV_LOG" | sed 's/^/    /'
     fi
-    test_fail "provisioning failed after ${elapsed}s"
+    test_fatal "provisioning failed after ${elapsed}s"
 fi
 
 # /.provisioning gone but no outcome marker — the 95-supervisor-wait.sh removed it

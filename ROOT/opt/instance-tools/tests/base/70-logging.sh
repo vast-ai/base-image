@@ -7,10 +7,13 @@ source "$(dirname "$0")/../lib.sh"
 
 is_serverless && test_skip "logging not applicable in serverless mode"
 
-# log-tee (skip if absent — external images may not have it)
+# log-tee (required for IMAGE_TYPE=vast, optional for external)
 if command -v log-tee &>/dev/null; then
     echo "  log-tee: present"
 else
+    if is_vast_image; then
+        test_fail "log-tee not found (required for IMAGE_TYPE=vast)"
+    fi
     echo "  absent (ok): log-tee"
 fi
 

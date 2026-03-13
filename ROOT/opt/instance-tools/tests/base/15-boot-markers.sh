@@ -28,8 +28,12 @@ if ! is_serverless || [[ -f /etc/supervisor/conf.d/caddy.conf ]]; then
     assert_file_exists /etc/portal.yaml
 fi
 
-# /etc/Caddyfile — not expected in serverless
+# /etc/Caddyfile — not expected in serverless; may take a few seconds to generate
 if ! is_serverless; then
+    for _ in $(seq 1 30); do
+        [[ -f /etc/Caddyfile ]] && break
+        sleep 1
+    done
     assert_file_exists /etc/Caddyfile
 fi
 
