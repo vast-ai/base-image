@@ -129,7 +129,7 @@ test_pass "description of what passed"
 
 6. **No `local` at top level** — test scripts run at the top level (not inside a function), so `local` is invalid. Use it inside functions you define within the test.
 
-7. **Custom timeout** — for long-running tests, add `# TEST_TIMEOUT=N` as the second line (line 2) of the script. The runner reads this via grep.
+7. **Custom timeout** — for long-running tests, add `# TEST_TIMEOUT=N` as a comment near the top of the script. The runner scans the entire file with `grep ^# TEST_TIMEOUT=` so it can appear on any line (convention: in the header block, after the shebang and description).
 
 8. **Boot scripts are sourced** — if adding a boot script to `/etc/vast_boot.d/`, never use `exit` (it kills the boot sequence). Use `return` instead.
 
