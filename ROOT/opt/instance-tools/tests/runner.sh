@@ -291,7 +291,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 port = int('${RESULTS_PORT}') if '${RESULTS_PORT}'.isdigit() else 10199
-server = http.server.HTTPServer(('0.0.0.0', port), Handler)
+# ThreadingHTTPServer so /test-status can be served while /test-stream
+# is active (SSE blocks the handler thread for the stream's lifetime).
+if hasattr(http.server, 'ThreadingHTTPServer'):
+    server = http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler)
+else:
+    # Python 3.6 fallback
+    import socketserver
+    class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+    server = ThreadedServer(('0.0.0.0', port), Handler)
 server.daemon_threads = True
 server.serve_forever()
 " &
