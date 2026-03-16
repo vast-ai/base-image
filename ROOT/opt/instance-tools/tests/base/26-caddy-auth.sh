@@ -7,30 +7,7 @@ is_serverless && test_skip "serverless (no caddy)"
 [[ -f /etc/Caddyfile ]] || test_skip "no Caddyfile"
 
 # FAILURES and fail_later/report_failures come from lib.sh
-
-# ── HTTP request helper ──────────────────────────────────────────────
-# Usage: http_check LABEL EXPECTED_STATUS [curl_args...]
-# Logs the request and result verbosely.
-
-http_check() {
-    local label="$1"
-    local expected="$2"
-    shift 2
-    local status
-    status=$(curl -s --max-time 5 ${tls_flag:-} -o /dev/null -w '%{http_code}' "$@" 2>/dev/null)
-    if [[ "$expected" == *"|"* ]]; then
-        # Multiple acceptable codes, e.g. "200|302"
-        if echo "$expected" | tr '|' '\n' | grep -qx "$status"; then
-            echo "  ${label} → ${status} ok"
-            return 0
-        fi
-    elif [[ "$status" == "$expected" ]]; then
-        echo "  ${label} → ${status} ok"
-        return 0
-    fi
-    fail_later "$label" "expected ${expected}, got ${status}"
-    return 1
-}
+# http_check, find_caddy_ports, caddy_port_proto come from lib.sh
 
 # ── OPEN_BUTTON_TOKEN is required ────────────────────────────────────
 
@@ -77,12 +54,8 @@ echo "  WEB_USERNAME=${WEB_USERNAME:-<not set>} (basic auth user: ${basic_user})
 
 # ── Find external ports ──────────────────────────────────────────────
 
-all_caddy_ports=()
-while IFS= read -r line; do
-    port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
-    [[ -n "$port" && "$port" != "2019" ]] || continue
-    ss -tln | grep -q ":${port} " && all_caddy_ports+=("$port")
-done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
+find_caddy_ports
+all_caddy_ports=("${REPLY[@]}")
 
 test_port=""
 for p in "${all_caddy_ports[@]}"; do
@@ -100,19 +73,10 @@ if [[ ${#all_caddy_ports[@]} -eq 0 ]]; then
     test_skip "no external caddy ports found"
 fi
 
-get_proto() {
-    local p="$1"
-    if grep -A5 "^:${p} {" /etc/Caddyfile | grep -q "tls "; then
-        echo "https"
-    else
-        echo "http"
-    fi
-}
-
 # Set TLS flag for curl if needed
 tls_flag=""
 if [[ -n "$test_port" ]]; then
-    proto=$(get_proto "$test_port")
+    proto=$(caddy_port_proto "$test_port")
     [[ "$proto" == "https" ]] && tls_flag="-k"
     base_url="${proto}://127.0.0.1:${test_port}"
 fi
@@ -128,44 +92,44 @@ elif [[ -n "$test_port" ]]; then
     # No auth → 401
     http_check \
         "no credentials" 401 \
-        "${base_url}/"
+        $tls_flag "${base_url}/"
 
     # Bearer OPEN_BUTTON_TOKEN
     http_check \
         "bearer ${OPEN_BUTTON_TOKEN:0:8}... (OBT)" "200|302" \
-        -H "Authorization: Bearer ${OPEN_BUTTON_TOKEN}" "${base_url}/"
+        $tls_flag -H "Authorization: Bearer ${OPEN_BUTTON_TOKEN}" "${base_url}/"
 
     # Bearer WEB_PASSWORD
     http_check \
         "bearer ${WEB_PASSWORD:0:8}... (WEB_PASSWORD)" "200|302" \
-        -H "Authorization: Bearer ${WEB_PASSWORD}" "${base_url}/"
+        $tls_flag -H "Authorization: Bearer ${WEB_PASSWORD}" "${base_url}/"
 
     # Basic auth: correct user + WEB_PASSWORD
     http_check \
         "basic ${basic_user}:${WEB_PASSWORD:0:8}..." "200|302" \
-        -u "${basic_user}:${WEB_PASSWORD}" "${base_url}/"
+        $tls_flag -u "${basic_user}:${WEB_PASSWORD}" "${base_url}/"
 
     # Basic auth: wrong username + correct password → 401
     http_check \
         "basic wronguser:${WEB_PASSWORD:0:8}..." 401 \
-        -u "wronguser:${WEB_PASSWORD}" "${base_url}/"
+        $tls_flag -u "wronguser:${WEB_PASSWORD}" "${base_url}/"
 
     # If custom WEB_USERNAME, verify default vastai is rejected
     if [[ -n "${WEB_USERNAME:-}" && "${WEB_USERNAME}" != "vastai" ]]; then
         http_check \
             "basic vastai:${WEB_PASSWORD:0:8}... (should reject)" 401 \
-            -u "vastai:${WEB_PASSWORD}" "${base_url}/"
+            $tls_flag -u "vastai:${WEB_PASSWORD}" "${base_url}/"
     fi
 
     # Query param token → 302 redirect with cookie
     http_check \
         "?token=${OPEN_BUTTON_TOKEN:0:8}... (query param)" "302|200" \
-        "${base_url}/?token=${OPEN_BUTTON_TOKEN}"
+        $tls_flag "${base_url}/?token=${OPEN_BUTTON_TOKEN}"
 
     # Wrong query param token → 401
     http_check \
         "?token=WRONG_TOKEN (query param)" 401 \
-        "${base_url}/?token=wrong_token_value"
+        $tls_flag "${base_url}/?token=wrong_token_value"
 
     # Cookie auth: capture cookie from ?token= redirect, then use it
     cookie_name="${VAST_CONTAINERLABEL:-C.unknown}_auth_token"
@@ -178,17 +142,17 @@ elif [[ -n "$test_port" ]]; then
         # Valid cookie → 200
         http_check \
             "cookie ${cookie_name}=${cookie_val:0:8}..." "200|302" \
-            -b "${cookie_name}=${cookie_val}" "${base_url}/"
+            $tls_flag -b "${cookie_name}=${cookie_val}" "${base_url}/"
 
         # Fake cookie value → 401
         http_check \
             "cookie ${cookie_name}=FAKE_VALUE" 401 \
-            -b "${cookie_name}=fake_cookie_value" "${base_url}/"
+            $tls_flag -b "${cookie_name}=fake_cookie_value" "${base_url}/"
 
         # Wrong cookie name, correct value → 401
         http_check \
             "cookie wrong_name=${cookie_val:0:8}..." 401 \
-            -b "wrong_cookie_name=${cookie_val}" "${base_url}/"
+            $tls_flag -b "wrong_cookie_name=${cookie_val}" "${base_url}/"
     else
         fail_later "cookie-auth" "?token= did not return a Set-Cookie header"
     fi
@@ -196,12 +160,12 @@ elif [[ -n "$test_port" ]]; then
     # Wrong bearer → 401
     http_check \
         "bearer WRONG_TOKEN" 401 \
-        -H "Authorization: Bearer wrong_token_value" "${base_url}/"
+        $tls_flag -H "Authorization: Bearer wrong_token_value" "${base_url}/"
 
     # Wrong basic auth → 401
     http_check \
         "basic nobody:wrongpassword" 401 \
-        -u "nobody:wrongpassword" "${base_url}/"
+        $tls_flag -u "nobody:wrongpassword" "${base_url}/"
 
     # ── Custom WEB_USERNAME test ─────────────────────────────────────
     # If WEB_USERNAME was not already set, temporarily set one to verify
@@ -220,12 +184,12 @@ elif [[ -n "$test_port" ]]; then
         # Custom user + WEB_PASSWORD → should work
         http_check \
             "basic ${test_web_user}:${WEB_PASSWORD:0:8}..." "200|302" \
-            -u "${test_web_user}:${WEB_PASSWORD}" "${base_url}/"
+            $tls_flag -u "${test_web_user}:${WEB_PASSWORD}" "${base_url}/"
 
         # Default vastai + WEB_PASSWORD → should be rejected
         http_check \
             "basic vastai:${WEB_PASSWORD:0:8}... (should reject)" 401 \
-            -u "vastai:${WEB_PASSWORD}" "${base_url}/"
+            $tls_flag -u "vastai:${WEB_PASSWORD}" "${base_url}/"
 
         # Restore: remove custom username and restart
         sed -i '/^WEB_USERNAME=/d' /etc/environment
@@ -243,7 +207,7 @@ if [[ ${#all_caddy_ports[@]} -gt 1 ]]; then
     for port in "${all_caddy_ports[@]}"; do
         [[ "$port" == "$test_port" ]] && continue
 
-        port_proto=$(get_proto "$port")
+        port_proto=$(caddy_port_proto "$port")
         tls_flag=""
         [[ "$port_proto" == "https" ]] && tls_flag="-k"
 
@@ -280,7 +244,7 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
     supervisorctl restart caddy &>/dev/null
     wait_for_caddy
 
-    exc_proto=$(get_proto "$test_port")
+    exc_proto=$(caddy_port_proto "$test_port")
     tls_flag=""
     [[ "$exc_proto" == "https" ]] && tls_flag="-k"
 
@@ -304,44 +268,36 @@ fi
 echo ""
 echo "  -- external port mappings --"
 port_check_count=0
-while IFS='=' read -r varname mapped_port; do
-    container_port="${varname#VAST_TCP_PORT_}"
-    [[ "$container_port" == "22" ]] && continue
 
-    # When the requested port is out of bounds (>= 70000), the backend picks
-    # a random host port and maps it 1:1 inside the container — so the actual
-    # listen port inside is mapped_port, not container_port.
-    if (( container_port >= 70000 )); then
-        check_port="$mapped_port"
-    else
-        check_port="$container_port"
-    fi
+# check_port_mappings PREFIX PROTO SS_FLAG
+#   PREFIX: VAST_TCP_PORT_ or VAST_UDP_PORT_
+#   PROTO:  TCP or UDP (for display)
+#   SS_FLAG: -tln or -uln
+check_port_mappings() {
+    local prefix="$1" proto="$2" ss_flag="$3"
+    while IFS='=' read -r varname mapped_port; do
+        [[ -n "$varname" ]] || continue
+        local container_port="${varname#"${prefix}"}"
+        [[ "$container_port" == "22" ]] && continue
 
-    if ss -tln | grep -qE ":(${check_port}) "; then
-        echo "  TCP ${container_port} (host ${mapped_port}): listening on ${check_port}"
-    else
-        echo "  WARN: TCP ${container_port} (host ${mapped_port}): not listening on ${check_port}"
-    fi
-    port_check_count=$((port_check_count + 1))
-done < <(env | grep '^VAST_TCP_PORT_' | sort)
+        local check_port
+        if (( container_port >= 70000 )); then
+            check_port="$mapped_port"
+        else
+            check_port="$container_port"
+        fi
 
-while IFS='=' read -r varname mapped_port; do
-    [[ -n "$varname" ]] || continue
-    container_port="${varname#VAST_UDP_PORT_}"
+        if ss "$ss_flag" | grep -qE ":(${check_port}) "; then
+            echo "  ${proto} ${container_port} (host ${mapped_port}): listening on ${check_port}"
+        else
+            echo "  WARN: ${proto} ${container_port} (host ${mapped_port}): not listening on ${check_port}"
+        fi
+        port_check_count=$((port_check_count + 1))
+    done < <(env | grep "^${prefix}" | sort)
+}
 
-    if (( container_port >= 70000 )); then
-        check_port="$mapped_port"
-    else
-        check_port="$container_port"
-    fi
-
-    if ss -uln | grep -qE ":(${check_port}) "; then
-        echo "  UDP ${container_port} (host ${mapped_port}): listening on ${check_port}"
-    else
-        echo "  WARN: UDP ${container_port} (host ${mapped_port}): not listening on ${check_port}"
-    fi
-    port_check_count=$((port_check_count + 1))
-done < <(env | grep '^VAST_UDP_PORT_' | sort)
+check_port_mappings "VAST_TCP_PORT_" "TCP" "-tln"
+check_port_mappings "VAST_UDP_PORT_" "UDP" "-uln"
 
 if [[ -n "${VAST_TCP_PORT_72299:-}" ]]; then
     sync_port="${VAST_TCP_PORT_72299}"

@@ -30,15 +30,8 @@ echo "  cert and key are valid"
 
 # ── Find a test port ──────────────────────────────────────────────────
 
-test_port=""
-while IFS= read -r line; do
-    port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
-    [[ -n "$port" && "$port" != "2019" ]] || continue
-    if ss -tln | grep -q ":${port} "; then
-        test_port="$port"
-        break
-    fi
-done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
+find_caddy_ports
+test_port="${REPLY[0]:-}"
 
 [[ -n "$test_port" ]] || test_skip "no external caddy port found"
 echo "  test port: ${test_port}"
@@ -46,7 +39,7 @@ echo "  test port: ${test_port}"
 # ── Helpers ───────────────────────────────────────────────────────────
 
 caddyfile_has_tls() {
-    grep -A5 "^:${test_port} {" /etc/Caddyfile | grep -q "tls "
+    [[ "$(caddy_port_proto "$test_port")" == "https" ]]
 }
 
 # Inspect the certificate served by caddy on a given port
@@ -114,13 +107,7 @@ if caddyfile_has_tls; then
     echo "  -- TLS currently active --"
 
     # HTTPS should work (with -k for self-signed)
-    status=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
-        "https://127.0.0.1:${test_port}/" 2>/dev/null)
-    if [[ "$status" =~ ^(200|302|401)$ ]]; then
-        echo "  https://127.0.0.1:${test_port} → ${status} (ok)"
-    else
-        fail_later "tls-active-https" "expected 200/302/401, got ${status}"
-    fi
+    http_check "tls-active-https" "200|302|401" -k "https://127.0.0.1:${test_port}/"
 
     inspect_served_cert "$test_port"
     check_http_redirect "$test_port"
@@ -129,13 +116,7 @@ else
     echo "  -- plain HTTP (no TLS) --"
 
     # HTTP should work
-    status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
-        "http://127.0.0.1:${test_port}/" 2>/dev/null)
-    if [[ "$status" =~ ^(200|302|401)$ ]]; then
-        echo "  http://127.0.0.1:${test_port} → ${status} (ok)"
-    else
-        fail_later "http-active" "expected 200/302/401, got ${status}"
-    fi
+    http_check "http-active" "200|302|401" "http://127.0.0.1:${test_port}/"
 
     # HTTPS should NOT work (no TLS configured).
     # Note: there is no HTTPS→HTTP reverse redirect — caddy only supports
@@ -167,13 +148,7 @@ if ! caddyfile_has_tls; then
 
     if caddyfile_has_tls; then
         # Verify HTTPS works
-        status=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
-            "https://127.0.0.1:${test_port}/" 2>/dev/null)
-        if [[ "$status" =~ ^(200|302|401)$ ]]; then
-            echo "  https after enable → ${status} (ok)"
-        else
-            fail_later "tls-enable" "expected 200/302/401, got ${status}"
-        fi
+        http_check "tls-enable" "200|302|401" -k "https://127.0.0.1:${test_port}/"
 
         inspect_served_cert "$test_port"
         check_http_redirect "$test_port" " (after enable)"
@@ -188,13 +163,7 @@ if ! caddyfile_has_tls; then
     supervisorctl restart caddy &>/dev/null
     wait_for_caddy "$test_port" "http"
 
-    status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
-        "http://127.0.0.1:${test_port}/" 2>/dev/null)
-    if [[ "$status" =~ ^(200|302|401)$ ]]; then
-        echo "  http after restore → ${status} (ok)"
-    else
-        fail_later "http-restore" "expected 200/302/401, got ${status}"
-    fi
+    http_check "http-restore" "200|302|401" "http://127.0.0.1:${test_port}/"
 else
     echo "  -- disabling HTTPS (verify plain HTTP) --"
     sed -i '/^ENABLE_HTTPS=/d' /etc/environment 2>/dev/null
@@ -204,13 +173,7 @@ else
     wait_for_caddy "$test_port" "http"
 
     if ! caddyfile_has_tls; then
-        status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
-            "http://127.0.0.1:${test_port}/" 2>/dev/null)
-        if [[ "$status" =~ ^(200|302|401)$ ]]; then
-            echo "  http after disable → ${status} (ok)"
-        else
-            fail_later "http-disable" "expected 200/302/401, got ${status}"
-        fi
+        http_check "http-disable" "200|302|401" "http://127.0.0.1:${test_port}/"
     else
         fail_later "tls-disable" "ENABLE_HTTPS=false but Caddyfile still has tls directive"
     fi
@@ -223,13 +186,7 @@ else
     supervisorctl restart caddy &>/dev/null
     wait_for_caddy "$test_port" "https"
 
-    status=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
-        "https://127.0.0.1:${test_port}/" 2>/dev/null)
-    if [[ "$status" =~ ^(200|302|401)$ ]]; then
-        echo "  https after restore → ${status} (ok)"
-    else
-        fail_later "tls-restore" "expected 200/302/401, got ${status}"
-    fi
+    http_check "tls-restore" "200|302|401" -k "https://127.0.0.1:${test_port}/"
 fi
 
 # ── Report ────────────────────────────────────────────────────────────

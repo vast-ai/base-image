@@ -140,6 +140,7 @@ RESULTS = '${RESULTS_FILE}'
 OUTPUT_LOG = '${OUTPUT_LOG}'
 SYSTEM_LOGS = [p.strip() for p in '${INSTANCE_TEST_SYSTEM_LOG:-}'.split(',') if p.strip()]
 READY_FILE = '${CLIENT_READY_FILE}'
+AUTH_TOKEN = '${OPEN_BUTTON_TOKEN:-}'
 
 def read_results():
     try:
@@ -153,8 +154,37 @@ def signal_client_ready():
         open(READY_FILE, 'w').close()
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
+    def _check_auth(self):
+        if not AUTH_TOKEN:
+            return True
+        auth = self.headers.get('Authorization', '')
+        if auth == f'Bearer {AUTH_TOKEN}':
+            return True
         parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        if qs.get('token', [''])[0] == AUTH_TOKEN:
+            return True
+        self.send_response(401)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(b'{\"error\":\"unauthorized\"}')
+        return False
+
+    def _strip_token_param(self):
+        '''Return the path with ?token= stripped so it does not interfere with routing.'''
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        qs.pop('token', None)
+        if qs:
+            from urllib.parse import urlencode
+            return f'{parsed.path}?{urlencode(qs, doseq=True)}'
+        return parsed.path
+
+    def do_GET(self):
+        if not self._check_auth():
+            return
+        clean_path = self._strip_token_param()
+        parsed = urlparse(clean_path)
         if parsed.path == '/test-status':
             self._serve_json()
         elif parsed.path == '/test-stream':
@@ -166,6 +196,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if not self._check_auth():
+            return
         parsed = urlparse(self.path)
         if parsed.path == '/test-start':
             signal_client_ready()

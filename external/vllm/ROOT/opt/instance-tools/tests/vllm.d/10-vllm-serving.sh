@@ -212,35 +212,36 @@ fi
 echo ""
 echo "  -- log analysis --"
 
+# check_log_errors LABEL PATH [exclude_pattern]
+# Grep for ERROR/CRITICAL lines in a log file, fail_later if any found.
+check_log_errors() {
+    local label="$1" path="$2" exclude="${3:-}"
+    [[ -f "$path" ]] || return 0
+    local error_lines
+    if [[ -n "$exclude" ]]; then
+        error_lines=$(grep -E "^.*\b(ERROR|CRITICAL)\b" "$path" 2>/dev/null \
+            | grep -vE "$exclude" || true)
+    else
+        error_lines=$(grep -E "^.*\b(ERROR|CRITICAL)\b" "$path" 2>/dev/null || true)
+    fi
+    local error_count
+    error_count=$(echo "$error_lines" | grep -c . 2>/dev/null || true)
+    if [[ "$error_count" -gt 0 ]]; then
+        echo "  ${error_count} ERROR/CRITICAL line(s) in ${label} log:"
+        echo "$error_lines" | tail -5 | sed 's/^/    /'
+        fail_later "${label}-log-errors" "${error_count} ERROR/CRITICAL line(s) in ${label} log"
+    else
+        echo "  ${label} log clean"
+    fi
+}
+
 if [[ -f "$VLLM_LOG" ]]; then
     log_size=$(stat -c '%s' "$VLLM_LOG" 2>/dev/null || echo "0")
     echo "  vllm log: ${log_size}B"
-
-    # Fail on ERROR/CRITICAL after successful startup — these indicate runtime issues.
-    # Filter out known noisy/benign patterns that vLLM logs at ERROR level.
-    error_lines=$(grep -E "^.*\b(ERROR|CRITICAL)\b" "$VLLM_LOG" 2>/dev/null \
-        | grep -vE "torch\.distributed|CUDAGraph|deprecat" || true)
-    error_count=$(echo "$error_lines" | grep -c . 2>/dev/null || true)
-    if [[ "$error_count" -gt 0 ]]; then
-        echo "  ${error_count} ERROR/CRITICAL line(s) in vllm log:"
-        echo "$error_lines" | tail -5 | sed 's/^/    /'
-        fail_later "vllm-log-errors" "${error_count} ERROR/CRITICAL line(s) in vllm log"
-    else
-        echo "  no ERROR/CRITICAL lines in log"
-    fi
 fi
 
-if [[ -f "$RAY_LOG" ]]; then
-    ray_error_lines=$(grep -E "^.*\b(ERROR|CRITICAL)\b" "$RAY_LOG" 2>/dev/null || true)
-    ray_errors=$(echo "$ray_error_lines" | grep -c . 2>/dev/null || true)
-    if [[ "$ray_errors" -gt 0 ]]; then
-        echo "  ${ray_errors} ERROR/CRITICAL line(s) in ray log:"
-        echo "$ray_error_lines" | tail -3 | sed 's/^/    /'
-        fail_later "ray-log-errors" "${ray_errors} ERROR/CRITICAL line(s) in ray log"
-    else
-        echo "  ray log clean"
-    fi
-fi
+check_log_errors "vllm" "$VLLM_LOG" "torch\.distributed|CUDAGraph|deprecat"
+check_log_errors "ray" "$RAY_LOG"
 
 # ── Port exposure check ─────────────────────────────────────────────
 # Verify that services configured in PORTAL_CONFIG have their ports listening.
@@ -316,7 +317,7 @@ SERVED_MODEL="${SERVED_MODEL:-${VLLM_MODEL}}"
 if [[ "${VLLM_TEST_ENDPOINT}" == "none" ]]; then
     echo "  inference test skipped (VLLM_TEST_ENDPOINT=none)"
 else
-    echo "  endpoint: /v1/chat/completions"
+    echo "  endpoint: ${VLLM_TEST_ENDPOINT} (/v1/chat/completions)"
     echo "  model: ${SERVED_MODEL}"
 
     # Test prompts — exercise different aspects of the model

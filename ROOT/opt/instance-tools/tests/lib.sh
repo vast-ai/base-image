@@ -20,8 +20,12 @@
 #   is_serverless    — predicate (return 0/1)
 #   is_vast_image    — predicate (return 0/1): IMAGE_TYPE=vast
 #   portal_has_entry — predicate (return 0/1)
+#   service_running NAME — predicate (return 0/1)
 #   version_gt A B   — predicate: version A > B (dotted integers)
-#   fail_later MSG   — record failure without exiting (call report_failures at end)
+#   find_caddy_ports — populate REPLY with active Caddy external ports
+#   caddy_port_proto PORT — echo "https" or "http" for a Caddyfile port
+#   http_check LABEL EXPECTED [curl_args...] — HTTP status check via fail_later
+#   fail_later LABEL MSG — record failure without exiting (call report_failures at end)
 #   report_failures  — exit with failure if any fail_later calls were made
 
 TEST_NAME="${TEST_NAME:-$(basename "$0" .sh)}"
@@ -63,6 +67,13 @@ is_vast_image() {
 
 portal_has_entry() {
     [[ -f /etc/portal.yaml ]] && grep -qiE "^[^#].*${1}" /etc/portal.yaml
+}
+
+service_running() {
+    local name="$1"
+    local status
+    status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
+    [[ "$status" == "RUNNING" ]]
 }
 
 # Compare dotted version strings as integers (e.g. "12.10" > "12.9").
@@ -135,6 +146,29 @@ wait_for_caddy() {
     done
     echo "  WARN: caddy not responding on ${proto}://${port} after 30s"
     return 1
+}
+
+# Populate REPLY array with active external Caddy ports from Caddyfile.
+# Excludes admin port (2019), only includes ports with active listeners.
+find_caddy_ports() {
+    REPLY=()
+    [[ -f /etc/Caddyfile ]] || return 0
+    local line port
+    while IFS= read -r line; do
+        port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
+        [[ -n "$port" && "$port" != "2019" ]] || continue
+        ss -tln | grep -q ":${port} " && REPLY+=("$port")
+    done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
+}
+
+# Echo "https" or "http" based on whether the Caddyfile port block has a tls directive.
+caddy_port_proto() {
+    local p="$1"
+    if grep -A5 "^:${p} {" /etc/Caddyfile | grep -q "tls "; then
+        echo "https"
+    else
+        echo "http"
+    fi
 }
 
 wait_for_url() {
@@ -218,4 +252,28 @@ assert_user_exists() {
     if [[ -n "$expected_uid" ]]; then
         [[ "$actual_uid" == "$expected_uid" ]] || test_fail "user $username UID mismatch: expected $expected_uid, got $actual_uid"
     fi
+}
+
+# ── HTTP check helper ───────────────────────────────────────────────
+# Usage: http_check LABEL EXPECTED_STATUS [curl_args...]
+# EXPECTED_STATUS supports pipe-delimited codes, e.g. "200|302".
+# Callers pass any extra curl flags (e.g. -k for TLS) in curl_args.
+
+http_check() {
+    local label="$1"
+    local expected="$2"
+    shift 2
+    local status
+    status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null)
+    if [[ "$expected" == *"|"* ]]; then
+        if echo "$expected" | tr '|' '\n' | grep -qx "$status"; then
+            echo "  ${label} → ${status} ok"
+            return 0
+        fi
+    elif [[ "$status" == "$expected" ]]; then
+        echo "  ${label} → ${status} ok"
+        return 0
+    fi
+    fail_later "$label" "expected ${expected}, got ${status}"
+    return 1
 }

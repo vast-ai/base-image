@@ -20,11 +20,11 @@ done
 
 check_running() {
     local name="$1"
-    local status
-    status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
-    if [[ "$status" == "RUNNING" ]]; then
+    if service_running "$name"; then
         echo "  ${name}: RUNNING"
     else
+        local status
+        status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
         fail_later "$name" "expected RUNNING, got ${status:-unknown}"
     fi
 }

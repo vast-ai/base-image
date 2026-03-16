@@ -5,13 +5,7 @@
 source "$(dirname "$0")/../lib.sh"
 
 # FAILURES and fail_later/report_failures come from lib.sh
-
-service_running() {
-    local name="$1"
-    local status
-    status=$(supervisorctl status "$name" 2>/dev/null | awk '{print $2}')
-    [[ "$status" == "RUNNING" ]]
-}
+# service_running comes from lib.sh
 
 # ── Instance Portal ──────────────────────────────────────────────────
 
