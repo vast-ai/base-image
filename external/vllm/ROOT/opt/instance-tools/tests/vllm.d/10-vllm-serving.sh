@@ -243,18 +243,22 @@ declare -A PORT_CHECKS=(
     ["ray"]="8265:Ray Dashboard:ray"
 )
 
-for key in "${!PORT_CHECKS[@]}"; do
-    IFS=: read -r port label pattern <<< "${PORT_CHECKS[$key]}"
-    if portal_config_has "$pattern"; then
-        if ss -tln | grep -q ":${port} "; then
-            echo "  ${label}: listening on port ${port}"
+if is_serverless; then
+    echo "  skip: port exposure checks (caddy not running in serverless)"
+else
+    for key in "${!PORT_CHECKS[@]}"; do
+        IFS=: read -r port label pattern <<< "${PORT_CHECKS[$key]}"
+        if portal_config_has "$pattern"; then
+            if ss -tln | grep -q ":${port} "; then
+                echo "  ${label}: listening on port ${port}"
+            else
+                fail_later "port-${port}" "${label} in PORTAL_CONFIG but port ${port} not listening"
+            fi
         else
-            fail_later "port-${port}" "${label} in PORTAL_CONFIG but port ${port} not listening"
+            echo "  skip: ${label} (not in PORTAL_CONFIG)"
         fi
-    else
-        echo "  skip: ${label} (not in PORTAL_CONFIG)"
-    fi
-done
+    done
+fi
 
 # ── Model UI (optional) ─────────────────────────────────────────────
 
@@ -343,23 +347,27 @@ print(json.dumps({
         fi
 
         # Parse response: extract content, token counts, finish reason
-        parsed=$(echo "$response" | python3 -c "
-import sys, json
+        eval "$(echo "$response" | python3 -c "
+import sys, json, shlex
 try:
     d = json.load(sys.stdin)
     c = d.get('choices', [{}])[0]
     m = c.get('message', {})
-    msg = (m.get('content') or m.get('reasoning_content') or '').strip()
+    content = (m.get('content') or '').strip()
+    reasoning = (m.get('reasoning_content') or '').strip()
+    msg = content or reasoning
     finish = c.get('finish_reason', '?')
     usage = d.get('usage', {})
     prompt_tok = usage.get('prompt_tokens', '?')
     compl_tok = usage.get('completion_tokens', '?')
-    print(f'{finish}|{prompt_tok}|{compl_tok}|{msg}')
+    print(f'finish_reason={shlex.quote(str(finish))}')
+    print(f'prompt_tokens={shlex.quote(str(prompt_tok))}')
+    print(f'compl_tokens={shlex.quote(str(compl_tok))}')
+    print(f'content={shlex.quote(msg)}')
+    print(f'is_reasoning={shlex.quote(\"true\" if reasoning and not content else \"false\")}')
 except Exception as e:
-    print(f'error|0|0|{e}')
-" 2>/dev/null)
-
-        IFS='|' read -r finish_reason prompt_tokens compl_tokens content <<< "$parsed"
+    print(f'finish_reason=error prompt_tokens=0 compl_tokens=0 content= is_reasoning=false')
+" 2>/dev/null)"
 
         if [[ -z "$content" ]]; then
             echo "    FAIL: no content (finish_reason=${finish_reason})"
@@ -369,6 +377,7 @@ except Exception as e:
             # Truncate long responses for display
             display="${content:0:120}"
             [[ ${#content} -gt 120 ]] && display="${display}..."
+            [[ "$is_reasoning" == "true" ]] && echo "    (reasoning_content)"
             echo "    response: ${display}"
             echo "    tokens: ${prompt_tokens} prompt → ${compl_tokens} completion, finish=${finish_reason}"
             inference_pass=$((inference_pass + 1))
