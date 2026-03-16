@@ -15,6 +15,7 @@ ENV DATA_DIRECTORY=/workspace
 ENV WORKSPACE=/workspace
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
@@ -41,13 +42,8 @@ RUN uv venv /opt/model-ui/venv && \
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Ensure we have a Jupyter kernel for Ollama's system python environment
-# Use explicit path to avoid the sys-venv shim (which is in PATH for boot)
-RUN \
-    set -euo pipefail && \
-    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)" && \
-    uv pip install --python "$SYS_PYTHON" --break-system-packages ipykernel && \
-    "$SYS_PYTHON" -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
+# Register Jupyter kernel (ipykernel installed into /venv/main by convert-non-vast-image.sh)
+RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
 
 # Use familiar workspace (prevent not found error)
 RUN \

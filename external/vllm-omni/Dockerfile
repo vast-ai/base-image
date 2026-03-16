@@ -16,6 +16,7 @@ ENV WORKSPACE=/workspace
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:${PATH}
 WORKDIR /
 
@@ -53,11 +54,9 @@ RUN uv venv /opt/model-ui/venv && \
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Ensure we have a Jupyter kernel for vLLM-Omni
-RUN \
-    uv pip install --system ipykernel && \
-    python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
-    python3 -m ipykernel install --name "vllm-omni" --display-name "vLLM-Omni"
+# Register Jupyter kernels (ipykernel installed into /venv/main by convert-non-vast-image.sh)
+RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
+    /venv/main/bin/python -m ipykernel install --name "vllm-omni" --display-name "vLLM-Omni"
 
 # Use familiar workspace
 RUN \

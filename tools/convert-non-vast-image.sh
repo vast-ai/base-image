@@ -95,6 +95,9 @@ else
     fi
 fi
 
+# Enable expect/unbuffer to find its Tcl libraries (multiarch-safe, matches base Dockerfile)
+mkdir -p /usr/lib/tcltk && ln -sf "/usr/lib/tcltk/$(uname -m)-linux-gnu" /usr/lib/tcltk/default
+
 # Ensure system pip
 if ! which pip > /dev/null 2>&1 || ! which pip3 > /dev/null 2>&1; then
     apt-get install --no-install-recommends -y python3-pip
@@ -164,8 +167,46 @@ for bin in /opt/sys-venv/bin/*; do
     ln -sf "$bin" "/opt/sys-venv/shim/$(basename "$bin")"
 done
 
-# Remove redundant base image files
-[[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh
+# Set up /venv/main as a standard venv with system package inheritance.
+# Uses the system Python directly — no conda Python, no library conflicts.
+# 37-sync-environment.sh detects pyvenv.cfg and syncs via tar.
+if [[ ! -d /venv/main ]]; then
+    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)"
+    if [[ -n "$SYS_PYTHON" ]]; then
+        # Install miniforge3 (available for users who want conda envs)
+        curl -L -o /tmp/miniforge3.sh \
+            "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+        bash /tmp/miniforge3.sh -b -p /opt/miniforge3
+        rm -f /tmp/miniforge3.sh
+
+        # Configure conda (same as base image)
+        /opt/miniforge3/bin/conda config --set auto_activate_base false
+        /opt/miniforge3/bin/conda config --set always_copy true
+        /opt/miniforge3/bin/conda config --set pip_interop_enabled true
+        /opt/miniforge3/bin/conda config --add envs_dirs /venv
+        /opt/miniforge3/bin/conda config --set env_prompt '({name}) '
+        /opt/miniforge3/bin/conda init
+        if id -u user > /dev/null 2>&1; then
+            su -l user -c "/opt/miniforge3/bin/conda config --set auto_activate_base false"
+            su -l user -c "/opt/miniforge3/bin/conda config --set always_copy true"
+            su -l user -c "/opt/miniforge3/bin/conda config --set pip_interop_enabled true"
+            su -l user -c "/opt/miniforge3/bin/conda config --add envs_dirs /venv"
+            su -l user -c "/opt/miniforge3/bin/conda config --set env_prompt '({name}) '"
+            su -l user -c "/opt/miniforge3/bin/conda init"
+        fi
+        /opt/miniforge3/bin/conda clean -ay
+
+        # Create venv with system site-packages inheritance
+        mkdir -p /venv
+        "$SYS_PYTHON" -m venv --system-site-packages /venv/main
+
+        # Install ipykernel for Jupyter kernel registration
+        uv pip install --python /venv/main/bin/python ipykernel
+    else
+        echo "WARNING: No system Python found, skipping /venv/main creation"
+        rm -f /etc/vast_boot.d/37-sync-environment.sh
+    fi
+fi
 
 # Create 'user' account (matches base image: uid 1001, gid 0) if not present
 if ! id -u user > /dev/null 2>&1; then
