@@ -1473,6 +1473,8 @@ window.InstancePortal = (function() {
         webSocket: null,
         maxLogLines: 300,
         lastSpansByFile: {},  // file -> [span, ...] array for per-file overwrite tracking
+        _activeOverwrites: new Set(),  // files currently in overwrite (progress bar) mode
+        _unpinTimers: {},  // file -> timeout ID for auto-unpin
         
         // Connection management
         reconnectTimer: null,
@@ -1646,13 +1648,30 @@ window.InstancePortal = (function() {
             }
         },
 
+        // Auto-unpin a file after overwrite inactivity (progress bar finished)
+        _scheduleUnpin: function(file) {
+            clearTimeout(this._unpinTimers[file]);
+            this._unpinTimers[file] = setTimeout(() => {
+                this._activeOverwrites.delete(file);
+                delete this._unpinTimers[file];
+            }, 3000);
+        },
+
         // Return the first active (overwriting) span in the console,
         // or null if none — used as the insertBefore anchor for new lines.
         _pinnedAnchor: function(logConsole) {
-            const active = this._getActiveSpans();
-            if (active.size === 0) return null;
+            if (this._activeOverwrites.size === 0) return null;
+            // Collect spans only from files actively being overwritten
+            const pinned = new Set();
+            for (const file of this._activeOverwrites) {
+                const spans = this.lastSpansByFile[file];
+                if (spans) {
+                    for (const s of spans) pinned.add(s);
+                }
+            }
+            if (pinned.size === 0) return null;
             for (const child of logConsole.children) {
-                if (active.has(child)) return child;
+                if (pinned.has(child)) return child;
             }
             return null;
         },
@@ -1663,6 +1682,14 @@ window.InstancePortal = (function() {
 
             const logConsole = document.getElementById(this.elements.logConsole);
             if (!logConsole) return;
+
+            // Unpin this file before computing anchor so its own completed
+            // span isn't used as the insertion point
+            if (file) {
+                this._activeOverwrites.delete(file);
+                clearTimeout(this._unpinTimers[file]);
+                delete this._unpinTimers[file];
+            }
 
             const span = document.createElement('span');
             span.innerHTML = html;
@@ -1689,6 +1716,10 @@ window.InstancePortal = (function() {
             const target = spans && spans.length > 0 ? spans[spans.length - 1] : null;
             if (target && target.parentNode === logConsole) {
                 target.innerHTML = html;
+                if (file) {
+                    this._activeOverwrites.add(file);
+                    this._scheduleUnpin(file);
+                }
             } else {
                 this.appendLog(html, file);
                 return;
@@ -1721,6 +1752,8 @@ window.InstancePortal = (function() {
                     logConsole.insertBefore(span, anchor);
                     existing.push(span);
                 }
+                this._activeOverwrites.add(file);
+                this._scheduleUnpin(file);
             } else {
                 // Create fresh block
                 const spans = htmlLines.map(html => {
