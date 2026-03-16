@@ -30,6 +30,8 @@ RUN sed -i '1i umask 002' /root/.bashrc
 
 # Add some useful scripts and config files
 COPY ./ROOT/ /
+# Marker for tests
+ENV IMAGE_TYPE=vast
 
 # Vast.ai environment variables used for Jupyter & Data sync
 ENV DATA_DIRECTORY=/workspace
