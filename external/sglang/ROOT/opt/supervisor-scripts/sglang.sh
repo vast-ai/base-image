@@ -5,7 +5,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
 [[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "sglang"
+. "${utils}/exit_portal.sh" "sglang"
 
 # Check we are actually trying to serve a model
 if [[ -z "${SGLANG_MODEL:-}" ]]; then

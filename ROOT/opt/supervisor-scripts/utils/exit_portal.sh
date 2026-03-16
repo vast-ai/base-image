@@ -5,6 +5,11 @@ fi
 
 search_term="$1"
 
+# Portal config is not relevant in serverless mode — skip the check entirely
+if [[ "${SERVERLESS,,}" = "true" ]]; then
+    return 0 2>/dev/null || true
+fi
+
 # User can configure startup by removing the reference in /etc.portal.yaml - So wait for that file and check it
 while [ ! -f "$(realpath -q /etc/portal.yaml 2>/dev/null)" ]; do
     echo "Waiting for /etc/portal.yaml before starting ${PROC_NAME}..."

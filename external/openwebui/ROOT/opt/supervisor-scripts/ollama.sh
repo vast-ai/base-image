@@ -4,7 +4,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "ollama"
+. "${utils}/exit_portal.sh" "ollama"
 
 # Clear stale readiness sentinel from previous runs
 rm -f /tmp/.ollama_ready

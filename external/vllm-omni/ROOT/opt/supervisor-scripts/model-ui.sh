@@ -4,7 +4,8 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "model ui"
+. "${utils}/exit_serverless.sh"
+. "${utils}/exit_portal.sh" "model ui"
 
 # No model = no UI
 if [[ -z "${MODEL_NAME:-}" ]]; then

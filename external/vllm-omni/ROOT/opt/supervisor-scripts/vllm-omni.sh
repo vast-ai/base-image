@@ -5,7 +5,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
 [[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "vllm"
+. "${utils}/exit_portal.sh" "vllm"
 
 # Check we are actually trying to serve a model
 if [[ -z "${VLLM_MODEL:-}" ]]; then
