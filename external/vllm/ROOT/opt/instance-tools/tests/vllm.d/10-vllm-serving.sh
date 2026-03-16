@@ -335,7 +335,6 @@ import json, sys
 print(json.dumps({
     'model': sys.argv[1],
     'messages': [{'role': 'user', 'content': sys.argv[2]}],
-    'max_tokens': 1024,
     'temperature': 0.1
 }))
 " "$SERVED_MODEL" "$prompt")" 2>/dev/null)
