@@ -45,7 +45,7 @@ if [[ -d /opt/miniforge3 ]]; then
     if /opt/miniforge3/bin/conda --version &>/dev/null; then
         echo "  conda: $(/opt/miniforge3/bin/conda --version 2>&1)"
         # Verify conda can list envs (functional check)
-        env_count=$(/opt/miniforge3/bin/conda env list 2>/dev/null | grep -c '^\S' || true)
+        env_count=$(/opt/miniforge3/bin/conda env list 2>/dev/null | grep -c '^[^#[:space:]]' || true)
         echo "  conda envs: ${env_count}"
         # Verify mamba solver is available (faster dependency resolution)
         if /opt/miniforge3/bin/conda list -n base 2>/dev/null | grep -q mamba; then
