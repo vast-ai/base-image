@@ -132,15 +132,21 @@ start_results_server() {
     # With ?log=1, it also tails the system log file (ANSI passthrough).
     # When tests finish, it sends a final "result" event with the JSON summary.
     rm -f "${CLIENT_READY_FILE}"
+    _RESULTS_FILE="$RESULTS_FILE" \
+    _OUTPUT_LOG="$OUTPUT_LOG" \
+    _SYSTEM_LOGS="${INSTANCE_TEST_SYSTEM_LOG:-}" \
+    _READY_FILE="$CLIENT_READY_FILE" \
+    _AUTH_TOKEN="${OPEN_BUTTON_TOKEN:-}" \
+    _RESULTS_PORT="$RESULTS_PORT" \
     python3 -c "
 import http.server, json, os, sys, time, threading, io
 from urllib.parse import urlparse, parse_qs
 
-RESULTS = '${RESULTS_FILE}'
-OUTPUT_LOG = '${OUTPUT_LOG}'
-SYSTEM_LOGS = [p.strip() for p in '${INSTANCE_TEST_SYSTEM_LOG:-}'.split(',') if p.strip()]
-READY_FILE = '${CLIENT_READY_FILE}'
-AUTH_TOKEN = '${OPEN_BUTTON_TOKEN:-}'
+RESULTS = os.environ['_RESULTS_FILE']
+OUTPUT_LOG = os.environ['_OUTPUT_LOG']
+SYSTEM_LOGS = [p.strip() for p in os.environ.get('_SYSTEM_LOGS', '').split(',') if p.strip()]
+READY_FILE = os.environ['_READY_FILE']
+AUTH_TOKEN = os.environ.get('_AUTH_TOKEN', '')
 
 def read_results():
     try:
@@ -322,7 +328,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-port = int('${RESULTS_PORT}') if '${RESULTS_PORT}'.isdigit() else 10199
+_port_str = os.environ.get('_RESULTS_PORT', '10199')
+port = int(_port_str) if _port_str.isdigit() else 10199
 # ThreadingHTTPServer so /test-status can be served while /test-stream
 # is active (SSE blocks the handler thread for the stream's lifetime).
 if hasattr(http.server, 'ThreadingHTTPServer'):

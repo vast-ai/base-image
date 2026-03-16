@@ -15,7 +15,9 @@ driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/
 # nvidia-smi reports the *effective* CUDA version, which includes compat libs if loaded.
 # To get the native driver CUDA max, we must bypass any compat libs in the linker path
 # by pointing LD_LIBRARY_PATH at the system libcuda directory.
-system_libcuda_dir=$(dirname "$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)" 2>/dev/null)
+_libcuda_path=$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)
+system_libcuda_dir=""
+[[ -n "$_libcuda_path" ]] && system_libcuda_dir=$(dirname "$_libcuda_path")
 if [[ -n "$system_libcuda_dir" && -d "$system_libcuda_dir" ]]; then
     native_driver_cuda=$(LD_LIBRARY_PATH="$system_libcuda_dir" nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
 else

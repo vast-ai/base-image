@@ -308,6 +308,10 @@ echo ""
 echo "  -- inference --"
 
 VLLM_TEST_ENDPOINT="${VLLM_TEST_ENDPOINT:-chat}"
+case "$VLLM_TEST_ENDPOINT" in
+    chat|none) ;;
+    *) test_fail "unsupported VLLM_TEST_ENDPOINT='${VLLM_TEST_ENDPOINT}' (must be 'chat' or 'none')" ;;
+esac
 VLLM_API="http://127.0.0.1:${VLLM_INTERNAL_PORT}"
 # Use the model ID that vLLM is actually serving (from /v1/models)
 SERVED_MODEL=$(curl -sf --max-time 10 "${VLLM_API}/v1/models" 2>/dev/null \

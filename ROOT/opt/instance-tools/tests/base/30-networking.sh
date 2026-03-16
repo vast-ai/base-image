@@ -23,8 +23,12 @@ fi
 # Test results server reachable (only in automated mode — manual mode skips the HTTP server)
 if ss -tln | grep -q ":${INSTANCE_TEST_PORT:-10199} "; then
     echo "  test results server listening on port ${INSTANCE_TEST_PORT:-10199}"
+elif [[ "${INSTANCE_TEST:-}" == "true" ]]; then
+    fail_later "results-server" "test results server not listening on port ${INSTANCE_TEST_PORT:-10199} (automated mode)"
 else
     echo "  test results server not listening (expected in manual mode)"
 fi
+
+report_failures
 
 test_pass "networking tools present, connectivity ok"
