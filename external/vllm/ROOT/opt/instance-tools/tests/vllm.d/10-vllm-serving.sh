@@ -30,27 +30,21 @@ echo ""
 echo "  -- ray --"
 
 if [[ -f /etc/supervisor/conf.d/ray.conf ]]; then
-    if is_serverless; then
-        # In serverless mode, ray/vllm supervisor services are stopped by the
-        # serverless boot path — the platform manages them differently.
-        echo "  skip: ray supervisor check (serverless)"
-    else
-        assert_service_running ray
-        echo "  ray: supervisor service running"
+    assert_service_running ray
+    echo "  ray: supervisor service running"
 
-        # Verify gcs_server process is alive (vllm.sh waits for this)
-        if pgrep -f gcs_server &>/dev/null; then
-            echo "  ray: gcs_server process present"
-        else
-            fail_later "ray-gcs" "ray service running but gcs_server process not found"
-        fi
+    # Verify gcs_server process is alive (vllm.sh waits for this)
+    if pgrep -f gcs_server &>/dev/null; then
+        echo "  ray: gcs_server process present"
+    else
+        fail_later "ray-gcs" "ray service running but gcs_server process not found"
     fi
 
     # Ray dashboard (informational — not critical for serving)
     ray_dash_port="${RAY_DASHBOARD_PORT:-28265}"
-    if ! is_serverless && wait_for_port "$ray_dash_port" 10; then
+    if wait_for_port "$ray_dash_port" 10; then
         echo "  ray: dashboard listening on port ${ray_dash_port}"
-    elif ! is_serverless; then
+    else
         echo "  WARN: ray dashboard not listening on port ${ray_dash_port}"
     fi
 else
@@ -62,12 +56,8 @@ fi
 echo ""
 echo "  -- vllm --"
 
-if is_serverless; then
-    echo "  skip: vllm supervisor check (serverless)"
-else
-    assert_service_running vllm
-    echo "  vllm: supervisor service running"
-fi
+assert_service_running vllm
+echo "  vllm: supervisor service running"
 
 # Check for early fatal errors in the log before waiting for the API.
 # vLLM logs to /var/log/vllm.log (clean, ANSI-stripped).
@@ -95,9 +85,7 @@ restart_count=0
 last_pid=""
 
 # Get initial vLLM PID from supervisor
-if ! is_serverless; then
-    last_pid=$(supervisorctl status vllm 2>/dev/null | grep -oP 'pid \K[0-9]+' || true)
-fi
+last_pid=$(supervisorctl status vllm 2>/dev/null | grep -oP 'pid \K[0-9]+' || true)
 
 _dump_log_tail() {
     if [[ -f "$VLLM_LOG" ]]; then
@@ -114,34 +102,32 @@ while (( elapsed < HEALTH_TIMEOUT )); do
     fi
 
     # Track supervisor restarts by PID change
-    if ! is_serverless; then
-        sup_line=$(supervisorctl status vllm 2>/dev/null)
-        vllm_sup_state=$(echo "$sup_line" | awk '{print $2}')
-        cur_pid=$(echo "$sup_line" | grep -oP 'pid \K[0-9]+' || true)
+    sup_line=$(supervisorctl status vllm 2>/dev/null)
+    vllm_sup_state=$(echo "$sup_line" | awk '{print $2}')
+    cur_pid=$(echo "$sup_line" | grep -oP 'pid \K[0-9]+' || true)
 
-        if [[ "$vllm_sup_state" == "FATAL" ]]; then
-            echo "  vllm entered FATAL state — supervisor gave up restarting"
-            _dump_log_tail
-            test_fail "vllm service FATAL (supervisor stopped restarting)"
-        fi
-
-        if [[ "$vllm_sup_state" != "RUNNING" && "$vllm_sup_state" != "STARTING" ]]; then
-            echo "  vllm service in state: ${vllm_sup_state}"
-            _dump_log_tail
-            test_fail "vllm service not running (state: ${vllm_sup_state})"
-        fi
-
-        # Detect restart: PID changed while we were waiting
-        if [[ -n "$last_pid" && -n "$cur_pid" && "$cur_pid" != "$last_pid" ]]; then
-            restart_count=$((restart_count + 1))
-            echo "  vllm restarted (pid ${last_pid} → ${cur_pid}, restart #${restart_count})"
-            _dump_log_tail
-            if (( restart_count >= MAX_RESTARTS )); then
-                test_fail "vllm crash loop: ${restart_count} restarts detected (bad config or OOM?)"
-            fi
-        fi
-        last_pid="$cur_pid"
+    if [[ "$vllm_sup_state" == "FATAL" ]]; then
+        echo "  vllm entered FATAL state — supervisor gave up restarting"
+        _dump_log_tail
+        test_fail "vllm service FATAL (supervisor stopped restarting)"
     fi
+
+    if [[ "$vllm_sup_state" != "RUNNING" && "$vllm_sup_state" != "STARTING" ]]; then
+        echo "  vllm service in state: ${vllm_sup_state}"
+        _dump_log_tail
+        test_fail "vllm service not running (state: ${vllm_sup_state})"
+    fi
+
+    # Detect restart: PID changed while we were waiting
+    if [[ -n "$last_pid" && -n "$cur_pid" && "$cur_pid" != "$last_pid" ]]; then
+        restart_count=$((restart_count + 1))
+        echo "  vllm restarted (pid ${last_pid} → ${cur_pid}, restart #${restart_count})"
+        _dump_log_tail
+        if (( restart_count >= MAX_RESTARTS )); then
+            test_fail "vllm crash loop: ${restart_count} restarts detected (bad config or OOM?)"
+        fi
+    fi
+    last_pid="$cur_pid"
 
     # Progress report every 30s
     if (( elapsed - last_report >= 30 )); then
