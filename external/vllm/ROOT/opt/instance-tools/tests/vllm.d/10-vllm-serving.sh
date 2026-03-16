@@ -219,10 +219,10 @@ check_log_errors() {
     [[ -f "$path" ]] || return 0
     local error_lines
     if [[ -n "$exclude" ]]; then
-        error_lines=$(grep -E "^.*\b(ERROR|CRITICAL)\b" "$path" 2>/dev/null \
+        error_lines=$(grep -P "\b(ERROR|CRITICAL)\b" "$path" 2>/dev/null \
             | grep -vE "$exclude" || true)
     else
-        error_lines=$(grep -E "^.*\b(ERROR|CRITICAL)\b" "$path" 2>/dev/null || true)
+        error_lines=$(grep -P "\b(ERROR|CRITICAL)\b" "$path" 2>/dev/null || true)
     fi
     local error_count
     error_count=$(echo "$error_lines" | grep -c . 2>/dev/null || true)
