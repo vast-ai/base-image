@@ -390,6 +390,16 @@ declare -a TEST_DURATIONS=()
 
 # Start HTTP results server (automated mode only)
 if [[ "$MANUAL" == "false" ]]; then
+    # OPEN_BUTTON_TOKEN is required in automated mode — without a real token
+    # the results server would be unauthenticated on a public port.
+    # "1" is a Vast placeholder meaning "enabled", not a valid secret.
+    _obt="${OPEN_BUTTON_TOKEN:-}"
+    if [[ -z "$_obt" || "$_obt" == "1" ]]; then
+        echo "FATAL: OPEN_BUTTON_TOKEN is not set or invalid (got '${_obt:-}')." | log_output
+        echo "  The template must provide a real token for results server auth." | log_output
+        write_results "failed"
+        exit 1
+    fi
     start_results_server
 fi
 
