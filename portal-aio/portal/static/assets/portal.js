@@ -14,6 +14,7 @@ window.InstancePortal = (function() {
     const applications = {
         // Store for application data
         _data: {},
+        _configOrder: [],  // original app order from config
         
         // Initialize applications
         init: async function() {
@@ -42,8 +43,11 @@ window.InstancePortal = (function() {
                 
                 const data = await response.json();
                 
-                // Store the raw data
+                // Store the raw data and preserve original config order
                 this._data = data;
+                if (this._configOrder.length === 0) {
+                    this._configOrder = Object.keys(data);
+                }
                 
                 // Add computed properties and methods to each application
                 this._enhanceApplications();
@@ -1194,17 +1198,22 @@ window.InstancePortal = (function() {
                 }
             });
 
-            // Move stopped cards to end of grid
+            // Reorder: running cards in original config order, stopped cards at end
             if (needsReorder) {
+                const cardsByName = {};
+                cards.forEach(card => cardsByName[card.getAttribute('data-app-id')] = card);
                 const running = [];
                 const stopped = [];
-                cards.forEach(card => {
+                // Use config order so restarted services return to their original position
+                for (const name of applications._configOrder) {
+                    const card = cardsByName[name];
+                    if (!card) continue;
                     if (card.classList.contains('service-stopped')) {
                         stopped.push(card);
                     } else {
                         running.push(card);
                     }
-                });
+                }
                 running.concat(stopped).forEach(card => appGrid.appendChild(card));
             }
         },
