@@ -361,7 +361,7 @@ except Exception as e:
 
         IFS='|' read -r finish_reason prompt_tokens compl_tokens content <<< "$parsed"
 
-        if [[ -z "$content" || "$finish_reason" == "error" ]]; then
+        if [[ -z "$content" ]]; then
             echo "    FAIL: no content (finish_reason=${finish_reason})"
             echo "    raw: ${response:0:200}"
             inference_fail=$((inference_fail + 1))

@@ -23,8 +23,8 @@ done
 assert_file_exists /etc/environment
 grep -q "PATH=" /etc/environment || test_fail "/etc/environment missing PATH"
 
-# /etc/portal.yaml — skip check in serverless if caddy not present
-if ! is_serverless || [[ -f /etc/supervisor/conf.d/caddy.conf ]]; then
+# /etc/portal.yaml — not expected in serverless mode
+if ! is_serverless; then
     assert_file_exists /etc/portal.yaml
 fi
 
