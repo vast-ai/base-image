@@ -362,7 +362,8 @@ import sys, json
 try:
     d = json.load(sys.stdin)
     c = d.get('choices', [{}])[0]
-    msg = c.get('message', {}).get('content', '').strip()
+    m = c.get('message', {})
+    msg = (m.get('content') or m.get('reasoning_content') or '').strip()
     finish = c.get('finish_reason', '?')
     usage = d.get('usage', {})
     prompt_tok = usage.get('prompt_tokens', '?')
