@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test: serverless mode — verify non-serverless services are stopped.
+# Test: serverless mode — verify non-serverless services are stopped and ports closed.
 source "$(dirname "$0")/../lib.sh"
 
 is_serverless || test_skip "not in serverless mode"
@@ -25,4 +25,4 @@ done
 # supervisord itself must still be running
 pgrep -f supervisord &>/dev/null || test_fail "supervisord not running"
 
-test_pass "serverless negative checks passed"
+test_pass "serverless service checks passed"

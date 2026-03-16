@@ -49,6 +49,8 @@ check_stopped() {
 declare -A CHECKED=()
 
 if is_serverless; then
+    # Wait for services to finish exiting (startsecs=5 + sleep 6 in exit_serverless.sh)
+    sleep 8
     # Serverless: caddy/portal/jupyter/tensorboard/syncthing/tunnel_manager should be stopped
     for name in caddy instance_portal jupyter tensorboard syncthing tunnel_manager; do
         if [[ -f "/etc/supervisor/conf.d/${name}.conf" ]]; then
