@@ -52,6 +52,17 @@ apt-get install --no-install-recommends -y \
     ninja-build \
     gdb \
     libssl-dev \
+    pkg-config \
+    autoconf \
+    automake \
+    libtool \
+    libffi-dev \
+    libcurl4-openssl-dev \
+    libxml2-dev \
+    libsqlite3-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libwebp-dev \
     netcat-traditional \
     net-tools \
     dnsutils \

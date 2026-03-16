@@ -1646,6 +1646,17 @@ window.InstancePortal = (function() {
             }
         },
 
+        // Return the first active (overwriting) span in the console,
+        // or null if none — used as the insertBefore anchor for new lines.
+        _pinnedAnchor: function(logConsole) {
+            const active = this._getActiveSpans();
+            if (active.size === 0) return null;
+            for (const child of logConsole.children) {
+                if (active.has(child)) return child;
+            }
+            return null;
+        },
+
         // Append log message to the console (new line)
         appendLog: function(html, file) {
             if (this.isPaused) return;
@@ -1655,7 +1666,12 @@ window.InstancePortal = (function() {
 
             const span = document.createElement('span');
             span.innerHTML = html;
-            logConsole.appendChild(span);
+            const anchor = this._pinnedAnchor(logConsole);
+            if (anchor) {
+                logConsole.insertBefore(span, anchor);
+            } else {
+                logConsole.appendChild(span);
+            }
             if (file) this.lastSpansByFile[file] = [span];
 
             this._trimLog(logConsole);

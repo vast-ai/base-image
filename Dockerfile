@@ -134,6 +134,20 @@ RUN \
         ninja-build \
         gdb \
         libssl-dev \
+        # Build system tools
+        pkg-config \
+        autoconf \
+        automake \
+        libtool \
+        # Common dev libraries
+        libffi-dev \
+        libcurl4-openssl-dev \
+        libxml2-dev \
+        libsqlite3-dev \
+        # Image processing
+        libpng-dev \
+        libjpeg-dev \
+        libwebp-dev \
         # System Python
         python3-full \
         python3-dev \
