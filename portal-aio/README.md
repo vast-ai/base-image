@@ -72,7 +72,7 @@ Processes wrapped with the `pty` helper and `log-tee` produce three output strea
 | `/var/log/<name>.log` | All ANSI stripped, `\r` converted to `\n` | Human-readable clean log |
 | stdout | Same as clean log | Vast.ai native log viewer |
 
-This is handled by `log-tee` (for shell scripts via `logging.sh`) and `subprocess_runner.py` (for the Python provisioner). The `pty` wrapper (backed by `unbuffer -p`) gives child processes a real PTY so they enable progress bars, colored output, and other terminal features.
+This is handled by `log-tee` (for shell scripts via `logging.sh`) and `subprocess_runner.py` (for the Python provisioner). The `pty` wrapper (backed by `unbuffer -p`) gives child processes a real PTY so they enable progress bars, colored output, and other terminal features. Set `DISABLE_PTY=true` to disable the PTY wrapper at runtime (useful for debugging or environments where `unbuffer` causes issues).
 
 ### System Monitoring
 

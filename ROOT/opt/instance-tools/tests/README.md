@@ -13,7 +13,8 @@ tests/
 │   ├── 11-instance-metadata.sh
 │   ├── 12-provisioning.sh
 │   ├── ...
-│   └── 85-serverless-negative.sh
+│   ├── 85-serverless-services.sh
+│   └── 86-serverless-pyworker.sh
 └── *.d/                   # Derivative test directories (e.g. pytorch.d/, comfyui.d/)
 ```
 
@@ -76,6 +77,10 @@ Sourced by every test. Provides:
 | `assert_service_stopped NAME` | Assert | supervisorctl STOPPED/EXITED/FATAL |
 | `assert_env_set VARNAME` | Assert | Non-empty env var |
 | `assert_user_exists USER [UID]` | Assert | `id -u` check |
+| `service_running NAME` | Predicate | supervisorctl RUNNING check (return 0/1) |
+| `find_caddy_ports` | Query | Populate REPLY with active Caddy external ports |
+| `caddy_port_proto PORT` | Query | Echo "https" or "http" for a Caddyfile port |
+| `http_check LABEL EXPECTED [curl_args...]` | Assert | HTTP status check via `fail_later` (supports pipe-delimited codes) |
 
 **Instance metadata:** Test 11 queries the Vast API and caches the full instance JSON at `/tmp/instance-test-metadata.json`. Use `instance_field "gpu_name"` etc. from any test that runs after 11.
 
@@ -88,7 +93,7 @@ Tests execute in filename sort order. The numbering creates two phases:
 | 10–11 | Pre-provisioning | Supervisor alive, instance identity/API, basic infrastructure |
 | 12 | **Provisioning gate** | Monitors provisioning for activity; blocks until done or hung |
 | 15–60 | Post-provisioning | Boot markers, portal, caddy, networking, filesystem, users, python, binaries, env, GPU/CUDA |
-| 65–85 | Service validation | Supervisor service states, functional HTTP checks, logging, cron, serverless negative checks |
+| 65–86 | Service validation | Supervisor service states, functional HTTP checks, logging, cron, serverless services, serverless pyworker |
 
 **Why ordering matters:** Provisioning (step 12) can register new supervisor services, install packages, and download models. Tests that check service states or installed software must run after it.
 

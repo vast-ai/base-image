@@ -464,6 +464,12 @@ The logging utilities in `/opt/supervisor-scripts/utils/` handle:
 |----------|-------------|
 | `TENSORBOARD_LOG_DIR` | Tensorboard log directory (default: `/workspace`) |
 
+### Logging
+
+| Variable | Description |
+|----------|-------------|
+| `DISABLE_PTY` | Set to `true` to disable PTY wrapping (unbuffer) for all supervisor scripts |
+
 ## Building From Source (Not Recommended)
 
 > **Note:** Building from source creates new image layers that won't be cached on Vast.ai hosts. For most use cases, [extending our pre-built images](#building-a-derived-image-recommended) is faster and more efficient.
