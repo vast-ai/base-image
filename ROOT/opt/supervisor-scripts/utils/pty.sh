@@ -5,10 +5,11 @@
 #   pty command arg1 arg2 ...
 #
 # If unbuffer is not available, falls back to direct execution.
+# Set DISABLE_PTY=true to bypass unbuffer even when available.
 pty() {
-    if command -v unbuffer &>/dev/null; then
-        unbuffer -p "$@"
-    else
+    if [[ "${DISABLE_PTY:-false}" == "true" ]] || ! command -v unbuffer &>/dev/null; then
         "$@"
+    else
+        unbuffer -p "$@"
     fi
 }
