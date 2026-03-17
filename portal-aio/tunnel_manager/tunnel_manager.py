@@ -36,7 +36,8 @@ def load_config():
             data = yaml.safe_load(file) or {}
             config_applications = data.get('applications', {})
             return hydrate_applications(config_applications)
-        
+    return {}
+
 def hydrate_applications(applications):
     for app_name, app in applications.items():
         if app["external_port"] == app["internal_port"] and app["internal_port"] == 8080:

@@ -36,9 +36,7 @@ utils=/opt/supervisor-scripts/utils
 . "${{utils}}/logging.sh"
 . "${{utils}}/cleanup_generic.sh"
 . "${{utils}}/environment.sh"
-{exit_serverless}{exit_portal}
-# Activate virtual environment
-. {venv}/bin/activate
+{exit_serverless}{exit_portal}{venv_activate}
 
 {wait_block}# Set environment variables
 {env_exports}
@@ -97,15 +95,23 @@ def _generate_startup_script(service: Service) -> str:
         env_lines.append(f'export {key}="{_shell_escape(value)}"')
     env_exports = "\n".join(env_lines) if env_lines else "# (none)"
 
+    # Virtual environment activation (skip for system services)
+    venv_activate = ""
+    if service.venv and service.venv != "system":
+        venv_activate = (
+            '# Activate virtual environment\n'
+            f'. {service.venv}/bin/activate\n'
+        )
+
     # Pre-launch commands
     pre_commands = ""
     if service.pre_commands:
         pre_commands = "\n".join(service.pre_commands) + "\n"
 
     return _STARTUP_SCRIPT_TEMPLATE.format(
-        venv=service.venv,
         exit_serverless=exit_serverless,
         exit_portal=exit_portal,
+        venv_activate=venv_activate,
         wait_block=wait_block,
         env_exports=env_exports,
         pre_commands=pre_commands,

@@ -6,7 +6,7 @@ pip_packages:
 services:
   - name: ollama
     portal_search_term: ollama
-    venv: /usr
+    venv: /venv/main
     workdir: /usr/local/bin
     command: ollama serve
 

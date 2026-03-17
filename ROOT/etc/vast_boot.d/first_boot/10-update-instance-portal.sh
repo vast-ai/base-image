@@ -23,7 +23,7 @@ REPO="${PORTAL_REPO:-vast-ai/base-image}"
 INSTALLED=""
 if [[ -f "$VERSION_FILE" ]]; then
     INSTALLED=$(<"$VERSION_FILE")
-    INSTALLED="${INSTALLED%%[[:space:]]}"  # trim whitespace
+    INSTALLED="${INSTALLED%%[[:space:]]*}"  # trim trailing whitespace
 fi
 
 if [[ -z "$INSTALLED" ]]; then
