@@ -468,13 +468,26 @@ window.InstancePortal = (function() {
                     }
                     
                     const tunnelsData = await response.json();
-                    
-                    // Process each tunnel and associate with applications
+
+                    // Build set of current targets to detect removals
+                    const currentTargets = new Set(tunnelsData.map(t => t.targetUrl));
+
+                    // Remove tunnels no longer reported by the API
+                    for (const key of Object.keys(this.named_tunnels)) {
+                        if (!currentTargets.has(key)) {
+                            delete this.named_tunnels[key];
+                        }
+                    }
+
+                    // Add/update tunnels from the API response
                     tunnelsData.forEach(tunnelData => {
-                        const tunnel = this._createTunnelObject('named', tunnelData.targetUrl, tunnelData.tunnelUrl);
-                        this.named_tunnels[tunnelData.targetUrl] = tunnel;
+                        const existing = this.named_tunnels[tunnelData.targetUrl];
+                        if (!existing || existing.tunnelUrl !== tunnelData.tunnelUrl) {
+                            const tunnel = this._createTunnelObject('named', tunnelData.targetUrl, tunnelData.tunnelUrl);
+                            this.named_tunnels[tunnelData.targetUrl] = tunnel;
+                        }
                     });
-                    
+
                     return Object.values(this.named_tunnels);
                 } catch (error) {
                     if (attempt < MAX_RETRIES) {
@@ -499,13 +512,26 @@ window.InstancePortal = (function() {
                     }
                     
                     const tunnelsData = await response.json();
-                    
-                    // Process each tunnel and associate with applications
+
+                    // Build set of current targets to detect removals
+                    const currentTargets = new Set(tunnelsData.map(t => t.targetUrl));
+
+                    // Remove tunnels no longer reported by the API
+                    for (const key of Object.keys(this.quick_tunnels)) {
+                        if (!currentTargets.has(key)) {
+                            delete this.quick_tunnels[key];
+                        }
+                    }
+
+                    // Add/update tunnels from the API response
                     tunnelsData.forEach(tunnelData => {
-                        const tunnel = this._createTunnelObject('quick', tunnelData.targetUrl, tunnelData.tunnelUrl);
-                        this.quick_tunnels[tunnelData.targetUrl] = tunnel;
+                        const existing = this.quick_tunnels[tunnelData.targetUrl];
+                        if (!existing || existing.tunnelUrl !== tunnelData.tunnelUrl) {
+                            const tunnel = this._createTunnelObject('quick', tunnelData.targetUrl, tunnelData.tunnelUrl);
+                            this.quick_tunnels[tunnelData.targetUrl] = tunnel;
+                        }
                     });
-                    
+
                     return Object.values(this.quick_tunnels);
                 } catch (error) {
                     if (attempt < MAX_RETRIES) {
@@ -676,38 +702,48 @@ window.InstancePortal = (function() {
                     if (resolved || Date.now() - start_time >= max_duration) return;
                     
                     try {
-                        // For non-proxied apps, we just need to know if we got any response (best effort)
-                        // For proxied apps, we need a 200 response
+                        const resolverUrl = `${tunnel_url}/portal-resolver?t=${Date.now()}`;
+
                         if (isProxied) {
-                            // When proxied, we need to check for a 200 response
-                            // Using regular fetch (not no-cors) to read the status
-                            const response = await fetch(`${tunnel_url}/portal-resolver?t=${Date.now()}`, {
+                            // Two-phase check for proxied apps to avoid CORS console errors:
+                            // Phase 1: no-cors probe — if the tunnel is down, this rejects
+                            //          with a network error (no CORS error in console).
+                            // Phase 2: regular fetch — only attempted once we know the tunnel
+                            //          responds.  If Caddy is serving, we get a 200 with CORS
+                            //          headers.  If Cloudflare returned an error page (rare at
+                            //          this point), the CORS failure is caught and retried.
+                            await fetch(resolverUrl, {
+                                mode: 'no-cors',
                                 cache: 'no-store',
                                 credentials: 'omit'
                             });
-                            
+
+                            // Tunnel responded — now try a regular fetch to verify it's
+                            // our Caddy (200 + CORS headers), not a Cloudflare error page.
+                            const response = await fetch(resolverUrl, {
+                                cache: 'no-store',
+                                credentials: 'omit'
+                            });
+
                             if (response.status === 200 && !resolved) {
                                 clearTimeout(timeout);
                                 resolved = true;
                                 resolve(true);
                             } else if (!resolved && Date.now() - start_time < max_duration) {
-                                // If not a 200 response and we have time, try again
                                 setTimeout(attemptLoad, polling_interval);
                             } else if (!resolved) {
                                 resolved = true;
                                 resolve(false);
                             }
                         } else {
-                            // For non-proxied apps where we cannot control CORS headers, we just need any response
-                            // This may give us a false positive for resolvable but it is the best we can do
-                            // Use fetch with no-cors
-                            await fetch(`${tunnel_url}/portal-resolver?t=${Date.now()}`, {
+                            // For non-proxied apps where we cannot control CORS headers,
+                            // we just need any response (best effort)
+                            await fetch(resolverUrl, {
                                 mode: 'no-cors',
                                 cache: 'no-store',
                                 credentials: 'omit'
                             });
-                            
-                            // If we get here, we got a response (for non-proxied apps this is enough)
+
                             if (!resolved) {
                                 clearTimeout(timeout);
                                 resolved = true;
@@ -715,7 +751,7 @@ window.InstancePortal = (function() {
                             }
                         }
                     } catch (fetchError) {
-                        // If we still have time, try again
+                        // Network error or CORS failure — retry if time remains
                         if (!resolved && Date.now() - start_time < max_duration) {
                             setTimeout(attemptLoad, polling_interval);
                         } else if (!resolved) {
@@ -2274,6 +2310,10 @@ window.InstancePortal = (function() {
                     break;
                 case 'tunnels-page':
                     pageTitle.textContent = 'Tunnels (Open New Ports)';
+                    this.tunnels.fetch().then(() => {
+                        this.tunnels.checkAllTunnelStatus();
+                        this.tunnels.ui.renderTunnelTable();
+                    }).catch(e => console.error('tunnels refresh failed:', e));
                     break;
                 case 'services-page':
                     pageTitle.textContent = 'Supervisor';

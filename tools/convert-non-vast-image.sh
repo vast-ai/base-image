@@ -216,6 +216,7 @@ fi
 rm -f /etc/vast_boot.d/48-venv-backup.sh
 rm -f /opt/instance-tools/bin/venv_backup.sh
 rm -f /etc/supervisor/conf.d/tensorboard.conf
+rm -f /opt/superviros-scripts/tensorboard.sh
 
 # Install Syncthing
 SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')"

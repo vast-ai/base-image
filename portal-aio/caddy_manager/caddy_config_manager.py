@@ -279,6 +279,13 @@ def generate_noauth_config(hostname, internal_port, flush_interval):
     import real_ip_map
     import forwarded_protocol_map
 
+    route /portal-resolver {{
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, OPTIONS"
+        header Access-Control-Allow-Headers "*"
+        respond 200
+    }}
+
     handle {{
         {get_reverse_proxy_block(hostname, internal_port, flush_interval)}
     }}
@@ -292,7 +299,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     # Escape passwords for Caddy double-quoted string contexts (Set-Cookie headers)
     def caddy_quote_escape(s):
-        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
+        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '').replace(';', '')
 
     safe_password = caddy_quote_escape(password)
     safe_open_button_token = caddy_quote_escape(open_button_token)
@@ -304,9 +311,9 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     route @noauth {{
         route /portal-resolver {{
-            header Access-Control-Allow-Origin *
-            header Access-Control-Allow-Methods GET, OPTIONS
-            header Access-Control-Allow-Headers *
+            header Access-Control-Allow-Origin "*"
+            header Access-Control-Allow-Methods "GET, OPTIONS"
+            header Access-Control-Allow-Headers "*"
             respond 200
         }}
 

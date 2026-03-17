@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from .schema import Service
 from .subprocess_runner import run_cmd
 
 log = logging.getLogger("provisioner")
+
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def _shell_escape(value: str) -> str:
@@ -130,6 +133,11 @@ def register_services(services: list[Service], dry_run: bool = False) -> None:
         return
 
     for service in services:
+        if not service.name or not _SAFE_NAME_RE.match(service.name):
+            raise ValueError(
+                f"Invalid service name: {service.name!r} — must match [a-zA-Z0-9_-]+"
+            )
+
         script_path = f"/opt/supervisor-scripts/{service.name}.sh"
         conf_path = f"/etc/supervisor/conf.d/{service.name}.conf"
 
