@@ -92,8 +92,17 @@ def generate_caddyfile(config):
     elif not open_button_token:
         open_button_token = web_password
     
+    # Strip characters that are unsafe in cookie values / CEL strings.
+    # Done early so every downstream use (CEL matchers, Set-Cookie headers,
+    # basic_auth hash, console output) sees the same sanitized value.
+    def _sanitize_token(s):
+        return s.replace('\r', '').replace('\n', '').replace(';', '')
+
+    web_password = _sanitize_token(web_password)
+    open_button_token = _sanitize_token(open_button_token)
+
     caddy_identifier = os.environ.get('VAST_CONTAINERLABEL')
-    
+
     # Configurable options
     enable_compression = os.environ.get('CADDY_ENABLE_COMPRESSION', 'true').lower() == 'true'
     flush_interval = os.environ.get('CADDY_FLUSH_INTERVAL', '-1')  # -1 = immediate (good for SSE)
@@ -299,7 +308,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
     # Escape passwords for Caddy double-quoted string contexts (Set-Cookie headers)
     def caddy_quote_escape(s):
-        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '').replace(';', '')
+        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
 
     safe_password = caddy_quote_escape(password)
     safe_open_button_token = caddy_quote_escape(open_button_token)

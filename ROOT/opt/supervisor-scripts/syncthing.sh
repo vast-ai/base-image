@@ -58,7 +58,8 @@ run_with_retry $CLI config gui insecure-admin-access set true
 run_with_retry $CLI config gui insecure-skip-host-check set true
 # Add TCP listener for the dynamic port (relay address is set in config.xml)
 LISTEN_ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"
-if ! run_with_retry $CLI config options raw-listen-addresses list | grep -qF "$LISTEN_ADDR"; then
+listen_output=$(run_with_retry $CLI config options raw-listen-addresses list) || true
+if ! echo "$listen_output" | grep -qF "$LISTEN_ADDR"; then
     run_with_retry $CLI config options raw-listen-addresses add "$LISTEN_ADDR"
 fi
 
