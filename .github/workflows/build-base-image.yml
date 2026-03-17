@@ -27,7 +27,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=()
+          [[ -z "$NAMESPACE" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          [[ -z "$USERNAME" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "$TOKEN" ]] && missing+=("DOCKERHUB_TOKEN")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required secrets are set"
+
   generate-matrix:
+    needs: validate-secrets
     runs-on: ubuntu-latest
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
