@@ -18,7 +18,7 @@ services:
 post_commands:
   - which ollama > /dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh
   - |
-    ollama serve > /dev/null 2>&1 &
+    ollama serve &
     OLLAMA_PID=$!
     while ! curl -s localhost:11434 > /dev/null 2>&1; do sleep 2; done
     ollama pull ${OLLAMA_MODEL:-qwen3:8b}

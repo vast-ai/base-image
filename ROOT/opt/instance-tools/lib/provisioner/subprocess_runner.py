@@ -8,6 +8,7 @@ import fcntl
 import logging
 import os
 import re
+import select
 import struct
 import subprocess
 import termios
@@ -147,6 +148,14 @@ def run_cmd(
         # doesn't produce a spurious extra newline on stdout.
         pending_cr = False
         while True:
+            # Use select with a timeout so we can detect when the main
+            # process has exited even if a backgrounded child inherited
+            # the PTY slave fd and is keeping it open.
+            ready, _, _ = select.select([master_fd], [], [], 1.0)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue
             try:
                 data = os.read(master_fd, 4096)
                 if not data:
