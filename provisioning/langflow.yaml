@@ -1,0 +1,24 @@
+version: 1
+
+pip_packages:
+  - packages: ["langflow"]
+
+services:
+  - name: ollama
+    portal_search_term: ollama
+    venv: /usr
+    workdir: /usr/local/bin
+    command: ollama serve
+
+  - name: langflow
+    portal_search_term: langflow
+    workdir: /opt
+    command: langflow run ${LANGFLOW_ARGS:-}
+
+post_commands:
+  - which ollama > /dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh
+  - |
+    ollama serve &
+    while ! curl -s localhost:11434 > /dev/null 2>&1; do sleep 2; done
+    ollama pull ${OLLAMA_MODEL:-qwen3:8b}
+    kill %1
