@@ -468,7 +468,7 @@ async def _create_default_tunnels():
                 await asyncio.sleep(2)
             try:
                 tunnel = await get_or_create_quick_tunnel(target_url)
-                print(f"Default Tunnel started for {app_name} ({target_url}) - {tunnel.tunnel_url}?token={os.environ.get('OPEN_BUTTON_TOKEN')}")
+                print(f"Default Tunnel started for {app_name} ({target_url}) - {tunnel.tunnel_url}")
             except Exception as e:
                 print(f"Failed to create default tunnel for {app_name} ({target_url}): {e}")
                 failed_targets.append(target_url)
@@ -482,7 +482,7 @@ async def _create_default_tunnels():
                 await asyncio.sleep(delay)
                 try:
                     tunnel = await get_or_create_quick_tunnel(target_url)
-                    print(f"Default Tunnel started for {app_name} ({target_url}) - {tunnel.tunnel_url}?token={os.environ.get('OPEN_BUTTON_TOKEN')}")
+                    print(f"Default Tunnel started for {app_name} ({target_url}) - {tunnel.tunnel_url}")
                     break
                 except Exception as e:
                     print(f"Retry {attempt}/3 failed for {app_name} ({target_url}): {e}")

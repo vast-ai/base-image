@@ -9,5 +9,9 @@ if [[ -z "$logpath" ]]; then
     cleanlog="/var/log/${PROC_NAME}.log"
     [[ -f "$cleanlog" ]] && mv "${cleanlog}" "${cleanlog}.old"
 fi
-exec > >(log-tee "${logfile}")
+if command -v log-tee &>/dev/null; then
+    exec > >(log-tee "${logfile}")
+else
+    exec > >(tee -a "${logfile}")
+fi
 exec 2>&1
