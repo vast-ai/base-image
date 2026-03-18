@@ -392,13 +392,12 @@ jobs:
         with:
           pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags-*}"
           path: all-tags/
-          merge-multiple: true
 
       - name: Aggregate tags
         id: collect
         run: |
           if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
-            TAGS=$(cat all-tags/*.txt | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            TAGS=$(find all-tags -name '*.txt' -exec cat {} + | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
             echo "Found $(echo $TAGS | jq length) unique tags"
           else
             echo "::warning::No tags found - extend may have failed"
