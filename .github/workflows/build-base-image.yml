@@ -52,7 +52,8 @@ jobs:
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       merge-matrix: ${{ steps.matrix.outputs.merge-matrix }}
-      mini-arch-matrix: ${{ steps.matrix.outputs.mini-arch-matrix }}
+      mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
+      mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
       - name: Generate matrices
@@ -112,13 +113,49 @@ jobs:
             done
           done
 
+          # Mini configs: key|mini_tag|cuda_versions
+          MINI_CONFIGS=(
+            "cuda-12.9-mini|cuda-12.9-mini|12-9"
+            "cuda-13.1-mini|cuda-13.1-mini|12-9 13-1"
+            "cuda-13.2-mini|cuda-13.2-mini|12-9 13-2"
+          )
+
+          MINI_BUILD_MATRIX="[]"
+          MINI_MERGE_MATRIX="[]"
+
+          for mini_config in "${MINI_CONFIGS[@]}"; do
+            IFS='|' read -r key mini_tag cuda_versions <<< "$mini_config"
+
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            MINI_MERGE_MATRIX=$(echo "$MINI_MERGE_MATRIX" | jq -c \
+              --arg key "$key" \
+              --arg mini_tag "$mini_tag" \
+              '. + [{"config_key": $key, "mini_tag": $mini_tag}]')
+
+            for arch in "linux/amd64" "linux/arm64"; do
+              arch_suffix="${arch#linux/}"
+              MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
+                --arg key "$key" \
+                --arg mini_tag "$mini_tag" \
+                --arg cuda_versions "$cuda_versions" \
+                --arg arch "$arch" \
+                --arg arch_suffix "$arch_suffix" \
+                '. + [{"config_key": $key, "mini_tag": $mini_tag, "cuda_versions": $cuda_versions, "arch": $arch, "arch_suffix": $arch_suffix}]')
+            done
+          done
+
           # Output matrices
           echo "build-matrix={\"include\":$(echo $BUILD_MATRIX)}" >> $GITHUB_OUTPUT
           echo "merge-matrix={\"include\":$(echo $MERGE_MATRIX)}" >> $GITHUB_OUTPUT
-          echo "mini-arch-matrix={\"include\":[{\"arch\":\"linux/amd64\",\"arch_suffix\":\"amd64\"},{\"arch\":\"linux/arm64\",\"arch_suffix\":\"arm64\"}]}" >> $GITHUB_OUTPUT
+          echo "mini-build-matrix={\"include\":$(echo $MINI_BUILD_MATRIX)}" >> $GITHUB_OUTPUT
+          echo "mini-merge-matrix={\"include\":$(echo $MINI_MERGE_MATRIX)}" >> $GITHUB_OUTPUT
 
           echo "Build matrix entries: $(echo $BUILD_MATRIX | jq length)"
           echo "Merge matrix entries: $(echo $MERGE_MATRIX | jq length)"
+          echo "Mini build matrix entries: $(echo $MINI_BUILD_MATRIX | jq length)"
           echo "Build date: $BUILD_DATE"
 
   build:
@@ -263,7 +300,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-arch-matrix) }}
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-build-matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -283,58 +320,51 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build mini variants
+      - name: Build mini Python versions
         env:
           NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          MINI_TAG: ${{ matrix.mini_tag }}
+          CUDA_VERSIONS: ${{ matrix.cuda_versions }}
           ARCH: ${{ matrix.arch }}
           ARCH_SUFFIX: ${{ matrix.arch_suffix }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
-
-          # Mini configs: mini_tag|cuda_versions
-          MINI_CONFIGS=(
-            "cuda-12.9-mini|12-9"
-            "cuda-13.1-mini|12-9 13-1"
-            "cuda-13.2-mini|12-9 13-2"
-          )
-
           mkdir -p built-tags
 
-          for mini_config in "${MINI_CONFIGS[@]}"; do
-            IFS='|' read -r mini_tag cuda_versions <<< "$mini_config"
+          for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+            py_tag="${py_version//.}"
 
-            for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
-              py_tag="${py_version//.}"
+            # Use the just-built staging stock-24 image as base
+            BASE="${NAMESPACE}/base-image:stock-ubuntu24.04-py${py_tag}-${BUILD_DATE}"
+            TAG="${NAMESPACE}/base-image:${MINI_TAG}-py${py_tag}-${BUILD_DATE}-${ARCH_SUFFIX}"
 
-              # Use the just-built staging stock-24 image as base
-              BASE="${NAMESPACE}/base-image:stock-ubuntu24.04-py${py_tag}-${BUILD_DATE}"
-              TAG="${NAMESPACE}/base-image:${mini_tag}-py${py_tag}-${BUILD_DATE}-${ARCH_SUFFIX}"
+            echo "=== Building mini: ${MINI_TAG} py${py_tag} for ${ARCH} ==="
+            docker buildx build \
+              --progress=plain \
+              --platform "${ARCH}" \
+              -f Dockerfile.runtime \
+              --build-arg BASE_IMAGE="${BASE}" \
+              --build-arg CUDA_VERSIONS="${CUDA_VERSIONS}" \
+              --tag "${TAG}" \
+              --push .
 
-              echo "=== Building mini: ${mini_tag} py${py_tag} for ${ARCH} ==="
-              docker buildx build \
-                --progress=plain \
-                --platform "${ARCH}" \
-                -f Dockerfile.runtime \
-                --build-arg BASE_IMAGE="${BASE}" \
-                --build-arg CUDA_VERSIONS="${cuda_versions}" \
-                --tag "${TAG}" \
-                --push .
-
-              echo "$TAG" >> built-tags/tags.txt
-            done
+            echo "$TAG" >> built-tags/tags.txt
           done
 
       - name: Upload mini tags
         uses: actions/upload-artifact@v4
         with:
-          name: mini-tags-${{ matrix.arch_suffix }}
+          name: mini-tags-${{ matrix.config_key }}-${{ matrix.arch_suffix }}
           path: built-tags/
           retention-days: 1
 
   merge-mini-manifests:
     needs: [generate-matrix, build-mini]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-merge-matrix) }}
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -348,34 +378,31 @@ jobs:
       - name: Merge mini manifests
         env:
           NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          MINI_TAG: ${{ matrix.mini_tag }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
-          MINI_TAGS=("cuda-12.9-mini" "cuda-13.1-mini" "cuda-13.2-mini")
-
           mkdir -p built-tags
 
-          for mini_tag in "${MINI_TAGS[@]}"; do
-            for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
-              py_tag="${py_version//.}"
+          for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+            py_tag="${py_version//.}"
 
-              FINAL_TAG="${NAMESPACE}/base-image:${mini_tag}-py${py_tag}-${BUILD_DATE}"
-              AMD64_TAG="${FINAL_TAG}-amd64"
-              ARM64_TAG="${FINAL_TAG}-arm64"
+            FINAL_TAG="${NAMESPACE}/base-image:${MINI_TAG}-py${py_tag}-${BUILD_DATE}"
+            AMD64_TAG="${FINAL_TAG}-amd64"
+            ARM64_TAG="${FINAL_TAG}-arm64"
 
-              echo "=== Merging mini manifest: ${FINAL_TAG} ==="
-              docker buildx imagetools create \
-                -t "${FINAL_TAG}" \
-                "${AMD64_TAG}" "${ARM64_TAG}"
+            echo "=== Merging mini manifest: ${FINAL_TAG} ==="
+            docker buildx imagetools create \
+              -t "${FINAL_TAG}" \
+              "${AMD64_TAG}" "${ARM64_TAG}"
 
-              echo "$FINAL_TAG" >> built-tags/tags.txt
-            done
+            echo "$FINAL_TAG" >> built-tags/tags.txt
           done
 
       - name: Upload mini manifest tags
         uses: actions/upload-artifact@v4
         with:
-          name: mini-manifest-tags
+          name: mini-manifest-tags-${{ matrix.config_key }}
           path: built-tags/
           retention-days: 1
 
@@ -389,7 +416,7 @@ jobs:
       - name: Download all tag artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags}"
+          pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags-*}"
           path: all-tags/
           merge-multiple: true
 
@@ -414,6 +441,7 @@ jobs:
         env:
           BUILD_MATRIX: ${{ needs.generate-matrix.outputs.build-matrix }}
           MERGE_MATRIX: ${{ needs.generate-matrix.outputs.merge-matrix }}
+          MINI_BUILD_MATRIX: ${{ needs.generate-matrix.outputs.mini-build-matrix }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
         run: |
@@ -444,8 +472,13 @@ jobs:
             echo ""
           done
 
-          echo "=== Mini Variants ==="
-          for mini_tag in "cuda-12.9-mini" "cuda-13.1-mini" "cuda-13.2-mini"; do
+          echo "=== Mini Build Jobs ==="
+          echo "$MINI_BUILD_MATRIX" | jq -r '.include[] | "  \(.config_key) [\(.arch_suffix)] cuda=\(.cuda_versions)"'
+          echo ""
+
+          echo "=== Mini Tags ==="
+          for entry in $(echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")'); do
+            mini_tag=$(echo "$entry" | jq -r '.mini_tag')
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${BUILD_DATE}"

@@ -37,6 +37,7 @@ jobs:
     outputs:
       configs: ${{ steps.configs.outputs.configs }}
       auto-tags: ${{ steps.configs.outputs.auto-tags }}
+      mini-tags: ${{ steps.configs.outputs.mini-tags }}
     steps:
       - name: Generate filtered config list
         id: configs
@@ -85,8 +86,28 @@ jobs:
             fi
           done
 
+          # Mini configs: key|mini_tag
+          MINI_CONFIGS=(
+            "cuda-12.9-mini|cuda-12.9-mini"
+            "cuda-13.1-mini|cuda-13.1-mini"
+            "cuda-13.2-mini|cuda-13.2-mini"
+          )
+
+          MINI_TAGS_JSON="[]"
+          for mini_config in "${MINI_CONFIGS[@]}"; do
+            IFS='|' read -r key mini_tag <<< "$mini_config"
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+            MINI_TAGS_JSON=$(echo "$MINI_TAGS_JSON" | jq -c \
+              --arg key "$key" \
+              --arg mini_tag "$mini_tag" \
+              '. + [{"key": $key, "mini_tag": $mini_tag}]')
+          done
+
           echo "configs=$(echo $CONFIGS_JSON)" >> $GITHUB_OUTPUT
           echo "auto-tags=$(echo $AUTO_TAGS)" >> $GITHUB_OUTPUT
+          echo "mini-tags=$(echo $MINI_TAGS_JSON)" >> $GITHUB_OUTPUT
           echo "Configs: $(echo $CONFIGS_JSON | jq length)"
           echo "Auto-tags: $(echo $AUTO_TAGS | jq length)"
 
@@ -113,6 +134,7 @@ jobs:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
+          MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           set -euo pipefail
           PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
@@ -163,9 +185,11 @@ jobs:
           echo ""
           echo "=== Promoting mini variants ==="
           MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
-          MINI_TAGS=("cuda-12.9-mini" "cuda-13.1-mini" "cuda-13.2-mini")
+          MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
 
-          for mini_tag in "${MINI_TAGS[@]}"; do
+          for ((i=0; i<MINI_COUNT; i++)); do
+            mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
+
             for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
 
@@ -230,6 +254,7 @@ jobs:
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
+          MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           echo "=== DRY RUN - Promotion Plan ==="
           echo "Staging date: $STAGING_DATE"
@@ -260,7 +285,9 @@ jobs:
 
           echo ""
           echo "=== Mini Promotions ==="
-          for mini_tag in "cuda-12.9-mini" "cuda-13.1-mini" "cuda-13.2-mini"; do
+          MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
+          for ((i=0; i<MINI_COUNT; i++)); do
+            mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
