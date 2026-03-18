@@ -5,6 +5,7 @@
 # DOCKERHUB_USERNAME
 # DOCKERHUB_TOKEN
 # DOCKERHUB_NAMESPACE_STAGING
+# DOCKERHUB_NAMESPACE
 # Optional:
 # SLACK_WEBHOOK_URL
 
@@ -41,6 +42,8 @@ jobs:
     steps:
       - name: Generate filtered config list
         id: configs
+        env:
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
         run: |
           FILTER="${{ inputs.FILTER }}"
 
@@ -80,8 +83,8 @@ jobs:
             if [[ -n "$auto_source" ]]; then
               cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
               AUTO_TAGS=$(echo "$AUTO_TAGS" | jq -c \
-                --arg source "vastai/base-image:${auto_source}" \
-                --arg target "vastai/base-image:cuda-${cuda_ver}-auto" \
+                --arg source "${NAMESPACE_PROD}/base-image:${auto_source}" \
+                --arg target "${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto" \
                 '. + [{"source": $source, "target": $target}]')
             fi
           done
@@ -131,6 +134,7 @@ jobs:
       - name: Promote all images sequentially
         env:
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
@@ -156,15 +160,15 @@ jobs:
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
               # Primary tag retains the build date for pinning/reproducibility
-              DATED_TAG="vastai/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              DATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
               # Undated alias always points to the latest promoted build
-              UNDATED_TAG="vastai/base-image:${tag_template}-py${py_tag}"
+              UNDATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}"
 
               EXTRA_TAGS="--tag ${UNDATED_TAG}"
               if [[ "$py_version" == "$default_python" ]]; then
                 # Default python aliases (with and without date)
-                DATED_ALIAS="vastai/base-image:${tag_template}-${STAGING_DATE}"
-                UNDATED_ALIAS="vastai/base-image:${tag_template}"
+                DATED_ALIAS="${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE}"
+                UNDATED_ALIAS="${NAMESPACE_PROD}/base-image:${tag_template}"
                 EXTRA_TAGS+=" --tag ${DATED_ALIAS} --tag ${UNDATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
                 echo "$UNDATED_ALIAS" >> built-tags/tags.txt
@@ -194,8 +198,8 @@ jobs:
               py_tag="${py_version//.}"
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              DATED_TAG="vastai/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              UNDATED_TAG="vastai/base-image:${mini_tag}-py${py_tag}"
+              DATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              UNDATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}"
 
               echo "Promoting mini: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
               docker buildx imagetools create \
@@ -252,6 +256,7 @@ jobs:
         env:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
           MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
@@ -274,13 +279,13 @@ jobs:
             for py in "${PYTHON_VERSIONS[@]}"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              echo "    -> vastai/base-image:${tag_template}-py${py_tag}-${STAGING_DATE} (dated)"
-              echo "    -> vastai/base-image:${tag_template}-py${py_tag} (undated alias)"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE} (dated)"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag} (undated alias)"
             done
             dp_tag="${default_python//.}"
             echo "  + default python aliases:"
-            echo "    -> vastai/base-image:${tag_template}-${STAGING_DATE} (dated)"
-            echo "    -> vastai/base-image:${tag_template} (undated alias)"
+            echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE} (dated)"
+            echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template} (undated alias)"
           done
 
           echo ""
@@ -291,8 +296,8 @@ jobs:
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              echo "    -> vastai/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE} (dated)"
-              echo "    -> vastai/base-image:${mini_tag}-py${py_tag} (undated alias)"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE} (dated)"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag} (undated alias)"
             done
           done
 
