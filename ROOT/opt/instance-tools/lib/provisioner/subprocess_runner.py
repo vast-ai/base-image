@@ -22,6 +22,110 @@ _write_lock = threading.Lock()
 # ANSI CSI sequences and bare ESC sequences.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b[^\[[]")
 
+# --- Parallel progress tracker ---
+# When active, \r-based progress lines from concurrent run_cmd threads
+# are collected here instead of written directly.  A timer thread
+# periodically flushes them as a cursor-up block so multiple progress
+# bars display cleanly.
+_parallel_tracker: "ProgressTracker | None" = None
+
+
+class ProgressTracker:
+    """Coordinates \r progress bars from concurrent download threads."""
+
+    def __init__(self, streams: list[tuple], interval: float = 0.5):
+        self._lines: dict[int, str] = {}  # thread_id -> latest progress text
+        self._lock = threading.Lock()
+        self._streams = streams
+        self._interval = interval
+        self._prev_count = 0
+        self._timer: threading.Timer | None = None
+        self._stopped = False
+
+    def start(self) -> None:
+        global _parallel_tracker
+        _parallel_tracker = self
+        self._schedule()
+
+    def stop(self) -> None:
+        global _parallel_tracker
+        self._stopped = True
+        if self._timer:
+            self._timer.cancel()
+        # Final flush then clear the block from display
+        self.flush()
+        with _write_lock:
+            self.clear_block()
+        _parallel_tracker = None
+
+    def update(self, text: str) -> None:
+        """Store the latest \r progress line for the calling thread."""
+        tid = threading.get_ident()
+        with self._lock:
+            self._lines[tid] = text
+
+    def remove_thread(self) -> None:
+        tid = threading.get_ident()
+        with self._lock:
+            self._lines.pop(tid, None)
+
+    def clear_block(self) -> None:
+        """Erase the progress block from display and reset cursor tracking.
+
+        Must be called (under _write_lock) before any direct write to the
+        streams so that the cursor position stays in sync.
+        """
+        if self._prev_count > 0:
+            for stream, is_portal in self._streams:
+                try:
+                    if is_portal:
+                        stream.write(
+                            f"\x1b[{self._prev_count}A"
+                            + ("\x1b[2K\n" * self._prev_count)
+                            + f"\x1b[{self._prev_count}A"
+                        )
+                        stream.flush()
+                except OSError:
+                    pass
+            self._prev_count = 0
+
+    def flush(self) -> None:
+        with self._lock:
+            snapshot = list(self._lines.values())
+        if not snapshot and self._prev_count == 0:
+            return
+        with _write_lock:
+            for stream, is_portal in self._streams:
+                try:
+                    if is_portal:
+                        # Cursor up to overwrite previous block
+                        if self._prev_count > 0:
+                            stream.write(f"\x1b[{self._prev_count}A")
+                        for line in snapshot:
+                            stream.write(f"\x1b[1G{line}\x1b[K\n")
+                        # Clear leftover lines from a shrinking block
+                        for _ in range(max(0, self._prev_count - len(snapshot))):
+                            stream.write("\x1b[2K\n")
+                    else:
+                        for line in snapshot:
+                            cleaned = _clean_for_terminal(line)
+                            if cleaned.strip():
+                                stream.write(f"\r{cleaned}")
+                    stream.flush()
+                except OSError:
+                    pass
+        self._prev_count = len(snapshot)
+
+    def _schedule(self) -> None:
+        if not self._stopped:
+            self._timer = threading.Timer(self._interval, self._tick)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _tick(self) -> None:
+        self.flush()
+        self._schedule()
+
 # Environment variables that leak the provisioner's own virtualenv into
 # child processes.  Stripping them ensures that child scripts (especially
 # legacy provisioning scripts that `. /venv/main/bin/activate`) start with
@@ -174,19 +278,35 @@ def run_cmd(
             if clean_text.endswith("\r"):
                 clean_text = clean_text[:-1]
                 pending_cr = True
-            cleaned = None
-            with _write_lock:
-                for stream, is_portal in streams:
-                    try:
-                        if is_portal:
-                            stream.write(text)
-                        else:
-                            if cleaned is None:
-                                cleaned = _clean_for_terminal(clean_text)
-                            stream.write(cleaned)
-                        stream.flush()
-                    except OSError:
-                        pass
+            # When a parallel progress tracker is active and this chunk
+            # is a \r-only update (no newline), route it to the tracker
+            # so multiple threads' progress bars render as a clean block.
+            tracker = _parallel_tracker
+            if tracker and "\n" not in text:
+                # Extract the visible text for the tracker (strip ANSI)
+                progress_text = _ANSI_RE.sub("", clean_text).rstrip()
+                if progress_text:
+                    tracker.update(progress_text)
+            else:
+                # Normal write path: completed lines or single-threaded mode
+                cleaned = None
+                with _write_lock:
+                    if tracker:
+                        # Clear the progress block before writing so the
+                        # cursor-up count stays in sync with actual output.
+                        tracker.clear_block()
+                        tracker.remove_thread()
+                    for stream, is_portal in streams:
+                        try:
+                            if is_portal:
+                                stream.write(text)
+                            else:
+                                if cleaned is None:
+                                    cleaned = _clean_for_terminal(clean_text)
+                                stream.write(cleaned)
+                            stream.flush()
+                        except OSError:
+                            pass
             # Collect \n-delimited lines for the return value
             line_buf += data
             while b"\n" in line_buf:
@@ -217,6 +337,11 @@ def run_cmd(
             if line:
                 lines.append(line)
         os.close(master_fd)
+        # Remove this thread from the progress tracker so completed
+        # downloads don't show stale progress lines.
+        tracker = _parallel_tracker
+        if tracker:
+            tracker.remove_thread()
     else:
         assert proc.stdout is not None
         for raw_line in proc.stdout:

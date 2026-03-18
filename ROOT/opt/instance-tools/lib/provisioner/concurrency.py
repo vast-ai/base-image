@@ -78,6 +78,10 @@ def run_parallel(
 
     Returns a list of results: None for success, Exception for failure.
     The order matches the input items list.
+
+    When multiple items run concurrently, a ProgressTracker merges their
+    \\r-based progress bars into a single cursor-up block so they don't
+    fight over the same terminal line.
     """
     if not items:
         return []
@@ -85,15 +89,26 @@ def run_parallel(
     log.info("Starting %d %s (max %d parallel)", len(items), label, max_workers)
     results: list[Exception | None] = [None] * len(items)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_to_idx = {pool.submit(fn, item): i for i, item in enumerate(items)}
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                future.result()
-            except Exception as e:
-                results[idx] = e
-                log.error("Failed %s item %d: %s", label, idx, e)
+    # Activate progress tracker for concurrent downloads
+    tracker = None
+    if len(items) > 1:
+        from .subprocess_runner import ProgressTracker, _get_log_streams
+        tracker = ProgressTracker(_get_log_streams())
+        tracker.start()
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_idx = {pool.submit(fn, item): i for i, item in enumerate(items)}
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    results[idx] = e
+                    log.error("Failed %s item %d: %s", label, idx, e)
+    finally:
+        if tracker:
+            tracker.stop()
 
     failed = sum(1 for r in results if r is not None)
     if failed:
