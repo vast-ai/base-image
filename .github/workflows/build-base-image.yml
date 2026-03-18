@@ -76,6 +76,7 @@ jobs:
             "cuda-12.9-24|nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04|cuda-12.9.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
             "cuda-13.0.2-24|nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04|cuda-13.0.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
             "cuda-13.1.1-24|nvidia/cuda:13.1.1-cudnn-devel-ubuntu24.04|cuda-13.1.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.2.0-24|nvidia/cuda:13.2.0-cudnn-devel-ubuntu24.04|cuda-13.2.0-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
           )
 
           BUILD_MATRIX="[]"
@@ -295,6 +296,7 @@ jobs:
           MINI_CONFIGS=(
             "cuda-12.9-mini|12-9"
             "cuda-13.1-mini|12-9 13-1"
+            "cuda-13.2-mini|12-9 13-2"
           )
 
           mkdir -p built-tags
@@ -349,7 +351,7 @@ jobs:
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
-          MINI_TAGS=("cuda-12.9-mini" "cuda-13.1-mini")
+          MINI_TAGS=("cuda-12.9-mini" "cuda-13.1-mini" "cuda-13.2-mini")
 
           mkdir -p built-tags
 
@@ -443,7 +445,7 @@ jobs:
           done
 
           echo "=== Mini Variants ==="
-          for mini_tag in "cuda-12.9-mini" "cuda-13.1-mini"; do
+          for mini_tag in "cuda-12.9-mini" "cuda-13.1-mini" "cuda-13.2-mini"; do
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${BUILD_DATE}"
