@@ -16,6 +16,7 @@ from .subprocess_runner import run_cmd
 log = logging.getLogger("provisioner")
 
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_SAFE_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _shell_escape(value: str) -> str:
@@ -92,6 +93,11 @@ def _generate_startup_script(service: Service) -> str:
     # Environment variable exports
     env_lines = []
     for key, value in service.environment.items():
+        if not _SAFE_ENV_KEY_RE.match(key):
+            raise ValueError(
+                f"Invalid environment variable name: {key!r} — "
+                f"must match [A-Za-z_][A-Za-z0-9_]*"
+            )
         env_lines.append(f'export {key}="{_shell_escape(value)}"')
     env_exports = "\n".join(env_lines) if env_lines else "# (none)"
 

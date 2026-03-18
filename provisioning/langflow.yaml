@@ -20,6 +20,10 @@ post_commands:
   - |
     ollama serve &
     OLLAMA_PID=$!
-    while ! curl -s localhost:11434 > /dev/null 2>&1; do sleep 2; done
+    for i in $(seq 1 30); do
+      curl -s localhost:11434 > /dev/null 2>&1 && break
+      [ $i -eq 30 ] && echo "ERROR: ollama failed to start after 60s" && kill $OLLAMA_PID 2>/dev/null && exit 1
+      sleep 2
+    done
     ollama pull ${OLLAMA_MODEL:-qwen3:8b}
     kill $OLLAMA_PID 2>/dev/null; wait $OLLAMA_PID 2>/dev/null
