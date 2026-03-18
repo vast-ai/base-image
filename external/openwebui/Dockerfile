@@ -57,5 +57,8 @@ RUN mkdir -p /opt/workspace-internal/ollama && \
 # Register Jupyter kernel (ipykernel installed into /venv/main by convert-non-vast-image.sh)
 RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
 
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
+
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

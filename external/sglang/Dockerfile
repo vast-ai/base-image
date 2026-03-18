@@ -64,5 +64,8 @@ RUN \
     ln -s /sgl-workspace /opt/workspace-internal/sgl-workspace-link
 
 
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
+
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

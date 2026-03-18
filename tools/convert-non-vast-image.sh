@@ -196,9 +196,9 @@ if [[ ! -d /venv/main ]]; then
         fi
         /opt/miniforge3/bin/conda clean -ay
 
-        # Create venv with system site-packages inheritance
+        # Create relocatable venv with system site-packages inheritance
         mkdir -p /venv
-        "$SYS_PYTHON" -m venv --system-site-packages /venv/main
+        uv venv --relocatable --seed --system-site-packages -p "$SYS_PYTHON" /venv/main
 
         # Install ipykernel for Jupyter kernel registration
         uv pip install --python /venv/main/bin/python ipykernel

@@ -60,5 +60,13 @@ RUN \
     set -euo pipefail && \
     uv pip install --system --no-cache-dir ray[default]
 
+# Fix vllm shebang so it runs through the venv Python, allowing users to
+# install/upgrade dependencies (e.g. transformers) into /venv/main and have
+# vllm pick them up.  Also enables volume sync of the environment.
+RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
+
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

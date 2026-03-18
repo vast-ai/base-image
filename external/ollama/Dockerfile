@@ -50,5 +50,8 @@ RUN \
     set -euo pipefail && \
     mkdir -p /opt/workspace-internal
 
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
+
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

@@ -48,3 +48,6 @@ RUN \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
