@@ -133,22 +133,29 @@ jobs:
               py_tag="${py_version//.}"
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              PROD_TAG="vastai/base-image:${tag_template}-py${py_tag}"
+              # Primary tag retains the build date for pinning/reproducibility
+              DATED_TAG="vastai/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              # Undated alias always points to the latest promoted build
+              UNDATED_TAG="vastai/base-image:${tag_template}-py${py_tag}"
 
-              EXTRA_TAGS=""
+              EXTRA_TAGS="--tag ${UNDATED_TAG}"
               if [[ "$py_version" == "$default_python" ]]; then
-                ALIAS="vastai/base-image:${tag_template}"
-                EXTRA_TAGS="--tag ${ALIAS}"
-                echo "$ALIAS" >> built-tags/tags.txt
+                # Default python aliases (with and without date)
+                DATED_ALIAS="vastai/base-image:${tag_template}-${STAGING_DATE}"
+                UNDATED_ALIAS="vastai/base-image:${tag_template}"
+                EXTRA_TAGS+=" --tag ${DATED_ALIAS} --tag ${UNDATED_ALIAS}"
+                echo "$DATED_ALIAS" >> built-tags/tags.txt
+                echo "$UNDATED_ALIAS" >> built-tags/tags.txt
               fi
 
-              echo "Promoting: ${SOURCE} -> ${PROD_TAG}"
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
               docker buildx imagetools create \
-                --tag "${PROD_TAG}" \
+                --tag "${DATED_TAG}" \
                 ${EXTRA_TAGS} \
                 "${SOURCE}"
 
-              echo "$PROD_TAG" >> built-tags/tags.txt
+              echo "$DATED_TAG" >> built-tags/tags.txt
+              echo "$UNDATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -163,14 +170,17 @@ jobs:
               py_tag="${py_version//.}"
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              PROD_TAG="vastai/base-image:${mini_tag}-py${py_tag}"
+              DATED_TAG="vastai/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              UNDATED_TAG="vastai/base-image:${mini_tag}-py${py_tag}"
 
-              echo "Promoting mini: ${SOURCE} -> ${PROD_TAG}"
+              echo "Promoting mini: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
               docker buildx imagetools create \
-                --tag "${PROD_TAG}" \
+                --tag "${DATED_TAG}" \
+                --tag "${UNDATED_TAG}" \
                 "${SOURCE}"
 
-              echo "$PROD_TAG" >> built-tags/tags.txt
+              echo "$DATED_TAG" >> built-tags/tags.txt
+              echo "$UNDATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -239,10 +249,13 @@ jobs:
             for py in "${PYTHON_VERSIONS[@]}"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              echo "    -> vastai/base-image:${tag_template}-py${py_tag}"
+              echo "    -> vastai/base-image:${tag_template}-py${py_tag}-${STAGING_DATE} (dated)"
+              echo "    -> vastai/base-image:${tag_template}-py${py_tag} (undated alias)"
             done
             dp_tag="${default_python//.}"
-            echo "  + alias: vastai/base-image:${tag_template} (from py${dp_tag})"
+            echo "  + default python aliases:"
+            echo "    -> vastai/base-image:${tag_template}-${STAGING_DATE} (dated)"
+            echo "    -> vastai/base-image:${tag_template} (undated alias)"
           done
 
           echo ""
@@ -251,7 +264,8 @@ jobs:
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              echo "    -> vastai/base-image:${mini_tag}-py${py_tag}"
+              echo "    -> vastai/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE} (dated)"
+              echo "    -> vastai/base-image:${mini_tag}-py${py_tag} (undated alias)"
             done
           done
 
