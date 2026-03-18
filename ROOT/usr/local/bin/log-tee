@@ -105,8 +105,11 @@ def main() -> None:
     clean_path = _derive_clean_path(portal_path)
     clean_fd = None
     if clean_path:
-        os.makedirs(os.path.dirname(clean_path), exist_ok=True)
-        clean_fd = os.open(clean_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.makedirs(os.path.dirname(clean_path), exist_ok=True)
+            clean_fd = os.open(clean_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        except PermissionError:
+            pass  # non-root user can't write to /var/log — skip clean log
 
     # Incremental UTF-8 decoder for multi-byte chars split across reads
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -128,10 +131,10 @@ def main() -> None:
 
         text = decoder.decode(data)
 
-        # Portal log: strip cursor/erase, keep colors + \r
-        portal_text = _strip_cursor(text)
-        if portal_text:
-            _write(portal_fd, portal_text.encode("utf-8"))
+        # Portal log: write raw output (portal backend handles cursor/erase
+        # sequences for progress bar rendering and block mode detection)
+        if text:
+            _write(portal_fd, text.encode("utf-8"))
 
         # Stdout + clean log: strip all ANSI, convert \r to \n
         stdout_text = text
@@ -160,9 +163,7 @@ def main() -> None:
     # Flush remaining bytes from decoder and any pending \r
     remaining = decoder.decode(b"", final=True)
     if remaining:
-        portal_text = _strip_cursor(remaining)
-        if portal_text:
-            _write(portal_fd, portal_text.encode("utf-8"))
+        _write(portal_fd, remaining.encode("utf-8"))
     if pending_cr:
         remaining = "\r" + remaining
     if remaining:

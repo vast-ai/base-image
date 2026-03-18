@@ -1114,6 +1114,11 @@ async def _process_chunk(text: str, filename: str) -> None:
             state.cursor_row += 1
             if state.cursor_row >= len(state.lines):
                 state.lines.append("")
+            elif state.in_block:
+                # In block mode (cursor-up active), the next line is about
+                # to be rewritten.  Clear it so new text replaces old
+                # content instead of appending to it.
+                state.lines[state.cursor_row] = ""
         elif part == '\r':
             # Peek ahead: if next non-empty part is \n or \r\n, this \r
             # is just part of a line ending (PTY onlcr artifact), not an
@@ -1164,9 +1169,17 @@ async def _process_chunk(text: str, filename: str) -> None:
                 state.lines[state.cursor_row] = ""
             elif letter == 'K':
                 # Erase in line: 0/default = cursor→end, 1 = start→cursor,
-                # 2 = entire line.  We don't track column position, so all
-                # variants clear the whole line.
-                state.lines[state.cursor_row] = ""
+                # 2 = entire line.  Without column tracking, only param 2
+                # (entire line) can be handled correctly.  Param 0/1 are
+                # no-ops — the line was already cleared by \r or \x1b[G
+                # before new text was written, so there is nothing beyond
+                # the cursor to erase.
+                try:
+                    p = int(param_str) if param_str else 0
+                except ValueError:
+                    p = 0
+                if p == 2:
+                    state.lines[state.cursor_row] = ""
             elif letter == 'J':
                 # Erase in display — clear visible lines below cursor
                 try:

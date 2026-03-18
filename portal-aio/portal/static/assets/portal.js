@@ -1662,7 +1662,7 @@ window.InstancePortal = (function() {
         // Collect all actively-tracked spans (progress bars, blocks)
         _getActiveSpans: function() {
             const active = new Set();
-            for (const file in this.lastSpansByFile) {
+            for (const file of this._activeOverwrites) {
                 const spans = this.lastSpansByFile[file];
                 if (spans) {
                     for (const s of spans) active.add(s);
@@ -1744,7 +1744,27 @@ window.InstancePortal = (function() {
             } else {
                 logConsole.appendChild(span);
             }
-            if (file) this.lastSpansByFile[file] = [span];
+            if (file) {
+                const oldSpans = this.lastSpansByFile[file];
+                if (oldSpans && oldSpans.length > 1) {
+                    // Block-to-line transition: remove old block spans
+                    for (const s of oldSpans) {
+                        if (s !== span && s.parentNode === logConsole) {
+                            logConsole.removeChild(s);
+                        }
+                    }
+                } else if (oldSpans && oldSpans.length === 1) {
+                    const old = oldSpans[0];
+                    if (old !== span && old.parentNode === logConsole &&
+                        (span.compareDocumentPosition(old) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+                        // Old span (completed progress bar) was pinned at the
+                        // bottom but now trails the new append.  Move it back
+                        // into chronological order, just before the new span.
+                        logConsole.insertBefore(old, span);
+                    }
+                }
+                this.lastSpansByFile[file] = [span];
+            }
 
             this._trimLog(logConsole);
             this.scrollToBottom();
@@ -1761,7 +1781,22 @@ window.InstancePortal = (function() {
             const target = spans && spans.length > 0 ? spans[spans.length - 1] : null;
             if (target && target.parentNode === logConsole) {
                 target.innerHTML = html;
+                // Clean up block-to-line transition: remove stale block spans
+                if (file && spans.length > 1) {
+                    for (let i = 0; i < spans.length - 1; i++) {
+                        if (spans[i].parentNode === logConsole) {
+                            logConsole.removeChild(spans[i]);
+                        }
+                    }
+                    this.lastSpansByFile[file] = [target];
+                }
                 if (file) {
+                    if (!this._activeOverwrites.has(file)) {
+                        // First overwrite — move span to pinned zone at bottom
+                        // so non-pinned content doesn't get trapped between
+                        // pinned progress bars from different files.
+                        logConsole.appendChild(target);
+                    }
                     this._activeOverwrites.add(file);
                     this._scheduleUnpin(file);
                 }
@@ -1797,6 +1832,10 @@ window.InstancePortal = (function() {
                     logConsole.insertBefore(span, anchor);
                     existing.push(span);
                 }
+                if (!this._activeOverwrites.has(file)) {
+                    // First block overwrite — move spans to pinned zone
+                    for (const s of existing) logConsole.appendChild(s);
+                }
                 this._activeOverwrites.add(file);
                 this._scheduleUnpin(file);
             } else {
@@ -1808,6 +1847,8 @@ window.InstancePortal = (function() {
                     return span;
                 });
                 this.lastSpansByFile[file] = spans;
+                this._activeOverwrites.add(file);
+                this._scheduleUnpin(file);
             }
 
             this._trimLog(logConsole);
