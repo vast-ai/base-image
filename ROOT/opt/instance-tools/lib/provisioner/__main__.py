@@ -178,8 +178,15 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
     # installation phase sees it.  Their only purpose is to append items
     # to existing manifest lists (downloads, git_repos, pip_packages, etc.).
     log.info("--- Phase 1b: Extensions ---")
+    # Include PROVISIONING_* env vars in the hash so that changes to
+    # extension-consumed env vars (e.g. PROVISIONING_COMFYUI_WORKFLOWS)
+    # invalidate the cache and trigger a re-run.
+    prov_env = {k: v for k, v in sorted(os.environ.items()) if k.startswith("PROVISIONING_")}
     ext_hash_data = json.dumps(
-        [{"module": e.module, "config": e.config, "enabled": e.enabled} for e in manifest.extensions],
+        {
+            "extensions": [{"module": e.module, "config": e.config, "enabled": e.enabled} for e in manifest.extensions],
+            "provisioning_env": prov_env,
+        },
         sort_keys=True,
     )
     ext_hash = compute_stage_hash("extensions", ext_hash_data)
