@@ -18,11 +18,6 @@ on:
         description: "Date suffix to promote (e.g. 2026-03-19)"
         required: true
         type: string
-      LATEST_TORCH:
-        description: "Create auto-tags pointing to the newest torch version"
-        required: false
-        default: true
-        type: boolean
       FILTER:
         description: "Filter by version or config key (e.g. 2.10, cu128, mini)"
         required: false
@@ -160,7 +155,6 @@ jobs:
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
-          LATEST_TORCH: ${{ inputs.LATEST_TORCH }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
@@ -241,51 +235,45 @@ jobs:
           fi
 
           # Auto convenience tags MUST be created last.
-          # The Vast.ai @vastai-automatic-tag backend resolves to the most
-          # recently pushed image for a given CUDA version. These auto tags
-          # use the LATEST torch version's default Python variant (py312).
+          # Each auto-tag points to the LATEST torch version that supports
+          # the corresponding backend. If a future torch drops cu126, the
+          # 12.6.3-auto tag stays on the last torch that supported it.
           echo ""
           echo "=== Creating auto convenience tags (must be last) ==="
-          if [[ "$LATEST_TORCH" == "true" ]]; then
-            # Find the latest torch version from configs
-            LATEST_VER=$(echo "$CONFIGS" | jq -r '[.[].torch_version] | sort_by(split(".") | map(tonumber)) | last')
-            echo "Latest torch version: ${LATEST_VER}"
 
-            # Auto-tag map: target_tag|source_cuda_short
-            AUTO_TAG_MAP=(
-              "cuda-12.1.1-auto|12.6.3"
-              "cuda-12.4.1-auto|12.6.3"
-              "cuda-12.6.3-auto|12.6.3"
-              "cuda-12.8.1-auto|12.8.1"
-              "cuda-12.9.1-auto|12.8.1"
-              "cuda-13.0.2-auto|13.0.2"
-            )
+          # Map: host_cuda_auto_tag | backend_config_key
+          # backend_config_key is used to find the latest torch with that backend
+          AUTO_TAG_MAP=(
+            "cuda-12.1.1-auto|cu126"
+            "cuda-12.4.1-auto|cu126"
+            "cuda-12.6.3-auto|cu126"
+            "cuda-12.8.1-auto|cu128"
+            "cuda-12.9.1-auto|cu128"
+            "cuda-13.0.2-auto|cu130"
+          )
 
-            # Collect CUDA versions available for the latest torch version
-            AVAILABLE_CUDA=($(echo "$CONFIGS" | jq -r --arg v "$LATEST_VER" '[.[] | select(.torch_version == $v) | .cuda_short] | unique | .[]'))
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
 
-            for entry in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r auto_tag source_cuda <<< "$entry"
+            # Find the latest torch version that has this backend
+            BEST_VER=$(echo "$CONFIGS" | jq -r --arg k "$backend" \
+              '[.[] | select(.key == $k)] | sort_by(.torch_version | split(".") | map(tonumber)) | last | .torch_version // empty')
+            [[ -z "$BEST_VER" ]] && continue
 
-              found=false
-              for avail in "${AVAILABLE_CUDA[@]}"; do
-                [[ "$avail" == "$source_cuda" ]] && found=true && break
-              done
-              [[ "$found" != "true" ]] && continue
+            # Get the cuda_short for this backend+version
+            CUDA_SHORT=$(echo "$CONFIGS" | jq -r --arg k "$backend" --arg v "$BEST_VER" \
+              '.[] | select(.key == $k and .torch_version == $v) | .cuda_short')
 
-              SOURCE="${NAMESPACE_PROD}/pytorch:${LATEST_VER}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
-              TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+            SOURCE="${NAMESPACE_PROD}/pytorch:${BEST_VER}-cuda-${CUDA_SHORT}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
+            TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
 
-              echo "Auto-tag: ${SOURCE} -> ${TARGET}"
-              docker buildx imagetools create \
-                --tag "${TARGET}" \
-                "${SOURCE}"
+            echo "Auto-tag: ${SOURCE} -> ${TARGET} (latest ${backend} = ${BEST_VER})"
+            docker buildx imagetools create \
+              --tag "${TARGET}" \
+              "${SOURCE}"
 
-              echo "$TARGET" >> built-tags/tags.txt
-            done
-          else
-            echo "  (skipped - LATEST_TORCH not set)"
-          fi
+            echo "$TARGET" >> built-tags/tags.txt
+          done
 
           echo ""
           echo "=== Promotion complete ==="
@@ -314,7 +302,6 @@ jobs:
       - name: Print promotion plan
         env:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
-          LATEST_TORCH: ${{ inputs.LATEST_TORCH }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
@@ -374,34 +361,29 @@ jobs:
 
           echo ""
           echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
-          if [[ "$LATEST_TORCH" == "true" ]]; then
-            LATEST_VER=$(echo "$CONFIGS" | jq -r '[.[].torch_version] | sort_by(split(".") | map(tonumber)) | last')
-            echo "Latest torch version: ${LATEST_VER}"
+          echo "Each auto-tag points to the latest torch with that backend:"
 
-            AUTO_TAG_MAP=(
-              "cuda-12.1.1-auto|12.6.3"
-              "cuda-12.4.1-auto|12.6.3"
-              "cuda-12.6.3-auto|12.6.3"
-              "cuda-12.8.1-auto|12.8.1"
-              "cuda-12.9.1-auto|12.8.1"
-              "cuda-13.0.2-auto|13.0.2"
-            )
+          AUTO_TAG_MAP=(
+            "cuda-12.1.1-auto|cu126"
+            "cuda-12.4.1-auto|cu126"
+            "cuda-12.6.3-auto|cu126"
+            "cuda-12.8.1-auto|cu128"
+            "cuda-12.9.1-auto|cu128"
+            "cuda-13.0.2-auto|cu130"
+          )
 
-            AVAILABLE_CUDA=($(echo "$CONFIGS" | jq -r --arg v "$LATEST_VER" '[.[] | select(.torch_version == $v) | .cuda_short] | unique | .[]'))
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
 
-            for entry in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r auto_tag source_cuda <<< "$entry"
-              found=false
-              for avail in "${AVAILABLE_CUDA[@]}"; do
-                [[ "$avail" == "$source_cuda" ]] && found=true && break
-              done
-              [[ "$found" != "true" ]] && continue
+            BEST_VER=$(echo "$CONFIGS" | jq -r --arg k "$backend" \
+              '[.[] | select(.key == $k)] | sort_by(.torch_version | split(".") | map(tonumber)) | last | .torch_version // empty')
+            [[ -z "$BEST_VER" ]] && continue
 
-              echo "  ${NAMESPACE_PROD}/pytorch:${LATEST_VER}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE} -> ${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            done
-          else
-            echo "  (skipped - LATEST_TORCH not set)"
-          fi
+            CUDA_SHORT=$(echo "$CONFIGS" | jq -r --arg k "$backend" --arg v "$BEST_VER" \
+              '.[] | select(.key == $k and .torch_version == $v) | .cuda_short')
+
+            echo "  ${NAMESPACE_PROD}/pytorch:${BEST_VER}-cuda-${CUDA_SHORT}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE} -> ${NAMESPACE_PROD}/pytorch:${auto_tag} (latest ${backend} = ${BEST_VER})"
+          done
 
   notify:
     needs: [generate-configs, promote]
