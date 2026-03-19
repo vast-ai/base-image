@@ -50,6 +50,7 @@ jobs:
         if: steps.slack-check.outputs.available == 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          IMAGE_TAGS: ${{ inputs.image-tags }}
         run: |
           if [[ "${{ inputs.build-result }}" == "success" ]]; then
             STATUS_EMOJI="✅"
@@ -96,8 +97,8 @@ jobs:
           if [[ "${{ inputs.build-result }}" == "success" ]]; then
             # Filter out per-arch tags (keep only merged manifests) and format as code blocks
             # Slack block text has a 3000 char limit, so we truncate with a count if needed
-            TOTAL_COUNT=$(echo '${{ inputs.image-tags }}' | jq 'length')
-            TAGS_TEXT=$(echo '${{ inputs.image-tags }}' | jq -r '
+            TOTAL_COUNT=$(echo "$IMAGE_TAGS" | jq 'length')
+            TAGS_TEXT=$(echo "$IMAGE_TAGS" | jq -r '
               [.[] | select(test("-(amd64|arm64)$") | not)] |
               sort |
               [.[] | "`" + . + "`"] |

@@ -112,8 +112,6 @@ jobs:
     if: ${{ !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     environment: production
-    outputs:
-      all-tags: ${{ steps.collect.outputs.tags }}
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -224,11 +222,31 @@ jobs:
           echo ""
           echo "=== Promotion complete ==="
 
-      - name: Collect all tags
+      - name: Upload promoted tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-tags
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [promote]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "promoted-tags"
+          path: all-tags/
+
+      - name: Aggregate tags
         id: collect
         run: |
-          if [ -d built-tags ] && [ "$(ls -A built-tags 2>/dev/null)" ]; then
-            TAGS=$(cat built-tags/*.txt | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(find all-tags -name '*.txt' -exec cat {} + | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
             echo "Found $(echo "$TAGS" | jq length) unique tags"
           else
             echo "::warning::No tags found"
@@ -304,14 +322,14 @@ jobs:
           done
 
   notify:
-    needs: [generate-configs, promote]
+    needs: [generate-configs, promote, collect-tags]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.promote.result }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
-      image-tags: ${{ needs.promote.outputs.all-tags || '[]' }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:
