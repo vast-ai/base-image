@@ -147,8 +147,16 @@ jobs:
             echo "has-mini=false" >> $GITHUB_OUTPUT
           fi
 
-          echo "configs=${CONFIGS_JSON}" >> $GITHUB_OUTPUT
-          echo "mini-configs=${MINI_CONFIGS_JSON}" >> $GITHUB_OUTPUT
+          {
+            echo "configs<<CONFIGS_EOF"
+            echo "${CONFIGS_JSON}"
+            echo "CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-configs<<MINI_CONFIGS_EOF"
+            echo "${MINI_CONFIGS_JSON}"
+            echo "MINI_CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
           echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
           echo "Mini configs: $(echo "$MINI_CONFIGS_JSON" | jq length)"
 
@@ -303,7 +311,11 @@ jobs:
             echo "::warning::No tags found"
             TAGS="[]"
           fi
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
 
   dry-run:
     needs: generate-configs

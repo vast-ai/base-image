@@ -172,10 +172,26 @@ jobs:
             echo "has-mini=false" >> $GITHUB_OUTPUT
           fi
 
-          echo "build-matrix={\"include\":$(echo $BUILD_MATRIX)}" >> $GITHUB_OUTPUT
-          echo "merge-matrix={\"include\":$(echo $MERGE_MATRIX)}" >> $GITHUB_OUTPUT
-          echo "mini-build-matrix={\"include\":$(echo $MINI_BUILD_MATRIX)}" >> $GITHUB_OUTPUT
-          echo "mini-merge-matrix={\"include\":$(echo $MINI_MERGE_MATRIX)}" >> $GITHUB_OUTPUT
+          {
+            echo "build-matrix<<BUILD_MATRIX_EOF"
+            echo "{\"include\":${BUILD_MATRIX}}"
+            echo "BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "merge-matrix<<MERGE_MATRIX_EOF"
+            echo "{\"include\":${MERGE_MATRIX}}"
+            echo "MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-build-matrix<<MINI_BUILD_MATRIX_EOF"
+            echo "{\"include\":${MINI_BUILD_MATRIX}}"
+            echo "MINI_BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-merge-matrix<<MINI_MERGE_MATRIX_EOF"
+            echo "{\"include\":${MINI_MERGE_MATRIX}}"
+            echo "MINI_MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
 
           echo "Build matrix entries: $(echo $BUILD_MATRIX | jq length)"
           echo "Mini build matrix entries: $(echo $MINI_BUILD_MATRIX | jq length)"
@@ -456,7 +472,11 @@ jobs:
             echo "::warning::No tags found - extend may have failed"
             TAGS="[]"
           fi
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
 
   dry-run:
     needs: generate-matrix

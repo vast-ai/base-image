@@ -94,8 +94,16 @@ jobs:
               '. + [{"key": $key, "mini_tag": $mini_tag}]')
           done
 
-          echo "configs=${CONFIGS_JSON}" >> $GITHUB_OUTPUT
-          echo "mini-tags=${MINI_TAGS_JSON}" >> $GITHUB_OUTPUT
+          {
+            echo "configs<<CONFIGS_EOF"
+            echo "${CONFIGS_JSON}"
+            echo "CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-tags<<MINI_TAGS_EOF"
+            echo "${MINI_TAGS_JSON}"
+            echo "MINI_TAGS_EOF"
+          } >> $GITHUB_OUTPUT
           echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
           echo "Mini tags: $(echo "$MINI_TAGS_JSON" | jq length)"
 
@@ -221,12 +229,16 @@ jobs:
         run: |
           if [ -d built-tags ] && [ "$(ls -A built-tags 2>/dev/null)" ]; then
             TAGS=$(cat built-tags/*.txt | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
-            echo "Found $(echo $TAGS | jq length) unique tags"
+            echo "Found $(echo "$TAGS" | jq length) unique tags"
           else
             echo "::warning::No tags found"
             TAGS="[]"
           fi
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
 
   dry-run:
     needs: generate-configs
