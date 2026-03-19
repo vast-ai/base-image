@@ -44,30 +44,30 @@ jobs:
         id: configs
         env:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
         run: |
           FILTER="${{ inputs.FILTER }}"
 
-          # Configs in promotion order: key|tag_template|default_python|auto_source_tag
-          # auto_source_tag: the prod tag to alias as cuda-X.Y.Z-auto (best ubuntu+python combo)
+          # Configs in promotion order: key|tag_template|default_python
           ALL_CONFIGS=(
-            "stock-22|stock-ubuntu22.04|3.10|"
-            "stock-24|stock-ubuntu24.04|3.12|"
-            "cuda-11.8-22|cuda-11.8.0-cudnn8-devel-ubuntu22.04|3.10|cuda-11.8.0-cudnn8-devel-ubuntu22.04-py310"
-            "cuda-12.1-22|cuda-12.1.1-cudnn8-devel-ubuntu22.04|3.10|cuda-12.1.1-cudnn8-devel-ubuntu22.04-py310"
-            "cuda-12.4-22|cuda-12.4.1-cudnn-devel-ubuntu22.04|3.10|cuda-12.4.1-cudnn-devel-ubuntu22.04-py310"
-            "cuda-12.6-24|cuda-12.6.3-cudnn-devel-ubuntu24.04|3.12|cuda-12.6.3-cudnn-devel-ubuntu24.04-py312"
-            "cuda-12.8-24|cuda-12.8.1-cudnn-devel-ubuntu24.04|3.12|cuda-12.8.1-cudnn-devel-ubuntu24.04-py312"
-            "cuda-12.9-24|cuda-12.9.1-cudnn-devel-ubuntu24.04|3.12|cuda-12.9.1-cudnn-devel-ubuntu24.04-py312"
-            "cuda-13.0.2-24|cuda-13.0.2-cudnn-devel-ubuntu24.04|3.12|cuda-13.0.2-cudnn-devel-ubuntu24.04-py312"
-            "cuda-13.1.1-24|cuda-13.1.1-cudnn-devel-ubuntu24.04|3.12|cuda-13.1.1-cudnn-devel-ubuntu24.04-py312"
-            "cuda-13.2.0-24|cuda-13.2.0-cudnn-devel-ubuntu24.04|3.12|cuda-13.2.0-cudnn-devel-ubuntu24.04-py312"
+            "stock-22|stock-ubuntu22.04|3.10"
+            "stock-24|stock-ubuntu24.04|3.12"
+            "cuda-11.8-22|cuda-11.8.0-cudnn8-devel-ubuntu22.04|3.10"
+            "cuda-12.1-22|cuda-12.1.1-cudnn8-devel-ubuntu22.04|3.10"
+            "cuda-12.4-22|cuda-12.4.1-cudnn-devel-ubuntu22.04|3.10"
+            "cuda-12.6-24|cuda-12.6.3-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-12.8-24|cuda-12.8.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-12.9-24|cuda-12.9.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.0.2-24|cuda-13.0.2-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.1.1-24|cuda-13.1.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.2.0-24|cuda-13.2.0-cudnn-devel-ubuntu24.04|3.12"
           )
 
           CONFIGS_JSON="[]"
           AUTO_TAGS="[]"
 
           for config in "${ALL_CONFIGS[@]}"; do
-            IFS='|' read -r key tag_template default_python auto_source <<< "$config"
+            IFS='|' read -r key tag_template default_python <<< "$config"
 
             if [[ -n "$FILTER" && "$key" != *"$FILTER"* ]]; then
               continue
@@ -77,13 +77,14 @@ jobs:
               --arg key "$key" \
               --arg tag_template "$tag_template" \
               --arg default_python "$default_python" \
-              --arg auto_source "$auto_source" \
-              '. + [{"key": $key, "tag_template": $tag_template, "default_python": $default_python, "auto_source": $auto_source}]')
+              '. + [{"key": $key, "tag_template": $tag_template, "default_python": $default_python}]')
 
-            if [[ -n "$auto_source" ]]; then
-              cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            # Build auto-tag entry for CUDA configs (source is the dated default-python prod tag)
+            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            if [[ -n "$cuda_ver" ]]; then
+              dp_tag="${default_python//.}"
               AUTO_TAGS=$(echo "$AUTO_TAGS" | jq -c \
-                --arg source "${NAMESPACE_PROD}/base-image:${auto_source}" \
+                --arg source "${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}" \
                 --arg target "${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto" \
                 '. + [{"source": $source, "target": $target}]')
             fi
@@ -159,29 +160,23 @@ jobs:
               py_tag="${py_version//.}"
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              # Primary tag retains the build date for pinning/reproducibility
               DATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              # Undated alias always points to the latest promoted build
-              UNDATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}"
 
-              EXTRA_TAGS="--tag ${UNDATED_TAG}"
+              EXTRA_TAGS=""
               if [[ "$py_version" == "$default_python" ]]; then
-                # Default python aliases (with and without date)
+                # Default python alias (no -pyXXX, but keeps date)
                 DATED_ALIAS="${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE}"
-                UNDATED_ALIAS="${NAMESPACE_PROD}/base-image:${tag_template}"
-                EXTRA_TAGS+=" --tag ${DATED_ALIAS} --tag ${UNDATED_ALIAS}"
+                EXTRA_TAGS="--tag ${DATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
-                echo "$UNDATED_ALIAS" >> built-tags/tags.txt
               fi
 
-              echo "Promoting: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
               docker buildx imagetools create \
                 --tag "${DATED_TAG}" \
                 ${EXTRA_TAGS} \
                 "${SOURCE}"
 
               echo "$DATED_TAG" >> built-tags/tags.txt
-              echo "$UNDATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -199,16 +194,13 @@ jobs:
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
               DATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              UNDATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}"
 
-              echo "Promoting mini: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
+              echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
               docker buildx imagetools create \
                 --tag "${DATED_TAG}" \
-                --tag "${UNDATED_TAG}" \
                 "${SOURCE}"
 
               echo "$DATED_TAG" >> built-tags/tags.txt
-              echo "$UNDATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -279,13 +271,11 @@ jobs:
             for py in "${PYTHON_VERSIONS[@]}"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE} (dated)"
-              echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag} (undated alias)"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
             done
             dp_tag="${default_python//.}"
-            echo "  + default python aliases:"
-            echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE} (dated)"
-            echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template} (undated alias)"
+            echo "  + default python alias:"
+            echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE} (alias for py${dp_tag})"
           done
 
           echo ""
@@ -296,14 +286,22 @@ jobs:
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE} (dated)"
-              echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag} (undated alias)"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
             done
           done
 
           echo ""
           echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
-          echo "$AUTO_TAGS" | jq -r '.[] | "  \(.source) -> \(.target)"'
+          AUTO_COUNT=$(echo "$AUTO_TAGS" | jq length)
+          if [[ $AUTO_COUNT -gt 0 ]]; then
+            for ((i=0; i<AUTO_COUNT; i++)); do
+              SOURCE=$(echo "$AUTO_TAGS" | jq -r ".[$i].source")
+              TARGET=$(echo "$AUTO_TAGS" | jq -r ".[$i].target")
+              echo "  ${SOURCE} -> ${TARGET}"
+            done
+          else
+            echo "  (none)"
+          fi
 
   notify:
     needs: [generate-configs, promote]

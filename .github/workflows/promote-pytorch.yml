@@ -54,6 +54,7 @@ jobs:
         id: configs
         env:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
         run: |
           PYTORCH_VERSION="${{ inputs.PYTORCH_VERSION }}"
           FILTER="${{ inputs.FILTER }}"
@@ -175,7 +176,7 @@ jobs:
               done
 
               if [[ "$found" == "true" ]]; then
-                SOURCE="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04"
+                SOURCE="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
                 TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
                 AUTO_TAGS=$(echo "$AUTO_TAGS" | jq -c \
                   --arg source "$SOURCE" \
@@ -238,25 +239,22 @@ jobs:
             for py_tag in ${python_versions}; do
               SOURCE="${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
               DATED_TAG="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              UNDATED_TAG="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04"
 
-              EXTRA_TAGS="--tag ${UNDATED_TAG}"
+              EXTRA_TAGS=""
               if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
+                # Default python alias (no -pyXXX, but keeps date)
                 DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04-${STAGING_DATE}"
-                UNDATED_ALIAS="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04"
-                EXTRA_TAGS+=" --tag ${DATED_ALIAS} --tag ${UNDATED_ALIAS}"
+                EXTRA_TAGS="--tag ${DATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
-                echo "$UNDATED_ALIAS" >> built-tags/tags.txt
               fi
 
-              echo "Promoting: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
               docker buildx imagetools create \
                 --tag "${DATED_TAG}" \
                 ${EXTRA_TAGS} \
                 "${SOURCE}"
 
               echo "$DATED_TAG" >> built-tags/tags.txt
-              echo "$UNDATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -274,16 +272,13 @@ jobs:
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
                 DATED_TAG="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                UNDATED_TAG="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}"
 
-                echo "Promoting mini: ${SOURCE} -> ${DATED_TAG} (+ undated alias)"
+                echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
                 docker buildx imagetools create \
                   --tag "${DATED_TAG}" \
-                  --tag "${UNDATED_TAG}" \
                   "${SOURCE}"
 
                 echo "$DATED_TAG" >> built-tags/tags.txt
-                echo "$UNDATED_TAG" >> built-tags/tags.txt
               done
             done
           fi
@@ -357,12 +352,10 @@ jobs:
             echo "--- ${key} (cuda-${cuda_short}) ---"
             for py_tag in ${python_versions}; do
               echo "  ${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE} (dated)"
-              echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04 (undated alias)"
+              echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
             done
-            echo "  + default python aliases:"
-            echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04-${STAGING_DATE} (dated)"
-            echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04 (undated)"
+            echo "  + default python alias:"
+            echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04-${STAGING_DATE} (alias for py${DEFAULT_PYTHON})"
           done
 
           if [[ "$HAS_MINI" == "true" ]]; then
@@ -375,8 +368,7 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 echo "  ${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE} (dated)"
-                echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag} (undated alias)"
+                echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
               done
             done
           fi
@@ -385,7 +377,11 @@ jobs:
           echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
           AUTO_COUNT=$(echo "$AUTO_TAGS" | jq length)
           if [[ $AUTO_COUNT -gt 0 ]]; then
-            echo "$AUTO_TAGS" | jq -r '.[] | "  \(.source) -> \(.target)"'
+            for ((i=0; i<AUTO_COUNT; i++)); do
+              SOURCE=$(echo "$AUTO_TAGS" | jq -r ".[$i].source")
+              TARGET=$(echo "$AUTO_TAGS" | jq -r ".[$i].target")
+              echo "  ${SOURCE} -> ${TARGET}"
+            done
           else
             echo "  (none - LATEST_TORCH not set or no matching CUDA versions)"
           fi
