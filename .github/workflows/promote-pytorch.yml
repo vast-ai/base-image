@@ -1,5 +1,5 @@
 # Promote staging PyTorch images to production by retagging (no rebuild)
-# Retags dated staging images to clean production tags
+# Promotes all torch versions (2.6.0 through 2.10.0) in one run
 # All promotions run sequentially in a single job to ensure ordering
 # Required repository secrets:
 # DOCKERHUB_USERNAME
@@ -15,20 +15,16 @@ on:
   workflow_dispatch:
     inputs:
       STAGING_DATE:
-        description: "Date suffix to promote (e.g. 2026-03-06)"
-        required: true
-        type: string
-      PYTORCH_VERSION:
-        description: "PyTorch version to promote (e.g. 2.10.0)"
+        description: "Date suffix to promote (e.g. 2026-03-19)"
         required: true
         type: string
       LATEST_TORCH:
-        description: "Create auto-tags (set true for the latest torch version)"
+        description: "Create auto-tags pointing to the newest torch version"
         required: false
-        default: false
+        default: true
         type: boolean
       FILTER:
-        description: "Filter configs by pattern (e.g. cu128, mini)"
+        description: "Filter by version or config key (e.g. 2.10, cu128, mini)"
         required: false
         default: ""
       DRY_RUN:
@@ -51,97 +47,79 @@ jobs:
     steps:
       - name: Generate filtered config list
         id: configs
-        env:
-          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
-          STAGING_DATE: ${{ inputs.STAGING_DATE }}
         run: |
-          PYTORCH_VERSION="${{ inputs.PYTORCH_VERSION }}"
           FILTER="${{ inputs.FILTER }}"
-          LATEST_TORCH="${{ inputs.LATEST_TORCH }}"
-          DEFAULT_PYTHON="312"
 
-          # Config format: key|cuda_ver|torch_backend|arches|python_versions
-          # Mini format: key|mini_base_tag|torch_backend|python_versions
-          case "$PYTORCH_VERSION" in
-            2.6.0)
-              CONFIGS=(
-                "cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313"
-              )
-              MINI_CONFIGS=()  ;;
-            2.7.1)
-              CONFIGS=(
-                "cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313"
-                "cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313"
-              )
-              MINI_CONFIGS=()  ;;
-            2.8.0)
-              CONFIGS=(
-                "cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313"
-                "cu128|12.8.1-cudnn-devel|cu128|linux/amd64|310 311 312 313"
-                "cu129|12.9.1-cudnn-devel|cu129|linux/amd64|310 311 312 313"
-              )
-              MINI_CONFIGS=()  ;;
-            2.9.0)
-              CONFIGS=(
-                "cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313 314"
-                "cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-                "cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-              )
-              MINI_CONFIGS=()  ;;
-            2.9.1|2.10.0)
-              CONFIGS=(
-                "cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313 314"
-                "cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-                "cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-              )
-              MINI_CONFIGS=(
-                "cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-                "cu130-mini|cuda-13.1-mini|cu130|310 311 312"
-              )  ;;
-            *)
-              echo "::error::Unknown PYTORCH_VERSION: $PYTORCH_VERSION"
-              exit 1  ;;
-          esac
+          # All pytorch versions and their configs
+          # Format: torch_ver|key|cuda_short|python_versions
+          ALL_CONFIGS=(
+            # 2.6.0
+            "2.6.0|cu126|12.6.3|310 311 312 313"
+            # 2.7.1
+            "2.7.1|cu126|12.6.3|310 311 312 313"
+            "2.7.1|cu128|12.8.1|310 311 312 313"
+            # 2.8.0
+            "2.8.0|cu126|12.6.3|310 311 312 313"
+            "2.8.0|cu128|12.8.1|310 311 312 313"
+            "2.8.0|cu129|12.9.1|310 311 312 313"
+            # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
+            "2.9.1|cu126|12.6.3|310 311 312 313 314"
+            "2.9.1|cu128|12.8.1|310 311 312 313 314"
+            "2.9.1|cu130|13.0.2|310 311 312 313 314"
+            # 2.10.0
+            "2.10.0|cu126|12.6.3|310 311 312 313 314"
+            "2.10.0|cu128|12.8.1|310 311 312 313 314"
+            "2.10.0|cu130|13.0.2|310 311 312 313 314"
+          )
+
+          # Mini format: torch_ver|key|torch_backend|cuda_minor|python_versions
+          ALL_MINI_CONFIGS=(
+            "2.6.0|cu126-mini|cu126|12.9|310 311 312"
+            "2.7.1|cu128-mini|cu128|12.9|310 311 312"
+            "2.8.0|cu128-mini|cu128|12.9|310 311 312"
+            "2.9.1|cu128-mini|cu128|12.9|310 311 312"
+            "2.9.1|cu130-mini|cu130|13.1|310 311 312"
+            "2.10.0|cu128-mini|cu128|12.9|310 311 312"
+            "2.10.0|cu130-mini|cu130|13.1|310 311 312"
+          )
 
           CONFIGS_JSON="[]"
 
-          for config in "${CONFIGS[@]}"; do
-            IFS='|' read -r key cuda_ver torch_backend arches python_versions <<< "$config"
+          for config in "${ALL_CONFIGS[@]}"; do
+            IFS='|' read -r torch_ver key cuda_short python_versions <<< "$config"
 
-            if [[ -n "$FILTER" && "$key" != *"$FILTER"* ]]; then
+            # Filter matches version or config key
+            if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* ]]; then
               continue
             fi
 
-            cuda_short="${cuda_ver%%-*}"
-
             CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c \
+              --arg torch_ver "$torch_ver" \
               --arg key "$key" \
               --arg cuda_short "$cuda_short" \
               --arg python_versions "$python_versions" \
-              '. + [{"key": $key, "cuda_short": $cuda_short, "python_versions": $python_versions}]')
+              '. + [{"torch_version": $torch_ver, "key": $key, "cuda_short": $cuda_short, "python_versions": $python_versions}]')
           done
 
-          # Mini configs
           MINI_CONFIGS_JSON="[]"
-          for mini_config in "${MINI_CONFIGS[@]}"; do
-            IFS='|' read -r key mini_base_tag torch_backend python_versions <<< "$mini_config"
 
-            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+          for mini_config in "${ALL_MINI_CONFIGS[@]}"; do
+            IFS='|' read -r torch_ver key torch_backend cuda_minor python_versions <<< "$mini_config"
+
+            if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
               continue
             fi
 
-            cuda_minor="${mini_base_tag#cuda-}"
-            cuda_minor="${cuda_minor%-mini}"
-
             MINI_CONFIGS_JSON=$(echo "$MINI_CONFIGS_JSON" | jq -c \
+              --arg torch_ver "$torch_ver" \
               --arg key "$key" \
               --arg torch_backend "$torch_backend" \
               --arg cuda_minor "$cuda_minor" \
               --arg python_versions "$python_versions" \
-              '. + [{"key": $key, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "python_versions": $python_versions}]')
+              '. + [{"torch_version": $torch_ver, "key": $key, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "python_versions": $python_versions}]')
           done
 
-          if [[ ${#MINI_CONFIGS[@]} -gt 0 && $(echo "$MINI_CONFIGS_JSON" | jq length) -gt 0 ]]; then
+          if [[ $(echo "$MINI_CONFIGS_JSON" | jq length) -gt 0 ]]; then
             echo "has-mini=true" >> $GITHUB_OUTPUT
           else
             echo "has-mini=false" >> $GITHUB_OUTPUT
@@ -182,7 +160,6 @@ jobs:
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
-          PYTORCH_VERSION: ${{ inputs.PYTORCH_VERSION }}
           LATEST_TORCH: ${{ inputs.LATEST_TORCH }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
@@ -193,24 +170,29 @@ jobs:
           mkdir -p built-tags
 
           # Promote full images
-          echo "=== Promoting PyTorch ${PYTORCH_VERSION} full images ==="
+          echo "=== Promoting PyTorch full images ==="
           CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          CURRENT_VER=""
           for ((i=0; i<CONFIG_COUNT; i++)); do
+            torch_ver=$(echo "$CONFIGS" | jq -r ".[$i].torch_version")
             key=$(echo "$CONFIGS" | jq -r ".[$i].key")
             cuda_short=$(echo "$CONFIGS" | jq -r ".[$i].cuda_short")
             python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
 
-            echo ""
-            echo "--- Config: ${key} (cuda-${cuda_short}) ---"
+            if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
+              echo ""
+              echo "=== PyTorch ${torch_ver} ==="
+              CURRENT_VER="$torch_ver"
+            fi
+            echo "--- ${key} (cuda-${cuda_short}) ---"
 
             for py_tag in ${python_versions}; do
-              SOURCE="${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              DATED_TAG="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
+              SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
+              DATED_TAG="${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
 
               EXTRA_TAGS=""
               if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
-                # Default python alias (no -pyXXX, but keeps date)
-                DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04-${STAGING_DATE}"
+                DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-24.04-${STAGING_DATE}"
                 EXTRA_TAGS="--tag ${DATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
               fi
@@ -228,17 +210,25 @@ jobs:
           # Promote mini variants
           if [[ "$HAS_MINI" == "true" ]]; then
             echo ""
-            echo "=== Promoting PyTorch ${PYTORCH_VERSION} mini variants ==="
+            echo "=== Promoting PyTorch mini variants ==="
             MINI_COUNT=$(echo "$MINI_CONFIGS" | jq length)
 
+            CURRENT_VER=""
             for ((i=0; i<MINI_COUNT; i++)); do
+              torch_ver=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_version")
               torch_backend=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_backend")
               cuda_minor=$(echo "$MINI_CONFIGS" | jq -r ".[$i].cuda_minor")
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
 
+              if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
+                echo ""
+                echo "=== PyTorch ${torch_ver} (mini) ==="
+                CURRENT_VER="$torch_ver"
+              fi
+
               for py_tag in ${python_versions}; do
-                SOURCE="${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                DATED_TAG="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                DATED_TAG="${NAMESPACE_PROD}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
 
                 echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
                 docker buildx imagetools create \
@@ -253,11 +243,14 @@ jobs:
           # Auto convenience tags MUST be created last.
           # The Vast.ai @vastai-automatic-tag backend resolves to the most
           # recently pushed image for a given CUDA version. These auto tags
-          # point to the default Python variant (py312) so they must be
-          # the final push to ensure correct resolution ordering.
+          # use the LATEST torch version's default Python variant (py312).
           echo ""
           echo "=== Creating auto convenience tags (must be last) ==="
           if [[ "$LATEST_TORCH" == "true" ]]; then
+            # Find the latest torch version from configs
+            LATEST_VER=$(echo "$CONFIGS" | jq -r '[.[].torch_version] | sort_by(split(".") | map(tonumber)) | last')
+            echo "Latest torch version: ${LATEST_VER}"
+
             # Auto-tag map: target_tag|source_cuda_short
             AUTO_TAG_MAP=(
               "cuda-12.1.1-auto|12.6.3"
@@ -268,23 +261,19 @@ jobs:
               "cuda-13.0.2-auto|13.0.2"
             )
 
-            # Collect available CUDA versions from configs
-            AVAILABLE_CUDA=()
-            for ((i=0; i<CONFIG_COUNT; i++)); do
-              AVAILABLE_CUDA+=($(echo "$CONFIGS" | jq -r ".[$i].cuda_short"))
-            done
+            # Collect CUDA versions available for the latest torch version
+            AVAILABLE_CUDA=($(echo "$CONFIGS" | jq -r --arg v "$LATEST_VER" '[.[] | select(.torch_version == $v) | .cuda_short] | unique | .[]'))
 
             for entry in "${AUTO_TAG_MAP[@]}"; do
               IFS='|' read -r auto_tag source_cuda <<< "$entry"
 
-              # Only create auto-tag if we have a config with this CUDA version
               found=false
               for avail in "${AVAILABLE_CUDA[@]}"; do
                 [[ "$avail" == "$source_cuda" ]] && found=true && break
               done
               [[ "$found" != "true" ]] && continue
 
-              SOURCE="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
+              SOURCE="${NAMESPACE_PROD}/pytorch:${LATEST_VER}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
               TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
 
               echo "Auto-tag: ${SOURCE} -> ${TARGET}"
@@ -306,7 +295,7 @@ jobs:
         run: |
           if [ -d built-tags ] && [ "$(ls -A built-tags 2>/dev/null)" ]; then
             TAGS=$(cat built-tags/*.txt | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
-            echo "Found $(echo $TAGS | jq length) unique tags"
+            echo "Found $(echo "$TAGS" | jq length) unique tags"
           else
             echo "::warning::No tags found"
             TAGS="[]"
@@ -325,7 +314,6 @@ jobs:
       - name: Print promotion plan
         env:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
-          PYTORCH_VERSION: ${{ inputs.PYTORCH_VERSION }}
           LATEST_TORCH: ${{ inputs.LATEST_TORCH }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
@@ -336,38 +324,50 @@ jobs:
           DEFAULT_PYTHON="312"
 
           echo "=== DRY RUN - PyTorch Promotion Plan ==="
-          echo "PyTorch version: $PYTORCH_VERSION"
           echo "Staging date: $STAGING_DATE"
           echo ""
 
           echo "=== Full Image Promotions (in order) ==="
           CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          CURRENT_VER=""
           for ((i=0; i<CONFIG_COUNT; i++)); do
+            torch_ver=$(echo "$CONFIGS" | jq -r ".[$i].torch_version")
             key=$(echo "$CONFIGS" | jq -r ".[$i].key")
             cuda_short=$(echo "$CONFIGS" | jq -r ".[$i].cuda_short")
             python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
 
-            echo ""
-            echo "--- ${key} (cuda-${cuda_short}) ---"
+            if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
+              echo ""
+              echo "--- PyTorch ${torch_ver} ---"
+              CURRENT_VER="$torch_ver"
+            fi
             for py_tag in ${python_versions}; do
-              echo "  ${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
+              echo "  ${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
+              echo "    -> ${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
             done
             echo "  + default python alias:"
-            echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${cuda_short}-24.04-${STAGING_DATE} (alias for py${DEFAULT_PYTHON})"
+            echo "    -> ${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-24.04-${STAGING_DATE} (alias for py${DEFAULT_PYTHON})"
           done
 
           if [[ "$HAS_MINI" == "true" ]]; then
             echo ""
             echo "=== Mini Promotions ==="
             MINI_COUNT=$(echo "$MINI_CONFIGS" | jq length)
+            CURRENT_VER=""
             for ((i=0; i<MINI_COUNT; i++)); do
+              torch_ver=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_version")
               torch_backend=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_backend")
               cuda_minor=$(echo "$MINI_CONFIGS" | jq -r ".[$i].cuda_minor")
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
+
+              if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
+                echo ""
+                echo "--- PyTorch ${torch_ver} (mini) ---"
+                CURRENT_VER="$torch_ver"
+              fi
               for py_tag in ${python_versions}; do
-                echo "  ${NAMESPACE_STAGING}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                echo "    -> ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                echo "  ${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                echo "    -> ${NAMESPACE_PROD}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
               done
             done
           fi
@@ -375,6 +375,9 @@ jobs:
           echo ""
           echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
           if [[ "$LATEST_TORCH" == "true" ]]; then
+            LATEST_VER=$(echo "$CONFIGS" | jq -r '[.[].torch_version] | sort_by(split(".") | map(tonumber)) | last')
+            echo "Latest torch version: ${LATEST_VER}"
+
             AUTO_TAG_MAP=(
               "cuda-12.1.1-auto|12.6.3"
               "cuda-12.4.1-auto|12.6.3"
@@ -384,10 +387,7 @@ jobs:
               "cuda-13.0.2-auto|13.0.2"
             )
 
-            AVAILABLE_CUDA=()
-            for ((i=0; i<CONFIG_COUNT; i++)); do
-              AVAILABLE_CUDA+=($(echo "$CONFIGS" | jq -r ".[$i].cuda_short"))
-            done
+            AVAILABLE_CUDA=($(echo "$CONFIGS" | jq -r --arg v "$LATEST_VER" '[.[] | select(.torch_version == $v) | .cuda_short] | unique | .[]'))
 
             for entry in "${AUTO_TAG_MAP[@]}"; do
               IFS='|' read -r auto_tag source_cuda <<< "$entry"
@@ -397,7 +397,7 @@ jobs:
               done
               [[ "$found" != "true" ]] && continue
 
-              echo "  ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE} -> ${NAMESPACE_PROD}/pytorch:${auto_tag}"
+              echo "  ${NAMESPACE_PROD}/pytorch:${LATEST_VER}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE} -> ${NAMESPACE_PROD}/pytorch:${auto_tag}"
             done
           else
             echo "  (skipped - LATEST_TORCH not set)"
@@ -409,7 +409,7 @@ jobs:
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.promote.result }}
-      image-name: "PyTorch ${{ inputs.PYTORCH_VERSION }} (Production)"
+      image-name: "PyTorch (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
       image-tags: ${{ needs.promote.outputs.all-tags || '[]' }}
       trigger: ${{ github.event_name }}
