@@ -1,6 +1,9 @@
 #!/bin/bash
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/cleanup_generic.sh"
 
-[[ -n $TURN_SERVER ]] && echo "Refusing to start ${PROC_NAME} (External TURN_SERVER configured)" | tee -a "/var/log/portal/${PROC_NAME}.log" && exit
+[[ -n $TURN_SERVER ]] && echo "Refusing to start ${PROC_NAME} (External TURN_SERVER configured)" && exit
 
 turnserver \
         -n \
@@ -16,4 +19,4 @@ turnserver \
         --realm="vast.ai" \
         --user="${TURN_USERNAME:-user}:${TURN_PASSWORD:-${OPEN_BUTTON_TOKEN:-password}}" \
         -p "${VAST_UDP_PORT_70000:-3478}" \
-        -X "${PUBLIC_IPADDR:-localhost}" 2>&1 | tee -a "/var/log/portal/${PROC_NAME}.log"
+        -X "${PUBLIC_IPADDR:-localhost}" 2>&1

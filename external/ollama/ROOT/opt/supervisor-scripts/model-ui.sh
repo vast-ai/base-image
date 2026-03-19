@@ -13,4 +13,4 @@ while [ -f "/.provisioning" ]; do
     sleep 10
 done
 
-/opt/model-ui/venv/bin/python /opt/model-ui/app.py
+pty /opt/model-ui/venv/bin/python /opt/model-ui/app.py

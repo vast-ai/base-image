@@ -17,7 +17,7 @@ while [ -f "/.provisioning" ]; do
 done
 
 # Launch Ollama in the background, wait for readiness, then pull the model if configured
-ollama serve ${OLLAMA_ARGS:-} 2>&1 &
+pty ollama serve ${OLLAMA_ARGS:-} 2>&1 &
 OLLAMA_PID=$!
 
 # Wait for the server to become ready

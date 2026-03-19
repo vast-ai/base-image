@@ -20,4 +20,4 @@ done
 cd /opt/comfyui-api-wrapper
 . .venv/bin/activate
 
-uvicorn main:app --port 18288 2>&1
+pty uvicorn main:app --port 18288 2>&1
