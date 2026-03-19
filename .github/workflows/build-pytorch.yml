@@ -87,11 +87,7 @@ jobs:
             "2.8.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313"
             "2.8.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64|310 311 312 313"
             "2.8.0|cu129|12.9.1-cudnn-devel|cu129|linux/amd64|310 311 312 313"
-            # 2.9.0
-            "2.9.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313 314"
-            "2.9.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.9.1
+            # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
             "2.9.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313 314"
             "2.9.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.9.1|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
@@ -108,9 +104,6 @@ jobs:
             "2.7.1|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
             # 2.8.0
             "2.8.0|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-            # 2.9.0
-            "2.9.0|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-            "2.9.0|cu130-mini|cuda-13.1-mini|cu130|310 311 312"
             # 2.9.1
             "2.9.1|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
             "2.9.1|cu130-mini|cuda-13.1-mini|cu130|310 311 312"
