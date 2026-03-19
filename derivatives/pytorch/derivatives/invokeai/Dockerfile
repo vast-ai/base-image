@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312
+ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-03-19
 
 FROM ${PYTORCH_BASE}
 
@@ -19,7 +19,7 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install InvokeAI
-    uv pip install invokeai==${INVOKEAI_VERSION} && \
+    uv pip install --no-cache-dir invokeai==${INVOKEAI_VERSION} && \
     # Patchmatch will likely fail to build if the python version is not 3.12 or 3.10
     apt-get update && apt-get install --no-install-recommends -y python3-opencv libopencv-dev && \
     pip install pypatchmatch && \

@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1
+ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-03-19
 
 FROM ${PYTORCH_BASE}
 
@@ -23,7 +23,7 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
+    uv pip install --no-cache-dir xformers torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
     # Get SwarmUI and install dependencies
     cd /opt/workspace-internal/ && \
     git clone https://github.com/mcmonkeyprojects/SwarmUI && \
@@ -44,7 +44,7 @@ RUN \
         kill -9 $installer_pid' || \
         { echo "Installation timed out after 120 seconds"; exit 1; } && \
     # Fix animation issues - SwarmUi does not install this automatically
-    pip install imageio_ffmpeg && \
+    uv pip install --no-cache-dir imageio_ffmpeg && \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
