@@ -1,0 +1,4 @@
+name: Extend Base Image
+
+on:
+  workflow_dispatch:

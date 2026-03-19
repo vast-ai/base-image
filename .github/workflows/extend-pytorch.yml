@@ -1,0 +1,4 @@
+name: Extend PyTorch
+
+on:
+  workflow_dispatch:

@@ -1,0 +1,4 @@
+name: Build PyTorch
+
+on:
+  workflow_dispatch:

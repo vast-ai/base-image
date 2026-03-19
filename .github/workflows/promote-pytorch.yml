@@ -1,0 +1,4 @@
+name: Promote PyTorch
+
+on:
+  workflow_dispatch:
