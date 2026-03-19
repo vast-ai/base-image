@@ -40,7 +40,7 @@ RUN \
         . /venv/main/bin/activate && \
         ./launch-linux.sh --launch_mode none > /tmp/install-swarmui.log 2>&1 & \
         installer_pid=$! && \
-        until grep -q "Program is running" /tmp/install-swarmui.log; do echo "Waiting for SwarmUI installation..."; sleep 5; done && \
+        until grep -q "is now running" /tmp/install-swarmui.log; do echo "Waiting for SwarmUI installation..."; sleep 5; done && \
         kill -9 $installer_pid' || \
         { echo "Installation timed out after 120 seconds"; exit 1; } && \
     # Fix animation issues - SwarmUi does not install this automatically
