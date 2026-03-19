@@ -559,12 +559,13 @@ jobs:
 
           echo "=== Tags that would be created ==="
           CURRENT_VER=""
-          for entry in $(echo "$MERGE_MATRIX" | jq -c '.include[]'); do
-            torch_ver=$(echo "$entry" | jq -r '.torch_version')
-            cuda_short=$(echo "$entry" | jq -r '.cuda_short')
-            cuda_ver=$(echo "$entry" | jq -r '.cuda_ver')
-            python_versions=$(echo "$entry" | jq -r '.python_versions')
-            arches=$(echo "$entry" | jq -r '.arches')
+          MERGE_COUNT=$(echo "$MERGE_MATRIX" | jq '.include | length')
+          for ((i=0; i<MERGE_COUNT; i++)); do
+            torch_ver=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].torch_version")
+            cuda_short=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].cuda_short")
+            cuda_ver=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].cuda_ver")
+            python_versions=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].python_versions")
+            arches=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].arches")
 
             if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
               echo ""
@@ -581,14 +582,18 @@ jobs:
 
           if [[ "$HAS_MINI" == "true" ]]; then
             echo ""
-            echo "=== Mini Builds ($(echo "$MINI_BUILD_MATRIX" | jq '[.include[] | select(.arch_suffix == "amd64")] | length') configs x2 arches) ==="
+            MINI_COUNT=$(echo "$MINI_BUILD_MATRIX" | jq '[.include[] | select(.arch_suffix == "amd64")] | length')
+            echo "=== Mini Builds (${MINI_COUNT} configs x2 arches) ==="
             CURRENT_VER=""
-            for entry in $(echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")'); do
-              torch_ver=$(echo "$entry" | jq -r '.torch_version')
-              torch_backend=$(echo "$entry" | jq -r '.torch_backend')
-              cuda_minor=$(echo "$entry" | jq -r '.cuda_minor')
-              mini_base_tag=$(echo "$entry" | jq -r '.mini_base_tag')
-              python_versions=$(echo "$entry" | jq -r '.python_versions')
+            for ((i=0; i<$(echo "$MINI_BUILD_MATRIX" | jq '.include | length'); i++)); do
+              arch_suffix=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].arch_suffix")
+              [[ "$arch_suffix" != "amd64" ]] && continue
+
+              torch_ver=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].torch_version")
+              torch_backend=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].torch_backend")
+              cuda_minor=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].cuda_minor")
+              mini_base_tag=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].mini_base_tag")
+              python_versions=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].python_versions")
 
               if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
                 echo ""
