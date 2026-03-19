@@ -97,19 +97,20 @@ jobs:
             "2.10.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
+          # Mini format: torch_ver|key|mini_base_tag|torch_backend|arches|python_versions
           ALL_MINI_CONFIGS=(
-            # 2.6.0 — only cu126 available
-            "2.6.0|cu126-mini|cuda-12.9-mini|cu126|310 311 312"
-            # 2.7.1
-            "2.7.1|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-            # 2.8.0
-            "2.8.0|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-            # 2.9.1
-            "2.9.1|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-            "2.9.1|cu130-mini|cuda-13.1-mini|cu130|310 311 312"
-            # 2.10.0
-            "2.10.0|cu128-mini|cuda-12.9-mini|cu128|310 311 312"
-            "2.10.0|cu130-mini|cuda-13.1-mini|cu130|310 311 312"
+            # 2.6.0 — cu126 is multi-arch
+            "2.6.0|cu126-mini|cuda-12.9-mini|cu126|linux/amd64,linux/arm64|310 311 312"
+            # 2.7.1 — cu128 is multi-arch
+            "2.7.1|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312"
+            # 2.8.0 — cu128 is amd64-only (no arm64 wheels)
+            "2.8.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64|310 311 312"
+            # 2.9.1 — cu128 multi-arch, cu130 multi-arch
+            "2.9.1|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312"
+            "2.9.1|cu130-mini|cuda-13.1-mini|cu130|linux/amd64,linux/arm64|310 311 312"
+            # 2.10.0 — cu128 multi-arch, cu130 multi-arch
+            "2.10.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312"
+            "2.10.0|cu130-mini|cuda-13.1-mini|cu130|linux/amd64,linux/arm64|310 311 312"
           )
 
           BUILD_MATRIX="[]"
@@ -158,7 +159,7 @@ jobs:
           MINI_MERGE_MATRIX="[]"
 
           for mini_config in "${ALL_MINI_CONFIGS[@]}"; do
-            IFS='|' read -r torch_ver key mini_base_tag torch_backend python_versions <<< "$mini_config"
+            IFS='|' read -r torch_ver key mini_base_tag torch_backend arches python_versions <<< "$mini_config"
 
             if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
               continue
@@ -173,10 +174,12 @@ jobs:
               --arg mini_base_tag "$mini_base_tag" \
               --arg torch_backend "$torch_backend" \
               --arg cuda_minor "$cuda_minor" \
+              --arg arches "$arches" \
               --arg python_versions "$python_versions" \
-              '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "python_versions": $python_versions}]')
+              '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arches": $arches, "python_versions": $python_versions}]')
 
-            for arch in "linux/amd64" "linux/arm64"; do
+            IFS=',' read -ra ARCH_LIST <<< "$arches"
+            for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
               MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
@@ -467,20 +470,29 @@ jobs:
           PYTORCH_VERSION: ${{ matrix.torch_version }}
           TORCH_BACKEND: ${{ matrix.torch_backend }}
           CUDA_MINOR: ${{ matrix.cuda_minor }}
+          ARCHES: ${{ matrix.arches }}
           PYTHON_VERSIONS: ${{ matrix.python_versions }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           mkdir -p built-tags
 
+          IFS=',' read -ra ARCH_LIST <<< "$ARCHES"
+
           for py_tag in ${PYTHON_VERSIONS}; do
             FINAL_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-${TORCH_BACKEND}-cuda-${CUDA_MINOR}-mini-py${py_tag}-${BUILD_DATE}"
             AMD64_TAG="${FINAL_TAG}-amd64"
-            ARM64_TAG="${FINAL_TAG}-arm64"
 
             echo "=== Merging mini manifest: ${FINAL_TAG} ==="
-            docker buildx imagetools create \
-              -t "${FINAL_TAG}" \
-              "${AMD64_TAG}" "${ARM64_TAG}"
+            if [[ ${#ARCH_LIST[@]} -gt 1 ]]; then
+              ARM64_TAG="${FINAL_TAG}-arm64"
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                "${AMD64_TAG}" "${ARM64_TAG}"
+            else
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                "${AMD64_TAG}"
+            fi
 
             echo "$FINAL_TAG" >> built-tags/tags.txt
           done
