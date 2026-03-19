@@ -37,14 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.configs.outputs.configs }}
-      auto-tags: ${{ steps.configs.outputs.auto-tags }}
       mini-tags: ${{ steps.configs.outputs.mini-tags }}
     steps:
       - name: Generate filtered config list
         id: configs
-        env:
-          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
-          STAGING_DATE: ${{ inputs.STAGING_DATE }}
         run: |
           FILTER="${{ inputs.FILTER }}"
 
@@ -64,7 +60,6 @@ jobs:
           )
 
           CONFIGS_JSON="[]"
-          AUTO_TAGS="[]"
 
           for config in "${ALL_CONFIGS[@]}"; do
             IFS='|' read -r key tag_template default_python <<< "$config"
@@ -78,16 +73,6 @@ jobs:
               --arg tag_template "$tag_template" \
               --arg default_python "$default_python" \
               '. + [{"key": $key, "tag_template": $tag_template, "default_python": $default_python}]')
-
-            # Build auto-tag entry for CUDA configs (source is the dated default-python prod tag)
-            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
-            if [[ -n "$cuda_ver" ]]; then
-              dp_tag="${default_python//.}"
-              AUTO_TAGS=$(echo "$AUTO_TAGS" | jq -c \
-                --arg source "${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}" \
-                --arg target "${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto" \
-                '. + [{"source": $source, "target": $target}]')
-            fi
           done
 
           # Mini configs: key|mini_tag
@@ -109,11 +94,10 @@ jobs:
               '. + [{"key": $key, "mini_tag": $mini_tag}]')
           done
 
-          echo "configs=$(echo $CONFIGS_JSON)" >> $GITHUB_OUTPUT
-          echo "auto-tags=$(echo $AUTO_TAGS)" >> $GITHUB_OUTPUT
-          echo "mini-tags=$(echo $MINI_TAGS_JSON)" >> $GITHUB_OUTPUT
-          echo "Configs: $(echo $CONFIGS_JSON | jq length)"
-          echo "Auto-tags: $(echo $AUTO_TAGS | jq length)"
+          echo "configs=${CONFIGS_JSON}" >> $GITHUB_OUTPUT
+          echo "mini-tags=${MINI_TAGS_JSON}" >> $GITHUB_OUTPUT
+          echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
+          echo "Mini tags: $(echo "$MINI_TAGS_JSON" | jq length)"
 
   promote:
     needs: generate-configs
@@ -138,7 +122,6 @@ jobs:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
-          AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
           MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           set -euo pipefail
@@ -211,10 +194,16 @@ jobs:
           # the final push to ensure correct resolution ordering.
           echo ""
           echo "=== Creating auto convenience tags (must be last) ==="
-          AUTO_COUNT=$(echo "$AUTO_TAGS" | jq length)
-          for ((i=0; i<AUTO_COUNT; i++)); do
-            SOURCE=$(echo "$AUTO_TAGS" | jq -r ".[$i].source")
-            TARGET=$(echo "$AUTO_TAGS" | jq -r ".[$i].target")
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+
+            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+
+            dp_tag="${default_python//.}"
+            SOURCE="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
+            TARGET="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
 
             echo "Auto-tag: ${SOURCE} -> ${TARGET}"
             docker buildx imagetools create \
@@ -250,7 +239,6 @@ jobs:
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
-          AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
           MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           echo "=== DRY RUN - Promotion Plan ==="
@@ -292,16 +280,16 @@ jobs:
 
           echo ""
           echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
-          AUTO_COUNT=$(echo "$AUTO_TAGS" | jq length)
-          if [[ $AUTO_COUNT -gt 0 ]]; then
-            for ((i=0; i<AUTO_COUNT; i++)); do
-              SOURCE=$(echo "$AUTO_TAGS" | jq -r ".[$i].source")
-              TARGET=$(echo "$AUTO_TAGS" | jq -r ".[$i].target")
-              echo "  ${SOURCE} -> ${TARGET}"
-            done
-          else
-            echo "  (none)"
-          fi
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+
+            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+
+            dp_tag="${default_python//.}"
+            echo "  ${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE} -> ${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+          done
 
   notify:
     needs: [generate-configs, promote]

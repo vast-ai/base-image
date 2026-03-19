@@ -47,7 +47,6 @@ jobs:
     outputs:
       configs: ${{ steps.configs.outputs.configs }}
       mini-configs: ${{ steps.configs.outputs.mini-configs }}
-      auto-tags: ${{ steps.configs.outputs.auto-tags }}
       has-mini: ${{ steps.configs.outputs.has-mini }}
     steps:
       - name: Generate filtered config list
@@ -105,7 +104,6 @@ jobs:
           esac
 
           CONFIGS_JSON="[]"
-          AVAILABLE_CUDA=()
 
           for config in "${CONFIGS[@]}"; do
             IFS='|' read -r key cuda_ver torch_backend arches python_versions <<< "$config"
@@ -115,7 +113,6 @@ jobs:
             fi
 
             cuda_short="${cuda_ver%%-*}"
-            AVAILABLE_CUDA+=("$cuda_short")
 
             CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c \
               --arg key "$key" \
@@ -150,48 +147,10 @@ jobs:
             echo "has-mini=false" >> $GITHUB_OUTPUT
           fi
 
-          # Auto convenience tags (only when LATEST_TORCH=true)
-          # Maps CUDA versions to the best pytorch+cuda combo for automatic selection
-          AUTO_TAGS="[]"
-          if [[ "$LATEST_TORCH" == "true" ]]; then
-            AUTO_TAG_MAP=(
-              "cuda-12.1.1-auto|12.6.3"
-              "cuda-12.4.1-auto|12.6.3"
-              "cuda-12.6.3-auto|12.6.3"
-              "cuda-12.8.1-auto|12.8.1"
-              "cuda-12.9.1-auto|12.8.1"
-              "cuda-13.0.2-auto|13.0.2"
-            )
-
-            for entry in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r auto_tag source_cuda <<< "$entry"
-
-              # Only create auto-tag if we have a config with this CUDA version
-              found=false
-              for avail in "${AVAILABLE_CUDA[@]}"; do
-                if [[ "$avail" == "$source_cuda" ]]; then
-                  found=true
-                  break
-                fi
-              done
-
-              if [[ "$found" == "true" ]]; then
-                SOURCE="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
-                TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-                AUTO_TAGS=$(echo "$AUTO_TAGS" | jq -c \
-                  --arg source "$SOURCE" \
-                  --arg target "$TARGET" \
-                  '. + [{"source": $source, "target": $target}]')
-              fi
-            done
-          fi
-
-          echo "configs=$(echo $CONFIGS_JSON)" >> $GITHUB_OUTPUT
-          echo "mini-configs=$(echo $MINI_CONFIGS_JSON)" >> $GITHUB_OUTPUT
-          echo "auto-tags=$(echo $AUTO_TAGS)" >> $GITHUB_OUTPUT
-          echo "Configs: $(echo $CONFIGS_JSON | jq length)"
-          echo "Mini configs: $(echo $MINI_CONFIGS_JSON | jq length)"
-          echo "Auto-tags: $(echo $AUTO_TAGS | jq length)"
+          echo "configs=${CONFIGS_JSON}" >> $GITHUB_OUTPUT
+          echo "mini-configs=${MINI_CONFIGS_JSON}" >> $GITHUB_OUTPUT
+          echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
+          echo "Mini configs: $(echo "$MINI_CONFIGS_JSON" | jq length)"
 
   promote:
     needs: generate-configs
@@ -216,9 +175,9 @@ jobs:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           PYTORCH_VERSION: ${{ inputs.PYTORCH_VERSION }}
+          LATEST_TORCH: ${{ inputs.LATEST_TORCH }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
-          AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
         run: |
           set -euo pipefail
@@ -290,18 +249,46 @@ jobs:
           # the final push to ensure correct resolution ordering.
           echo ""
           echo "=== Creating auto convenience tags (must be last) ==="
-          AUTO_COUNT=$(echo "$AUTO_TAGS" | jq length)
-          for ((i=0; i<AUTO_COUNT; i++)); do
-            SOURCE=$(echo "$AUTO_TAGS" | jq -r ".[$i].source")
-            TARGET=$(echo "$AUTO_TAGS" | jq -r ".[$i].target")
+          if [[ "$LATEST_TORCH" == "true" ]]; then
+            # Auto-tag map: target_tag|source_cuda_short
+            AUTO_TAG_MAP=(
+              "cuda-12.1.1-auto|12.6.3"
+              "cuda-12.4.1-auto|12.6.3"
+              "cuda-12.6.3-auto|12.6.3"
+              "cuda-12.8.1-auto|12.8.1"
+              "cuda-12.9.1-auto|12.8.1"
+              "cuda-13.0.2-auto|13.0.2"
+            )
 
-            echo "Auto-tag: ${SOURCE} -> ${TARGET}"
-            docker buildx imagetools create \
-              --tag "${TARGET}" \
-              "${SOURCE}"
+            # Collect available CUDA versions from configs
+            AVAILABLE_CUDA=()
+            for ((i=0; i<CONFIG_COUNT; i++)); do
+              AVAILABLE_CUDA+=($(echo "$CONFIGS" | jq -r ".[$i].cuda_short"))
+            done
 
-            echo "$TARGET" >> built-tags/tags.txt
-          done
+            for entry in "${AUTO_TAG_MAP[@]}"; do
+              IFS='|' read -r auto_tag source_cuda <<< "$entry"
+
+              # Only create auto-tag if we have a config with this CUDA version
+              found=false
+              for avail in "${AVAILABLE_CUDA[@]}"; do
+                [[ "$avail" == "$source_cuda" ]] && found=true && break
+              done
+              [[ "$found" != "true" ]] && continue
+
+              SOURCE="${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
+              TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+
+              echo "Auto-tag: ${SOURCE} -> ${TARGET}"
+              docker buildx imagetools create \
+                --tag "${TARGET}" \
+                "${SOURCE}"
+
+              echo "$TARGET" >> built-tags/tags.txt
+            done
+          else
+            echo "  (skipped - LATEST_TORCH not set)"
+          fi
 
           echo ""
           echo "=== Promotion complete ==="
@@ -327,11 +314,11 @@ jobs:
         env:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           PYTORCH_VERSION: ${{ inputs.PYTORCH_VERSION }}
+          LATEST_TORCH: ${{ inputs.LATEST_TORCH }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
-          AUTO_TAGS: ${{ needs.generate-configs.outputs.auto-tags }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
         run: |
           DEFAULT_PYTHON="312"
@@ -375,15 +362,33 @@ jobs:
 
           echo ""
           echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
-          AUTO_COUNT=$(echo "$AUTO_TAGS" | jq length)
-          if [[ $AUTO_COUNT -gt 0 ]]; then
-            for ((i=0; i<AUTO_COUNT; i++)); do
-              SOURCE=$(echo "$AUTO_TAGS" | jq -r ".[$i].source")
-              TARGET=$(echo "$AUTO_TAGS" | jq -r ".[$i].target")
-              echo "  ${SOURCE} -> ${TARGET}"
+          if [[ "$LATEST_TORCH" == "true" ]]; then
+            AUTO_TAG_MAP=(
+              "cuda-12.1.1-auto|12.6.3"
+              "cuda-12.4.1-auto|12.6.3"
+              "cuda-12.6.3-auto|12.6.3"
+              "cuda-12.8.1-auto|12.8.1"
+              "cuda-12.9.1-auto|12.8.1"
+              "cuda-13.0.2-auto|13.0.2"
+            )
+
+            AVAILABLE_CUDA=()
+            for ((i=0; i<CONFIG_COUNT; i++)); do
+              AVAILABLE_CUDA+=($(echo "$CONFIGS" | jq -r ".[$i].cuda_short"))
+            done
+
+            for entry in "${AUTO_TAG_MAP[@]}"; do
+              IFS='|' read -r auto_tag source_cuda <<< "$entry"
+              found=false
+              for avail in "${AVAILABLE_CUDA[@]}"; do
+                [[ "$avail" == "$source_cuda" ]] && found=true && break
+              done
+              [[ "$found" != "true" ]] && continue
+
+              echo "  ${NAMESPACE_PROD}/pytorch:${PYTORCH_VERSION}-cuda-${source_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE} -> ${NAMESPACE_PROD}/pytorch:${auto_tag}"
             done
           else
-            echo "  (none - LATEST_TORCH not set or no matching CUDA versions)"
+            echo "  (skipped - LATEST_TORCH not set)"
           fi
 
   notify:
