@@ -4,7 +4,8 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "open webui"
+[[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
+. "${utils}/exit_portal.sh" "open webui"
 
 # Wait for provisioning to complete
 
@@ -67,7 +68,7 @@ UVICORN_WORKERS="${UVICORN_WORKERS:-1}"
 
 # Launch via uvicorn directly (matches upstream start_ollama_docker.sh)
 cd /app/backend || exit 1
-exec "$PYTHON_CMD" -m uvicorn open_webui.main:app \
+pty "$PYTHON_CMD" -m uvicorn open_webui.main:app \
     --host "$HOST" \
     --port "$PORT" \
     --forwarded-allow-ips '*' \

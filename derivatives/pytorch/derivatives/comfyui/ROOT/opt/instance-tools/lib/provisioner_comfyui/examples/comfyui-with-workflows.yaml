@@ -1,0 +1,40 @@
+# ComfyUI provisioning manifest with workflow-based model discovery
+#
+# The provisioner_comfyui extension parses GUI-format workflow JSON files
+# to automatically discover and download required models and custom nodes.
+# This eliminates the need to manually list every model URL — just point
+# it at your workflow files and everything gets resolved.
+
+version: 1
+
+settings:
+  venv: "/venv/main"
+
+# The comfyui extension fetches each workflow JSON, extracts model download
+# URLs from nodes[].properties.models[], resolves custom node git repos via
+# the ComfyUI Registry API (api.comfy.org), and appends them to the
+# manifest's downloads and git_repos lists.  Workflows are also saved to
+# {comfyui_dir}/user/default/workflows/ so they appear in the UI.
+#
+# Supported workflow formats:
+#   - Top-level nodes (standard GUI export)
+#   - Subgraph definitions (newer ComfyUI with definitions.subgraphs[].nodes)
+#
+# Duplicate models and repos are automatically deduplicated against both
+# the workflow contents and any entries already in the manifest.
+#
+# Workflow URLs can also be provided at runtime via the environment variable
+# PROVISIONING_COMFYUI_WORKFLOWS (semicolon-delimited, consistent with all
+# other PROVISIONING_* env vars).
+# These are appended to the workflows list below, with duplicates removed.
+#
+#   PROVISIONING_COMFYUI_WORKFLOWS="https://example.com/wf1.json;https://example.com/wf2.json"
+extensions:
+  - module: provisioner_comfyui
+    config:
+      comfyui_dir: "${WORKSPACE:-/workspace}/ComfyUI"  # optional, this is the default
+      workflows:
+        # Add workflow URLs here — models and custom nodes are auto-discovered
+        - https://example.com/my-workflow.json
+        - https://example.com/another-workflow.json
+

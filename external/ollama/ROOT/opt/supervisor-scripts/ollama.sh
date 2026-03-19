@@ -4,7 +4,8 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "ollama"
+[[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
+. "${utils}/exit_portal.sh" "ollama"
 
 # Wait for provisioning to complete
 
@@ -14,7 +15,7 @@ while [ -f "/.provisioning" ]; do
 done
 
 # Launch Ollama in the background, wait for readiness, then pull the model if configured
-ollama serve ${OLLAMA_ARGS:-} 2>&1 &
+pty ollama serve ${OLLAMA_ARGS:-} 2>&1 &
 OLLAMA_PID=$!
 
 # Wait for the server to become ready

@@ -24,4 +24,4 @@ echo "Starting ACE Step UI"
 
 cd "${WORKSPACE}/ace-step-ui"
 . /opt/nvm/nvm.sh
-ACESTEP_PATH="${WORKSPACE}/ACE-Step-1.5/" ./start.sh
+ACESTEP_PATH="${WORKSPACE}/ACE-Step-1.5/" pty ./start.sh

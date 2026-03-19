@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py311
+ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py311-2026-03-19
 
 FROM ${PYTORCH_BASE}
 
@@ -62,3 +62,6 @@ RUN \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash

@@ -4,21 +4,22 @@ FROM ${BASE_IMAGE}
 
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
+# Space-separated list of CUDA version suffixes (e.g., "12-9 13-1")
+ARG CUDA_VERSIONS="12-9 13-1"
+
 RUN \
     set -euo pipefail && \
     apt-get update && \
-    # Add only a small subset of the toolkit packages.
-    # Add multiple for best-match auto enablement at runtime
-    apt-get install -y --no-install-recommends \
-        cuda-nvcc-12-9 \
-        cuda-cccl-12-9 \
-        cuda-nvrtc-12-9 \
-        cuda-nvcc-13-1 \
-        cuda-cccl-13-1 \
-        cuda-nvrtc-13-1 \
-        cuda-compat-13-1 \
-        libnccl2 && \
-        apt-get clean && rm -rf /var/lib/apt/lists/*
+    PACKAGES="" && \
+    for ver in ${CUDA_VERSIONS}; do \
+        PACKAGES="$PACKAGES cuda-nvcc-${ver} cuda-cccl-${ver} cuda-nvrtc-${ver}"; \
+        major=$(echo "$ver" | cut -d'-' -f1); \
+        if [ "$major" -ge 13 ]; then \
+            PACKAGES="$PACKAGES cuda-compat-${ver}"; \
+        fi; \
+    done && \
+    apt-get install -y --no-install-recommends $PACKAGES libnccl2 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Defend against environment clashes when syncing to volume
 RUN \

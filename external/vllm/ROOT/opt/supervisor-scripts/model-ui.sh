@@ -4,7 +4,8 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "model ui"
+. "${utils}/exit_serverless.sh"
+. "${utils}/exit_portal.sh" "model ui"
 
 # No model = no UI
 if [[ -z "${MODEL_NAME:-}" ]]; then
@@ -18,4 +19,4 @@ while [ -f "/.provisioning" ]; do
     sleep 10
 done
 
-/opt/model-ui/venv/bin/python /opt/model-ui/app.py
+pty /opt/model-ui/venv/bin/python /opt/model-ui/app.py

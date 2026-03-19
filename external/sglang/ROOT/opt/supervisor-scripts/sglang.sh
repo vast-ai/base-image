@@ -4,7 +4,8 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "sglang"
+[[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
+. "${utils}/exit_portal.sh" "sglang"
 
 # Check we are actually trying to serve a model
 if [[ -z "${SGLANG_MODEL:-}" ]]; then
@@ -34,4 +35,4 @@ fi
 # Force Caches to be written in workspace (vols)
 export HOME=${WORKSPACE}
 # Read complex args from /etc/sglang-args.conf if env vars were unsuitable
-eval "sglang serve --model-path "${SGLANG_MODEL:-}" ${SGLANG_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/sglang-args.conf ]] && cat /etc/sglang-args.conf)" 2>&1
+eval "pty sglang serve --model-path "${SGLANG_MODEL:-}" ${SGLANG_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/sglang-args.conf ]] && cat /etc/sglang-args.conf)" 2>&1

@@ -496,6 +496,5 @@ ENV XMODIFIERS="@im=fcitx"
 
 USER root
 
-
-
-
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash

@@ -40,3 +40,6 @@ RUN \
 ENV LLAMA_CPP_DIR=/opt/llama.cpp/cuda-${CUDA_VERSION}
 ENV PATH=${LLAMA_CPP_DIR}:${PATH}
 
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
+

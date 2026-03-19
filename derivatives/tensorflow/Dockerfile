@@ -33,3 +33,6 @@ RUN \
    python3 -c "import tensorflow as tf; x = tf.random.normal((2,3)); y = tf.random.normal((3,2)); z = tf.matmul(x, y); assert z.shape == (2,2), 'Basic tensor operations failed'" && \
    # Test 4: Simple model creation and compilation
    python3 -c "import tensorflow as tf; model = tf.keras.Sequential([tf.keras.layers.Dense(2, input_shape=(10,))]); model.compile(optimizer='adam', loss='mse'); print('✓ Model creation successful')"
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash

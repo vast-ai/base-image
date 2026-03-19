@@ -13,4 +13,4 @@ echo "Starting AI Toolkit"
 
 cd "${WORKSPACE}/ai-toolkit/ui"
 
-${AI_TOOLKIT_START_CMD:-npm run start} 2>&1
+pty ${AI_TOOLKIT_START_CMD:-npm run start} 2>&1

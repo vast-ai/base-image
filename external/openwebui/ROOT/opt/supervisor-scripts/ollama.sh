@@ -4,7 +4,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "ollama"
+. "${utils}/exit_portal.sh" "ollama"
 
 # Clear stale readiness sentinel from previous runs
 rm -f /tmp/.ollama_ready
@@ -17,7 +17,7 @@ while [ -f "/.provisioning" ]; do
 done
 
 # Launch Ollama in the background, wait for readiness, then pull the model if configured
-ollama serve ${OLLAMA_ARGS:-} 2>&1 &
+pty ollama serve ${OLLAMA_ARGS:-} 2>&1 &
 OLLAMA_PID=$!
 
 # Wait for the server to become ready

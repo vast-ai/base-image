@@ -8,7 +8,7 @@ if [[ -n $APT_PACKAGES ]]; then
 fi
 
 if [[ -n $PIP_PACKAGES ]]; then
-    uv pip install --system --break-system-packages $PIP_PACKAGES
+    uv pip install --python /venv/main/bin/python $PIP_PACKAGES
 fi
 
 # Put anything more complex into a PROVISIONING_SCRIPT

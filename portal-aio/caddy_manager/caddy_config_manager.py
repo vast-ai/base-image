@@ -92,8 +92,17 @@ def generate_caddyfile(config):
     elif not open_button_token:
         open_button_token = web_password
     
+    # Strip characters that are unsafe in cookie values / CEL strings.
+    # Done early so every downstream use (CEL matchers, Set-Cookie headers,
+    # basic_auth hash, console output) sees the same sanitized value.
+    def _sanitize_token(s):
+        return s.replace('\r', '').replace('\n', '').replace(';', '')
+
+    web_password = _sanitize_token(web_password)
+    open_button_token = _sanitize_token(open_button_token)
+
     caddy_identifier = os.environ.get('VAST_CONTAINERLABEL')
-    
+
     # Configurable options
     enable_compression = os.environ.get('CADDY_ENABLE_COMPRESSION', 'true').lower() == 'true'
     flush_interval = os.environ.get('CADDY_FLUSH_INTERVAL', '-1')  # -1 = immediate (good for SSE)
@@ -103,37 +112,46 @@ def generate_caddyfile(config):
     else:
         servers_block = ''
 
-    # Build token matchers - if both tokens are the same, use simple query match
+    # Escape passwords for use in CEL expression strings (backtick-delimited).
+    # Backslashes and double-quotes must be escaped for CEL string literals.
+    def cel_escape(s):
+        return s.replace('\\', '\\\\').replace('`', '\\`').replace('"', '\\"').replace('\r', '').replace('\n', '')
+
+    cel_web_password = cel_escape(web_password)
+    cel_open_button_token = cel_escape(open_button_token)
+
+    # Build token matchers - always use CEL expressions for safety.
+    # Simple query/header_regexp matchers break with regex-special chars in passwords (e.g. * + .)
     if web_password == open_button_token:
         token_auth_matcher = f'''(token_auth_matcher) {{
         @token_auth {{
-            query token={web_password}
+            expression `{{http.request.uri.query.token}} == "{cel_web_password}"`
         }}
     }}'''
         cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
         @has_valid_auth_cookie {{
-            header_regexp Cookie {caddy_identifier}_auth_token={web_password}
+            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_web_password}")`
         }}
     }}'''
         bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
         @has_valid_bearer_token {{
-            header Authorization "Bearer {web_password}"
+            expression `{{http.request.header.Authorization}} == "Bearer {cel_web_password}"`
         }}
     }}'''
     else:
         token_auth_matcher = f'''(token_auth_matcher) {{
         @token_auth {{
-            expression `{{http.request.uri.query.token}} == "{web_password}" || {{http.request.uri.query.token}} == "{open_button_token}"`
+            expression `{{http.request.uri.query.token}} == "{cel_web_password}" || {{http.request.uri.query.token}} == "{cel_open_button_token}"`
         }}
     }}'''
         cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
         @has_valid_auth_cookie {{
-            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={web_password}") || {{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={open_button_token}")`
+            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_web_password}") || {{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_open_button_token}")`
         }}
     }}'''
         bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
         @has_valid_bearer_token {{
-            expression `{{http.request.header.Authorization}} == "Bearer {web_password}" || {{http.request.header.Authorization}} == "Bearer {open_button_token}"`
+            expression `{{http.request.header.Authorization}} == "Bearer {cel_web_password}" || {{http.request.header.Authorization}} == "Bearer {cel_open_button_token}"`
         }}
     }}'''
 
@@ -270,6 +288,13 @@ def generate_noauth_config(hostname, internal_port, flush_interval):
     import real_ip_map
     import forwarded_protocol_map
 
+    route /portal-resolver {{
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, OPTIONS"
+        header Access-Control-Allow-Headers "*"
+        respond 200
+    }}
+
     handle {{
         {get_reverse_proxy_block(hostname, internal_port, flush_interval)}
     }}
@@ -280,17 +305,24 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
     hashed_password = subprocess.check_output([CADDY_BIN, 'hash-password', '-p', password]).decode().strip()
     cors_block = get_cors_block()
     proxy_block = get_reverse_proxy_block(hostname, internal_port, flush_interval)
-   
-    return f'''    
+
+    # Escape passwords for Caddy double-quoted string contexts (Set-Cookie headers)
+    def caddy_quote_escape(s):
+        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
+
+    safe_password = caddy_quote_escape(password)
+    safe_open_button_token = caddy_quote_escape(open_button_token)
+
+    return f'''
     import noauth_matcher
     import real_ip_map
     import forwarded_protocol_map
 
     route @noauth {{
         route /portal-resolver {{
-            header Access-Control-Allow-Origin *
-            header Access-Control-Allow-Methods GET, OPTIONS
-            header Access-Control-Allow-Headers *
+            header Access-Control-Allow-Origin "*"
+            header Access-Control-Allow-Methods "GET, OPTIONS"
+            header Access-Control-Allow-Headers "*"
             respond 200
         }}
 
@@ -305,7 +337,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
     import has_valid_bearer_token_matcher
 
     route @token_auth {{
-        header Set-Cookie "{caddy_identifier}_auth_token={open_button_token}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
+        header Set-Cookie "{caddy_identifier}_auth_token={safe_open_button_token}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
         uri query -token
         redir * {{uri}} 302
     }}
@@ -328,7 +360,7 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
         basic_auth {{
             {username} "{hashed_password}"
         }}
-        header Set-Cookie "{caddy_identifier}_auth_token={password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
+        header Set-Cookie "{caddy_identifier}_auth_token={safe_password}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
 
         handle {{
             {cors_block}

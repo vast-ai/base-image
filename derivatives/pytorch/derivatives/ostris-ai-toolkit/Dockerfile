@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312
+ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-03-19
 
 FROM ${PYTORCH_BASE}
 
@@ -25,8 +25,8 @@ RUN \
     cd $(basename ${AI_TOOLKIT_REPO}) && \
     git checkout "${AI_TOOLKIT_REF}" && \
     # Fixes known issue with toolkit 6870ab4
-    uv pip install timm==1.0.22 && \
-    uv pip install -r requirements.txt && \
+    uv pip install --no-cache-dir timm==1.0.22 && \
+    uv pip install --no-cache-dir -r requirements.txt && \
     cd ui && \
     npm install && \
     npm run update_db && \

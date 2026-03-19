@@ -1,4 +1,628 @@
+# Build PyTorch images from base-image across all supported torch versions
+# Splits arch builds into separate jobs, then merges into multi-arch manifests
+# Mini builds run in parallel with full builds (use prod base-image-mini, not just-built pytorch)
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+# DOCKERHUB_NAMESPACE_STAGING
+# DOCKERHUB_NAMESPACE
+# Optional:
+# SLACK_WEBHOOK_URL
+
 name: Build PyTorch
 
 on:
   workflow_dispatch:
+    inputs:
+      BASE_DATE:
+        description: "Base image date suffix to build from (e.g. 2026-03-18)"
+        required: true
+        type: string
+      FILTER:
+        description: "Filter by version or config key (e.g. 2.10, cu128, mini)"
+        required: false
+        default: ""
+      DRY_RUN:
+        description: "Print what would build without building"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: pytorch-build
+  cancel-in-progress: false
+
+jobs:
+  validate-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=()
+          [[ -z "$NAMESPACE_STAGING" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          [[ -z "$NAMESPACE_PROD" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "$USERNAME" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "$TOKEN" ]] && missing+=("DOCKERHUB_TOKEN")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required secrets are set"
+
+  generate-matrix:
+    needs: validate-secrets
+    runs-on: ubuntu-latest
+    outputs:
+      build-matrix: ${{ steps.matrix.outputs.build-matrix }}
+      merge-matrix: ${{ steps.matrix.outputs.merge-matrix }}
+      mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
+      mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
+      has-mini: ${{ steps.matrix.outputs.has-mini }}
+      build-date: ${{ steps.matrix.outputs.build-date }}
+    steps:
+      - name: Generate matrices
+        id: matrix
+        run: |
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          echo "build-date=$BUILD_DATE" >> $GITHUB_OUTPUT
+
+          FILTER="${{ inputs.FILTER }}"
+          DEFAULT_PYTHON="312"
+
+          # All pytorch versions and their configs
+          # Config format: torch_ver|key|cuda_ver|torch_backend|arches|python_versions
+          # Mini format:   torch_ver|key|mini_base_tag|torch_backend|python_versions (always multi-arch)
+          ALL_CONFIGS=(
+            # 2.6.0
+            "2.6.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313"
+            # 2.7.1
+            "2.7.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313"
+            "2.7.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313"
+            # 2.8.0
+            "2.8.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313"
+            "2.8.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64|310 311 312 313"
+            "2.8.0|cu129|12.9.1-cudnn-devel|cu129|linux/amd64|310 311 312 313"
+            # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
+            "2.9.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313 314"
+            "2.9.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.9.1|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            # 2.10.0
+            "2.10.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312 313 314"
+            "2.10.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.10.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+          )
+
+          # Mini format: torch_ver|key|mini_base_tag|torch_backend|arches|python_versions
+          ALL_MINI_CONFIGS=(
+            # 2.6.0 — cu126 is multi-arch
+            "2.6.0|cu126-mini|cuda-12.9-mini|cu126|linux/amd64,linux/arm64|310 311 312"
+            # 2.7.1 — cu128 is multi-arch
+            "2.7.1|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312"
+            # 2.8.0 — cu128 is amd64-only (no arm64 wheels)
+            "2.8.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64|310 311 312"
+            # 2.9.1 — cu128 multi-arch, cu130 multi-arch
+            "2.9.1|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312"
+            "2.9.1|cu130-mini|cuda-13.1-mini|cu130|linux/amd64,linux/arm64|310 311 312"
+            # 2.10.0 — cu128 multi-arch, cu130 multi-arch
+            "2.10.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312"
+            "2.10.0|cu130-mini|cuda-13.1-mini|cu130|linux/amd64,linux/arm64|310 311 312"
+          )
+
+          BUILD_MATRIX="[]"
+          MERGE_MATRIX="[]"
+
+          for config in "${ALL_CONFIGS[@]}"; do
+            IFS='|' read -r torch_ver key cuda_ver torch_backend arches python_versions <<< "$config"
+
+            # Apply filter — matches against version or config key
+            if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            cuda_short="${cuda_ver%%-*}"
+
+            # Add to merge matrix (one per version+config)
+            MERGE_MATRIX=$(echo "$MERGE_MATRIX" | jq -c \
+              --arg torch_ver "$torch_ver" \
+              --arg key "$key" \
+              --arg cuda_short "$cuda_short" \
+              --arg cuda_ver "$cuda_ver" \
+              --arg torch_backend "$torch_backend" \
+              --arg arches "$arches" \
+              --arg python_versions "$python_versions" \
+              '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "cuda_ver": $cuda_ver, "torch_backend": $torch_backend, "arches": $arches, "python_versions": $python_versions}]')
+
+            # Split arches into separate build matrix entries
+            IFS=',' read -ra ARCH_LIST <<< "$arches"
+            for arch in "${ARCH_LIST[@]}"; do
+              arch_suffix="${arch#linux/}"
+              BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
+                --arg torch_ver "$torch_ver" \
+                --arg key "$key" \
+                --arg cuda_short "$cuda_short" \
+                --arg cuda_ver "$cuda_ver" \
+                --arg torch_backend "$torch_backend" \
+                --arg arch "$arch" \
+                --arg arch_suffix "$arch_suffix" \
+                --arg python_versions "$python_versions" \
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "cuda_ver": $cuda_ver, "torch_backend": $torch_backend, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+            done
+          done
+
+          # Mini configs
+          MINI_BUILD_MATRIX="[]"
+          MINI_MERGE_MATRIX="[]"
+
+          for mini_config in "${ALL_MINI_CONFIGS[@]}"; do
+            IFS='|' read -r torch_ver key mini_base_tag torch_backend arches python_versions <<< "$mini_config"
+
+            if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            cuda_minor="${mini_base_tag#cuda-}"
+            cuda_minor="${cuda_minor%-mini}"
+
+            MINI_MERGE_MATRIX=$(echo "$MINI_MERGE_MATRIX" | jq -c \
+              --arg torch_ver "$torch_ver" \
+              --arg key "$key" \
+              --arg mini_base_tag "$mini_base_tag" \
+              --arg torch_backend "$torch_backend" \
+              --arg cuda_minor "$cuda_minor" \
+              --arg arches "$arches" \
+              --arg python_versions "$python_versions" \
+              '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arches": $arches, "python_versions": $python_versions}]')
+
+            IFS=',' read -ra ARCH_LIST <<< "$arches"
+            for arch in "${ARCH_LIST[@]}"; do
+              arch_suffix="${arch#linux/}"
+              MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
+                --arg torch_ver "$torch_ver" \
+                --arg key "$key" \
+                --arg mini_base_tag "$mini_base_tag" \
+                --arg torch_backend "$torch_backend" \
+                --arg cuda_minor "$cuda_minor" \
+                --arg arch "$arch" \
+                --arg arch_suffix "$arch_suffix" \
+                --arg python_versions "$python_versions" \
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+            done
+          done
+
+          if [[ $(echo "$MINI_BUILD_MATRIX" | jq length) -gt 0 ]]; then
+            echo "has-mini=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-mini=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Output matrices
+          {
+            echo "build-matrix<<BUILD_MATRIX_EOF"
+            echo "{\"include\":${BUILD_MATRIX}}"
+            echo "BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "merge-matrix<<MERGE_MATRIX_EOF"
+            echo "{\"include\":${MERGE_MATRIX}}"
+            echo "MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-build-matrix<<MINI_BUILD_MATRIX_EOF"
+            echo "{\"include\":${MINI_BUILD_MATRIX}}"
+            echo "MINI_BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-merge-matrix<<MINI_MERGE_MATRIX_EOF"
+            echo "{\"include\":${MINI_MERGE_MATRIX}}"
+            echo "MINI_MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+
+          echo "Build matrix entries: $(echo "$BUILD_MATRIX" | jq length)"
+          echo "Merge matrix entries: $(echo "$MERGE_MATRIX" | jq length)"
+          echo "Mini build matrix entries: $(echo "$MINI_BUILD_MATRIX" | jq length)"
+          echo "Mini merge matrix entries: $(echo "$MINI_MERGE_MATRIX" | jq length)"
+          echo "Build date: $BUILD_DATE"
+
+  build:
+    needs: generate-matrix
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.build-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build all Python versions
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          PROD_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          PYTORCH_VERSION: ${{ matrix.torch_version }}
+          CUDA_VER: ${{ matrix.cuda_ver }}
+          CUDA_SHORT: ${{ matrix.cuda_short }}
+          TORCH_BACKEND: ${{ matrix.torch_backend }}
+          ARCH: ${{ matrix.arch }}
+          ARCH_SUFFIX: ${{ matrix.arch_suffix }}
+          PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          BASE_DATE: ${{ inputs.BASE_DATE }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          DEFAULT_PYTHON="312"
+          mkdir -p built-tags
+
+          for py_tag in ${PYTHON_VERSIONS}; do
+            # Base image from production with date
+            BASE="${PROD_NAMESPACE}/base-image:cuda-${CUDA_VER}-ubuntu24.04-py${py_tag}-${BASE_DATE}"
+
+            # Primary arch-specific tag with date
+            PRIMARY_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-cuda-${CUDA_SHORT}-py${py_tag}-24.04-${BUILD_DATE}-${ARCH_SUFFIX}"
+
+            TAGS="--tag ${PRIMARY_TAG}"
+
+            # Default Python alias (no -pyXXX)
+            if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
+              ALIAS_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-cuda-${CUDA_SHORT}-24.04-${BUILD_DATE}-${ARCH_SUFFIX}"
+              TAGS+=" --tag ${ALIAS_TAG}"
+              echo "$ALIAS_TAG" >> built-tags/tags.txt
+            fi
+
+            echo "=== Building pytorch ${PYTORCH_VERSION} cuda-${CUDA_SHORT} py${py_tag} for ${ARCH} ==="
+            docker buildx build \
+              --progress=plain \
+              --platform "${ARCH}" \
+              -f derivatives/pytorch/Dockerfile \
+              --build-arg VAST_BASE="${BASE}" \
+              --build-arg PYTORCH_VERSION="${PYTORCH_VERSION}" \
+              --build-arg PYTORCH_BACKEND="${TORCH_BACKEND}" \
+              ${TAGS} \
+              --push .
+
+            echo "$PRIMARY_TAG" >> built-tags/tags.txt
+            echo "Pushed: ${PRIMARY_TAG}"
+          done
+
+      - name: Upload built tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tags-${{ matrix.torch_version }}-${{ matrix.config_key }}-${{ matrix.arch_suffix }}
+          path: built-tags/
+          retention-days: 1
+
+  merge-manifests:
+    needs: [generate-matrix, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.merge-matrix) }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Merge arch manifests
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          PYTORCH_VERSION: ${{ matrix.torch_version }}
+          CUDA_SHORT: ${{ matrix.cuda_short }}
+          ARCHES: ${{ matrix.arches }}
+          PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          DEFAULT_PYTHON="312"
+          mkdir -p built-tags
+
+          IFS=',' read -ra ARCH_LIST <<< "$ARCHES"
+
+          for py_tag in ${PYTHON_VERSIONS}; do
+            FINAL_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-cuda-${CUDA_SHORT}-py${py_tag}-24.04-${BUILD_DATE}"
+            AMD64_TAG="${FINAL_TAG}-amd64"
+
+            EXTRA_TAGS=""
+            if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
+              ALIAS_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-cuda-${CUDA_SHORT}-24.04-${BUILD_DATE}"
+              EXTRA_TAGS="-t ${ALIAS_TAG}"
+              echo "$ALIAS_TAG" >> built-tags/tags.txt
+            fi
+
+            echo "=== Merging manifest: ${FINAL_TAG} ==="
+            if [[ ${#ARCH_LIST[@]} -gt 1 ]]; then
+              ARM64_TAG="${FINAL_TAG}-arm64"
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                ${EXTRA_TAGS} \
+                "${AMD64_TAG}" "${ARM64_TAG}"
+            else
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                ${EXTRA_TAGS} \
+                "${AMD64_TAG}"
+            fi
+
+            echo "$FINAL_TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload manifest tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-tags-${{ matrix.torch_version }}-${{ matrix.config_key }}
+          path: built-tags/
+          retention-days: 1
+
+  build-mini:
+    needs: [generate-matrix]
+    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-build-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build mini Python versions
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          PROD_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          PYTORCH_VERSION: ${{ matrix.torch_version }}
+          MINI_BASE_TAG: ${{ matrix.mini_base_tag }}
+          TORCH_BACKEND: ${{ matrix.torch_backend }}
+          CUDA_MINOR: ${{ matrix.cuda_minor }}
+          ARCH: ${{ matrix.arch }}
+          ARCH_SUFFIX: ${{ matrix.arch_suffix }}
+          PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          BASE_DATE: ${{ inputs.BASE_DATE }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          mkdir -p built-tags
+
+          for py_tag in ${PYTHON_VERSIONS}; do
+            # Use prod base-image-mini with date
+            BASE="${PROD_NAMESPACE}/base-image:${MINI_BASE_TAG}-py${py_tag}-${BASE_DATE}"
+            TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-${TORCH_BACKEND}-cuda-${CUDA_MINOR}-mini-py${py_tag}-${BUILD_DATE}-${ARCH_SUFFIX}"
+
+            echo "=== Building mini: pytorch ${PYTORCH_VERSION} ${TORCH_BACKEND} cuda-${CUDA_MINOR}-mini py${py_tag} for ${ARCH} ==="
+            docker buildx build \
+              --progress=plain \
+              --platform "${ARCH}" \
+              -f derivatives/pytorch/Dockerfile \
+              --build-arg VAST_BASE="${BASE}" \
+              --build-arg PYTORCH_VERSION="${PYTORCH_VERSION}" \
+              --build-arg PYTORCH_BACKEND="${TORCH_BACKEND}" \
+              --tag "${TAG}" \
+              --push .
+
+            echo "$TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload mini tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-tags-${{ matrix.torch_version }}-${{ matrix.config_key }}-${{ matrix.arch_suffix }}
+          path: built-tags/
+          retention-days: 1
+
+  merge-mini-manifests:
+    needs: [generate-matrix, build-mini]
+    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-merge-matrix) }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Merge mini manifests
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          PYTORCH_VERSION: ${{ matrix.torch_version }}
+          TORCH_BACKEND: ${{ matrix.torch_backend }}
+          CUDA_MINOR: ${{ matrix.cuda_minor }}
+          ARCHES: ${{ matrix.arches }}
+          PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          mkdir -p built-tags
+
+          IFS=',' read -ra ARCH_LIST <<< "$ARCHES"
+
+          for py_tag in ${PYTHON_VERSIONS}; do
+            FINAL_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-${TORCH_BACKEND}-cuda-${CUDA_MINOR}-mini-py${py_tag}-${BUILD_DATE}"
+            AMD64_TAG="${FINAL_TAG}-amd64"
+
+            echo "=== Merging mini manifest: ${FINAL_TAG} ==="
+            if [[ ${#ARCH_LIST[@]} -gt 1 ]]; then
+              ARM64_TAG="${FINAL_TAG}-arm64"
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                "${AMD64_TAG}" "${ARM64_TAG}"
+            else
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                "${AMD64_TAG}"
+            fi
+
+            echo "$FINAL_TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload mini manifest tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-manifest-tags-${{ matrix.torch_version }}-${{ matrix.config_key }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags-*}"
+          path: all-tags/
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(find all-tags -name '*.txt' -exec cat {} + | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found $(echo "$TAGS" | jq length) unique tags"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
+
+  dry-run:
+    needs: generate-matrix
+    if: ${{ inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print build plan
+        env:
+          BUILD_MATRIX: ${{ needs.generate-matrix.outputs.build-matrix }}
+          MERGE_MATRIX: ${{ needs.generate-matrix.outputs.merge-matrix }}
+          MINI_BUILD_MATRIX: ${{ needs.generate-matrix.outputs.mini-build-matrix }}
+          HAS_MINI: ${{ needs.generate-matrix.outputs.has-mini }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+          BASE_DATE: ${{ inputs.BASE_DATE }}
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+        run: |
+          DEFAULT_PYTHON="312"
+
+          echo "=== DRY RUN - PyTorch Build Plan ==="
+          echo "Base image date: $BASE_DATE"
+          echo "Build date: $BUILD_DATE"
+          echo "Staging namespace: $NAMESPACE_STAGING"
+          echo "Prod namespace (base images): $NAMESPACE_PROD"
+          echo ""
+
+          echo "=== Build Jobs ($(echo "$BUILD_MATRIX" | jq '.include | length') total) ==="
+          echo "$BUILD_MATRIX" | jq -r '.include[] | "  torch=\(.torch_version) \(.config_key) [\(.arch_suffix)] cuda=\(.cuda_ver) python=\(.python_versions)"'
+          echo ""
+
+          echo "=== Tags that would be created ==="
+          CURRENT_VER=""
+          MERGE_COUNT=$(echo "$MERGE_MATRIX" | jq '.include | length')
+          for ((i=0; i<MERGE_COUNT; i++)); do
+            torch_ver=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].torch_version")
+            cuda_short=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].cuda_short")
+            cuda_ver=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].cuda_ver")
+            python_versions=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].python_versions")
+            arches=$(echo "$MERGE_MATRIX" | jq -r ".include[$i].arches")
+
+            if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
+              echo ""
+              echo "--- PyTorch ${torch_ver} ---"
+              CURRENT_VER="$torch_ver"
+            fi
+            echo "  cuda-${cuda_short} (${arches}):"
+            echo "    base: ${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-ubuntu24.04-py*-${BASE_DATE}"
+            for py_tag in ${python_versions}; do
+              echo "    -> ${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${BUILD_DATE}"
+            done
+            echo "    -> ${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-24.04-${BUILD_DATE} (alias for py${DEFAULT_PYTHON})"
+          done
+
+          if [[ "$HAS_MINI" == "true" ]]; then
+            echo ""
+            MINI_COUNT=$(echo "$MINI_BUILD_MATRIX" | jq '[.include[] | select(.arch_suffix == "amd64")] | length')
+            echo "=== Mini Builds (${MINI_COUNT} configs x2 arches) ==="
+            CURRENT_VER=""
+            for ((i=0; i<$(echo "$MINI_BUILD_MATRIX" | jq '.include | length'); i++)); do
+              arch_suffix=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].arch_suffix")
+              [[ "$arch_suffix" != "amd64" ]] && continue
+
+              torch_ver=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].torch_version")
+              torch_backend=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].torch_backend")
+              cuda_minor=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].cuda_minor")
+              mini_base_tag=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].mini_base_tag")
+              python_versions=$(echo "$MINI_BUILD_MATRIX" | jq -r ".include[$i].python_versions")
+
+              if [[ "$torch_ver" != "$CURRENT_VER" ]]; then
+                echo ""
+                echo "--- PyTorch ${torch_ver} (mini) ---"
+                CURRENT_VER="$torch_ver"
+              fi
+              echo "  ${torch_backend} on ${mini_base_tag}:"
+              echo "    base: ${NAMESPACE_PROD}/base-image:${mini_base_tag}-py*-${BASE_DATE}"
+              for py_tag in ${python_versions}; do
+                echo "    -> ${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${BUILD_DATE}"
+              done
+            done
+          fi
+
+  notify:
+    needs: [generate-matrix, build, merge-manifests, collect-tags]
+    if: always() && !inputs.DRY_RUN
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "PyTorch (all versions)"
+      image-ref: ${{ needs.generate-matrix.outputs.build-date }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,9 +1,11 @@
 #!/bin/bash
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/cleanup_generic.sh"
 
 while [[ ! -S /run/user/1001/pipewire-0 ]]; do
-    echo "Waiting for pipewire socket..." | tee -a "/var/log/portal/${PROC_NAME}.log"
+    echo "Waiting for pipewire socket..."
     sleep 1
 done
 
-wireplumber | tee -a "/var/log/portal/${PROC_NAME}.log"
-
+wireplumber 2>&1

@@ -1,4 +1,336 @@
+# Promote staging base images to production by retagging (no rebuild)
+# Retags dated staging images to clean production tags
+# All promotions run sequentially in a single job to ensure ordering
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+# DOCKERHUB_NAMESPACE_STAGING
+# DOCKERHUB_NAMESPACE
+# Optional:
+# SLACK_WEBHOOK_URL
+
 name: Promote Base Image
 
 on:
   workflow_dispatch:
+    inputs:
+      STAGING_DATE:
+        description: "Date suffix to promote (e.g. 2026-03-06)"
+        required: true
+        type: string
+      FILTER:
+        description: "Filter configs by pattern (e.g. cuda-12, stock)"
+        required: false
+        default: ""
+      DRY_RUN:
+        description: "Print what would be promoted without promoting"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: base-image-promote
+  cancel-in-progress: false
+
+jobs:
+  generate-configs:
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.configs.outputs.configs }}
+      mini-tags: ${{ steps.configs.outputs.mini-tags }}
+    steps:
+      - name: Generate filtered config list
+        id: configs
+        run: |
+          FILTER="${{ inputs.FILTER }}"
+
+          # Configs in promotion order: key|tag_template|default_python
+          ALL_CONFIGS=(
+            "stock-22|stock-ubuntu22.04|3.10"
+            "stock-24|stock-ubuntu24.04|3.12"
+            "cuda-11.8-22|cuda-11.8.0-cudnn8-devel-ubuntu22.04|3.10"
+            "cuda-12.1-22|cuda-12.1.1-cudnn8-devel-ubuntu22.04|3.10"
+            "cuda-12.4-22|cuda-12.4.1-cudnn-devel-ubuntu22.04|3.10"
+            "cuda-12.6-24|cuda-12.6.3-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-12.8-24|cuda-12.8.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-12.9-24|cuda-12.9.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.0.2-24|cuda-13.0.2-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.1.1-24|cuda-13.1.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.2.0-24|cuda-13.2.0-cudnn-devel-ubuntu24.04|3.12"
+          )
+
+          CONFIGS_JSON="[]"
+
+          for config in "${ALL_CONFIGS[@]}"; do
+            IFS='|' read -r key tag_template default_python <<< "$config"
+
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c \
+              --arg key "$key" \
+              --arg tag_template "$tag_template" \
+              --arg default_python "$default_python" \
+              '. + [{"key": $key, "tag_template": $tag_template, "default_python": $default_python}]')
+          done
+
+          # Mini configs: key|mini_tag
+          MINI_CONFIGS=(
+            "cuda-12.9-mini|cuda-12.9-mini"
+            "cuda-13.1-mini|cuda-13.1-mini"
+            "cuda-13.2-mini|cuda-13.2-mini"
+          )
+
+          MINI_TAGS_JSON="[]"
+          for mini_config in "${MINI_CONFIGS[@]}"; do
+            IFS='|' read -r key mini_tag <<< "$mini_config"
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+            MINI_TAGS_JSON=$(echo "$MINI_TAGS_JSON" | jq -c \
+              --arg key "$key" \
+              --arg mini_tag "$mini_tag" \
+              '. + [{"key": $key, "mini_tag": $mini_tag}]')
+          done
+
+          {
+            echo "configs<<CONFIGS_EOF"
+            echo "${CONFIGS_JSON}"
+            echo "CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-tags<<MINI_TAGS_EOF"
+            echo "${MINI_TAGS_JSON}"
+            echo "MINI_TAGS_EOF"
+          } >> $GITHUB_OUTPUT
+          echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
+          echo "Mini tags: $(echo "$MINI_TAGS_JSON" | jq length)"
+
+  promote:
+    needs: generate-configs
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Promote all images sequentially
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+          CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
+        run: |
+          set -euo pipefail
+          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          mkdir -p built-tags
+
+          # Promote all base images (per-config, per-python)
+          echo "=== Promoting base images ==="
+          CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+
+            echo ""
+            echo "--- Config: ${key} ---"
+
+            for py_version in "${PYTHON_VERSIONS[@]}"; do
+              py_tag="${py_version//.}"
+
+              SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              DATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+
+              EXTRA_TAGS=""
+              if [[ "$py_version" == "$default_python" ]]; then
+                # Default python alias (no -pyXXX, but keeps date)
+                DATED_ALIAS="${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE}"
+                EXTRA_TAGS="--tag ${DATED_ALIAS}"
+                echo "$DATED_ALIAS" >> built-tags/tags.txt
+              fi
+
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
+              docker buildx imagetools create \
+                --tag "${DATED_TAG}" \
+                ${EXTRA_TAGS} \
+                "${SOURCE}"
+
+              echo "$DATED_TAG" >> built-tags/tags.txt
+            done
+          done
+
+          # Promote mini variants
+          echo ""
+          echo "=== Promoting mini variants ==="
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
+          MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
+
+          for ((i=0; i<MINI_COUNT; i++)); do
+            mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
+
+            for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+              py_tag="${py_version//.}"
+
+              SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              DATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+
+              echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
+              docker buildx imagetools create \
+                --tag "${DATED_TAG}" \
+                "${SOURCE}"
+
+              echo "$DATED_TAG" >> built-tags/tags.txt
+            done
+          done
+
+          # Auto convenience tags MUST be created last.
+          # The Vast.ai @vastai-automatic-tag backend resolves to the most
+          # recently pushed image for a given CUDA version. These auto tags
+          # point to the default Python variant (e.g. py312) so they must be
+          # the final push to ensure correct resolution ordering.
+          echo ""
+          echo "=== Creating auto convenience tags (must be last) ==="
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+
+            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+
+            dp_tag="${default_python//.}"
+            SOURCE="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
+            TARGET="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+
+            echo "Auto-tag: ${SOURCE} -> ${TARGET}"
+            docker buildx imagetools create \
+              --tag "${TARGET}" \
+              "${SOURCE}"
+
+            echo "$TARGET" >> built-tags/tags.txt
+          done
+
+          echo ""
+          echo "=== Promotion complete ==="
+
+      - name: Upload promoted tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-tags
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [promote]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "promoted-tags"
+          path: all-tags/
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(find all-tags -name '*.txt' -exec cat {} + | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found $(echo "$TAGS" | jq length) unique tags"
+          else
+            echo "::warning::No tags found"
+            TAGS="[]"
+          fi
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
+
+  dry-run:
+    needs: generate-configs
+    if: ${{ inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print promotion plan
+        env:
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
+        run: |
+          echo "=== DRY RUN - Promotion Plan ==="
+          echo "Staging date: $STAGING_DATE"
+          echo ""
+
+          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+
+          echo "=== Base Image Promotions (in order) ==="
+          CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+
+            echo ""
+            echo "--- ${key} ---"
+            for py in "${PYTHON_VERSIONS[@]}"; do
+              py_tag="${py//.}"
+              echo "  ${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+            done
+            dp_tag="${default_python//.}"
+            echo "  + default python alias:"
+            echo "    -> ${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE} (alias for py${dp_tag})"
+          done
+
+          echo ""
+          echo "=== Mini Promotions ==="
+          MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
+          for ((i=0; i<MINI_COUNT; i++)); do
+            mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
+            for py in "3.10" "3.11" "3.12"; do
+              py_tag="${py//.}"
+              echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+            done
+          done
+
+          echo ""
+          echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+
+            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+
+            dp_tag="${default_python//.}"
+            echo "  ${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE} -> ${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+          done
+
+  notify:
+    needs: [generate-configs, promote, collect-tags]
+    if: always() && !inputs.DRY_RUN
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.promote.result }}
+      image-name: "Base Image (Production)"
+      image-ref: ${{ inputs.STAGING_DATE }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

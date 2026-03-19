@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1
+ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py311-2026-03-19
 
 FROM ${PYTORCH_BASE}
 
@@ -20,7 +20,7 @@ RUN \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    pip install xformers torch==$PYTORCH_VERSION --index-url "${PYTORCH_INDEX_URL}" && \
+    uv pip install --no-cache-dir xformers torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
     # Get Kohya and install dependencies (We will unpin torch & xformers)
     cd /opt/workspace-internal/ && \
     git clone --recursive https://github.com/bmaltais/kohya_ss.git && \
@@ -29,8 +29,8 @@ RUN \
     git submodule update --init --recursive && \
     # Allow installation with alternative torch versions and disable bundled tensorboard
     grep -v "^--extra-index-url\|^torch==\|^torchvision==\|^xformers==\|^tensorboard\|^tensorflow" requirements_linux.txt > requirements_linux_modified.txt && \
-    pip install --no-cache-dir \
-        torch==${PYTORCH_VERSION} \
+    uv pip install --no-cache-dir \
+        torch=="${PYTORCH_VERSION}" \
         -r requirements_linux_modified.txt && \
     rm -f requirements_linux_modified.txt && \
     # Fix the Tensorboard URL in the GUI to avoid hardcoded localhost links
@@ -42,3 +42,6 @@ RUN \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
     [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash

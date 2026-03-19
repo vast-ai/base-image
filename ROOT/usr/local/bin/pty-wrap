@@ -1,0 +1,9 @@
+#!/bin/bash
+# Wrap a command in a pseudo-terminal so isatty() returns True on stdout.
+# Enables progress bars (tqdm, rich, etc.) for processes that check for a TTY.
+# Uses unbuffer -p (pipeline mode): PTY on child's stdout, stdin/stderr pass through.
+# Set DISABLE_PTY=true to bypass unbuffer.
+if [[ "${DISABLE_PTY:-false}" == "true" ]] || ! command -v unbuffer &>/dev/null; then
+    exec "$@"
+fi
+exec unbuffer -p "$@"

@@ -16,6 +16,7 @@ ENV WORKSPACE=/workspace
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
@@ -35,6 +36,9 @@ RUN \
 
 # Install Model UI (lightweight web interface) — chat only by default
 ENV MODEL_UI_CHAT_CAPS=all
+# Inference test endpoint: chat (default), none (skip).
+# Override for non-chat models (e.g. embeddings, rerankers).
+ENV VLLM_TEST_ENDPOINT=chat
 COPY --from=base_image_source tools/model-ui /opt/model-ui
 RUN uv venv /opt/model-ui/venv && \
     uv pip install --python /opt/model-ui/venv/bin/python --no-cache-dir -r /opt/model-ui/requirements.txt
@@ -42,14 +46,9 @@ RUN uv venv /opt/model-ui/venv && \
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Ensure we have a Jupyter kernel for vLLM
-# Use explicit path to avoid the sys-venv shim (which is in PATH for boot)
-RUN \
-    set -euo pipefail && \
-    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)" && \
-    uv pip install --python "$SYS_PYTHON" --break-system-packages ipykernel && \
-    "$SYS_PYTHON" -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
-    "$SYS_PYTHON" -m ipykernel install --name "vllm" --display-name "vLLM"
+# Register Jupyter kernels (ipykernel installed into /venv/main by convert-non-vast-image.sh)
+RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
+    /venv/main/bin/python -m ipykernel install --name "vllm" --display-name "vLLM"
 
 # Use familiar workspace
 RUN \
@@ -60,6 +59,14 @@ RUN \
 RUN \
     set -euo pipefail && \
     uv pip install --system --no-cache-dir ray[default]
+
+# Fix vllm shebang so it runs through the venv Python, allowing users to
+# install/upgrade dependencies (e.g. transformers) into /venv/main and have
+# vllm pick them up.  Also enables volume sync of the environment.
+RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

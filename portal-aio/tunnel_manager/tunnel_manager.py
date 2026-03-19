@@ -11,10 +11,12 @@ import aiohttp
 from urllib.parse import urlparse
 from cachetools import TTLCache
 import ipaddress
+import logging
 
 cloudflare_metrics = os.environ.get("CLOUDFLARE_METRICS", "localhost:11113")
 public_ipaddr = None
 app = FastAPI()
+
 
 CLOUDFLARED_BIN = "/opt/portal-aio/tunnel_manager/cloudflared"
 CF_TUNNEL_TOKEN = os.environ.get('CF_TUNNEL_TOKEN')
@@ -31,9 +33,11 @@ def load_config():
     yaml_path = '/etc/portal.yaml'
     if os.path.exists(yaml_path):
         with open(yaml_path, 'r') as file:
-            config_applications = yaml.safe_load(file)['applications']
+            data = yaml.safe_load(file) or {}
+            config_applications = data.get('applications', {})
             return hydrate_applications(config_applications)
-        
+    return {}
+
 def hydrate_applications(applications):
     for app_name, app in applications.items():
         if app["external_port"] == app["internal_port"] and app["internal_port"] == 8080:
@@ -439,11 +443,60 @@ async def get_named_tunnel(port: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _create_default_tunnels():
+    """Create quick tunnels for all configured apps.
+
+    Runs as a background task so the API server is available immediately
+    (otherwise /get-direct-url etc. return 500 while tunnels are being
+    created).
+    """
+    try:
+        config = load_config()
+        unique_targets = {}
+        for app_name, app_config in config.items():
+            target_url = app_config['target_url']
+            if target_url not in unique_targets:
+                unique_targets[target_url] = app_name
+
+        # Create tunnels sequentially with a small delay between each
+        # to avoid hitting Cloudflare's rate limiter on quick tunnel
+        # creation.  Failed tunnels are retried with longer back-off.
+        failed_targets = []
+        for i, target_url in enumerate(unique_targets):
+            app_name = unique_targets[target_url]
+            if i > 0:
+                await asyncio.sleep(2)
+            try:
+                tunnel = await get_or_create_quick_tunnel(target_url)
+                print(f"Default Tunnel started for {app_name} ({target_url}) - {tunnel.tunnel_url}")
+            except Exception as e:
+                print(f"Failed to create default tunnel for {app_name} ({target_url}): {e}")
+                failed_targets.append(target_url)
+
+        # Retry failed tunnels with increasing back-off
+        for target_url in failed_targets:
+            app_name = unique_targets[target_url]
+            for attempt in range(1, 4):
+                delay = attempt * 10
+                print(f"Retrying tunnel for {app_name} ({target_url}) in {delay}s (attempt {attempt}/3)")
+                await asyncio.sleep(delay)
+                try:
+                    tunnel = await get_or_create_quick_tunnel(target_url)
+                    print(f"Default Tunnel started for {app_name} ({target_url}) - {tunnel.tunnel_url}")
+                    break
+                except Exception as e:
+                    print(f"Retry {attempt}/3 failed for {app_name} ({target_url}): {e}")
+    except Exception as e:
+        print(f"Error creating default tunnels: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
+    # Suppress uvicorn access logs after uvicorn has configured its loggers.
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     try:
         # Monitor quick tunnels in case user kills them
-        monitor_task = asyncio.create_task(monitor_processes())
+        asyncio.create_task(monitor_processes())
 
         # Create the main cloudflared process to handle named tunnels
         global cloudflared_account_process
@@ -454,38 +507,10 @@ async def startup_event():
                 print("Named tunnel process started")
             except Exception as e:
                 print(f"Failed to start named tunnel process: {str(e)}")
-        
-        try:
-            # Track unique ports and their first app name
-            config = load_config()
-            unique_targets = {}
-            for app_name, app_config in config.items():
-                target = app_config['target_url']
-                if target not in unique_targets:
-                    unique_targets[target] = app_name
 
-            # Create tunnels only for unique ports
-            tunnel_tasks = []
-            for target in unique_targets.keys():
-                try:
-                    task = get_or_create_quick_tunnel(f"{target}")
-                    tunnel_tasks.append(task)
-                except Exception as e:
-                    print(f"Failed to create tunnel task for {target}: {e}")
-
-            if tunnel_tasks:
-                default_tunnels = await asyncio.gather(*tunnel_tasks)
-
-            # Print results
-            for port, result in zip(unique_targets.keys(), default_tunnels):
-                app_name = unique_targets[target]
-                if isinstance(result, Exception):
-                    print(f"Failed to create default tunnel for {port}: {str(result)}")
-                elif result:
-                    print(f"Default Tunnel started for {port} - {result.tunnel_url}?token={os.environ.get('OPEN_BUTTON_TOKEN')}")
-        except:
-            # User can still create tunnels in the UI
-            pass
+        # Create default tunnels in the background so the API server
+        # starts accepting requests immediately (e.g. /get-direct-url).
+        asyncio.create_task(_create_default_tunnels())
     except Exception as e:
         print(f"Startup failed: {str(e)}")
         raise

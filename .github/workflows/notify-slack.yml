@@ -50,6 +50,7 @@ jobs:
         if: steps.slack-check.outputs.available == 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          IMAGE_TAGS: ${{ inputs.image-tags }}
         run: |
           if [[ "${{ inputs.build-result }}" == "success" ]]; then
             STATUS_EMOJI="✅"
@@ -94,8 +95,25 @@ jobs:
           
           # Add image tags on success
           if [[ "${{ inputs.build-result }}" == "success" ]]; then
-            # Format tags as code blocks
-            TAGS_TEXT=$(echo '${{ inputs.image-tags }}' | jq -r '[.[] | "`" + . + "`"] | join("\n")')
+            # Filter out per-arch tags (keep only merged manifests) and format as code blocks
+            # Slack block text has a 3000 char limit, so we truncate with a count if needed
+            TOTAL_COUNT=$(echo "$IMAGE_TAGS" | jq 'length')
+            TAGS_TEXT=$(echo "$IMAGE_TAGS" | jq -r '
+              [.[] | select(test("-(amd64|arm64)$") | not)] |
+              sort |
+              [.[] | "`" + . + "`"] |
+              join("\n")')
+            SHOWN_COUNT=$(echo "$TAGS_TEXT" | grep -c '`' || true)
+
+            # Truncate to stay under Slack's 3000 char limit (leave room for header + overflow note)
+            if [[ ${#TAGS_TEXT} -gt 2800 ]]; then
+              TAGS_TEXT="${TAGS_TEXT:0:2800}"
+              # Trim to last complete line
+              TAGS_TEXT="${TAGS_TEXT%$'\n'*}"
+              SHOWN_COUNT=$(echo "$TAGS_TEXT" | grep -c '`' || true)
+              TAGS_TEXT="${TAGS_TEXT}"$'\n'"_...and more (${TOTAL_COUNT} total tags, ${SHOWN_COUNT} shown)_"
+            fi
+
             SUCCESS_BLOCKS=$(jq -n \
               --arg tags "$TAGS_TEXT" \
               '[

@@ -15,6 +15,7 @@ SHELL ["/bin/bash", "-c"]
 ENV DATA_DIRECTORY=/workspace
 ENV WORKSPACE=/workspace
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
@@ -53,10 +54,11 @@ RUN \
 RUN mkdir -p /opt/workspace-internal/ollama && \
     mv /app/backend/data /opt/workspace-internal/data
 
-# Ensure we have a Jupyter kernel for the image's own Python
-RUN \
-    uv pip install --python /usr/local/bin/python3 --break-system-packages ipykernel && \
-    /usr/local/bin/python3 -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
+# Register Jupyter kernel (ipykernel installed into /venv/main by convert-non-vast-image.sh)
+RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

@@ -138,4 +138,5 @@ RUN \
     pkill -f "platform_scripts/bash/start.sh" && \
     rm -f /tmp/install.log
 
-
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash

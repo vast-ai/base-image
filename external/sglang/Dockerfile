@@ -16,6 +16,7 @@ ENV WORKSPACE=/workspace
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
@@ -52,14 +53,9 @@ RUN uv venv /opt/model-ui/venv && \
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Ensure we have a Jupyter kernel for SGLang
-# Use explicit path to avoid the sys-venv shim (which is in PATH for boot)
-RUN \
-    set -euo pipefail && \
-    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)" && \
-    uv pip install --python "$SYS_PYTHON" --break-system-packages ipykernel && \
-    "$SYS_PYTHON" -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
-    "$SYS_PYTHON" -m ipykernel install --name "sglang" --display-name "SGLang"
+# Register Jupyter kernels (ipykernel installed into /venv/main by convert-non-vast-image.sh)
+RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)" && \
+    /venv/main/bin/python -m ipykernel install --name "sglang" --display-name "SGLang"
 
 # Use familiar workspace. Do not move the real sgl-workspace
 RUN \
@@ -67,6 +63,9 @@ RUN \
     mkdir /opt/workspace-internal && \
     ln -s /sgl-workspace /opt/workspace-internal/sgl-workspace-link
 
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

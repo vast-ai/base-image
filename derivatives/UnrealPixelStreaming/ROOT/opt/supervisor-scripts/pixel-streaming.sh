@@ -1,4 +1,7 @@
 #!/bin/bash
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/cleanup_generic.sh"
 
 # Ensure NVIDIA display drivers are available
 if [ -z "$(ldconfig -N -v $(sed 's/:/ /g' <<< $LD_LIBRARY_PATH) 2>/dev/null | grep 'libEGL_nvidia.so.0')" ] || [ -z "$(ldconfig -N -v $(sed 's/:/ /g' <<< $LD_LIBRARY_PATH) 2>/dev/null | grep 'libGLX_nvidia.so.0')" ]; then
@@ -8,7 +11,7 @@ if [ -z "$(ldconfig -N -v $(sed 's/:/ /g' <<< $LD_LIBRARY_PATH) 2>/dev/null | gr
     # Download the correct nvidia driver (check multiple locations)
     cd /tmp
     curl -fsSL -O "https://international.download.nvidia.com/XFree86/Linux-${DRIVER_ARCH}/${DRIVER_VERSION}/NVIDIA-Linux-${DRIVER_ARCH}-${DRIVER_VERSION}.run" || curl -fsSL -O "https://international.download.nvidia.com/tesla/${DRIVER_VERSION}/NVIDIA-Linux-${DRIVER_ARCH}-${DRIVER_VERSION}.run" || { echo "Failed NVIDIA GPU driver download."; }
-    
+
     if [ -f "/tmp/NVIDIA-Linux-${DRIVER_ARCH}-${DRIVER_VERSION}.run" ]; then
         # Extract installer before installing
         sudo sh "NVIDIA-Linux-${DRIVER_ARCH}-${DRIVER_VERSION}.run" -x
@@ -30,4 +33,3 @@ fi
 ice="--turn ${TURN_SERVER:-${PUBLIC_IPADDR:-localhost}:${VAST_UDP_PORT_70000:-3478}} --turn-user ${TURN_USER:-user} --turn-pass ${TURN_PASSWORD:-${OPEN_BUTTON_TOKEN:-password}} --stun stun.l.google.com:19302"
 
 /opt/PixelStreamingInfrastructure/SignallingWebServer/platform_scripts/bash/start.sh ${PIXEL_STREAMING_ARGS:-} ${ice}
-

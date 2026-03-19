@@ -32,6 +32,6 @@ COMFYUI_ARGS=${COMFYUI_ARGS:---disable-auto-launch --port 18188 --enable-cors-he
 # Launch ComfyUI
 cd "${COMFYUI_DIR}"
 LD_PRELOAD=libtcmalloc_minimal.so.4 \
-        python main.py \
+        pty python main.py \
         ${COMFYUI_ARGS} 2>&1
 

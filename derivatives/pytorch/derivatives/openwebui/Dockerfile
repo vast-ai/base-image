@@ -53,4 +53,7 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-    ENV PATH="${PATH}:/opt/llama.cpp/bin"
+ENV PATH="${PATH}:/opt/llama.cpp/bin"
+
+# Defend against environment clashes when syncing to volume
+RUN env-hash > /.env_hash

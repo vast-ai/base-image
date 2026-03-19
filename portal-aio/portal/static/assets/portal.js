@@ -1,8 +1,20 @@
 // Create a namespace for your application
 window.InstancePortal = (function() {
+    // Escape strings for safe HTML interpolation
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+    // Escape strings for safe use inside JS string literals in onclick attributes
+    function escapeAttr(str) {
+        return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    }
+
     const applications = {
         // Store for application data
         _data: {},
+        _configOrder: [],  // original app order from config
         
         // Initialize applications
         init: async function() {
@@ -13,7 +25,7 @@ window.InstancePortal = (function() {
                 this.updateAllUI();
                 
                 // Optionally set up a refresh interval
-                setInterval(() => this.refreshData(), 30000);
+                this._refreshInterval = setInterval(() => this.refreshData(), 30000);
             } catch (error) {
                 console.error('Error initializing applications:', error);
             }
@@ -31,8 +43,11 @@ window.InstancePortal = (function() {
                 
                 const data = await response.json();
                 
-                // Store the raw data
+                // Store the raw data and preserve original config order
                 this._data = data;
+                if (this._configOrder.length === 0) {
+                    this._configOrder = Object.keys(data);
+                }
                 
                 // Add computed properties and methods to each application
                 this._enhanceApplications();
@@ -158,7 +173,7 @@ window.InstancePortal = (function() {
                 // UI rendering methods
                 app.renderUI = function() {
                     // Find all elements for this app
-                    const elements = document.querySelectorAll(`[data-app-id="${appName}"]`);
+                    const elements = document.querySelectorAll(`[data-app-id="${CSS.escape(appName)}"]`);
                     
                     elements.forEach(el => {
                         // For advanced details, update the content
@@ -181,7 +196,7 @@ window.InstancePortal = (function() {
                                 <div>Port: ${this.external_port}${this.mapped_port ? " → " + this.mapped_port : ""}</div>
                                 <div class="ip-info">IP: <a href="${this.direct_url_full}" target="_blank">${this.direct_url.split('//')[1].split(':')[0]}</a></div>
                             </div>
-                            <button class="copy-btn" onclick="window.app.url.copy('${this.direct_url_full}')">
+                            <button class="copy-btn" onclick="window.app.url.copy('${escapeAttr(this.direct_url_full)}')">
                                 Copy URL
                             </button>
                         </div>
@@ -195,7 +210,7 @@ window.InstancePortal = (function() {
                                     <div>Port: ${this.external_port} → Named Tunnel</div>
                                     <div class="ip-info">Link: <a href="${this.named_tunnel_url}" target="_blank">Secure Tunnel Link</a></div>
                                 </div>
-                                <button class="copy-btn" onclick="window.app.url.copy('${this.named_tunnel_url}')">
+                                <button class="copy-btn" onclick="window.app.url.copy('${escapeAttr(this.named_tunnel_url)}')">
                                     Copy URL
                                 </button>
                             </div>
@@ -209,7 +224,7 @@ window.InstancePortal = (function() {
                                     <div>Port: ${this.external_port} → Quick Tunnel</div>
                                     <div class="ip-info">Link: <a href="${this.quick_tunnel_url}" target="_blank">Secure Tunnel Link</a></div>
                                 </div>
-                                <button class="copy-btn" onclick="window.app.url.copy('${this.quick_tunnel_url}')">
+                                <button class="copy-btn" onclick="window.app.url.copy('${escapeAttr(this.quick_tunnel_url)}')">
                                     Copy URL
                                 </button>
                             </div>
@@ -322,23 +337,19 @@ window.InstancePortal = (function() {
                             success = true;
                         } else {
                             if (attempt < MAX_RETRIES) {
-                                console.log(`Tunnels server not available for ${appName} direct URL (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                             } else {
                                 app.direct_url = null;
                                 app.direct_url_error = 'Failed to retrieve direct URL';
-                                console.log(`Tunnels server not available for ${appName} direct URL. Giving up after ${MAX_RETRIES} attempts.`);
                             }
                         }
                     } catch (error) {
                         if (attempt < MAX_RETRIES) {
-                            console.log(`Tunnels server not available for ${appName} direct URL (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                         } else {
                             console.error(`Error fetching direct URL for ${appName}:`, error);
                             app.direct_url = null;
                             app.direct_url_error = 'Connection error';
-                            console.log(`Tunnels server not available for ${appName} direct URL. Giving up after ${MAX_RETRIES} attempts.`);
                         }
                     }
                 }
@@ -449,7 +460,6 @@ window.InstancePortal = (function() {
                     
                     // Don't retry if it's a 404 - that means the resource doesn't exist
                     if (response.status === 404) {
-                        console.log('Named tunnels endpoint not found (404). Not retrying.');
                         return [];
                     }
                     
@@ -458,20 +468,31 @@ window.InstancePortal = (function() {
                     }
                     
                     const tunnelsData = await response.json();
-                    
-                    // Process each tunnel and associate with applications
+
+                    // Build set of current targets to detect removals
+                    const currentTargets = new Set(tunnelsData.map(t => t.targetUrl));
+
+                    // Remove tunnels no longer reported by the API
+                    for (const key of Object.keys(this.named_tunnels)) {
+                        if (!currentTargets.has(key)) {
+                            delete this.named_tunnels[key];
+                        }
+                    }
+
+                    // Add/update tunnels from the API response
                     tunnelsData.forEach(tunnelData => {
-                        const tunnel = this._createTunnelObject('named', tunnelData.targetUrl, tunnelData.tunnelUrl);
-                        this.named_tunnels[tunnelData.targetUrl] = tunnel;
+                        const existing = this.named_tunnels[tunnelData.targetUrl];
+                        if (!existing || existing.tunnelUrl !== tunnelData.tunnelUrl) {
+                            const tunnel = this._createTunnelObject('named', tunnelData.targetUrl, tunnelData.tunnelUrl);
+                            this.named_tunnels[tunnelData.targetUrl] = tunnel;
+                        }
                     });
-                    
+
                     return Object.values(this.named_tunnels);
                 } catch (error) {
                     if (attempt < MAX_RETRIES) {
-                        console.log(`Tunnels server not available for named tunnels (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                     } else {
-                        console.log(`Tunnels server not available for named tunnels. Giving up after ${MAX_RETRIES} attempts.`);
                         return [];
                     }
                 }
@@ -491,21 +512,32 @@ window.InstancePortal = (function() {
                     }
                     
                     const tunnelsData = await response.json();
-                    
-                    // Process each tunnel and associate with applications
+
+                    // Build set of current targets to detect removals
+                    const currentTargets = new Set(tunnelsData.map(t => t.targetUrl));
+
+                    // Remove tunnels no longer reported by the API
+                    for (const key of Object.keys(this.quick_tunnels)) {
+                        if (!currentTargets.has(key)) {
+                            delete this.quick_tunnels[key];
+                        }
+                    }
+
+                    // Add/update tunnels from the API response
                     tunnelsData.forEach(tunnelData => {
-                        const tunnel = this._createTunnelObject('quick', tunnelData.targetUrl, tunnelData.tunnelUrl);
-                        this.quick_tunnels[tunnelData.targetUrl] = tunnel;
+                        const existing = this.quick_tunnels[tunnelData.targetUrl];
+                        if (!existing || existing.tunnelUrl !== tunnelData.tunnelUrl) {
+                            const tunnel = this._createTunnelObject('quick', tunnelData.targetUrl, tunnelData.tunnelUrl);
+                            this.quick_tunnels[tunnelData.targetUrl] = tunnel;
+                        }
                     });
-                    
+
                     return Object.values(this.quick_tunnels);
                 } catch (error) {
                     if (attempt < MAX_RETRIES) {
-                        console.log(`Tunnels server not available for quick tunnels (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY/1000} seconds...`);
                         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
                     } else {
-                        console.log(`Tunnels server not available for quick tunnels. Giving up after ${MAX_RETRIES} attempts.`);
-                        console.error('Error details:', error);
+                        console.error('Error fetching quick tunnels:', error);
                         return [];
                     }
                 }
@@ -525,7 +557,6 @@ window.InstancePortal = (function() {
 
         // Create a new quick tunnel (public API method)
         createQuickTunnel: async function(targetUrl) {
-            console.log(targetUrl);
             document.querySelector('.tunnel-loading').classList.add('show');
             try {
                 const validUrl = window.app.url.validate(targetUrl); // Assuming this function exists
@@ -538,9 +569,7 @@ window.InstancePortal = (function() {
                 }
                 
                 const data = await response.json();
-                console.log(data);
-                console.log('Tunnel created:', data.tunnel_url);
-                
+
                 // Create a tunnel object using the factory
                 const newTunnel = this._createTunnelObject('quick', validUrl, data.tunnel_url);
                 
@@ -572,7 +601,7 @@ window.InstancePortal = (function() {
                 
                 if (isActive) {
                     // Success - tunnel is active
-                    console.log(`Tunnel ${tunnel.tunnelUrl} is now active after ${attempts} attempts`);
+                    // Tunnel is active
                 } else if (tunnel.status === 'error' && attempts >= maxAttempts) {
                     // Failed after max attempts
                     console.error(`Tunnel ${tunnel.tunnelUrl} failed to activate after ${maxAttempts} attempts`);
@@ -600,8 +629,6 @@ window.InstancePortal = (function() {
                 }
                 
                 const data = await response.json();
-                console.log('Tunnel stopped:', targetUrl);
-                
                 // Completely remove the tunnel from our tracking
                 if (this.quick_tunnels[targetUrl]) {
                     delete this.quick_tunnels[targetUrl];
@@ -628,8 +655,7 @@ window.InstancePortal = (function() {
                 }
                 
                 const data = await response.json();
-                console.log('Tunnel refreshed:', data.tunnel_url);
-                
+
                 // Update the existing tunnel
                 if (this.quick_tunnels[targetUrl]) {
                     this.quick_tunnels[targetUrl].tunnelUrl = data.tunnel_url;
@@ -676,38 +702,48 @@ window.InstancePortal = (function() {
                     if (resolved || Date.now() - start_time >= max_duration) return;
                     
                     try {
-                        // For non-proxied apps, we just need to know if we got any response (best effort)
-                        // For proxied apps, we need a 200 response
+                        const resolverUrl = `${tunnel_url}/portal-resolver?t=${Date.now()}`;
+
                         if (isProxied) {
-                            // When proxied, we need to check for a 200 response
-                            // Using regular fetch (not no-cors) to read the status
-                            const response = await fetch(`${tunnel_url}/portal-resolver?t=${Date.now()}`, {
+                            // Two-phase check for proxied apps to avoid CORS console errors:
+                            // Phase 1: no-cors probe — if the tunnel is down, this rejects
+                            //          with a network error (no CORS error in console).
+                            // Phase 2: regular fetch — only attempted once we know the tunnel
+                            //          responds.  If Caddy is serving, we get a 200 with CORS
+                            //          headers.  If Cloudflare returned an error page (rare at
+                            //          this point), the CORS failure is caught and retried.
+                            await fetch(resolverUrl, {
+                                mode: 'no-cors',
                                 cache: 'no-store',
                                 credentials: 'omit'
                             });
-                            
+
+                            // Tunnel responded — now try a regular fetch to verify it's
+                            // our Caddy (200 + CORS headers), not a Cloudflare error page.
+                            const response = await fetch(resolverUrl, {
+                                cache: 'no-store',
+                                credentials: 'omit'
+                            });
+
                             if (response.status === 200 && !resolved) {
                                 clearTimeout(timeout);
                                 resolved = true;
                                 resolve(true);
                             } else if (!resolved && Date.now() - start_time < max_duration) {
-                                // If not a 200 response and we have time, try again
                                 setTimeout(attemptLoad, polling_interval);
                             } else if (!resolved) {
                                 resolved = true;
                                 resolve(false);
                             }
                         } else {
-                            // For non-proxied apps where we cannot control CORS headers, we just need any response
-                            // This may give us a false positive for resolvable but it is the best we can do
-                            // Use fetch with no-cors
-                            await fetch(`${tunnel_url}/portal-resolver?t=${Date.now()}`, {
+                            // For non-proxied apps where we cannot control CORS headers,
+                            // we just need any response (best effort)
+                            await fetch(resolverUrl, {
                                 mode: 'no-cors',
                                 cache: 'no-store',
                                 credentials: 'omit'
                             });
-                            
-                            // If we get here, we got a response (for non-proxied apps this is enough)
+
                             if (!resolved) {
                                 clearTimeout(timeout);
                                 resolved = true;
@@ -715,7 +751,7 @@ window.InstancePortal = (function() {
                             }
                         }
                     } catch (fetchError) {
-                        // If we still have time, try again
+                        // Network error or CORS failure — retry if time remains
                         if (!resolved && Date.now() - start_time < max_duration) {
                             setTimeout(attemptLoad, polling_interval);
                         } else if (!resolved) {
@@ -805,17 +841,12 @@ window.InstancePortal = (function() {
             if (this._statusCheckInterval) {
                 clearInterval(this._statusCheckInterval);
             }
-            
-            // Setup new interval
+
+            // Setup new interval — check status and re-fetch tunnel list
             this._statusCheckInterval = setInterval(async () => {
+                await this.fetch();
                 const statusChanges = await this.checkAllTunnelStatus();
-                // If any status changed, update the UI
-                if (statusChanges.named.includes('active') || 
-                    statusChanges.named.includes('error') ||
-                    statusChanges.quick.includes('active') || 
-                    statusChanges.quick.includes('error')) {
-                    this.ui.renderTunnelTable();
-                }
+                this.ui.renderTunnelTable();
             }, interval);
         },
         
@@ -987,7 +1018,7 @@ window.InstancePortal = (function() {
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
                                 Copy URL
                             </button>
-                            <button class="advanced-toggle manage-toggle" data-target="${tunnel.targetUrl}">
+                            <button class="manage-toggle" data-target="${tunnel.targetUrl}">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon">
                                     <circle cx="12" cy="12" r="3"></circle>
                                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -1101,23 +1132,242 @@ window.InstancePortal = (function() {
             },
         }
     };
-    
+
+    // ─── Services (Supervisor Process Management) ────────────────────
+    const services = {
+        _data: [],
+        _pollInterval: null,
+        _pending: {},  // name -> action being performed
+
+        fetch: async function() {
+            try {
+                const response = await fetch('/supervisor/processes');
+                if (!response.ok) return;
+                this._data = await response.json();
+            } catch (e) {
+                console.warn('Supervisor not available:', e.message);
+            }
+        },
+
+        action: async function(name, action) {
+            this._pending[name] = action;
+            this.ui.render();
+            try {
+                const response = await fetch(`/supervisor/process/${encodeURIComponent(name)}/${action}`, {
+                    method: 'POST'
+                });
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || `Failed to ${action} ${name}`);
+                }
+                // If restarting the portal itself, refresh so the 503 handler shows the placeholder
+                if (name === 'instance_portal' && action === 'restart') {
+                    setTimeout(() => window.location.reload(), 1000);
+                    return;
+                }
+                window.app.showToast(`${name}: ${action} successful`, 'success');
+            } catch (e) {
+                window.app.showToast(e.message, 'error');
+            } finally {
+                delete this._pending[name];
+                // Refresh after a short delay to let supervisor settle
+                setTimeout(() => this.refresh(), 500);
+            }
+        },
+
+        start: function(name) { return this.action(name, 'start'); },
+        stop: function(name) { return this.action(name, 'stop'); },
+        restart: function(name) { return this.action(name, 'restart'); },
+
+        // Match supervisor process names to portal app names
+        // e.g. "jupyter" matches "Jupyter", "instance_portal" matches "Instance Portal"
+        _matchesApp: function(procName, appName) {
+            const normalized = procName.replace(/[_-]/g, ' ').toLowerCase();
+            const appNorm = appName.toLowerCase();
+            return appNorm === normalized ||
+                   appNorm.includes(normalized) ||
+                   normalized.includes(appNorm);
+        },
+
+        getAppState: function(appName) {
+            for (const proc of this._data) {
+                if (this._matchesApp(proc.name, appName)) {
+                    return proc.state;
+                }
+            }
+            return null;
+        },
+
+        updateAppCards: function() {
+            if (!this._data.length) return;
+            const appGrid = document.getElementById('app-grid');
+            if (!appGrid) return;
+            const cards = Array.from(appGrid.querySelectorAll('.card[data-app-id]'));
+            let needsReorder = false;
+
+            cards.forEach(card => {
+                const appName = card.getAttribute('data-app-id');
+                const state = this.getAppState(appName);
+                const isStopped = state && state !== 'RUNNING' && state !== 'STARTING';
+                const wasStopped = card.classList.contains('service-stopped');
+
+                if (isStopped && !wasStopped) needsReorder = true;
+                if (!isStopped && wasStopped) needsReorder = true;
+
+                if (isStopped) {
+                    card.classList.add('service-stopped');
+                    const btn = card.querySelector('.launch-btn');
+                    if (btn && !btn.hasAttribute('data-original-text')) {
+                        btn.setAttribute('data-original-text', btn.textContent.trim());
+                        btn.textContent = 'Service Stopped';
+                        btn.disabled = true;
+                    }
+                } else {
+                    card.classList.remove('service-stopped');
+                    const btn = card.querySelector('.launch-btn');
+                    if (btn && btn.hasAttribute('data-original-text')) {
+                        btn.textContent = btn.getAttribute('data-original-text');
+                        btn.removeAttribute('data-original-text');
+                        // Don't re-enable Instance Portal's button
+                        if (appName !== 'Instance Portal') btn.disabled = false;
+                    }
+                }
+            });
+
+            // Reorder: running cards in original config order, stopped cards at end
+            if (needsReorder) {
+                const cardsByName = {};
+                cards.forEach(card => cardsByName[card.getAttribute('data-app-id')] = card);
+                const running = [];
+                const stopped = [];
+                // Use config order so restarted services return to their original position
+                for (const name of applications._configOrder) {
+                    const card = cardsByName[name];
+                    if (!card) continue;
+                    if (card.classList.contains('service-stopped')) {
+                        stopped.push(card);
+                    } else {
+                        running.push(card);
+                    }
+                }
+                running.concat(stopped).forEach(card => appGrid.appendChild(card));
+            }
+        },
+
+        refresh: async function() {
+            await this.fetch();
+            this.ui.render();
+            this.updateAppCards();
+        },
+
+        init: async function() {
+            await this.fetch();
+            this.ui.render();
+            this.updateAppCards();
+            this._pollInterval = setInterval(() => this.refresh(), 10000);
+        },
+
+        ui: {
+            _formatUptime: function(startTs, nowTs) {
+                if (!startTs || startTs === 0) return '';
+                const secs = nowTs - startTs;
+                if (secs < 60) return `${secs}s`;
+                if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+                const h = Math.floor(secs / 3600);
+                const m = Math.floor((secs % 3600) / 60);
+                return `${h}h ${m}m`;
+            },
+
+            _spinnerSvg: '<svg class="service-spinner" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>',
+
+            render: function() {
+                const tbody = document.getElementById('services-table-body');
+                if (!tbody) return;
+
+                if (services._data.length === 0) {
+                    tbody.innerHTML = '<div class="service-item" style="justify-content: center; color: var(--text-secondary);">No supervisor processes found</div>';
+                    return;
+                }
+
+                // Sort: running first, then fatal/backoff, then stopped/exited last
+                const stateOrder = (s) => {
+                    if (s === 'RUNNING' || s === 'STARTING') return 0;
+                    if (s === 'FATAL' || s === 'BACKOFF') return 1;
+                    return 2; // STOPPED, EXITED, STOPPING, UNKNOWN
+                };
+                const sorted = [...services._data].sort((a, b) => {
+                    const diff = stateOrder(a.state) - stateOrder(b.state);
+                    if (diff !== 0) return diff;
+                    return a.name.localeCompare(b.name);
+                });
+
+                tbody.innerHTML = sorted.map(proc => {
+                    const pending = services._pending[proc.name];
+                    const stateClass = pending ? 'starting' : proc.state.toLowerCase();
+                    const pendingLabels = {start: 'STARTING', stop: 'STOPPING', restart: 'RESTARTING'};
+                    const stateLabel = pending ? (pendingLabels[pending] || pending.toUpperCase()) : proc.state;
+                    const isRunning = proc.state === 'RUNNING';
+                    const uptime = isRunning ? this._formatUptime(proc.start, proc.now) : '';
+                    const info = isRunning && proc.pid ? `PID ${proc.pid}` + (uptime ? ` · ${uptime}` : '') : '';
+
+                    // Determine which buttons to show
+                    // Disable all buttons when process is in a transitional state
+                    const transitional = pending || ['STARTING', 'STOPPING', 'BACKOFF'].includes(proc.state);
+                    let actions = '';
+                    const safeName = escapeAttr(proc.name);
+                    if (transitional) {
+                        const label = pending ? (pendingLabels[pending] || pending.toUpperCase()) : proc.state;
+                        actions = `<button class="service-btn" disabled>${this._spinnerSvg} ${label}</button>`;
+                    } else if (isRunning) {
+                    const stopBtn = proc.unstoppable ? '' : `
+                            <button class="service-btn danger" onclick="window.app.services.stop('${safeName}')" title="Stop">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
+                                Stop</button>`;
+                        actions = `
+                            <button class="service-btn" onclick="window.app.services.restart('${safeName}')" title="Restart">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                                Restart</button>${stopBtn}`;
+                    } else {
+                        actions = `
+                            <button class="service-btn" onclick="window.app.services.start('${safeName}')" title="Start">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                Start</button>`;
+                    }
+
+                    return `<div class="service-item">
+                        <div class="service-name">${escapeHtml(proc.name)}</div>
+                        <div><span class="status-badge ${escapeAttr(stateClass)}">${escapeHtml(stateLabel)}</span></div>
+                        <div class="service-info">${escapeHtml(info)}</div>
+                        <div class="service-actions">${actions}</div>
+                    </div>`;
+                }).join('');
+            }
+        }
+    };
+
     const systemMetrics = {
         // DOM element IDs
         elements: {
             gpuFill: 'gpu-fill',
             gpuTooltip: 'gpu-tooltip',
+            cpuFill: 'cpu-fill',
+            cpuTooltip: 'cpu-tooltip',
             ramFill: 'ram-fill',
             ramTooltip: 'ram-tooltip',
             diskFill: 'disk-fill',
-            diskTooltip: 'disk-tooltip'
+            diskTooltip: 'disk-tooltip',
+            volumeStat: 'volume-stat',
+            volumeFill: 'volume-fill',
+            volumeTooltip: 'volume-tooltip'
         },
-        
+
         // Data storage
         data: {
             gpu: null,
+            cpu: null,
             ram: null,
-            disk: null
+            disk: null,
+            volume: null
         },
         
         // Fetch metrics from API
@@ -1146,31 +1396,77 @@ window.InstancePortal = (function() {
                 const gpuMemoryUsed = this.data.gpu.memory_used / 1024; // Convert to GB
                 const gpuMemoryTotal = this.data.gpu.memory_total / 1024; // Convert to GB
                 
-                document.getElementById(this.elements.gpuFill).style.width = `${gpuLoad}%`;
-                document.getElementById(this.elements.gpuTooltip).textContent = 
+                const gpuEl = document.getElementById(this.elements.gpuFill);
+                gpuEl.style.width = `${gpuLoad}%`;
+                gpuEl.setAttribute('data-level', gpuLoad >= 90 ? 'critical' : gpuLoad >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.gpuTooltip).textContent =
                     `Load: ${Math.round(gpuLoad)}% | Memory: ${gpuMemoryUsed.toFixed(1)}/${gpuMemoryTotal.toFixed(1)} GB`;
             }
             
+            // Update CPU metrics
+            if (this.data.cpu) {
+                const cpuPercent = this.data.cpu.percent;
+                const cpuCount = this.data.cpu.count;
+
+                const cpuEl = document.getElementById(this.elements.cpuFill);
+                cpuEl.style.width = `${cpuPercent}%`;
+                cpuEl.setAttribute('data-level', cpuPercent >= 90 ? 'critical' : cpuPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.cpuTooltip).textContent =
+                    `${cpuPercent.toFixed(1)}% (${cpuCount} core${cpuCount !== 1 ? 's' : ''})`;
+            }
+
             // Update RAM metrics
             if (this.data.ram) {
                 const ramPercent = this.data.ram.percent;
-                const ramUsed = this.data.ram.used / (1024 * 1024 * 1024); // Convert to GB
-                const ramTotal = this.data.ram.total / (1024 * 1024 * 1024); // Convert to GB
-                
-                document.getElementById(this.elements.ramFill).style.width = `${ramPercent}%`;
-                document.getElementById(this.elements.ramTooltip).textContent = 
-                    `${ramUsed.toFixed(1)}/${ramTotal.toFixed(1)} GB (${ramPercent.toFixed(2)}%)`;
+                const ramUsed = this.data.ram.used / 1e9; // Convert to GB (decimal)
+                const ramTotal = this.data.ram.total / 1e9;
+
+                const ramEl = document.getElementById(this.elements.ramFill);
+                ramEl.style.width = `${ramPercent}%`;
+                ramEl.setAttribute('data-level', ramPercent >= 90 ? 'critical' : ramPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.ramTooltip).textContent =
+                    `${ramUsed.toFixed(1)}/${ramTotal.toFixed(1)} GB (${ramPercent.toFixed(1)}%)`;
             }
-            
+
             // Update Disk metrics
             if (this.data.disk) {
                 const diskPercent = this.data.disk.percent;
-                const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // Convert to GB
-                const diskTotal = this.data.disk.total / (1024 * 1024 * 1024); // Convert to GB
-                
-                document.getElementById(this.elements.diskFill).style.width = `${diskPercent}%`;
-                document.getElementById(this.elements.diskTooltip).textContent = 
-                    `${Math.round(diskUsed)}/${Math.round(diskTotal)} GB (${diskPercent.toFixed(2)}%)`;
+                const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // GiB to match df -h
+                const diskTotal = this.data.disk.total / (1024 * 1024 * 1024);
+
+                const diskEl = document.getElementById(this.elements.diskFill);
+                diskEl.style.width = `${diskPercent}%`;
+                diskEl.setAttribute('data-level', diskPercent >= 90 ? 'critical' : diskPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.diskTooltip).textContent =
+                    `${Math.round(diskUsed)}/${Math.round(diskTotal)} GB (${diskPercent.toFixed(1)}%)`;
+            }
+
+            // Adapt UI based on environment (container vs VM)
+            if (this.data.environment) {
+                const isVM = this.data.environment !== 'container';
+                // Hide supervisor tab in VM mode (no supervisor available)
+                const servicesNav = document.querySelector('[data-page="services-page"]');
+                if (servicesNav) servicesNav.style.display = isVM ? 'none' : '';
+                // Rename "Container Disk" to "Disk" in VM mode
+                const diskLabel = document.querySelector('#disk-fill')?.closest('.stat-item')?.querySelector('.stat-label');
+                if (diskLabel) diskLabel.textContent = isVM ? 'Disk' : 'Container Disk';
+            }
+
+            // Update Volume metrics (shown only when $WORKSPACE is a mounted volume)
+            const volumeStatEl = document.getElementById(this.elements.volumeStat);
+            if (this.data.volume) {
+                volumeStatEl.style.display = '';
+                const volPercent = this.data.volume.percent;
+                const volUsed = this.data.volume.used / (1024 * 1024 * 1024); // GiB to match df -h
+                const volTotal = this.data.volume.total / (1024 * 1024 * 1024);
+
+                const volEl = document.getElementById(this.elements.volumeFill);
+                volEl.style.width = `${volPercent}%`;
+                volEl.setAttribute('data-level', volPercent >= 90 ? 'critical' : volPercent >= 80 ? 'warning' : 'good');
+                document.getElementById(this.elements.volumeTooltip).textContent =
+                    `${Math.round(volUsed)}/${Math.round(volTotal)} GB (${volPercent.toFixed(1)}%)`;
+            } else if (volumeStatEl) {
+                volumeStatEl.style.display = 'none';
             }
         },
         
@@ -1221,6 +1517,9 @@ window.InstancePortal = (function() {
         isPaused: false,
         webSocket: null,
         maxLogLines: 300,
+        lastSpansByFile: {},  // file -> [span, ...] array for per-file overwrite tracking
+        _activeOverwrites: new Set(),  // files currently in overwrite (progress bar) mode
+        _unpinTimers: {},  // file -> timeout ID for auto-unpin
         
         // Connection management
         reconnectTimer: null,
@@ -1230,6 +1529,21 @@ window.InstancePortal = (function() {
         reconnectAttempts: 0,
         maxReconnectAttempts: 10,
         
+        updateConnectionStatus: function(status) {
+            const dot = document.getElementById('ws-status');
+            if (!dot) return;
+            dot.className = 'ws-status-dot';
+            if (status === 'connected') {
+                dot.classList.add('connected');
+                dot.title = 'Connected';
+            } else if (status === 'reconnecting') {
+                dot.classList.add('reconnecting');
+                dot.title = 'Reconnecting...';
+            } else {
+                dot.title = 'Disconnected';
+            }
+        },
+
         // Toggle pause state
         togglePause: function() {
             this.isPaused = !this.isPaused;
@@ -1345,29 +1659,216 @@ window.InstancePortal = (function() {
             }
         },
         
-        // Append log message to the console
-        appendLog: function(html) {
+        // Collect all actively-tracked spans (progress bars, blocks)
+        _getActiveSpans: function() {
+            const active = new Set();
+            for (const file of this._activeOverwrites) {
+                const spans = this.lastSpansByFile[file];
+                if (spans) {
+                    for (const s of spans) active.add(s);
+                }
+            }
+            return active;
+        },
+
+        // Trim log console to maxLogLines, skipping actively-tracked spans
+        // (progress bars / blocks). Active spans are pinned at the bottom.
+        _trimLog: function(logConsole) {
+            const excess = logConsole.childElementCount - this.maxLogLines;
+            if (excess <= 0) return;
+            const active = this._getActiveSpans();
+            let removed = 0;
+            // Limit iterations to avoid infinite loops if all spans are active
+            let maxIter = excess + active.size;
+            while (logConsole.childElementCount > this.maxLogLines && maxIter-- > 0) {
+                const first = logConsole.firstChild;
+                if (!first) break;
+                if (active.has(first)) {
+                    // Pin: move active span to the bottom instead of removing
+                    logConsole.appendChild(first);
+                } else {
+                    logConsole.removeChild(first);
+                    removed++;
+                }
+            }
+        },
+
+        // Auto-unpin a file after overwrite inactivity (progress bar finished)
+        _scheduleUnpin: function(file) {
+            clearTimeout(this._unpinTimers[file]);
+            this._unpinTimers[file] = setTimeout(() => {
+                this._activeOverwrites.delete(file);
+                delete this._unpinTimers[file];
+            }, 3000);
+        },
+
+        // Return the first active (overwriting) span in the console,
+        // or null if none — used as the insertBefore anchor for new lines.
+        _pinnedAnchor: function(logConsole) {
+            if (this._activeOverwrites.size === 0) return null;
+            // Collect spans only from files actively being overwritten
+            const pinned = new Set();
+            for (const file of this._activeOverwrites) {
+                const spans = this.lastSpansByFile[file];
+                if (spans) {
+                    for (const s of spans) pinned.add(s);
+                }
+            }
+            if (pinned.size === 0) return null;
+            for (const child of logConsole.children) {
+                if (pinned.has(child)) return child;
+            }
+            return null;
+        },
+
+        // Append log message to the console (new line)
+        appendLog: function(html, file) {
             if (this.isPaused) return;
-            
+
             const logConsole = document.getElementById(this.elements.logConsole);
             if (!logConsole) return;
-            
-            // Create a temporary container
+
+            // Unpin this file before computing anchor so its own completed
+            // span isn't used as the insertion point
+            if (file) {
+                this._activeOverwrites.delete(file);
+                clearTimeout(this._unpinTimers[file]);
+                delete this._unpinTimers[file];
+            }
+
+            const span = document.createElement('span');
+            span.innerHTML = html;
+            const anchor = this._pinnedAnchor(logConsole);
+            if (anchor) {
+                logConsole.insertBefore(span, anchor);
+            } else {
+                logConsole.appendChild(span);
+            }
+            if (file) {
+                const oldSpans = this.lastSpansByFile[file];
+                if (oldSpans && oldSpans.length > 1) {
+                    // Block-to-line transition: remove old block spans
+                    for (const s of oldSpans) {
+                        if (s !== span && s.parentNode === logConsole) {
+                            logConsole.removeChild(s);
+                        }
+                    }
+                } else if (oldSpans && oldSpans.length === 1) {
+                    const old = oldSpans[0];
+                    if (old !== span && old.parentNode === logConsole &&
+                        (span.compareDocumentPosition(old) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+                        // Old span (completed progress bar) was pinned at the
+                        // bottom but now trails the new append.  Move it back
+                        // into chronological order, just before the new span.
+                        logConsole.insertBefore(old, span);
+                    }
+                }
+                this.lastSpansByFile[file] = [span];
+            }
+
+            this._trimLog(logConsole);
+            this.scrollToBottom();
+        },
+
+        // Overwrite the last span for a specific file (progress bar update)
+        overwriteLog: function(html, file) {
+            if (this.isPaused) return;
+
+            const logConsole = document.getElementById(this.elements.logConsole);
+            if (!logConsole) return;
+
+            const spans = file ? this.lastSpansByFile[file] : null;
+            const target = spans && spans.length > 0 ? spans[spans.length - 1] : null;
+            if (target && target.parentNode === logConsole) {
+                target.innerHTML = html;
+                // Clean up block-to-line transition: remove stale block spans
+                if (file && spans.length > 1) {
+                    for (let i = 0; i < spans.length - 1; i++) {
+                        if (spans[i].parentNode === logConsole) {
+                            logConsole.removeChild(spans[i]);
+                        }
+                    }
+                    this.lastSpansByFile[file] = [target];
+                }
+                if (file) {
+                    if (!this._activeOverwrites.has(file)) {
+                        // First overwrite — move span to pinned zone at bottom
+                        // so non-pinned content doesn't get trapped between
+                        // pinned progress bars from different files.
+                        logConsole.appendChild(target);
+                    }
+                    this._activeOverwrites.add(file);
+                    this._scheduleUnpin(file);
+                }
+            } else {
+                this.appendLog(html, file);
+                return;
+            }
+
+            this.scrollToBottom();
+        },
+
+        // Overwrite a multi-line block for a specific file (nested progress bars)
+        overwriteBlock: function(htmlLines, file) {
+            if (this.isPaused) return;
+            const logConsole = document.getElementById(this.elements.logConsole);
+            if (!logConsole) return;
+
+            const existing = this.lastSpansByFile[file];
+            if (existing && existing.length > 0 && existing[0].parentNode === logConsole) {
+                // Shrink excess spans
+                while (existing.length > htmlLines.length) {
+                    logConsole.removeChild(existing.pop());
+                }
+                // Update existing spans
+                for (let i = 0; i < existing.length; i++) {
+                    existing[i].innerHTML = htmlLines[i];
+                }
+                // Grow: add new spans after last existing
+                const anchor = existing[existing.length - 1].nextSibling;
+                while (existing.length < htmlLines.length) {
+                    const span = document.createElement('span');
+                    span.innerHTML = htmlLines[existing.length];
+                    logConsole.insertBefore(span, anchor);
+                    existing.push(span);
+                }
+                if (!this._activeOverwrites.has(file)) {
+                    // First block overwrite — move spans to pinned zone
+                    for (const s of existing) logConsole.appendChild(s);
+                }
+                this._activeOverwrites.add(file);
+                this._scheduleUnpin(file);
+            } else {
+                // Create fresh block
+                const spans = htmlLines.map(html => {
+                    const span = document.createElement('span');
+                    span.innerHTML = html;
+                    logConsole.appendChild(span);
+                    return span;
+                });
+                this.lastSpansByFile[file] = spans;
+                this._activeOverwrites.add(file);
+                this._scheduleUnpin(file);
+            }
+
+            this._trimLog(logConsole);
+            this.scrollToBottom();
+        },
+
+        appendSystemMessage: function(html) {
+            if (this.isPaused) return;
+
+            const logConsole = document.getElementById(this.elements.logConsole);
+            if (!logConsole) return;
+
             const temp = document.createElement('div');
             temp.innerHTML = html;
-            
-            // Add the log entry to the console
             if (temp.firstChild) {
                 logConsole.appendChild(temp.firstChild);
-                
-                // Remove old entries to keep memory usage reasonable
-                while (logConsole.childElementCount > this.maxLogLines) {
-                    logConsole.removeChild(logConsole.firstChild);
-                }
-                
-                // Scroll to bottom
-                this.scrollToBottom();
             }
+
+            this._trimLog(logConsole);
+            this.scrollToBottom();
         },
         
         // Setup connection monitoring
@@ -1383,7 +1884,6 @@ window.InstancePortal = (function() {
                 if (this.webSocket && this.webSocket.readyState === WebSocket.OPEN) {
                     try {
                         this.webSocket.send("ping");
-                        console.debug("Sent ping to server");
                     } catch (error) {
                         console.error("Error sending ping:", error);
                     }
@@ -1400,10 +1900,11 @@ window.InstancePortal = (function() {
                 
                 // If no heartbeat in 30 seconds, connection is stale
                 if (elapsed > 30000) {
+                    this.updateConnectionStatus('reconnecting');
                     console.warn(`No heartbeat for ${elapsed/1000}s, reconnecting...`);
-                    
+
                     // Add visual indicator
-                    this.appendLog(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection stale, reconnecting...</div>`);
+                    this.appendSystemMessage(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection stale, reconnecting...</div>`);
                     
                     // Force reconnection
                     this.reconnect();
@@ -1430,8 +1931,6 @@ window.InstancePortal = (function() {
             this.disconnect();
             
             try {
-                console.log('Connecting to WebSocket...');
-                
                 // Calculate protocol (wss:// for https, ws:// for http)
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const host = window.location.host;
@@ -1448,7 +1947,7 @@ window.InstancePortal = (function() {
                 
                 // Connection opened
                 this.webSocket.addEventListener('open', (event) => {
-                    console.log('WebSocket connected successfully');
+                    this.updateConnectionStatus('connected');
                     this.lastHeartbeat = Date.now();
                     this.reconnectAttempts = 0;
                     
@@ -1457,7 +1956,7 @@ window.InstancePortal = (function() {
                     
                     // Add a system message
                     const now = new Date().toLocaleTimeString();
-                    this.appendLog(`<div style="color:green;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">WebSocket connected at ${now}</div>`);
+                    this.appendSystemMessage(`<div style="color:green;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">WebSocket connected at ${now}</div>`);
                 });
                 
                 // Listen for messages
@@ -1469,32 +1968,45 @@ window.InstancePortal = (function() {
                     
                     // Handle heartbeat message
                     if (data === 'heartbeat') {
-                        console.debug('Received heartbeat');
                         return;
                     }
                     
                     // Handle pong message
                     if (data === 'pong') {
-                        console.debug('Received pong');
                         return;
                     }
                     
                     // Handle regular log messages
                     if (!this.isPaused && data) {
-                        this.appendLog(data);
+                        try {
+                            const msg = JSON.parse(data);
+                            const file = msg.file || '';
+                            if (msg.type === 'overwrite_block') {
+                                this.overwriteBlock(msg.lines, file);
+                            } else if (msg.type === 'overwrite') {
+                                this.overwriteLog(msg.html, file);
+                            } else if (msg.type === 'system') {
+                                this.appendSystemMessage(msg.html);
+                            } else {
+                                this.appendLog(msg.html, file);
+                            }
+                        } catch (e) {
+                            // Fallback for non-JSON messages (legacy)
+                            this.appendLog(data, '');
+                        }
                     }
                 });
                 
                 // Connection closed
                 this.webSocket.addEventListener('close', (event) => {
-                    console.log(`WebSocket closed: code=${event.code}, reason=${event.reason || 'none'}`);
-                    
+                    this.updateConnectionStatus('disconnected');
+
                     // Clean up
                     this.clearConnectionMonitoring();
                     
                     // Add visual indicator
                     const now = new Date().toLocaleTimeString();
-                    this.appendLog(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection closed at ${now}</div>`);
+                    this.appendSystemMessage(`<div style="color:orange;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection closed at ${now}</div>`);
                     
                     // Schedule reconnection
                     this.scheduleReconnect();
@@ -1502,18 +2014,19 @@ window.InstancePortal = (function() {
                 
                 // Connection error
                 this.webSocket.addEventListener('error', (error) => {
+                    this.updateConnectionStatus('disconnected');
                     console.error('WebSocket error:', error);
-                    
+
                     // Add visual indicator
                     const now = new Date().toLocaleTimeString();
-                    this.appendLog(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection error at ${now}</div>`);
+                    this.appendSystemMessage(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connection error at ${now}</div>`);
                     
                     // Error is followed by close event which will handle reconnection
                 });
                 
             } catch (error) {
                 console.error('Failed to create WebSocket:', error);
-                this.appendLog(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Failed to create WebSocket: ${error.message}</div>`);
+                this.appendSystemMessage(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Failed to create WebSocket: ${error.message}</div>`);
                 this.scheduleReconnect();
             }
         },
@@ -1521,7 +2034,7 @@ window.InstancePortal = (function() {
         // Immediate reconnect
         reconnect: function() {
             this.disconnect();
-            console.log('Forcing immediate reconnection');
+            this.updateConnectionStatus('reconnecting');
             setTimeout(() => this.connect(), 100); // Small delay to ensure clean disconnect
         },
         
@@ -1535,7 +2048,7 @@ window.InstancePortal = (function() {
             // Check max reconnect attempts
             if (this.reconnectAttempts >= this.maxReconnectAttempts) {
                 console.error(`Maximum reconnect attempts reached (${this.maxReconnectAttempts})`);
-                this.appendLog(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Maximum reconnect attempts reached. Please refresh the page.</div>`);
+                this.appendSystemMessage(`<div style="color:red;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Maximum reconnect attempts reached. Please refresh the page.</div>`);
                 return;
             }
             
@@ -1545,8 +2058,7 @@ window.InstancePortal = (function() {
             const delay = Math.floor(baseDelay * jitter);
             
             this.reconnectAttempts++;
-            
-            console.log(`Reconnecting in ${delay/1000} seconds (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            this.updateConnectionStatus('reconnecting');
             
             // Schedule reconnection
             this.reconnectTimer = setTimeout(() => {
@@ -1603,7 +2115,6 @@ window.InstancePortal = (function() {
             // Handle visibility change to reconnect when tab becomes visible
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'visible') {
-                    console.log('Page visible, checking connection');
                     
                     // Check if we need to reconnect
                     const stale = !this.webSocket || 
@@ -1611,7 +2122,6 @@ window.InstancePortal = (function() {
                                   (Date.now() - this.lastHeartbeat > 10000);
                     
                     if (stale) {
-                        console.log('Connection stale, reconnecting...');
                         this.reconnect();
                     }
                 }
@@ -1796,8 +2306,11 @@ window.InstancePortal = (function() {
             this.handleRoute();
             // Remove the loading screen
             this.hideLoader();
-            // Listen for hash changes
-            window.addEventListener('hashchange', this.handleRoute);
+            // Listen for hash changes (guard against duplicate registration)
+            if (!this._hashListenerAdded) {
+                this._hashListenerAdded = true;
+                window.addEventListener('hashchange', this.handleRoute);
+            }
         },
 
         hideLoader: function() {
@@ -1838,6 +2351,14 @@ window.InstancePortal = (function() {
                     break;
                 case 'tunnels-page':
                     pageTitle.textContent = 'Tunnels (Open New Ports)';
+                    this.tunnels.fetch().then(() => {
+                        this.tunnels.checkAllTunnelStatus();
+                        this.tunnels.ui.renderTunnelTable();
+                    }).catch(e => console.error('tunnels refresh failed:', e));
+                    break;
+                case 'services-page':
+                    pageTitle.textContent = 'Supervisor';
+                    services.refresh().catch(e => console.error('services refresh failed:', e));
                     break;
                 case 'logs-page':
                     pageTitle.textContent = 'Instance Logs';
@@ -1857,7 +2378,11 @@ window.InstancePortal = (function() {
         },
 
         handleRoute: function() {
-            const hash = window.location.hash.slice(2) || 'apps';
+            let hash = window.location.hash.slice(2) || 'apps';
+            // Redirect away from services page in VM mode (no supervisor)
+            if (hash === 'services' && appUI.systemMetrics?.data?.environment !== 'container') {
+                hash = 'apps';
+            }
             appUI.showPage(`${hash}-page`);
         },
 
@@ -1881,7 +2406,6 @@ window.InstancePortal = (function() {
                     await new Promise(resolve => setTimeout(resolve, 5000));
                 }
                 catch(e) {
-                    console.log("Failed to redirect: " + e);
                     return false;
                 }
             }
@@ -1900,6 +2424,10 @@ window.InstancePortal = (function() {
             this.tunnels = tunnels;
             await tunnels.init();
     
+            // Load supervisor services
+            this.services = services;
+            services.init();
+
             // Begin fetching logs immediately with returned reference
             this.logManager = logManager;
             logManager.init();
@@ -1917,10 +2445,13 @@ window.InstancePortal = (function() {
                 // Remove the loading screen
                 this.hideLoader();
 
-                // Listen for hash changes
-                window.addEventListener('hashchange', this.handleRoute);
+                // Listen for hash changes (guard against duplicate registration)
+                if (!this._hashListenerAdded) {
+                    this._hashListenerAdded = true;
+                    window.addEventListener('hashchange', this.handleRoute);
+                }
             }
-            
+
             return this;
         }
     };

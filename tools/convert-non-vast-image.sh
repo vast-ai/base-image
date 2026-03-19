@@ -52,6 +52,17 @@ apt-get install --no-install-recommends -y \
     ninja-build \
     gdb \
     libssl-dev \
+    pkg-config \
+    autoconf \
+    automake \
+    libtool \
+    libffi-dev \
+    libcurl4-openssl-dev \
+    libxml2-dev \
+    libsqlite3-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libwebp-dev \
     netcat-traditional \
     net-tools \
     dnsutils \
@@ -59,6 +70,7 @@ apt-get install --no-install-recommends -y \
     iputils-ping \
     traceroute \
     dos2unix \
+    expect \
     rsync \
     rclone \
     zip \
@@ -83,6 +95,9 @@ else
     fi
 fi
 
+# Enable expect/unbuffer to find its Tcl libraries (multiarch-safe, matches base Dockerfile)
+mkdir -p /usr/lib/tcltk && ln -sf "/usr/lib/tcltk/$(uname -m)-linux-gnu" /usr/lib/tcltk/default
+
 # Ensure system pip
 if ! which pip > /dev/null 2>&1 || ! which pip3 > /dev/null 2>&1; then
     apt-get install --no-install-recommends -y python3-pip
@@ -105,6 +120,13 @@ mkdir -p /opt/instance-tools/bin/
 . /opt/portal-aio/venv/bin/activate
 uv pip install -r /opt/portal-aio/requirements.txt
 deactivate
+
+# Install the declarative provisioner into its own venv
+uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11
+. /opt/instance-tools/provisioner/venv/bin/activate
+uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt
+deactivate
+
 wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}
 chmod +x /opt/portal-aio/tunnel_manager/cloudflared
 # Make these portal-provided tools easily reachable
@@ -145,8 +167,46 @@ for bin in /opt/sys-venv/bin/*; do
     ln -sf "$bin" "/opt/sys-venv/shim/$(basename "$bin")"
 done
 
-# Remove redundant base image files
-[[ ! -d /venv/main ]] && rm -f /etc/vast_boot.d/37-sync-environment.sh
+# Set up /venv/main as a standard venv with system package inheritance.
+# Uses the system Python directly — no conda Python, no library conflicts.
+# 37-sync-environment.sh detects pyvenv.cfg and syncs via tar.
+if [[ ! -d /venv/main ]]; then
+    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)"
+    if [[ -n "$SYS_PYTHON" ]]; then
+        # Install miniforge3 (available for users who want conda envs)
+        curl -L -o /tmp/miniforge3.sh \
+            "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+        bash /tmp/miniforge3.sh -b -p /opt/miniforge3
+        rm -f /tmp/miniforge3.sh
+
+        # Configure conda (same as base image)
+        /opt/miniforge3/bin/conda config --set auto_activate_base false
+        /opt/miniforge3/bin/conda config --set always_copy true
+        /opt/miniforge3/bin/conda config --set pip_interop_enabled true
+        /opt/miniforge3/bin/conda config --add envs_dirs /venv
+        /opt/miniforge3/bin/conda config --set env_prompt '({name}) '
+        /opt/miniforge3/bin/conda init
+        if id -u user > /dev/null 2>&1; then
+            su -l user -c "/opt/miniforge3/bin/conda config --set auto_activate_base false"
+            su -l user -c "/opt/miniforge3/bin/conda config --set always_copy true"
+            su -l user -c "/opt/miniforge3/bin/conda config --set pip_interop_enabled true"
+            su -l user -c "/opt/miniforge3/bin/conda config --add envs_dirs /venv"
+            su -l user -c "/opt/miniforge3/bin/conda config --set env_prompt '({name}) '"
+            su -l user -c "/opt/miniforge3/bin/conda init"
+        fi
+        /opt/miniforge3/bin/conda clean -ay
+
+        # Create relocatable venv with system site-packages inheritance
+        mkdir -p /venv
+        uv venv --relocatable --seed --system-site-packages -p "$SYS_PYTHON" /venv/main
+
+        # Install ipykernel for Jupyter kernel registration
+        uv pip install --python /venv/main/bin/python ipykernel
+    else
+        echo "WARNING: No system Python found, skipping /venv/main creation"
+        rm -f /etc/vast_boot.d/37-sync-environment.sh
+    fi
+fi
 
 # Create 'user' account (matches base image: uid 1001, gid 0) if not present
 if ! id -u user > /dev/null 2>&1; then
@@ -156,6 +216,7 @@ fi
 rm -f /etc/vast_boot.d/48-venv-backup.sh
 rm -f /opt/instance-tools/bin/venv_backup.sh
 rm -f /etc/supervisor/conf.d/tensorboard.conf
+rm -f /opt/supervisor-scripts/tensorboard.sh
 
 # Install Syncthing
 SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')"

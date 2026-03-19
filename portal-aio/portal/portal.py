@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
@@ -11,36 +12,126 @@ import asyncio
 import aiofiles
 import os
 import io
+import re
+import html as html_module
 import zipfile
 from datetime import datetime
 import logging
 import time
 import ipaddress
 import subprocess
+import socket
+import xmlrpc.client
+import http.client
 import GPUtil
 import psutil
-import numpy as np
+
+# ANSI color maps
+# Tuned for the dark log viewer background (--logs-bg ~#0b0f19).
+# Standard colors (30-37) are lifted from pure CGA values so they remain
+# legible on dark surfaces; bright colors (90-97) are softened to avoid glare.
+_ANSI_FG_COLORS = {
+    30: '#4b5563', 31: '#f87171', 32: '#4ade80', 33: '#fbbf24', 34: '#60a5fa', 35: '#c084fc', 36: '#22d3ee', 37: '#d1d5db',
+    90: '#9ca3af', 91: '#fca5a5', 92: '#86efac', 93: '#fde68a', 94: '#93bbfd', 95: '#d8b4fe', 96: '#67e8f9', 97: '#f3f4f6',
+}
+_ANSI_BG_COLORS = {
+    40: '#1f2937', 41: '#991b1b', 42: '#166534', 43: '#92400e', 44: '#1e3a5f', 45: '#6b21a8', 46: '#155e75', 47: '#4b5563',
+    100: '#374151', 101: '#f87171', 102: '#4ade80', 103: '#fbbf24', 104: '#60a5fa', 105: '#c084fc', 106: '#22d3ee', 107: '#e5e7eb',
+}
+
+# Regex to strip C0/C1 control characters except tab (\x09).
+# \r and \n are already consumed by _process_chunk before text reaches here.
+_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x0d\x0e-\x1a\x7f]')
+
+# Strip cursor movement, erase, and other non-SGR CSI sequences.
+# These are interpreted by _process_chunk(); they must not appear in HTML.
+_CSI_NON_SGR_RE = re.compile(r'\x1b\[\??[0-9;]*[A-Za-ln-z]')
+
+# Tokenizer for _process_chunk: splits on ANSI CSI sequences (including
+# DEC private-mode sequences like \x1b[?25l), \r\n, \r, \n
+_CHUNK_TOKEN_RE = re.compile(r'(\x1b\[\??[0-9;]*[A-Za-z]|\r\n|\r|\n)')
+
+def ansi_to_html(text: str) -> str:
+    """Convert ANSI escape codes to HTML spans. HTML-escapes text content.
+    Strips stray control characters (SI, SO, BEL, etc.) that are invisible
+    in a real terminal but render as garbage in HTML."""
+    # Strip non-SGR CSI sequences (cursor movement, erase, etc.)
+    text = _CSI_NON_SGR_RE.sub('', text)
+    # Split on ANSI sequences, escape text parts, convert codes to spans
+    parts = re.split(r'(\x1b\[[0-9;]*m)', text)
+    result = []
+    open_spans = 0
+    for part in parts:
+        m = re.match(r'\x1b\[([0-9;]*)m', part)
+        if m:
+            codes = [int(c) for c in m.group(1).split(';') if c] if m.group(1) else [0]
+            for code in codes:
+                if code == 0:
+                    result.append('</span>' * open_spans)
+                    open_spans = 0
+                elif code == 1:
+                    result.append('<span style="font-weight:bold">')
+                    open_spans += 1
+                elif code == 2:
+                    result.append('<span style="opacity:0.7">')
+                    open_spans += 1
+                elif code in _ANSI_FG_COLORS:
+                    result.append(f'<span style="color:{_ANSI_FG_COLORS[code]}">')
+                    open_spans += 1
+                elif code in _ANSI_BG_COLORS:
+                    result.append(f'<span style="background-color:{_ANSI_BG_COLORS[code]}">')
+                    open_spans += 1
+                # Unknown codes: silently ignored
+        else:
+            cleaned = _CONTROL_CHAR_RE.sub('', part)
+            result.append(html_module.escape(cleaned))
+    result.append('</span>' * open_spans)
+    return ''.join(result)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.INFO,
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("log_monitor")
 
+# Suppress noisy request logs (httpx at module load, uvicorn.access in lifespan
+# after uvicorn has configured its loggers)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 tunnel_manager=os.environ.get("TUNNEL_MANAGER", "http://localhost:11112")
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup
+    # Suppress uvicorn access logs (must be done here, after uvicorn configures its loggers)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # Prime psutil CPU counter so first real poll returns a meaningful value
+    psutil.cpu_percent(interval=None)
+    app.state.monitor_task = asyncio.create_task(
+        monitor_log_directory("/var/log/portal")
+    )
+    yield
+    # Shutdown
+    if hasattr(app.state, 'monitor_task'):
+        app.state.monitor_task.cancel()
+        try:
+            await app.state.monitor_task
+        except asyncio.CancelledError:
+            pass
+
+app = FastAPI(lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-def get_scheme():
+def get_scheme() -> str:
     if os.environ.get("ENABLE_HTTPS", "false").lower() != "true":
         scheme = "http"
     else:
         scheme = "https"
     return scheme
 
-def load_config():
+def load_config() -> dict:
     yaml_path = '/etc/portal.yaml'
     
     # Wait until the file exists - caddy-manager handles config writing
@@ -49,10 +140,11 @@ def load_config():
         time.sleep(1)
 
     with open(yaml_path, 'r') as file:
-        config_applications = yaml.safe_load(file)['applications']
+        data = yaml.safe_load(file) or {}
+        config_applications = data.get('applications', {})
         return hydrate_applications(config_applications)
 
-def hydrate_applications(applications):
+def hydrate_applications(applications: dict) -> dict:
     for app_name, app in applications.items():
         hostname = app["hostname"]
         external_port = app["external_port"]
@@ -65,17 +157,88 @@ def hydrate_applications(applications):
         applications[app_name]["mapped_port"] = os.environ.get(f'VAST_TCP_PORT_{external_port}', "")
     return applications
 
-def strip_port(host):
+def strip_port(host: str) -> str:
     return host.split(':')[0]
 
-def get_instance_properties():
+_PORTAL_LINKS_YAML = "/etc/portal-links.yaml"
+
+def _parse_yaml_link(item: dict) -> dict | None:
+    """Parse a single link entry from the YAML file."""
+    if not isinstance(item, dict) or not item.get("label") or not item.get("url"):
+        return None
+    link = {
+        "label": str(item["label"]),
+        "url": str(item["url"]),
+        "description": str(item.get("description", "")),
+        "icon": str(item.get("icon", "link")),
+        "button_text": str(item.get("button_text", "Open")),
+        "position": str(item.get("position", "after")),
+        "links": [],
+    }
+    for extra in item.get("links", []) or []:
+        if isinstance(extra, dict) and extra.get("label") and extra.get("url"):
+            link["links"].append({
+                "label": str(extra["label"]),
+                "url": str(extra["url"]),
+            })
+    return link
+
+def get_extra_links() -> dict:
+    """Build before/after extra-links from the YAML file and env var overlay.
+
+    1. ``/etc/portal-links.yaml`` — baked into the image at build time.
+       Derivative images drop their own version via ``COPY ./ROOT /``;
+       the portal update script never touches this path so it is safe.
+       Supports ``icon``, ``button_text``, ``links`` (secondary buttons),
+       and ``position`` (``before`` or ``after`` the built-in cards).
+    2. ``PORTAL_LINKS`` env var — ``Label|URL|Description,...`` entries
+       always appended after built-in cards (description is optional).
+
+    Returns ``{"before": [...], "after": [...]}``.
+    """
+    before: list[dict] = []
+    after: list[dict] = []
+
+    # --- YAML defaults ---
+    if os.path.isfile(_PORTAL_LINKS_YAML):
+        try:
+            with open(_PORTAL_LINKS_YAML, "r") as f:
+                data = yaml.safe_load(f)
+            for item in (data or []):
+                link = _parse_yaml_link(item)
+                if link:
+                    if link["position"] == "before":
+                        before.append(link)
+                    else:
+                        after.append(link)
+        except Exception as e:
+            print(f"WARNING: Failed to parse {_PORTAL_LINKS_YAML}: {e}")
+
+    # --- Environment overlay (always appended after) ---
+    raw = os.environ.get("PORTAL_LINKS", "").strip()
+    if raw:
+        for entry in raw.split(","):
+            parts = entry.strip().split("|", 2)
+            if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+                after.append({
+                    "label": parts[0].strip(),
+                    "url": parts[1].strip(),
+                    "description": parts[2].strip() if len(parts) > 2 else "",
+                    "icon": "link",
+                    "button_text": "Open",
+                    "links": [],
+                })
+
+    return {"before": before, "after": after}
+
+def get_instance_properties() -> dict:
     return {
         "id": os.environ.get("CONTAINER_ID",""),
         "gpu": get_gpu_info(),
         "direct_https": "true" if os.environ.get("ENABLE_HTTPS", "false").lower() == "true" else "false"
     }
 
-def get_gpu_info():
+def get_gpu_info() -> str:
     """Get formatted GPU information for both NVIDIA and AMD GPUs"""
     gpu_models = {}
     
@@ -115,7 +278,7 @@ def get_gpu_info():
     
     return ", ".join(result)
 
-def get_rocm_gpus():
+def get_rocm_gpus() -> list:
     """Get AMD GPU information using rocm-smi command line tool"""
     try:
         # Check if rocm-smi is available
@@ -168,9 +331,9 @@ def get_rocm_gpus():
                             gpu_names[card_id] = f"{vendor} GPU"
                         else:
                             gpu_names[card_id] = "AMD GPU"
-            except:
+            except Exception:
                 pass
-        
+
         gpus = []
         
         for card_id, card_data in rocm_data.items():
@@ -205,44 +368,83 @@ def get_rocm_gpus():
         print(f"Error getting ROCm GPU info: {str(e)}")
         return []
     
-def is_in_container():
+def is_in_container() -> bool:
     """Check if we're running inside a container"""
     return os.path.exists('/sys/fs/cgroup/memory/memory.limit_in_bytes') or os.path.exists('/sys/fs/cgroup/memory.max')
 
-def get_container_memory_limit():
-    """Get memory limit allocated to the container"""
+def get_container_memory_limit() -> Optional[int]:
+    """Get memory limit allocated to the container.
+
+    Prefers the soft limit (memory.soft_limit_in_bytes / memory.low) when
+    set, as platforms like Vast.ai use the soft limit for the user's actual
+    RAM allocation while setting a much higher hard limit that includes
+    swap headroom.
+
+    Returns None when the limit looks like 'no real limit' — either the
+    sentinel value ``max`` (v2) or a value larger than the host's physical
+    RAM.
+    """
     try:
-        # cgroups v1
+        host_ram = psutil.virtual_memory().total
+    except Exception:
+        host_ram = 0
+
+    def _is_real_limit(value: int) -> bool:
+        if value <= 0 or value >= 10**15:
+            return False
+        if host_ram and value >= host_ram:
+            return False
+        return True
+
+    # --- cgroups v1 ---
+    # Try soft limit first (the user's actual allocation on Vast.ai)
+    try:
+        with open('/sys/fs/cgroup/memory/memory.soft_limit_in_bytes', 'r') as f:
+            soft = int(f.read().strip())
+            if _is_real_limit(soft):
+                return soft
+    except Exception:
+        pass
+
+    try:
         with open('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'r') as f:
             limit = int(f.read().strip())
-            # Very large values typically indicate no limit
-            return limit if limit < 10**15 else None
-    except:
-        try:
-            # cgroups v2
-            with open('/sys/fs/cgroup/memory.max', 'r') as f:
-                value = f.read().strip()
-                if value == 'max':
-                    return None
-                return int(value)
-        except:
-            return None
+            if _is_real_limit(limit):
+                return limit
+    except Exception:
+        pass
 
-def get_container_memory_usage():
+    # --- cgroups v2 ---
+    # Try memory.low (soft) first, then memory.max (hard)
+    for path in ('/sys/fs/cgroup/memory.low', '/sys/fs/cgroup/memory.max'):
+        try:
+            with open(path, 'r') as f:
+                value = f.read().strip()
+                if value in ('max', '0'):
+                    continue
+                limit = int(value)
+                if _is_real_limit(limit):
+                    return limit
+        except Exception:
+            pass
+
+    return None
+
+def get_container_memory_usage() -> Optional[int]:
     """Get current memory usage of the container"""
     try:
         # cgroups v1
         with open('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'r') as f:
             return int(f.read().strip())
-    except:
+    except Exception:
         try:
             # cgroups v2
             with open('/sys/fs/cgroup/memory.current', 'r') as f:
                 return int(f.read().strip())
-        except:
+        except Exception:
             return None
 
-def get_container_memory_stats():
+def get_container_memory_stats() -> Optional[dict]:
     """Get detailed memory stats for container including total, used and percentage"""
     if not is_in_container():
         # Not in a container, return None to fall back to psutil
@@ -264,13 +466,134 @@ def get_container_memory_stats():
     }
 
 
+# --- CPU metrics ---
+
+# State for delta-based CPU measurement (cgroups)
+_cpu_prev: dict = {'timestamp': 0.0, 'usage': 0, 'percent': 0.0}
+
+def get_cpu_quota_cores() -> float:
+    """Get the CPU quota in fractional cores from cgroups (for % normalization).
+    Returns the quota as a float (e.g. 19.2), or falls back to os.cpu_count()."""
+    try:
+        # cgroups v2: cpu.max → "quota period"
+        with open('/sys/fs/cgroup/cpu.max', 'r') as f:
+            parts = f.read().strip().split()
+            if parts[0] != 'max':
+                return max(0.01, int(parts[0]) / int(parts[1]))
+    except Exception:
+        pass
+    try:
+        # cgroups v1: cpu.cfs_quota_us / cpu.cfs_period_us
+        for prefix in ('/sys/fs/cgroup/cpu/', '/sys/fs/cgroup/cpu,cpuacct/'):
+            quota_path = prefix + 'cpu.cfs_quota_us'
+            period_path = prefix + 'cpu.cfs_period_us'
+            if os.path.exists(quota_path):
+                with open(quota_path, 'r') as f:
+                    quota = int(f.read().strip())
+                if quota == -1:
+                    break  # no limit
+                with open(period_path, 'r') as f:
+                    period = int(f.read().strip())
+                return max(0.01, quota / period)
+    except Exception:
+        pass
+    return float(os.cpu_count() or 1)
+
+
+def get_container_cpu_usage() -> Optional[dict]:
+    """Get CPU usage for the container using cgroups delta measurement."""
+    global _cpu_prev
+
+    now = time.monotonic()
+    usage_ns = None
+
+    # cgroups v2: cpu.stat contains usage_usec
+    try:
+        with open('/sys/fs/cgroup/cpu.stat', 'r') as f:
+            for line in f:
+                if line.startswith('usage_usec'):
+                    usage_ns = int(line.split()[1]) * 1000
+                    break
+    except Exception:
+        pass
+
+    # cgroups v1: cpuacct.usage in nanoseconds
+    if usage_ns is None:
+        for prefix in ('/sys/fs/cgroup/cpuacct/', '/sys/fs/cgroup/cpu,cpuacct/'):
+            path = prefix + 'cpuacct.usage'
+            try:
+                with open(path, 'r') as f:
+                    usage_ns = int(f.read().strip())
+                break
+            except Exception:
+                continue
+
+    if usage_ns is None:
+        return None
+
+    # Use quota (fractional cores) for both % normalization and the
+    # user-visible core count.  os.cpu_count() reports the host's total
+    # cores which is misleading inside a container with a CPU quota.
+    quota_cores = get_cpu_quota_cores()
+
+    elapsed = now - _cpu_prev['timestamp']
+    if _cpu_prev['timestamp'] > 0 and elapsed > 0.5:
+        delta_usage = usage_ns - _cpu_prev['usage']
+        delta_time_ns = elapsed * 1e9
+        percent = (delta_usage / delta_time_ns) * 100.0 / quota_cores
+        _cpu_prev['percent'] = max(0.0, min(percent, 100.0))
+
+    _cpu_prev['timestamp'] = now
+    _cpu_prev['usage'] = usage_ns
+
+    return {
+        'percent': round(_cpu_prev['percent'], 1),
+        'count': int(quota_cores)
+    }
+
+
+def get_cpu_stats() -> dict:
+    """Get CPU usage, preferring container cgroup metrics when available."""
+    if is_in_container():
+        container_cpu = get_container_cpu_usage()
+        if container_cpu is not None:
+            return container_cpu
+    # VM / host fallback
+    return {
+        'percent': psutil.cpu_percent(interval=None),
+        'count': psutil.cpu_count() or 1
+    }
+
+
+# --- Workspace volume metrics ---
+
+def get_workspace_volume_info() -> Optional[dict]:
+    """Get disk usage for $WORKSPACE, only if it's on a separate mounted volume."""
+    workspace = os.environ.get('WORKSPACE')
+    if not workspace or not os.path.isdir(workspace):
+        return None
+    try:
+        # Different st_dev means a separate filesystem / mount
+        if os.stat('/').st_dev == os.stat(workspace).st_dev:
+            return None
+        usage = psutil.disk_usage(workspace)
+        return {
+            'path': workspace,
+            'total': usage.total,
+            'used': usage.used,
+            'percent': usage.percent
+        }
+    except Exception:
+        return None
+
+
 templates.env.filters["strip_port"] = strip_port
 
 tunnels = {}
 tunnel_api_timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request, token: Optional[str] = None):
+async def read_root(request: Request, token: Optional[str] = None) -> HTMLResponse:
     if token is not None:
         return RedirectResponse(url="/", status_code=302)
 
@@ -278,10 +601,15 @@ async def read_root(request: Request, token: Optional[str] = None):
     return templates.TemplateResponse("index.html", {
         "request": request,
         "instance": get_instance_properties(),
+        "extra_links": get_extra_links(),  # {"before": [...], "after": [...]}
         })
 
+@app.get("/health")
+async def health_check() -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
 @app.get("/get-applications")
-async def get_applications(request: Request):
+async def get_applications(request: Request) -> JSONResponse:
     applications = load_config()
     auth_token = request.cookies.get(f"" + os.environ.get('VAST_CONTAINERLABEL') + "_auth_token")
     for app_name, app in applications.items():
@@ -290,156 +618,263 @@ async def get_applications(request: Request):
 
     return JSONResponse(applications)
 
+async def _tunnel_proxy(method: str, path: str):
+    """Proxy a request to the tunnel manager service."""
+    url = f"{tunnel_manager}{path}"
+    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
+        if method == "GET":
+            response = await client.get(url)
+        else:
+            response = await client.post(url)
+        response.raise_for_status()
+        return response.json()
+
 @app.get("/get-direct-url/{port}")
 async def get_direct_url(port: int):
-    url = f"{tunnel_manager}/get-direct-url/{port}"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            result = response.json()
-            return result
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise HTTPException(status_code=404, detail=f"Direct URL unavailable")
-        except httpx.HTTPError as e:
-            # No stack trace in the live application
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API")
-        except:
-            raise HTTPException(status_code=500, detail=f"Unhandled error response from API")
+    try:
+        result = await _tunnel_proxy("GET", f"/get-direct-url/{port}")
+        return result
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Direct URL unavailable")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.get("/get-existing-quick-tunnel/{target_url:path}")
 async def get_existing_quick_tunnel(target_url: str):
-    url = f"{tunnel_manager}/get-quick-tunnel-if-exists/{target_url}"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            result = response.json()
-            return HTMLResponse(result['tunnel_url'])
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise HTTPException(status_code=404, detail=f"Tunnel not found")
-        except httpx.HTTPError as e:
-            # No stack trace in the live application
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API")
-        except:
-            raise HTTPException(status_code=500, detail=f"Unhandled error response from API")
-        
+    try:
+        result = await _tunnel_proxy("GET", f"/get-quick-tunnel-if-exists/{target_url}")
+        return HTMLResponse(result['tunnel_url'])
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tunnel not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
+
 @app.get("/get-existing-named-tunnel/{port}")
 async def get_existing_named_tunnel(port: int):
-    url = f"{tunnel_manager}/get-named-tunnel/{port}"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            result = response.json()
-            return HTMLResponse(result['tunnel_url'])
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise HTTPException(status_code=404, detail=f"Tunnel not found")
-        except httpx.HTTPError as e:
-            # No stack trace in the live application
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API")
-        except:
-            raise HTTPException(status_code=500, detail=f"Unhandled error response from API")
-        
+    try:
+        result = await _tunnel_proxy("GET", f"/get-named-tunnel/{port}")
+        return HTMLResponse(result['tunnel_url'])
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tunnel not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
+
 @app.get("/get-all-quick-tunnels")
 async def get_all_quick_tunnels():
-    url = f"{tunnel_manager}/get-all-quick-tunnels"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            result = response.json()
-            return result
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise HTTPException(status_code=404, detail=f"Tunnel not found")
-        except httpx.HTTPError as e:
-            # No stack trace in the live application
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API")
-        except:
-            raise HTTPException(status_code=500, detail=f"Unhandled error response from API")
-        
+    try:
+        result = await _tunnel_proxy("GET", "/get-all-quick-tunnels")
+        return result
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tunnel not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.get("/get-named-tunnels")
 async def get_named_tunnels():
-    url = f"{tunnel_manager}/get-named-tunnels"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            result = response.json()
-            return result
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in [404, 500]:
-                raise HTTPException(status_code=404, detail=f"Tunnel config not found")
-        except httpx.HTTPError as e:
-            # No stack trace in the live application
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API")
-        except:
-            raise HTTPException(status_code=500, detail=f"Unhandled error response from API")
-
+    try:
+        result = await _tunnel_proxy("GET", "/get-named-tunnels")
+        return result
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in [404, 500]:
+            raise HTTPException(status_code=404, detail="Tunnel config not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.post("/start-quick-tunnel/{target_url:path}")
-async def start_quick_tunnel(target_url: str):  
-    url = f"{tunnel_manager}/get-quick-tunnel/{target_url}"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            result = response.json()
-            return result
-        except httpx.HTTPError as e:
-            # No stack trace in the live application
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API")
-        except:
-            raise HTTPException(status_code=500, detail=f"Unhandled error response from API")
+async def start_quick_tunnel(target_url: str):
+    try:
+        result = await _tunnel_proxy("GET", f"/get-quick-tunnel/{target_url}")
+        return result
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tunnel not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.post("/stop-quick-tunnel/{target_url:path}")
 async def stop_quick_tunnel(target_url: str):
-    url = f"{tunnel_manager}/stop-quick-tunnel/{target_url}"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.post(url)
-            response.raise_for_status()
-            result = response.json()
-            return result
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API: {str(e)}")
+    try:
+        result = await _tunnel_proxy("POST", f"/stop-quick-tunnel/{target_url}")
+        return result
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tunnel not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
 @app.post("/refresh-quick-tunnel/{target_url:path}")
 async def refresh_quick_tunnel(target_url: str):
-    url = f"{tunnel_manager}/refresh-quick-tunnel/{target_url}"
-    async with httpx.AsyncClient(timeout=tunnel_api_timeout) as client:
-        try:
-            response = await client.post(url)
-            response.raise_for_status()
-            result = response.json()
-            return result
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=500, detail=f"Error communicating with the API: {str(e)}")
+    try:
+        result = await _tunnel_proxy("POST", f"/refresh-quick-tunnel/{target_url}")
+        return result
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tunnel not found")
+        raise HTTPException(status_code=e.response.status_code, detail="Tunnel manager error")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Error communicating with the API")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unhandled error response from API")
 
-async def set_external_ip(forwarded_host):
+## Supervisor process management via XML-RPC
+
+SUPERVISOR_SOCK = "/var/run/supervisor.sock"
+_unstoppable_env = os.environ.get("PORTAL_UNSTOPPABLE", "")
+UNSTOPPABLE_PROCESSES = frozenset(
+    {"instance_portal", "caddy", "tunnel_manager"} | {s.strip() for s in _unstoppable_env.split(",") if s.strip()}
+)
+
+class _UnixStreamHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection over a Unix domain socket."""
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(SUPERVISOR_SOCK)
+
+class _UnixStreamTransport(xmlrpc.client.Transport):
+    def make_connection(self, host):
+        return _UnixStreamHTTPConnection(host)
+
+def _get_supervisor_proxy() -> xmlrpc.client.ServerProxy:
+    return xmlrpc.client.ServerProxy(
+        "http://localhost",
+        transport=_UnixStreamTransport(),
+    )
+
+def _is_launch_managed() -> bool:
+    """Check if /.launch exists (Vast manages jupyter directly)."""
+    return os.path.isfile("/.launch")
+
+@app.get("/supervisor/processes")
+async def get_supervisor_processes():
+    try:
+        proxy = _get_supervisor_proxy()
+        all_info = await asyncio.to_thread(proxy.supervisor.getAllProcessInfo)
+        launch_managed = _is_launch_managed()
+        result = []
+        for proc in all_info:
+            # Hide jupyter when /.launch is present (Vast manages it directly)
+            if launch_managed and proc["name"] == "jupyter":
+                continue
+            # Hide processes that skipped startup (not in portal.yaml)
+            skip_marker = f"/tmp/supervisor-skip/{proc['name']}"
+            if os.path.isfile(skip_marker):
+                continue
+            result.append({
+                "name": proc["name"],
+                "group": proc["group"],
+                "state": proc["statename"],
+                "description": proc.get("description", ""),
+                "pid": proc.get("pid", 0),
+                "start": proc.get("start", 0),
+                "now": proc.get("now", 0),
+                "unstoppable": proc["name"] in UNSTOPPABLE_PROCESSES,
+            })
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get supervisor processes: {e}")
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+@app.post("/supervisor/process/{name}/start")
+async def supervisor_start_process(name: str):
+    try:
+        proxy = _get_supervisor_proxy()
+        await asyncio.to_thread(proxy.supervisor.startProcess, name)
+        return {"status": "ok", "name": name, "action": "start"}
+    except xmlrpc.client.Fault as e:
+        raise HTTPException(status_code=400, detail=e.faultString)
+    except Exception as e:
+        logger.error(f"Failed to start process {name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+@app.post("/supervisor/process/{name}/stop")
+async def supervisor_stop_process(name: str):
+    if name in UNSTOPPABLE_PROCESSES:
+        raise HTTPException(status_code=403, detail=f"Process '{name}' cannot be stopped")
+    try:
+        proxy = _get_supervisor_proxy()
+        await asyncio.to_thread(proxy.supervisor.stopProcess, name)
+        return {"status": "ok", "name": name, "action": "stop"}
+    except xmlrpc.client.Fault as e:
+        raise HTTPException(status_code=400, detail=e.faultString)
+    except Exception as e:
+        logger.error(f"Failed to stop process {name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+@app.post("/supervisor/process/{name}/restart")
+async def supervisor_restart_process(name: str):
+    try:
+        proxy = _get_supervisor_proxy()
+        # Check the process exists first
+        all_info = await asyncio.to_thread(proxy.supervisor.getAllProcessInfo)
+        if not any(p["name"] == name for p in all_info):
+            raise HTTPException(status_code=404, detail=f"Process '{name}' not found")
+
+        # Use supervisorctl restart in a fully detached subprocess.
+        # This is critical for self-restart (instance_portal): the XML-RPC
+        # stop+start approach fails because stopping the portal kills this
+        # very process before startProcess can execute.
+        # start_new_session=True puts the child in its own process group so
+        # it survives killasgroup=true in the supervisor config.
+        subprocess.Popen(
+            ["supervisorctl", "restart", name],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return {"status": "ok", "name": name, "action": "restart"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restart process {name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
+
+
+async def set_external_ip(forwarded_host: Optional[str]) -> None:
+    if not forwarded_host:
+        return
     try:
         ip, port = forwarded_host.split(":")
-        ip_obj = ipaddress.IPv4Address(ip)
+        ipaddress.IPv4Address(ip)  # validate
         if port != os.environ.get("VAST_TCP_PORT_1111"):
             return
         async with httpx.AsyncClient() as client:
-            response = await client.put(f"{tunnel_manager}/set-public-ip/{ip}")
+            await client.put(f"{tunnel_manager}/set-public-ip/{ip}")
     except Exception:
         return
-
-    return
 
 
 ## Log reader functions
 # Constants
-MAX_LINES = 500  # Maximum lines to keep in buffer
+MAX_LINES = 750  # Maximum lines to keep in buffer
 POLL_INTERVAL = 0.2  # File polling interval in seconds
-LOG_DIRECTORY = "/var/log/portal"  # Default directory to monitor
+LOG_MAX_SIZE = 5 * 1024 * 1024   # Rotate log files larger than 5 MB
+LOG_KEEP_SIZE = 1 * 1024 * 1024  # Keep the last 1 MB after rotation
+LOG_ROTATE_INTERVAL = 30         # Check sizes every N seconds
 
 # State for WebSocket and monitoring
 websocket_clients = set()  # Set of connected WebSocket clients
@@ -448,27 +883,36 @@ chronological_log_buffer = deque(maxlen=MAX_LINES)  # Single buffer for all logs
 file_specific_buffers = {}  # Filename -> Deque (for debugging/specific file views if needed)
 file_positions = {}  # Filename -> Last position
 file_mtimes = {}    # Filename -> Last modification time
-monitor_task = None  # Main monitoring task
+file_inodes = {}    # Filename -> Last inode number
 
-# Helper function to format log lines
-def highlight_log_level(line):
-    if 'WARN' in line.upper():
-        return f'<span class="warning">{line}</span>'
-    elif 'ERR' in line.upper():
-        return f'<span class="error">{line}</span>'
-    return f'<span>{line}</span>'
+# Per-file terminal emulation state (persists across chunk reads)
+class _FileTermState:
+    __slots__ = ('lines', 'cursor_row', 'emitted_up_to', 'line_active', 'in_block', 'pending_cr')
+    def __init__(self):
+        self.lines: list[str] = [""]   # Virtual screen lines
+        self.cursor_row: int = 0       # Current cursor row
+        self.emitted_up_to: int = 0    # Rows [0..emitted_up_to) already sent as 'append'
+        self.line_active: bool = False  # Client has a live span for current partial line
+        self.in_block: bool = False    # Cursor-up seen → block mode
+        self.pending_cr: bool = False  # \r at end of last chunk (may be start of \r\n)
+
+_file_term_state: dict[str, _FileTermState] = {}
+_file_block_sizes: dict[str, int] = {}
 
 # Dedicated task for each client to handle heartbeats and messages
-async def client_handler(websocket: WebSocket, client_id: int):
+async def client_handler(websocket: WebSocket, client_id: int) -> None:
     """Handle a single client's WebSocket connection"""
     try:
         # Send connection confirmation
-        await websocket.send_text('<div class="log-system-message" style="color:green;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connected to log stream</div>')
-        
+        await websocket.send_text(json.dumps({
+            "type": "system",
+            "html": '<div class="log-system-message" style="color:green;text-align:center;font-style:italic;margin:5px 0;border-bottom:1px dotted #ccc;">Connected to log stream</div>'
+        }))
+
         # Send historical logs from the single chronological buffer
         for line in chronological_log_buffer:
-            html_content = highlight_log_level(line)
-            await websocket.send_text(html_content)
+            html_content = ansi_to_html(line)
+            await websocket.send_text(json.dumps({"type": "append", "html": html_content}))
         
         # Heartbeat loop
         while True:
@@ -506,7 +950,7 @@ async def client_handler(websocket: WebSocket, client_id: int):
         remove_client(websocket, client_id)
 
 # Remove a client
-def remove_client(websocket, client_id):
+def remove_client(websocket: WebSocket, client_id: int) -> None:
     """Safely remove a client and cancel its task"""
     if websocket in websocket_clients:
         websocket_clients.remove(websocket)
@@ -518,7 +962,7 @@ def remove_client(websocket, client_id):
     logger.info(f"Client {client_id} removed, remaining clients: {len(websocket_clients)}")
 
 # Get all log files in the directory
-async def get_log_files(directory):
+async def get_log_files(directory: str) -> List[str]:
     try:
         # Get all log files in the directory
         log_files = [f for f in os.listdir(directory) if f.endswith('.log')]
@@ -538,136 +982,428 @@ async def get_log_files(directory):
         return []
 
 # Send message to all connected clients
-async def broadcast_message(message):
+async def broadcast_message(message: str, msg_type: str = "append", filename: str = "") -> None:
     """Send a formatted log message to all connected clients in parallel"""
     if not websocket_clients:
         return
-    
-    # Format the log message
-    html_content = highlight_log_level(message)
-    
-    # Create tasks to send to all clients in parallel
+
+    html_content = ansi_to_html(message)
+    json_msg = json.dumps({"type": msg_type, "html": html_content, "file": filename})
+
+    clients = list(websocket_clients)
     send_tasks = []
-    for client in websocket_clients:
-        task = asyncio.create_task(send_to_client(client, html_content))
+    for client in clients:
+        task = asyncio.create_task(send_to_client(client, json_msg))
         send_tasks.append(task)
-    
-    # Wait for all tasks to complete
+
     results = await asyncio.gather(*send_tasks, return_exceptions=True)
-    
-    # Remove any disconnected clients
+
     disconnected_clients = set()
-    for client, result in zip(websocket_clients, results):
+    for client, result in zip(clients, results):
         if isinstance(result, Exception):
             logger.error(f"Error sending to client {id(client)}: {result}")
             disconnected_clients.add(client)
-    
-    for client in disconnected_clients:
-        websocket_clients.remove(client)
 
-async def send_to_client(client, content):
+    websocket_clients.difference_update(disconnected_clients)
+
+async def send_to_client(client: WebSocket, content: str) -> bool:
     """Helper function to send content to a single client"""
     await client.send_text(content)
     return True
 
 # Tail a single log file
-async def tail_log_file(filepath):
+async def tail_log_file(filepath: str) -> None:
     """Monitor a log file for changes and broadcast new content"""
     filename = os.path.basename(filepath)
-    
+
     try:
-        # Get file stats
         if not os.path.exists(filepath):
             return
 
-        # Get current file info
-        current_size = os.path.getsize(filepath)
-        current_mtime = os.path.getmtime(filepath)
+        stat = os.stat(filepath)
+        current_size = stat.st_size
+        current_mtime = stat.st_mtime
+        current_inode = stat.st_ino
         last_position = file_positions.get(filename, None)
         last_mtime = file_mtimes.get(filename, 0)
-        
+        last_inode = file_inodes.get(filename, None)
+
+        # Detect file replacement (new inode = mv + recreate)
+        replaced = last_inode is not None and current_inode != last_inode
+
         # First time seeing this file
         if last_position is None:
             logger.info(f"New file: {filename}, size={current_size}")
-            file_specific_buffers[filename] = deque(maxlen=MAX_LINES)  # For file-specific tracking
-            
-            # For new files, read the last MAX_LINES lines
-            async with aiofiles.open(filepath, 'r') as file:
-                lines = await file.readlines()
-                if len(lines) > MAX_LINES:
-                    lines = lines[-MAX_LINES:]
-                
-                for line in lines:
-                    line = line.strip()
-                    if line:
-                        # Add to file-specific buffer
-                        file_specific_buffers[filename].append(line)
-                        # Add to chronological buffer
-                        chronological_log_buffer.append(line)
-                        # Broadcast to connected clients
-                        await broadcast_message(line)
-                
-                # Set the position to end of file
-                file_positions[filename] = current_size
-                file_mtimes[filename] = current_mtime
-            
-        # File has been modified since last check
-        elif current_mtime > last_mtime or current_size != last_position:
-            logger.debug(f"File {filename} changed: size={current_size}, last_pos={last_position}")
-            
-            # If file was truncated or rotated (smaller than before)
-            if current_size < last_position:
+            file_specific_buffers[filename] = deque(maxlen=MAX_LINES)
+
+            async with aiofiles.open(filepath, 'rb') as file:
+                raw = await file.read()
+
+            text = raw.decode('utf-8', errors='replace')
+            # For initial read, only keep last MAX_LINES lines
+            lines = text.split('\n')
+            if len(lines) > MAX_LINES:
+                lines = lines[-MAX_LINES:]
+                text = '\n'.join(lines)
+
+            await _process_chunk(text, filename)
+
+            file_positions[filename] = current_size
+            file_mtimes[filename] = current_mtime
+            file_inodes[filename] = current_inode
+
+        # File replaced (different inode) or modified since last check
+        elif replaced or current_mtime > last_mtime or current_size != last_position:
+            if replaced:
+                logger.info(f"File {filename} was replaced (new inode)")
+                last_position = 0
+                _file_term_state.pop(filename, None)
+                _file_block_sizes.pop(filename, None)
+            elif current_size < last_position:
                 logger.info(f"File {filename} was truncated")
                 last_position = 0
-            
-            # Open and seek to last position
-            async with aiofiles.open(filepath, 'r') as file:
+                _file_term_state.pop(filename, None)
+                _file_block_sizes.pop(filename, None)
+            else:
+                logger.debug(f"File {filename} changed: size={current_size}, last_pos={last_position}")
+
+            async with aiofiles.open(filepath, 'rb') as file:
                 if last_position > 0:
                     await file.seek(last_position)
-                
-                # Read all new lines
-                new_lines = []
-                async for line in file:
-                    line = line.strip()
-                    if line:
-                        new_lines.append(line)
-                        # Add to both buffers
-                        file_specific_buffers[filename].append(line)
-                        chronological_log_buffer.append(line)
-                        await broadcast_message(line)
-                
-                # Update position and mtime
-                file_positions[filename] = await file.tell()
-                file_mtimes[filename] = current_mtime
+                raw = await file.read()
+
+            text = raw.decode('utf-8', errors='replace')
+            await _process_chunk(text, filename)
+
+            file_positions[filename] = current_size
+            file_mtimes[filename] = current_mtime
+            file_inodes[filename] = current_inode
 
     except Exception as e:
         logger.error(f"Error tailing {filepath}: {e}")
 
+
+async def _process_chunk(text: str, filename: str) -> None:
+    """Process a chunk of text with terminal-like \\r, \\n, and cursor-up handling.
+
+    Maintains per-file state across calls so partial lines are not flushed
+    prematurely.  Supports \\x1b[A (cursor up) for nested progress bars (tqdm).
+
+    Lines are kept between chunks so cursor-up in a later chunk can reference
+    lines written in an earlier chunk.
+    """
+    state = _file_term_state.get(filename)
+    if state is None:
+        state = _FileTermState()
+        _file_term_state[filename] = state
+
+    # If previous chunk ended with \r, prepend it so the split sees it
+    if state.pending_cr:
+        text = '\r' + text
+        state.pending_cr = False
+
+    parts = _CHUNK_TOKEN_RE.split(text)
+
+    had_cursor_up = False
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+
+        if part == '\r\n' or part == '\n':
+            # Line complete — advance cursor
+            state.cursor_row += 1
+            if state.cursor_row >= len(state.lines):
+                state.lines.append("")
+            elif state.in_block:
+                # In block mode (cursor-up active), the next line is about
+                # to be rewritten.  Clear it so new text replaces old
+                # content instead of appending to it.
+                state.lines[state.cursor_row] = ""
+        elif part == '\r':
+            # Peek ahead: if next non-empty part is \n or \r\n, this \r
+            # is just part of a line ending (PTY onlcr artifact), not an
+            # overwrite.  Only clear the line for lone \r (progress bars).
+            next_part = None
+            for j in range(i + 1, len(parts)):
+                if parts[j]:
+                    next_part = parts[j]
+                    break
+            if next_part in ('\n', '\r\n'):
+                pass  # skip — the following \n/\r\n will commit the line
+            elif next_part is None:
+                # \r at end of chunk — may be start of \r\n split across reads
+                state.pending_cr = True
+            else:
+                state.lines[state.cursor_row] = ""
+        elif part.startswith('\x1b['):
+            # CSI sequence
+            body = part[2:]
+            letter = body[-1]
+            param_str = body[:-1]
+            # Strip DEC private-mode prefix (e.g. \x1b[?25l)
+            if param_str.startswith('?'):
+                pass  # ignore show/hide cursor, etc.
+            elif letter == 'A' or letter == 'F':
+                # Cursor up (A) / Cursor previous line (F)
+                try:
+                    n = int(param_str) if param_str else 1
+                except ValueError:
+                    n = 1
+                n = min(n, 500)
+                state.cursor_row = max(0, state.cursor_row - n)
+                state.in_block = True
+                had_cursor_up = True
+            elif letter == 'B' or letter == 'E':
+                # Cursor down (B) / Cursor next line (E)
+                try:
+                    n = int(param_str) if param_str else 1
+                except ValueError:
+                    n = 1
+                n = min(n, 500)
+                state.cursor_row += n
+                while state.cursor_row >= len(state.lines):
+                    state.lines.append("")
+            elif letter == 'G':
+                # Cursor horizontal absolute — move to column N.
+                # We don't track columns; treat as \r (column 1).
+                state.lines[state.cursor_row] = ""
+            elif letter == 'K':
+                # Erase in line: 0/default = cursor→end, 1 = start→cursor,
+                # 2 = entire line.  Without column tracking, only param 2
+                # (entire line) can be handled correctly.  Param 0/1 are
+                # no-ops — the line was already cleared by \r or \x1b[G
+                # before new text was written, so there is nothing beyond
+                # the cursor to erase.
+                try:
+                    p = int(param_str) if param_str else 0
+                except ValueError:
+                    p = 0
+                if p == 2:
+                    state.lines[state.cursor_row] = ""
+            elif letter == 'J':
+                # Erase in display — clear visible lines below cursor
+                try:
+                    p = int(param_str) if param_str else 0
+                except ValueError:
+                    p = 0
+                if p in (0, 2):
+                    for r in range(state.cursor_row, len(state.lines)):
+                        state.lines[r] = ""
+            elif letter == 'm':
+                # SGR (color/style) — preserve in line content
+                state.lines[state.cursor_row] += part
+            # Other CSI (cursor show/hide, etc.): ignore
+        else:
+            # Plain text — append to current line
+            state.lines[state.cursor_row] += part
+
+    # --- Emission ---
+    if state.in_block:
+        if had_cursor_up:
+            # Still actively using cursor-up: emit all lines as a block
+            await _emit_block(filename, state.lines)
+        else:
+            # No cursor-up this chunk — progress bars finished, transition
+            # back to line mode.  Flush remaining block lines as appends.
+            await _emit_block(filename, state.lines)
+            state.in_block = False
+            state.emitted_up_to = state.cursor_row
+            state.line_active = False
+            _file_block_sizes.pop(filename, None)
+
+        # Trim old lines in block mode to prevent unbounded growth.
+        # Keep a window around the cursor so cursor-up still works.
+        if len(state.lines) > 400:
+            # Keep the last 200 lines (enough for any progress bar block)
+            keep = 200
+            trim = len(state.lines) - keep
+            state.lines = state.lines[trim:]
+            state.cursor_row = max(0, state.cursor_row - trim)
+            state.emitted_up_to = max(0, state.emitted_up_to - trim)
+    else:
+        # Single-line mode — backward compatible
+        # Emit newly completed lines (emitted_up_to .. cursor_row)
+        for i in range(state.emitted_up_to, state.cursor_row):
+            line = state.lines[i] if i < len(state.lines) else ""
+            if line or state.line_active:
+                if i == state.emitted_up_to and state.line_active:
+                    # First completed line overwrites the partial preview
+                    await _emit_line(filename, line, "overwrite")
+                elif line:
+                    await _emit_line(filename, line, "append")
+                state.line_active = False
+        state.emitted_up_to = state.cursor_row
+
+        # Preview current (incomplete) line
+        current = state.lines[state.cursor_row] if state.cursor_row < len(state.lines) else ""
+        if current:
+            msg_type = "overwrite" if state.line_active else "append"
+            await _emit_line(filename, current, msg_type)
+            state.line_active = True
+
+        # Trim old completed lines to prevent unbounded growth
+        if state.emitted_up_to > 200:
+            trim = state.emitted_up_to
+            state.lines = state.lines[trim:]
+            state.cursor_row -= trim
+            state.emitted_up_to = 0
+
+
+async def _emit_line(filename: str, text: str, msg_type: str) -> None:
+    """Store a line in buffers and broadcast to clients.
+
+    "overwrite" messages update the per-file buffer and are broadcast live
+    to connected clients, but are NOT stored in the chronological buffer.
+    This prevents hundreds of intermediate progress-bar states from stacking
+    up when multiple log files are active and interleaving writes.
+    When the line completes it is emitted as "append" and stored normally.
+    """
+    if msg_type == "overwrite":
+        # Replace last entry in file-specific buffer
+        buf = file_specific_buffers.get(filename)
+        if buf:
+            buf[-1] = text
+        else:
+            file_specific_buffers.setdefault(filename, deque(maxlen=MAX_LINES)).append(text)
+        # Skip chronological buffer — live clients get the broadcast,
+        # new clients will see the final state when it becomes an "append".
+    else:
+        file_specific_buffers.setdefault(filename, deque(maxlen=MAX_LINES)).append(text)
+        chronological_log_buffer.append(text)
+
+    await broadcast_message(text, msg_type, filename)
+
+
+async def _emit_block(filename: str, lines: list[str]) -> None:
+    """Store and broadcast a multi-line progress block."""
+    html_lines = [ansi_to_html(line) for line in lines]
+    if not any(lines):
+        return
+
+    new_size = len(lines)
+
+    # Replace previous block entries in file-specific buffer
+    prev_size = _file_block_sizes.get(filename, 0)
+    buf = file_specific_buffers.get(filename)
+    if buf is not None:
+        for _ in range(min(prev_size, len(buf))):
+            buf.pop()
+    else:
+        buf = deque(maxlen=MAX_LINES)
+        file_specific_buffers[filename] = buf
+    for line in lines:
+        buf.append(line or "")
+
+    # Skip chronological buffer for block updates — live clients get the
+    # broadcast, new clients see the final state when block mode ends.
+
+    _file_block_sizes[filename] = new_size
+
+    json_msg = json.dumps({
+        "type": "overwrite_block",
+        "lines": html_lines,
+        "file": filename
+    })
+
+    clients = list(websocket_clients)
+    if not clients:
+        return
+    send_tasks = [asyncio.create_task(send_to_client(c, json_msg)) for c in clients]
+    results = await asyncio.gather(*send_tasks, return_exceptions=True)
+    disconnected = {c for c, r in zip(clients, results) if isinstance(r, Exception)}
+    websocket_clients.difference_update(disconnected)
+
+
+def _rotate_single_file(filepath: str) -> None:
+    """Truncate a single log file, keeping the last LOG_KEEP_SIZE bytes.
+
+    Atomically replaces the file via write-to-temp + rename so readers
+    see a clean inode change and re-read from the start.
+    """
+    size = os.path.getsize(filepath)
+    if size <= LOG_MAX_SIZE:
+        return
+    logger.info(f"Rotating {filepath}: {size / 1024 / 1024:.1f} MB > {LOG_MAX_SIZE / 1024 / 1024:.0f} MB limit")
+    with open(filepath, "rb") as f:
+        f.seek(max(0, size - LOG_KEEP_SIZE))
+        tail = f.read()
+    # Skip a partial first line
+    nl = tail.find(b"\n")
+    if nl >= 0:
+        tail = tail[nl + 1:]
+    tmp = filepath + ".rotate"
+    with open(tmp, "wb") as f:
+        f.write(tail)
+    os.replace(tmp, filepath)
+    logger.info(f"Rotated {filepath}: kept {len(tail)} bytes")
+
+
+def _rotate_log_file(filepath: str) -> None:
+    """Rotate a portal log file and its corresponding clean log in /var/log/.
+
+    The provisioner logging creates paired files:
+      /var/log/portal/X.log  (raw ANSI for the portal)
+      /var/log/X.log          (clean text for external logging)
+    Both are rotated together to keep disk usage bounded.
+
+    After rotation, updates the file tracking state so tail_log_file
+    doesn't re-read the kept tail as new data.
+    """
+    try:
+        _rotate_single_file(filepath)
+        # Update tracking so we don't re-read the kept tail
+        filename = os.path.basename(filepath)
+        stat = os.stat(filepath)
+        file_positions[filename] = stat.st_size
+        file_mtimes[filename] = stat.st_mtime
+        file_inodes[filename] = stat.st_ino
+        # Also rotate the companion clean log (e.g. /var/log/portal/X.log → /var/log/X.log)
+        directory, basename = os.path.split(filepath)
+        if os.path.basename(directory) == "portal":
+            clean_path = os.path.join(os.path.dirname(directory), basename)
+            if os.path.exists(clean_path):
+                _rotate_single_file(clean_path)
+    except Exception as e:
+        logger.error(f"Failed to rotate {filepath}: {e}")
+
+
 # Main monitoring loop
-async def monitor_log_directory(directory):
+async def monitor_log_directory(directory: str) -> None:
     """Main task to monitor log directory and tail files"""
     logger.info(f"Starting log monitoring in {directory}")
-    
+    last_rotate_check = 0.0
+
     while True:
         try:
             # Get current log files
             log_files = await get_log_files(directory)
-            
+
             # Monitor each file
             for log_file in log_files:
                 filepath = os.path.join(directory, log_file)
                 await tail_log_file(filepath)
-                
+
             # Clean up deleted files
             for filename in list(file_positions.keys()):
                 if filename not in log_files:
                     logger.info(f"File {filename} was removed, cleaning up")
                     file_positions.pop(filename, None)
                     file_mtimes.pop(filename, None)
-            
+                    file_inodes.pop(filename, None)
+                    file_specific_buffers.pop(filename, None)
+                    _file_term_state.pop(filename, None)
+                    _file_block_sizes.pop(filename, None)
+
+            # Periodically check log file sizes and rotate if needed
+            now = asyncio.get_event_loop().time()
+            if now - last_rotate_check > LOG_ROTATE_INTERVAL:
+                last_rotate_check = now
+                for log_file in log_files:
+                    _rotate_log_file(os.path.join(directory, log_file))
+
             # Small delay before next poll
             await asyncio.sleep(POLL_INTERVAL)
-            
+
         except asyncio.CancelledError:
             logger.info("Monitor task cancelled")
             break
@@ -676,7 +1412,7 @@ async def monitor_log_directory(directory):
             await asyncio.sleep(1)
 
 # WebSocket connection handler
-async def websocket_logs(websocket: WebSocket):
+async def websocket_logs(websocket: WebSocket) -> None:
     """Handle a new WebSocket connection"""
     await websocket.accept()
     
@@ -701,40 +1437,12 @@ async def websocket_logs(websocket: WebSocket):
         # Ensure client is removed
         remove_client(websocket, client_id)
 
-# Cleanup function to cancel all tasks
-async def cleanup_tasks():
-    """Clean up all tasks on shutdown"""
-    global monitor_task
-    
-    # Cancel monitor task
-    if monitor_task:
-        logger.info("Cancelling monitor task")
-        monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
-    
-    # Cancel all client tasks
-    for client_id, task in list(client_tasks.items()):
-        logger.info(f"Cancelling client task {client_id}")
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    
-    # Clear collections
-    websocket_clients.clear()
-    client_tasks.clear()
-    logger.info("All tasks cleaned up")
-
 @app.websocket("/ws-logs")
-async def logs_websocket(websocket: WebSocket):
+async def logs_websocket(websocket: WebSocket) -> None:
     await websocket_logs(websocket)
 
 @app.get("/download-logs")
-async def download_logs(filename: str = None):
+async def download_logs(filename: str = None) -> StreamingResponse:
     """
     Zip the /var/log directory and serve it as a downloadable file.
     
@@ -781,14 +1489,14 @@ async def download_logs(filename: str = None):
         return StreamingResponse(
             zip_buffer,
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+            headers={"Content-Disposition": f'attachment; filename="{os.path.basename(zip_filename).replace(chr(34), "_")}"'}
         )
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating zip file: {str(e)}")
 
 @app.get("/system-metrics")
-async def get_system_metrics():
+async def get_system_metrics() -> JSONResponse:
     # Try to get container memory metrics first
     container_memory = get_container_memory_stats()
     
@@ -808,6 +1516,14 @@ async def get_system_metrics():
     
     # Add container detection info
     metrics['environment'] = 'container' if is_in_container() else 'host'
+
+    # CPU metrics
+    metrics['cpu'] = get_cpu_stats()
+
+    # Workspace volume (only if mounted as a separate filesystem)
+    volume_info = get_workspace_volume_info()
+    if volume_info:
+        metrics['volume'] = volume_info
     
     # Get GPU metrics from both NVIDIA and AMD sources
     all_gpus = []
@@ -831,7 +1547,7 @@ async def get_system_metrics():
     # Calculate metrics if any GPUs are found
     if all_gpus:
         # Calculate average load across all GPUs
-        avg_load = np.mean([gpu.load for gpu in all_gpus])
+        avg_load = sum(gpu.load for gpu in all_gpus) / len(all_gpus)
         
         # Sum total and used memory across all GPUs
         # Handle potential unit differences between NVIDIA and ROCm
@@ -892,13 +1608,3 @@ async def get_system_metrics():
 
     return JSONResponse(content=metrics)
 
-@app.on_event("startup")
-async def startup_event():
-    app.state.monitor_task = asyncio.create_task(
-        monitor_log_directory("/var/log/portal")
-    )
-
-@app.on_event("shutdown") 
-async def shutdown_event():
-    if hasattr(app.state, 'monitor_task'):
-        app.state.monitor_task.cancel()

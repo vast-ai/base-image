@@ -1,4 +1,519 @@
+# Build base images across all config variants and Python versions
+# Splits arch builds into separate jobs, then merges into multi-arch manifests
+# Required repository secrets:
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+# DOCKERHUB_NAMESPACE_STAGING
+# Optional:
+# SLACK_WEBHOOK_URL
+
 name: Build Base Image
 
 on:
   workflow_dispatch:
+    inputs:
+      FILTER:
+        description: "Filter configs by pattern (e.g. cuda-12, stock, 24)"
+        required: false
+        default: ""
+      DRY_RUN:
+        description: "Print what would build without building"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: base-image-build
+  cancel-in-progress: false
+
+jobs:
+  validate-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=()
+          [[ -z "$NAMESPACE" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          [[ -z "$USERNAME" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "$TOKEN" ]] && missing+=("DOCKERHUB_TOKEN")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required secrets are set"
+
+  generate-matrix:
+    needs: validate-secrets
+    runs-on: ubuntu-latest
+    outputs:
+      build-matrix: ${{ steps.matrix.outputs.build-matrix }}
+      merge-matrix: ${{ steps.matrix.outputs.merge-matrix }}
+      mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
+      mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
+      build-date: ${{ steps.matrix.outputs.build-date }}
+    steps:
+      - name: Generate matrices
+        id: matrix
+        run: |
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          echo "build-date=$BUILD_DATE" >> $GITHUB_OUTPUT
+
+          FILTER="${{ inputs.FILTER }}"
+
+          # Build configs: key|base_image|tag_template|arches|default_python
+          # tag_template does NOT include -pyXXX (that's added dynamically)
+          CONFIGS=(
+            "stock-22|ubuntu:22.04|stock-ubuntu22.04|linux/amd64,linux/arm64|3.10"
+            "stock-24|ubuntu:24.04|stock-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-11.8-22|nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04|cuda-11.8.0-cudnn8-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
+            "cuda-12.1-22|nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04|cuda-12.1.1-cudnn8-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
+            "cuda-12.4-22|nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04|cuda-12.4.1-cudnn-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
+            "cuda-12.6-24|nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04|cuda-12.6.3-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-12.8-24|nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04|cuda-12.8.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-12.9-24|nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04|cuda-12.9.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.0.2-24|nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04|cuda-13.0.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.1.1-24|nvidia/cuda:13.1.1-cudnn-devel-ubuntu24.04|cuda-13.1.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.2.0-24|nvidia/cuda:13.2.0-cudnn-devel-ubuntu24.04|cuda-13.2.0-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+          )
+
+          BUILD_MATRIX="[]"
+          MERGE_MATRIX="[]"
+
+          for config in "${CONFIGS[@]}"; do
+            IFS='|' read -r key base_image tag_template arches default_python <<< "$config"
+
+            # Apply filter
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            # Add to merge matrix (one per config)
+            MERGE_MATRIX=$(echo "$MERGE_MATRIX" | jq -c \
+              --arg key "$key" \
+              --arg tag_template "$tag_template" \
+              --arg default_python "$default_python" \
+              '. + [{"config_key": $key, "tag_template": $tag_template, "default_python": $default_python}]')
+
+            # Split arches into separate build matrix entries
+            IFS=',' read -ra ARCH_LIST <<< "$arches"
+            for arch in "${ARCH_LIST[@]}"; do
+              arch_suffix="${arch#linux/}"
+              BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
+                --arg key "$key" \
+                --arg base_image "$base_image" \
+                --arg tag_template "$tag_template" \
+                --arg arch "$arch" \
+                --arg arch_suffix "$arch_suffix" \
+                --arg default_python "$default_python" \
+                '. + [{"config_key": $key, "base_image": $base_image, "tag_template": $tag_template, "arch": $arch, "arch_suffix": $arch_suffix, "default_python": $default_python}]')
+            done
+          done
+
+          # Mini configs: key|mini_tag|cuda_versions
+          MINI_CONFIGS=(
+            "cuda-12.9-mini|cuda-12.9-mini|12-9"
+            "cuda-13.1-mini|cuda-13.1-mini|12-9 13-1"
+            "cuda-13.2-mini|cuda-13.2-mini|12-9 13-2"
+          )
+
+          MINI_BUILD_MATRIX="[]"
+          MINI_MERGE_MATRIX="[]"
+
+          for mini_config in "${MINI_CONFIGS[@]}"; do
+            IFS='|' read -r key mini_tag cuda_versions <<< "$mini_config"
+
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            MINI_MERGE_MATRIX=$(echo "$MINI_MERGE_MATRIX" | jq -c \
+              --arg key "$key" \
+              --arg mini_tag "$mini_tag" \
+              '. + [{"config_key": $key, "mini_tag": $mini_tag}]')
+
+            for arch in "linux/amd64" "linux/arm64"; do
+              arch_suffix="${arch#linux/}"
+              MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
+                --arg key "$key" \
+                --arg mini_tag "$mini_tag" \
+                --arg cuda_versions "$cuda_versions" \
+                --arg arch "$arch" \
+                --arg arch_suffix "$arch_suffix" \
+                '. + [{"config_key": $key, "mini_tag": $mini_tag, "cuda_versions": $cuda_versions, "arch": $arch, "arch_suffix": $arch_suffix}]')
+            done
+          done
+
+          # Output matrices
+          {
+            echo "build-matrix<<BUILD_MATRIX_EOF"
+            echo "{\"include\":${BUILD_MATRIX}}"
+            echo "BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "merge-matrix<<MERGE_MATRIX_EOF"
+            echo "{\"include\":${MERGE_MATRIX}}"
+            echo "MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-build-matrix<<MINI_BUILD_MATRIX_EOF"
+            echo "{\"include\":${MINI_BUILD_MATRIX}}"
+            echo "MINI_BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "mini-merge-matrix<<MINI_MERGE_MATRIX_EOF"
+            echo "{\"include\":${MINI_MERGE_MATRIX}}"
+            echo "MINI_MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+
+          echo "Build matrix entries: $(echo $BUILD_MATRIX | jq length)"
+          echo "Merge matrix entries: $(echo $MERGE_MATRIX | jq length)"
+          echo "Mini build matrix entries: $(echo $MINI_BUILD_MATRIX | jq length)"
+          echo "Build date: $BUILD_DATE"
+
+  build:
+    needs: generate-matrix
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.build-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build all Python versions
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          TAG_TEMPLATE: ${{ matrix.tag_template }}
+          BASE_IMAGE: ${{ matrix.base_image }}
+          ARCH: ${{ matrix.arch }}
+          ARCH_SUFFIX: ${{ matrix.arch_suffix }}
+          DEFAULT_PYTHON: ${{ matrix.default_python }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          mkdir -p built-tags
+
+          for py_version in "${PYTHON_VERSIONS[@]}"; do
+            py_tag="${py_version//.}"
+
+            # Primary arch-specific tag with date
+            PRIMARY_TAG="${NAMESPACE}/base-image:${TAG_TEMPLATE}-py${py_tag}-${BUILD_DATE}-${ARCH_SUFFIX}"
+
+            TAGS="--tag ${PRIMARY_TAG}"
+
+            # Default Python alias (no -pyXXX)
+            if [[ "$py_version" == "$DEFAULT_PYTHON" ]]; then
+              ALIAS_TAG="${NAMESPACE}/base-image:${TAG_TEMPLATE}-${BUILD_DATE}-${ARCH_SUFFIX}"
+              TAGS+=" --tag ${ALIAS_TAG}"
+              echo "$ALIAS_TAG" >> built-tags/tags.txt
+            fi
+
+            echo "=== Building ${TAG_TEMPLATE} py${py_tag} for ${ARCH} ==="
+            docker buildx build \
+              --progress=plain \
+              --platform "${ARCH}" \
+              -f Dockerfile \
+              --build-arg BASE_IMAGE="${BASE_IMAGE}" \
+              --build-arg PYTHON_VERSION="${py_version}" \
+              ${TAGS} \
+              --push .
+
+            echo "$PRIMARY_TAG" >> built-tags/tags.txt
+            echo "Pushed: ${PRIMARY_TAG}"
+          done
+
+      - name: Upload built tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tags-${{ matrix.config_key }}-${{ matrix.arch_suffix }}
+          path: built-tags/
+          retention-days: 1
+
+  merge-manifests:
+    needs: [generate-matrix, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.merge-matrix) }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Merge arch manifests
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          TAG_TEMPLATE: ${{ matrix.tag_template }}
+          DEFAULT_PYTHON: ${{ matrix.default_python }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          mkdir -p built-tags
+
+          for py_version in "${PYTHON_VERSIONS[@]}"; do
+            py_tag="${py_version//.}"
+
+            FINAL_TAG="${NAMESPACE}/base-image:${TAG_TEMPLATE}-py${py_tag}-${BUILD_DATE}"
+            AMD64_TAG="${FINAL_TAG}-amd64"
+            ARM64_TAG="${FINAL_TAG}-arm64"
+
+            EXTRA_TAGS=""
+            if [[ "$py_version" == "$DEFAULT_PYTHON" ]]; then
+              ALIAS_TAG="${NAMESPACE}/base-image:${TAG_TEMPLATE}-${BUILD_DATE}"
+              EXTRA_TAGS="-t ${ALIAS_TAG}"
+              echo "$ALIAS_TAG" >> built-tags/tags.txt
+            fi
+
+            echo "=== Merging manifest: ${FINAL_TAG} ==="
+            docker buildx imagetools create \
+              -t "${FINAL_TAG}" \
+              ${EXTRA_TAGS} \
+              "${AMD64_TAG}" "${ARM64_TAG}"
+
+            echo "$FINAL_TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload manifest tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-tags-${{ matrix.config_key }}
+          path: built-tags/
+          retention-days: 1
+
+  build-mini:
+    needs: [generate-matrix, merge-manifests]
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-build-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build mini Python versions
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          MINI_TAG: ${{ matrix.mini_tag }}
+          CUDA_VERSIONS: ${{ matrix.cuda_versions }}
+          ARCH: ${{ matrix.arch }}
+          ARCH_SUFFIX: ${{ matrix.arch_suffix }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
+          mkdir -p built-tags
+
+          for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+            py_tag="${py_version//.}"
+
+            # Use the just-built staging stock-24 image as base
+            BASE="${NAMESPACE}/base-image:stock-ubuntu24.04-py${py_tag}-${BUILD_DATE}"
+            TAG="${NAMESPACE}/base-image:${MINI_TAG}-py${py_tag}-${BUILD_DATE}-${ARCH_SUFFIX}"
+
+            echo "=== Building mini: ${MINI_TAG} py${py_tag} for ${ARCH} ==="
+            docker buildx build \
+              --progress=plain \
+              --platform "${ARCH}" \
+              -f Dockerfile.runtime \
+              --build-arg BASE_IMAGE="${BASE}" \
+              --build-arg CUDA_VERSIONS="${CUDA_VERSIONS}" \
+              --tag "${TAG}" \
+              --push .
+
+            echo "$TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload mini tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-tags-${{ matrix.config_key }}-${{ matrix.arch_suffix }}
+          path: built-tags/
+          retention-days: 1
+
+  merge-mini-manifests:
+    needs: [generate-matrix, build-mini]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-merge-matrix) }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Merge mini manifests
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          MINI_TAG: ${{ matrix.mini_tag }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
+          mkdir -p built-tags
+
+          for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+            py_tag="${py_version//.}"
+
+            FINAL_TAG="${NAMESPACE}/base-image:${MINI_TAG}-py${py_tag}-${BUILD_DATE}"
+            AMD64_TAG="${FINAL_TAG}-amd64"
+            ARM64_TAG="${FINAL_TAG}-arm64"
+
+            echo "=== Merging mini manifest: ${FINAL_TAG} ==="
+            docker buildx imagetools create \
+              -t "${FINAL_TAG}" \
+              "${AMD64_TAG}" "${ARM64_TAG}"
+
+            echo "$FINAL_TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload mini manifest tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-manifest-tags-${{ matrix.config_key }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags-*}"
+          path: all-tags/
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(find all-tags -name '*.txt' -exec cat {} + | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found $(echo $TAGS | jq length) unique tags"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
+
+  dry-run:
+    needs: generate-matrix
+    if: ${{ inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print build plan
+        env:
+          BUILD_MATRIX: ${{ needs.generate-matrix.outputs.build-matrix }}
+          MERGE_MATRIX: ${{ needs.generate-matrix.outputs.merge-matrix }}
+          MINI_BUILD_MATRIX: ${{ needs.generate-matrix.outputs.mini-build-matrix }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+        run: |
+          echo "=== DRY RUN - Build Plan ==="
+          echo "Build date: $BUILD_DATE"
+          echo "Staging namespace: $NAMESPACE_STAGING"
+          echo ""
+
+          echo "=== Build Jobs ==="
+          echo "$BUILD_MATRIX" | jq -r '.include[] | "  \(.config_key) [\(.arch_suffix)] base=\(.base_image)"'
+          echo ""
+
+          echo "=== Merge Jobs ==="
+          echo "$MERGE_MATRIX" | jq -r '.include[] | "  \(.config_key) default_py=\(.default_python)"'
+          echo ""
+
+          echo "=== Tags that would be created ==="
+          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          for entry in $(echo "$MERGE_MATRIX" | jq -c '.include[]'); do
+            tag_template=$(echo "$entry" | jq -r '.tag_template')
+            default_python=$(echo "$entry" | jq -r '.default_python')
+            for py in "${PYTHON_VERSIONS[@]}"; do
+              py_tag="${py//.}"
+              echo "  ${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${BUILD_DATE}"
+            done
+            dp_tag="${default_python//.}"
+            echo "  ${NAMESPACE_STAGING}/base-image:${tag_template}-${BUILD_DATE} (alias for py${dp_tag})"
+            echo ""
+          done
+
+          echo "=== Mini Build Jobs ==="
+          echo "$MINI_BUILD_MATRIX" | jq -r '.include[] | "  \(.config_key) [\(.arch_suffix)] cuda=\(.cuda_versions)"'
+          echo ""
+
+          echo "=== Mini Tags ==="
+          for entry in $(echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")'); do
+            mini_tag=$(echo "$entry" | jq -r '.mini_tag')
+            for py in "3.10" "3.11" "3.12"; do
+              py_tag="${py//.}"
+              echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${BUILD_DATE}"
+            done
+          done
+
+  notify:
+    needs: [generate-matrix, build, merge-manifests, collect-tags]
+    if: always() && !inputs.DRY_RUN
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "Base Image"
+      image-ref: ${{ needs.generate-matrix.outputs.build-date }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

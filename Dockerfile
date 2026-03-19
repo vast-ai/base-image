@@ -30,6 +30,8 @@ RUN sed -i '1i umask 002' /root/.bashrc
 
 # Add some useful scripts and config files
 COPY ./ROOT/ /
+# Marker for tests
+ENV IMAGE_TYPE=vast
 
 # Vast.ai environment variables used for Jupyter & Data sync
 ENV DATA_DIRECTORY=/workspace
@@ -42,6 +44,9 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Allow immediate output
 ENV PYTHONUNBUFFERED=1
+# Enable expect/unbuffer to find its Tcl libraries (multiarch-safe)
+RUN mkdir -p /usr/lib/tcltk && ln -sf /usr/lib/tcltk/$(uname -m)-linux-gnu /usr/lib/tcltk/default
+ENV TCLLIBPATH=/usr/lib/tcltk/default
 # Expose all toolklit features
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
@@ -100,6 +105,7 @@ RUN \
         git-lfs \
         man \
         tzdata \
+        expect \
         # Display
         fonts-dejavu \
         fonts-freefont-ttf \
@@ -128,6 +134,20 @@ RUN \
         ninja-build \
         gdb \
         libssl-dev \
+        # Build system tools
+        pkg-config \
+        autoconf \
+        automake \
+        libtool \
+        # Common dev libraries
+        libffi-dev \
+        libcurl4-openssl-dev \
+        libxml2-dev \
+        libsqlite3-dev \
+        # Image processing
+        libpng-dev \
+        libjpeg-dev \
+        libwebp-dev \
         # System Python
         python3-full \
         python3-dev \
@@ -245,6 +265,14 @@ RUN \
     ln -s /opt/portal-aio/tunnel_manager/cloudflared /opt/instance-tools/bin/cloudflared && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install the declarative provisioner into its own venv
+RUN \
+    set -euo pipefail && \
+    uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11 && \
+    . /opt/instance-tools/provisioner/venv/bin/activate && \
+    uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt && \
+    deactivate
 
 # Populate the system Python environment with useful tools.  Add jupyter to speed up instance creation and install tensorboard as it is quite useful if training
 # These are in the system and not the venv because we want that to be as clean as possible

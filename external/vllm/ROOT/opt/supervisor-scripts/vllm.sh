@@ -4,7 +4,8 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-[[ "${SERVERLESS:-false}" = "false" ]] && . "${utils}/exit_portal.sh" "vllm"
+[[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
+. "${utils}/exit_portal.sh" "vllm"
 
 # Check we are actually trying to serve a model
 if [[ -z "${VLLM_MODEL:-}" ]]; then
@@ -61,4 +62,4 @@ if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-siz
 fi
 
 # Read complex args from /etc/vllm-args.conf if env vars were unsuitable
-eval "vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
+eval "pty vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
