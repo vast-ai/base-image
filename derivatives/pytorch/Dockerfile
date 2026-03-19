@@ -25,7 +25,7 @@ RUN \
     # Build package list - torchcodec unavailable via pip for arm64
     PACKAGES="torch==${PYTORCH_VERSION} torchvision torchaudio torchtext torchdata" && \
     [[ "${TARGETARCH}" == "amd64" ]] && PACKAGES="${PACKAGES} torchcodec" || true && \
-    uv pip install ${PACKAGES} --torch-backend ${PYTORCH_BACKEND} && \
+    uv pip install --no-cache-dir ${PACKAGES} --torch-backend ${PYTORCH_BACKEND} && \
     # Pin numpy<2 for PyTorch <=2.1 to prevent compatibility issues.
     # NumPy 2.0 introduced breaking ABI changes that cause crashes with older PyTorch.
     # Without this pin, users could accidentally upgrade numpy and break their environment.
