@@ -63,6 +63,10 @@ RUN \
     mkdir /opt/workspace-internal && \
     ln -s /sgl-workspace /opt/workspace-internal/sgl-workspace-link
 
+# Fix sglang shebang so it runs through the venv Python, allowing users to
+# install/upgrade dependencies (e.g. transformers) into /venv/main and have
+# vllm pick them up.  Also enables volume sync of the environment.
+RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/sglang
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
