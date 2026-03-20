@@ -9,14 +9,16 @@ downloads:
 
 post_commands:
   - >-
+    bash -c '
     . /opt/nvm/nvm.sh &&
     . /venv/main/bin/activate &&
-    sed -i 's|^VENV_NAME="unsloth_studio"|VENV_NAME="/venv/main"|' /tmp/unsloth-install.sh &&
-    sed -i 's|^PYTHON_VERSION="3.13"|PYTHON_VERSION="3.12"|' /tmp/unsloth-install.sh &&
-    sed -i 's|--torch-backend=auto|--torch-backend=cu128|' /tmp/unsloth-install.sh &&
-    sed -i '/^if \[ -t 0 \]/,/^fi$/d' /tmp/unsloth-install.sh &&
+    sed -i "s|^VENV_NAME=\"unsloth_studio\"|VENV_NAME=\"/venv/main\"|" /tmp/unsloth-install.sh &&
+    sed -i "s|^PYTHON_VERSION=\"3.13\"|PYTHON_VERSION=\"3.12\"|" /tmp/unsloth-install.sh &&
+    sed -i "s|--torch-backend=auto|--torch-backend=cu128|" /tmp/unsloth-install.sh &&
+    sed -i "/^if \[ -t 0 \]/,/^fi$/d" /tmp/unsloth-install.sh &&
     sh /tmp/unsloth-install.sh &&
     rm /tmp/unsloth-install.sh
+    '
 
 services:
   - name: unsloth-studio
