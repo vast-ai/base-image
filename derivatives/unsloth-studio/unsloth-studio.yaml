@@ -1,0 +1,24 @@
+version: 1
+
+apt_packages:
+  - libcublas-dev-12-9
+
+downloads:
+  - url: https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh
+    dest: /tmp/unsloth-install.sh
+
+post_commands:
+  - >-
+    . /opt/nvm/nvm.sh &&
+    . /venv/main/bin/activate &&
+    sed -i 's|^VENV_NAME="unsloth_studio"|VENV_NAME="/venv/main"|' /tmp/unsloth-install.sh &&
+    sed -i 's|^PYTHON_VERSION="3.13"|PYTHON_VERSION="3.12"|' /tmp/unsloth-install.sh &&
+    sed -i 's|--torch-backend=auto|--torch-backend=cu128|' /tmp/unsloth-install.sh &&
+    sed -i '/^if \[ -t 0 \]/,/^fi$/d' /tmp/unsloth-install.sh &&
+    sh /tmp/unsloth-install.sh &&
+    rm /tmp/unsloth-install.sh
+
+services:
+  - name: unsloth-studio
+    portal_search_term: "Unsloth"
+    command: "unsloth studio ${UNSLOTH_STUDIO_ARGS:---host 127.0.0.1 --port 18888}"
