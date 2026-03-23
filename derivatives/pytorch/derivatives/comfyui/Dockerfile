@@ -35,6 +35,7 @@ RUN \
     cd /opt/workspace-internal/ComfyUI/custom_nodes && \
     git clone https://github.com/Comfy-Org/ComfyUI-Manager && \
     uv pip install --no-cache-dir -r ComfyUI-Manager/requirements.txt && \
+    git clone https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint && \
     # Quick startup test in CPU mode to ensure requirements ready and startup succeeds
     cd /opt/workspace-internal/ComfyUI && \
     LD_PRELOAD=libtcmalloc_minimal.so.4 \
