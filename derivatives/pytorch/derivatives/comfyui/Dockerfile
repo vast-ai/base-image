@@ -81,6 +81,7 @@ RUN \
     rm -rf /opt/model_store/.cache && \
     rm -rf /root/.cache/huggingface
 
+RUN rm -f /opt/supervisor-scripts/pyworker.sh /etc/supervisor/conf.d/pyworker.conf
 # Defend against environment clashes when syncing to volume
 RUN \
     set -euo pipefail && \
