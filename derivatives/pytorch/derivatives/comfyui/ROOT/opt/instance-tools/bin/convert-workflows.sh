@@ -56,6 +56,13 @@ for filepath in "${json_files[@]}"; do
     filename=$(basename "$filepath")
     log "Processing ${filename}..."
 
+    # Skip if output already exists (don't clobber user modifications)
+    if [[ -f "${OUTPUT_DIR}/${filename}" ]]; then
+        log "  Skipping ${filename} (output already exists)"
+        skipped=$((skipped + 1))
+        continue
+    fi
+
     # Check if GUI format (has "nodes" key)
     if ! jq -e '.nodes' "$filepath" > /dev/null 2>&1; then
         log "  Skipping ${filename} (not GUI format)"
