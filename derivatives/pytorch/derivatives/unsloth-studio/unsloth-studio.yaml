@@ -23,4 +23,4 @@ post_commands:
 services:
   - name: unsloth-studio
     portal_search_term: "Unsloth"
-    command: "unsloth studio ${UNSLOTH_STUDIO_ARGS:---host 127.0.0.1 --port 18888}"
+    command: "pty unsloth studio ${UNSLOTH_STUDIO_ARGS:---host 127.0.0.1 --port 18888}"
