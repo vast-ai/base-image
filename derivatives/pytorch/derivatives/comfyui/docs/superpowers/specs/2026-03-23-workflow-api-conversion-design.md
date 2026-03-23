@@ -128,6 +128,8 @@ The script does not clear the payloads directory before writing. If a provisioni
 Add the conversion step between provisioning wait and uvicorn launch. The conversion script's exit code is intentionally not checked — if it fails (e.g. ComfyUI timeout), the API wrapper still starts, it just won't have converted payloads:
 
 ```bash
+# ... (existing source of utils, SERVERLESS/portal guard, cleanup trap) ...
+
 # Wait for provisioning to complete
 while [ -f "/.provisioning" ]; do
     echo "$PROC_NAME startup paused until instance provisioning has completed (/.provisioning present)"
@@ -145,6 +147,8 @@ pty uvicorn main:app --port 18288 2>&1
 
 **Serverless note:** In `SERVERLESS` mode, the conversion still runs. The timeout is the main concern for cold-start latency, but ComfyUI must be loaded anyway for the wrapper to function, so the wait is unavoidable.
 
+**Interaction with provisioning scripts:** Some existing provisioning scripts (e.g. `flux.2-dev.sh`) run `rm /opt/comfyui-api-wrapper/payloads/*.json` before writing their own hand-crafted payloads. Since provisioning completes before the conversion script runs, those hand-crafted payloads will already be in place. The conversion script may then overwrite them if the source workflow has the same filename. This is by design — the dynamically converted version is the source of truth.
+
 ### 3. Dockerfile (user-managed)
 
 The Seth Robinson converter custom node must be baked into the image. This is outside the scope of this spec — the user will add the appropriate `git clone` or `COPY` directive to the Dockerfile.
@@ -158,7 +162,7 @@ The Seth Robinson converter custom node must be baked into the image. This is ou
 ## Dependencies
 
 - `curl` — HTTP calls to ComfyUI endpoints
-- `jq` — JSON parsing, seed replacement, and envelope wrapping
+- `jq` >= 1.6 — JSON parsing, seed replacement, and envelope wrapping (1.6+ required for `walk()`)
 - Seth Robinson's `comfyui-workflow-to-api-converter-endpoint` custom node installed in ComfyUI
 
 ## Error Handling
