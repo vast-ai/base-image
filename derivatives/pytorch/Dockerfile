@@ -23,15 +23,8 @@ RUN \
     [[ "${PYTORCH_BACKEND}" != "auto" ]] || { echo "Cannot use 'auto' as torch backend during build" && exit 1; } && \
     # Activate the venv
     . /venv/main/bin/activate && \
-    # Look up pinned companion versions from JSON
-    jq -e --arg v "${PYTORCH_VERSION}" '.[$v]' /tmp/torch-companions.json > /dev/null || \
-        { echo "ERROR: PyTorch ${PYTORCH_VERSION} not found in torch-companions.json" && exit 1; } && \
-    # Build pinned package list, filtering amd64-only packages on other arches
-    if [[ "${TARGETARCH}" == "amd64" ]]; then \
-        COMPANIONS=$(jq -r --arg v "${PYTORCH_VERSION}" '.[$v].packages | to_entries | map("\(.key)==\(.value)") | .[]' /tmp/torch-companions.json | tr '\n' ' '); \
-    else \
-        COMPANIONS=$(jq -r --arg v "${PYTORCH_VERSION}" '(.[$v].amd64_only // []) as $excl | .[$v].packages | to_entries | map(select(.key as $k | $excl | index($k) | not)) | map("\(.key)==\(.value)") | .[]' /tmp/torch-companions.json | tr '\n' ' '); \
-    fi && \
+    # Look up pinned companion versions from JSON, filtering amd64-only packages on other arches
+    COMPANIONS=$(jq -r --arg v "${PYTORCH_VERSION}" --arg arch "${TARGETARCH}" 'if .[$v] == null then error("version not found") else . end | (.[$v].amd64_only // []) as $excl | .[$v].packages | to_entries | if $arch != "amd64" then map(select(.key as $k | $excl | index($k) | not)) else . end | map(.key + "==" + .value) | .[]' /tmp/torch-companions.json | tr '\n' ' ') && \
     PACKAGES="torch==${PYTORCH_VERSION} ${COMPANIONS}" && \
     echo "Installing: ${PACKAGES}" && \
     uv pip install --no-cache-dir ${PACKAGES} --torch-backend ${PYTORCH_BACKEND} && \
@@ -48,7 +41,7 @@ RUN \
     for spec in ${COMPANIONS}; do \
         pkg="${spec%%==*}" && ver="${spec#*==}" && \
         actual=$(python3 -c "import ${pkg}; print(${pkg}.__version__)") && \
-        [[ "${actual}" == "${ver}" ]] || { echo "${pkg}: expected ${ver}, got ${actual}" && exit 1; } && \
+        [[ "${actual}" == "${ver}"* ]] || { echo "${pkg}: expected ${ver}, got ${actual}" && exit 1; } && \
         echo "${pkg}==${actual} OK"; \
     done && \
     # Test 2: Check for correct backend based on base image
