@@ -40,7 +40,7 @@ RUN \
     python3 -c "import torch; assert torch.__version__.startswith('${PYTORCH_VERSION}'), f'torch: expected ${PYTORCH_VERSION}, got {torch.__version__}'" && \
     for spec in ${COMPANIONS}; do \
         pkg="${spec%%==*}" && ver="${spec#*==}" && \
-        actual=$(python3 -c "import ${pkg}; print(${pkg}.__version__)") && \
+        actual=$(python3 -c "from importlib.metadata import version; print(version('${pkg}'))") && \
         [[ "${actual}" == "${ver}"* ]] || { echo "${pkg}: expected ${ver}, got ${actual}" && exit 1; } && \
         echo "${pkg}==${actual} OK"; \
     done && \
