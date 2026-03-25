@@ -17,7 +17,7 @@ fi
 
 # Escape hatch
 if [[ "${SUPERVISOR_SKIP_PYWORKER,,}" == "true" ]]; then
-    echo "Skipping ${PROC_NAME} startup (SUPERVISOR_SKIP_PYWORKER=false)"
+    echo "Skipping ${PROC_NAME} startup (SUPERVISOR_SKIP_PYWORKER=true)"
     sleep 6
     exit 0
 fi
