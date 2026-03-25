@@ -24,13 +24,13 @@ RUN \
     # Activate the venv
     . /venv/main/bin/activate && \
     # Look up pinned companion versions from JSON
-    ENTRY=$(jq -r --arg v "${PYTORCH_VERSION}" '.[$v] // empty' /tmp/torch-companions.json) && \
-    [[ -n "${ENTRY}" ]] || { echo "ERROR: PyTorch ${PYTORCH_VERSION} not found in torch-companions.json" && exit 1; } && \
+    jq -e --arg v "${PYTORCH_VERSION}" '.[$v]' /tmp/torch-companions.json > /dev/null || \
+        { echo "ERROR: PyTorch ${PYTORCH_VERSION} not found in torch-companions.json" && exit 1; } && \
     # Build pinned package list, filtering amd64-only packages on other arches
     if [[ "${TARGETARCH}" == "amd64" ]]; then \
-        COMPANIONS=$(echo "${ENTRY}" | jq -r '.packages | to_entries | map("\(.key)==\(.value)") | .[]' | tr '\n' ' '); \
+        COMPANIONS=$(jq -r --arg v "${PYTORCH_VERSION}" '.[$v].packages | to_entries | map("\(.key)==\(.value)") | .[]' /tmp/torch-companions.json | tr '\n' ' '); \
     else \
-        COMPANIONS=$(echo "${ENTRY}" | jq -r '(.amd64_only // []) as $excl | .packages | to_entries | map(select(.key as $k | $excl | index($k) | not)) | map("\(.key)==\(.value)") | .[]' | tr '\n' ' '); \
+        COMPANIONS=$(jq -r --arg v "${PYTORCH_VERSION}" '(.[$v].amd64_only // []) as $excl | .[$v].packages | to_entries | map(select(.key as $k | $excl | index($k) | not)) | map("\(.key)==\(.value)") | .[]' /tmp/torch-companions.json | tr '\n' ' '); \
     fi && \
     PACKAGES="torch==${PYTORCH_VERSION} ${COMPANIONS}" && \
     echo "Installing: ${PACKAGES}" && \
