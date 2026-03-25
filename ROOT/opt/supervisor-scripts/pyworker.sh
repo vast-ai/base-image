@@ -15,9 +15,16 @@ if [[ "${SERVERLESS,,}" != "true" ]]; then
     exit 0
 fi
 
+# Escape hatch
+if [[ "${SUPERVISOR_SKIP_PYWORKER,,}" == "true" ]]; then
+    echo "Skipping ${PROC_NAME} startup (SUPERVISOR_SKIP_PYWORKER=false)"
+    sleep 6
+    exit 0
+fi
+
 # Skip if onstart.sh already handles pyworker bootstrap
-bootstrap_url="https://raw.githubusercontent.com/vast-ai/pyworker/refs/heads/main/start_server.sh"
-if [[ -f /root/onstart.sh ]] && grep -qF "$bootstrap_url" /root/onstart.sh; then
+bootstrap_url="https://raw.githubusercontent.com/vast-ai/pyworker/main/start_server.sh"
+if [[ -f /root/onstart.sh ]] && grep -qE "pyworker|start_server\.sh" /root/onstart.sh; then
     echo "Skipping ${PROC_NAME} startup (handled by /root/onstart.sh)"
     sleep 6
     exit 0
