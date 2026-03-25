@@ -451,7 +451,7 @@ jobs:
 
           echo "=== Tags that would be created ==="
           PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
-          for entry in $(echo "$MERGE_MATRIX" | jq -c '.include[]'); do
+          echo "$MERGE_MATRIX" | jq -c '.include[]' | while IFS= read -r entry; do
             tag_template=$(echo "$entry" | jq -r '.tag_template')
             default_python=$(echo "$entry" | jq -r '.default_python')
             for py in "${PYTHON_VERSIONS[@]}"; do
@@ -469,7 +469,7 @@ jobs:
           echo ""
 
           echo "=== Mini Tags ==="
-          for entry in $(echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")'); do
+          echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")' | while IFS= read -r entry; do
             mini_tag=$(echo "$entry" | jq -r '.mini_tag')
             for py in "3.10" "3.11" "3.12"; do
               py_tag="${py//.}"
