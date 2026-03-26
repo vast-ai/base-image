@@ -102,8 +102,8 @@ json.dump(info, sys.stdout)
 import torch
 for i in range(torch.cuda.device_count()):
     props = torch.cuda.get_device_properties(i)
-    print(f'  GPU {i}: {props.name} ({props.total_mem / 1e9:.1f} GB)')
-"
+    print(f'  GPU {i}: {props.name} ({props.total_memory / 1e9:.1f} GB)')
+" 2>&1 || fail_later "${venv_name}-gpu-info" "failed to query GPU properties"
         _gpu_info_printed=1
     fi
 
