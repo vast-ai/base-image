@@ -158,16 +158,19 @@ done
 
 echo ""
 if has_gpu && [[ "$_cuda_available" == "True" ]] && [[ "$_device_count" -gt 1 ]]; then
-    # Use the first torch venv for the NCCL test
+    # Use the first torch venv for the NCCL test.
+    # mp.spawn needs a real script file — it pickles the worker function and the
+    # spawned subprocess re-imports __main__ to unpickle it. With python3 -c
+    # there is no __main__ file, so unpickling fails.
     NCCL_PY="${TORCH_VENVS[0]}bin/python3"
-    "$NCCL_PY" -c "
+    NCCL_SCRIPT="/tmp/test_nccl.py"
+    cat > "$NCCL_SCRIPT" <<'NCCL_EOF'
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import sys, os
 
 def _worker(rank, world_size, results_path):
-    '''Run in a subprocess — one per GPU.'''
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29500'
     try:
@@ -199,36 +202,39 @@ def _worker(rank, world_size, results_path):
         with open(f'{results_path}.{rank}', 'w') as f:
             f.write(str(e))
 
-world = torch.cuda.device_count()
-results_path = '/tmp/nccl_test_result'
+if __name__ == '__main__':
+    world = torch.cuda.device_count()
+    results_path = '/tmp/nccl_test_result'
 
-for i in range(world):
-    try:
-        os.remove(f'{results_path}.{i}')
-    except FileNotFoundError:
-        pass
+    for i in range(world):
+        try:
+            os.remove(f'{results_path}.{i}')
+        except FileNotFoundError:
+            pass
 
-mp.spawn(_worker, args=(world, results_path), nprocs=world, join=True)
+    mp.spawn(_worker, args=(world, results_path), nprocs=world, join=True)
 
-failures = []
-for i in range(world):
-    try:
-        with open(f'{results_path}.{i}') as f:
-            result = f.read().strip()
-        if result != 'ok':
-            failures.append(f'rank {i}: {result}')
-    except FileNotFoundError:
-        failures.append(f'rank {i}: no result file')
+    failures = []
+    for i in range(world):
+        try:
+            with open(f'{results_path}.{i}') as f:
+                result = f.read().strip()
+            if result != 'ok':
+                failures.append(f'rank {i}: {result}')
+        except FileNotFoundError:
+            failures.append(f'rank {i}: no result file')
 
-if failures:
-    for f in failures:
-        print(f'  FAIL: {f}')
-    sys.exit(1)
+    if failures:
+        for f in failures:
+            print(f'  FAIL: {f}')
+        sys.exit(1)
 
-print(f'  NCCL all_reduce: ok ({world} GPUs)')
-print(f'  NCCL broadcast: ok')
-print(f'  NCCL all_gather: ok')
-" 2>&1 || fail_later "nccl" "multi-GPU NCCL communication failed"
+    print(f'  NCCL all_reduce: ok ({world} GPUs)')
+    print(f'  NCCL broadcast: ok')
+    print(f'  NCCL all_gather: ok')
+NCCL_EOF
+    "$NCCL_PY" "$NCCL_SCRIPT" 2>&1 || fail_later "nccl" "multi-GPU NCCL communication failed"
+    rm -f "$NCCL_SCRIPT"
 elif has_gpu && [[ "$_cuda_available" == "True" ]]; then
     echo "  skip: multi-GPU comms (single GPU)"
 else
