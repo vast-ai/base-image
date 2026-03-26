@@ -36,8 +36,8 @@ test_venv() {
 
     # torchaudio must be importable — it's a required companion
     local ta_version
-    ta_version=$("$py" -c "import torchaudio; print(torchaudio.__version__)" 2>&1) \
-        || { fail_later "${venv_name}-import" "torchaudio not importable in ${venv_dir}: ${ta_version}"; return; }
+    ta_version=$("$py" -c "import torchaudio; print(torchaudio.__version__)" 2>/dev/null) \
+        || { fail_later "${venv_name}-import" "torchaudio not importable in ${venv_dir}"; return; }
 
     local cuda_available
     cuda_available=$("$py" -c "import torch; print(torch.cuda.is_available())" 2>/dev/null)

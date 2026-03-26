@@ -30,8 +30,8 @@ test_venv() {
 
     # torchvision must be importable — it's a required companion
     local tv_version
-    tv_version=$("$py" -c "import torchvision; print(torchvision.__version__)" 2>&1) \
-        || { fail_later "${venv_name}-import" "torchvision not importable in ${venv_dir}: ${tv_version}"; return; }
+    tv_version=$("$py" -c "import torchvision; print(torchvision.__version__)" 2>/dev/null) \
+        || { fail_later "${venv_name}-import" "torchvision not importable in ${venv_dir}"; return; }
 
     local cuda_available
     cuda_available=$("$py" -c "import torch; print(torch.cuda.is_available())" 2>/dev/null)

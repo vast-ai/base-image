@@ -35,8 +35,8 @@ test_venv() {
     echo ""
     echo "  ${label} ── venv: ${venv_dir}"
 
-    # Import and version info
-    local torch_info
+    # Import and version info (stderr kept separate to avoid CUDA/NVML warnings corrupting JSON)
+    local torch_info torch_stderr
     torch_info=$("$py" -c "
 import torch, json, sys
 info = {
@@ -49,7 +49,16 @@ info = {
     'device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
 }
 json.dump(info, sys.stdout)
-" 2>&1) || { fail_later "${venv_name}-import" "cannot import torch in ${venv_dir}: ${torch_info}"; return; }
+" 2>/tmp/torch_info_stderr.txt) || {
+        torch_stderr=$(cat /tmp/torch_info_stderr.txt 2>/dev/null)
+        fail_later "${venv_name}-import" "cannot import torch in ${venv_dir}: ${torch_stderr}"
+        return
+    }
+    # Log any stderr warnings for debugging
+    if [[ -s /tmp/torch_info_stderr.txt ]]; then
+        echo "  ${label} warnings during torch import:"
+        sed 's/^/    /' /tmp/torch_info_stderr.txt
+    fi
 
     local torch_version cuda_available cuda_version cudnn_version device_count cuda_built
     torch_version=$(echo "$torch_info" | "$py" -c "import sys,json; print(json.load(sys.stdin)['version'])")
