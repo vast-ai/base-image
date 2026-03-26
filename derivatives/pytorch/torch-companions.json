@@ -1,0 +1,50 @@
+{
+  "2.6.0": {
+    "packages": {
+      "torchvision": "0.21.0",
+      "torchaudio": "2.6.0",
+      "torchcodec": "0.2.1"
+    },
+    "amd64_only": ["torchcodec"]
+  },
+  "2.7.1": {
+    "packages": {
+      "torchvision": "0.22.1",
+      "torchaudio": "2.7.1",
+      "torchcodec": "0.5"
+    },
+    "amd64_only": ["torchcodec"]
+  },
+  "2.8.0": {
+    "packages": {
+      "torchvision": "0.23.0",
+      "torchaudio": "2.8.0",
+      "torchcodec": "0.7.0"
+    },
+    "amd64_only": ["torchcodec"]
+  },
+  "2.9.1": {
+    "packages": {
+      "torchvision": "0.24.1",
+      "torchaudio": "2.9.1",
+      "torchcodec": "0.9.1"
+    },
+    "amd64_only": ["torchcodec"]
+  },
+  "2.10.0": {
+    "packages": {
+      "torchvision": "0.25.0",
+      "torchaudio": "2.10.0",
+      "torchcodec": "0.10.0"
+    },
+    "amd64_only": ["torchcodec"]
+  },
+  "2.11.0": {
+    "packages": {
+      "torchvision": "0.26.0",
+      "torchaudio": "2.11.0",
+      "torchcodec": "0.11.0"
+    },
+    "amd64_only": []
+  }
+}

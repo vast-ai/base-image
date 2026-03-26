@@ -1,6 +1,6 @@
 # Extend existing production PyTorch images with updated overlay files (no full rebuild)
 # Sources from dated production images, overlays ROOT + portal, pushes to staging
-# Extends all torch versions (2.6.0 through 2.10.0) in one run
+# Extends all torch versions (2.6.0 through 2.11.0) in one run
 # The resulting staging images can be promoted using the promote-pytorch workflow
 # Required repository secrets:
 # DOCKERHUB_USERNAME
@@ -56,29 +56,34 @@ jobs:
           # All pytorch versions — extend sources from prod, no base_image needed
           # Format: torch_ver|key|cuda_short|arches|python_versions
           ALL_CONFIGS=(
-            "2.6.0|cu126|12.6.3|linux/amd64,linux/arm64|310 311 312 313"
-            "2.7.1|cu126|12.6.3|linux/amd64|310 311 312 313"
+            "2.6.0|cu126|12.6.3|linux/amd64,linux/arm64|310 311 312"
+            "2.7.1|cu126|12.6.3|linux/amd64|310 311 312"
             "2.7.1|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313"
-            "2.8.0|cu126|12.6.3|linux/amd64|310 311 312 313"
+            "2.8.0|cu126|12.6.3|linux/amd64|310 311 312"
             "2.8.0|cu128|12.8.1|linux/amd64|310 311 312 313"
             "2.8.0|cu129|12.9.1|linux/amd64|310 311 312 313"
-            "2.9.1|cu126|12.6.3|linux/amd64|310 311 312 313 314"
+            "2.9.1|cu126|12.6.3|linux/amd64|310 311 312"
             "2.9.1|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.9.1|cu130|13.0.2|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu126|12.6.3|linux/amd64|310 311 312 313 314"
+            "2.10.0|cu126|12.6.3|linux/amd64|310 311 312"
             "2.10.0|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.10.0|cu130|13.0.2|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.11.0|cu126|12.6.3|linux/amd64|310 311 312"
+            "2.11.0|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.11.0|cu130|13.0.2|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           # Mini format: torch_ver|key|torch_backend|cuda_minor|arches|python_versions
           ALL_MINI_CONFIGS=(
-            "2.6.0|cu126-mini|cu126|12.9|linux/amd64,linux/arm64|310 311 312"
-            "2.7.1|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312"
-            "2.8.0|cu128-mini|cu128|12.9|linux/amd64|310 311 312"
-            "2.9.1|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312"
-            "2.9.1|cu130-mini|cu130|13.1|linux/amd64,linux/arm64|310 311 312"
-            "2.10.0|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312"
-            "2.10.0|cu130-mini|cu130|13.1|linux/amd64,linux/arm64|310 311 312"
+            "2.6.0|cu126-mini|cu126|12.9|linux/amd64,linux/arm64|310 311 312 313"
+            "2.7.1|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313"
+            "2.8.0|cu128-mini|cu128|12.9|linux/amd64|310 311 312 313"
+            "2.9.1|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.9.1|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.10.0|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.10.0|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.11.0|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.11.0|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           BUILD_MATRIX="[]"
