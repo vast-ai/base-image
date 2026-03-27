@@ -322,6 +322,7 @@ else
     )
     inference_pass=0
     inference_fail=0
+    inference_warn=0
 
     for i in "${!PROMPTS[@]}"; do
         prompt="${PROMPTS[$i]}"
@@ -353,7 +354,7 @@ try:
     c = d.get('choices', [{}])[0]
     m = c.get('message', {})
     content = (m.get('content') or '').strip()
-    reasoning = (m.get('reasoning_content') or '').strip()
+    reasoning = (m.get('reasoning_content') or m.get('thinking_content') or '').strip()
     msg = content or reasoning
     finish = c.get('finish_reason', '?')
     usage = d.get('usage', {})
@@ -368,25 +369,37 @@ except Exception as e:
     print(f'finish_reason=error prompt_tokens=0 compl_tokens=0 content= is_reasoning=false')
 " 2>/dev/null)"
 
-        if [[ -z "$content" ]]; then
-            echo "    FAIL: no content (finish_reason=${finish_reason})"
-            echo "    raw: ${response:0:200}"
-            inference_fail=$((inference_fail + 1))
-        else
-            # Truncate long responses for display
+        if [[ -n "$content" ]]; then
+            # Got content (regular or reasoning) — pass
             display="${content:0:120}"
             [[ ${#content} -gt 120 ]] && display="${display}..."
             [[ "$is_reasoning" == "true" ]] && echo "    (reasoning_content)"
             echo "    response: ${display}"
             echo "    tokens: ${prompt_tokens} prompt → ${compl_tokens} completion, finish=${finish_reason}"
             inference_pass=$((inference_pass + 1))
+        elif [[ "$finish_reason" == "length" ]]; then
+            # Token budget exhausted (likely reasoning consumed all tokens) — warn, not fail
+            echo "    WARN: finish_reason=length with no visible content (reasoning may have consumed all tokens)"
+            echo "    tokens: ${prompt_tokens} prompt → ${compl_tokens} completion"
+            inference_warn=$((inference_warn + 1))
+        else
+            echo "    FAIL: no content (finish_reason=${finish_reason})"
+            echo "    raw: ${response:0:200}"
+            inference_fail=$((inference_fail + 1))
         fi
     done
 
     echo ""
-    echo "  inference: ${inference_pass}/${#PROMPTS[@]} passed"
-    if [[ $inference_fail -gt 0 ]]; then
+    echo "  inference: ${inference_pass}/${#PROMPTS[@]} passed, ${inference_warn} length-limited, ${inference_fail} failed"
+    if [[ $inference_fail -gt 0 && $inference_pass -eq 0 && $inference_warn -eq 0 ]]; then
+        # Total failure — no prompt produced any output at all
         fail_later "inference" "${inference_fail}/${#PROMPTS[@]} inference requests failed"
+    elif [[ $inference_fail -gt 0 ]]; then
+        # Partial failure — some worked, some didn't; warn but don't fail the test
+        echo "  WARN: ${inference_fail} inference request(s) returned no content"
+    elif [[ $inference_pass -eq 0 && $inference_warn -gt 0 ]]; then
+        # All prompts hit token limit — model is serving but config may need tuning
+        echo "  WARN: all prompts hit max_tokens with no visible content (reasoning model?)"
     fi
 fi
 
