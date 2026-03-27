@@ -16,6 +16,9 @@ while [ -f "/.provisioning" ]; do
     sleep 5
 done
 
+# Convert GUI workflows to API format (blocks until done, errors non-fatal)
+/opt/instance-tools/bin/convert-workflows.sh || true
+
 # Launch ComfyUI API Wrapper
 cd /opt/comfyui-api-wrapper
 . .venv/bin/activate

@@ -1,0 +1,21 @@
+version: 1
+extensions:
+  - module: provisioner_comfyui
+    config:
+      workflows:
+        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_t2v.json
+        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_ia2v.json
+        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_i2v.json
+        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_flf2v.json
+
+downloads:
+  - url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/input/cactus_man.png
+    dest: ${WORKSPACE}/ComfyUI/input/cactus_man.png
+  - url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/input/high_view_classic_car.png
+    dest: ${WORKSPACE}/ComfyUI/input/high_view_classic_car.png
+  - url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/input/low_view_classic_car.png
+    dest: ${WORKSPACE}/ComfyUI/input/low_view_classic_car.png
+  - url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/input/egyptian_queen.png
+    dest: ${WORKSPACE}/ComfyUI/input/egyptian_queen.png
+  - url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/input/ltx_23_audio.mp3
+    dest: ${WORKSPACE}/ComfyUI/input/ltx_23_audio.mp3

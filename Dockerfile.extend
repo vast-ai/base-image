@@ -1,0 +1,27 @@
+# Extend an already-built base image with updated ROOT overlay files.
+# Used for rapid hotfixes and incremental updates without full rebuilds.
+#
+# Sources from a dated production image (PROD_NAMESPACE/base-image:...-YYYY-MM-DD),
+# overlays updated files, and pushes to staging with a new date tag.
+# The resulting staging image can be promoted using the existing promote workflow.
+#
+# Usage:
+#   docker buildx build -f Dockerfile.extend \
+#     --build-arg BASE_IMAGE=PROD_NAMESPACE/base-image:cuda-12.9.1-...-py312-2026-03-18 \
+#     --tag staging/base-image:cuda-12.9.1-...-py312-2026-03-19 \
+#     --push .
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Overlay updated files (supervisor scripts, instance tools, portal, etc.)
+COPY ./ROOT /
+
+# Update the portal if present
+COPY portal-aio /opt/portal-aio
+
+# Add sox for torchaudio/torchcodec support
+RUN apt-get update && apt-get install -y --no-install-recommends sox && rm -rf /var/lib/apt/lists/*
+
+# Refresh environment hash to reflect any changes
+RUN env-hash > /.env_hash

@@ -111,6 +111,7 @@ RUN \
         fonts-freefont-ttf \
         fonts-ubuntu \
         ffmpeg \
+        sox \
         mesa-utils-extra \
         # System monitoring & debugging
         htop \

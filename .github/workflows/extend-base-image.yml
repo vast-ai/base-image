@@ -98,7 +98,6 @@ jobs:
           # Mini configs
           MINI_CONFIGS=(
             "cuda-12.9-mini|cuda-12.9-mini"
-            "cuda-13.1-mini|cuda-13.1-mini"
             "cuda-13.2-mini|cuda-13.2-mini"
           )
 
@@ -190,7 +189,7 @@ jobs:
           SOURCE_DATE: ${{ inputs.SOURCE_DATE }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
 
           for py_version in "${PYTHON_VERSIONS[@]}"; do
@@ -251,7 +250,7 @@ jobs:
           DEFAULT_PYTHON: ${{ matrix.default_python }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
 
           for py_version in "${PYTHON_VERSIONS[@]}"; do
@@ -319,7 +318,7 @@ jobs:
           SOURCE_DATE: ${{ inputs.SOURCE_DATE }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
 
           for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
@@ -371,7 +370,7 @@ jobs:
           MINI_TAG: ${{ matrix.mini_tag }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
 
           for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
@@ -450,8 +449,8 @@ jobs:
           echo ""
 
           echo "=== Tags that would be created ==="
-          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
-          for entry in $(echo "$MERGE_MATRIX" | jq -c '.include[]'); do
+          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          echo "$MERGE_MATRIX" | jq -c '.include[]' | while IFS= read -r entry; do
             tag_template=$(echo "$entry" | jq -r '.tag_template')
             default_python=$(echo "$entry" | jq -r '.default_python')
             for py in "${PYTHON_VERSIONS[@]}"; do
@@ -469,9 +468,9 @@ jobs:
           echo ""
 
           echo "=== Mini Tags ==="
-          for entry in $(echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")'); do
+          echo "$MINI_BUILD_MATRIX" | jq -c '.include[] | select(.arch_suffix == "amd64")' | while IFS= read -r entry; do
             mini_tag=$(echo "$entry" | jq -r '.mini_tag')
-            for py in "3.10" "3.11" "3.12"; do
+            for py in "3.10" "3.11" "3.12" "3.13" "3.14"; do
               py_tag="${py//.}"
               echo "  ${PROD_NAMESPACE}/base-image:${mini_tag}-py${py_tag}-${SOURCE_DATE}"
               echo "    -> ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${BUILD_DATE}"

@@ -125,7 +125,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-03-19
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-03-26
 
     steps:
       - name: Checkout

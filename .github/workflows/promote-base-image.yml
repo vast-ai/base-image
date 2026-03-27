@@ -78,7 +78,6 @@ jobs:
           # Mini configs: key|mini_tag
           MINI_CONFIGS=(
             "cuda-12.9-mini|cuda-12.9-mini"
-            "cuda-13.1-mini|cuda-13.1-mini"
             "cuda-13.2-mini|cuda-13.2-mini"
           )
 
@@ -131,7 +130,7 @@ jobs:
           MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           set -euo pipefail
-          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
 
           # Promote all base images (per-config, per-python)
@@ -172,7 +171,7 @@ jobs:
           # Promote mini variants
           echo ""
           echo "=== Promoting mini variants ==="
-          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12")
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
 
           for ((i=0; i<MINI_COUNT; i++)); do
@@ -275,7 +274,7 @@ jobs:
           echo "Staging date: $STAGING_DATE"
           echo ""
 
-          PYTHON_VERSIONS=("3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
 
           echo "=== Base Image Promotions (in order) ==="
           CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
@@ -301,7 +300,7 @@ jobs:
           MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
           for ((i=0; i<MINI_COUNT; i++)); do
             mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
-            for py in "3.10" "3.11" "3.12"; do
+            for py in "3.10" "3.11" "3.12" "3.13" "3.14"; do
               py_tag="${py//.}"
               echo "  ${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
               echo "    -> ${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"

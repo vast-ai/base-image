@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-03-19
+ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-03-26
 
 FROM ${PYTORCH_BASE}
 
@@ -35,6 +35,7 @@ RUN \
     cd /opt/workspace-internal/ComfyUI/custom_nodes && \
     git clone https://github.com/Comfy-Org/ComfyUI-Manager && \
     uv pip install --no-cache-dir -r ComfyUI-Manager/requirements.txt && \
+    git clone https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint && \
     # Quick startup test in CPU mode to ensure requirements ready and startup succeeds
     cd /opt/workspace-internal/ComfyUI && \
     LD_PRELOAD=libtcmalloc_minimal.so.4 \
@@ -80,6 +81,7 @@ RUN \
     rm -rf /opt/model_store/.cache && \
     rm -rf /root/.cache/huggingface
 
+RUN rm -f /opt/supervisor-scripts/pyworker.sh /etc/supervisor/conf.d/pyworker.conf
 # Defend against environment clashes when syncing to volume
 RUN \
     set -euo pipefail && \

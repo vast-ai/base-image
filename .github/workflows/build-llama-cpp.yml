@@ -110,7 +110,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/base-image:cuda-12.9-mini-py312
+          - vastai/base-image:cuda-12.9-mini-py312-2026-03-26
 
     steps:
       - name: Checkout
