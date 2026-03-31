@@ -13,8 +13,4 @@ echo "Starting AI Toolkit"
 
 cd "${WORKSPACE}/ai-toolkit/ui"
 
-# Run via background+wait so the shell stays alive and cleanup_generic.sh
-# can kill child processes that escape the process group (e.g. run.py
-# training jobs spawned by the Node worker with start_new_session=True)
-pty ${AI_TOOLKIT_START_CMD:-npm run start} 2>&1 &
-wait $!
+pty ${AI_TOOLKIT_START_CMD:-npm run start} 2>&1
