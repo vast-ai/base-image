@@ -220,31 +220,20 @@ run_bg_user "selkies" selkies-gstreamer \
     --turn_username="${TURN_USERNAME}" \
     --turn_password="${TURN_PASSWORD}"
 
-# --- Wait for Selkies pipeline to be fully initialized, then resize ---
-# HTTP 200 is not enough — Selkies resets the display when its GStreamer
-# pipeline finishes initializing. Wait for the pipeline to reach playing
-# state and signal resize readiness.
-log "Waiting for Selkies pipeline..."
-SELKIES_LOG="/var/log/portal/desktop.log"
-for i in $(seq 1 60); do
-    if grep -q "sending resize enabled state" "${SELKIES_LOG}" 2>/dev/null; then
-        log "Selkies pipeline ready"
-        break
-    fi
-    sleep 1
-done
-# Extra settle time for pipeline to stabilize
-sleep 2
-
-log "Resizing display to ${DISPLAY_SIZEW}x${DISPLAY_SIZEH}..."
-for i in $(seq 1 5); do
-    if runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "${DISPLAY_SIZEW}x${DISPLAY_SIZEH}" 2>&1; then
-        log "Display resized to ${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
-        break
-    fi
-    log "Resize attempt $i failed, retrying..."
-    sleep 2
-done
+# --- Persistent display resize ---
+# Selkies resets the display resolution when its pipeline (re)initializes.
+# This background loop monitors and re-applies the target resolution.
+(
+    TARGET="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
+    while true; do
+        CURRENT=$(DISPLAY=${DISPLAY} runuser -u user -- xrandr 2>/dev/null | grep '\*' | awk '{print $1}')
+        if [[ "$CURRENT" != "$TARGET" ]]; then
+            DISPLAY=${DISPLAY} runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "$TARGET" >/dev/null 2>&1 \
+                && echo "[desktop] Display resized to $TARGET"
+        fi
+        sleep 5
+    done
+) &
 
 # --- All services started ---
 log "=========================================="
