@@ -152,6 +152,7 @@ RUN \
     uv pip install --no-cache-dir -r requirements.txt
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
+ARG LLAMA_CPP_VERSION=b8606
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
@@ -166,13 +167,15 @@ RUN \
     # Patch install_python_stack.py to use cu128 torch backend
     find /venv/unsloth/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
-    # Skip prebuilt llama.cpp (needs nvidia-smi), go straight to source build
-    export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
-    export SKIP_STUDIO_BASE=1 && \
-    unsloth studio setup && \
-    # Add llama.cpp shared libs to linker search path
+    # Install pre-built llama.cpp CUDA binaries (ai-dock) instead of compiling
+    mkdir -p /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
+    wget -qO- "https://github.com/ai-dock/llama.cpp-cuda/releases/download/${LLAMA_CPP_VERSION}/llama.cpp-${LLAMA_CPP_VERSION}-cuda-12.8.tar.gz" \
+        | tar xz --strip-components=1 -C /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
     echo "/opt/workspace-internal/unsloth/llama.cpp/build/bin" > /etc/ld.so.conf.d/llama-cpp.conf && \
-    ldconfig
+    ldconfig && \
+    # Run studio setup — skips llama.cpp build since binaries already exist
+    export SKIP_STUDIO_BASE=1 && \
+    unsloth studio setup
 
 # ---------- Whisper WebUI (base: torch-2.7.1) ----------
 ARG WHISPER_REPO=https://github.com/jhj0517/Whisper-WebUI
@@ -220,6 +223,15 @@ RUN \
     cd server && \
     npm install && \
     cp .env.example .env
+
+# ---------- Google Chrome ----------
+RUN \
+    cd /tmp && \
+    curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
+    apt-get update && apt-get install -y ./google-chrome-stable.deb && \
+    rm -f google-chrome-stable.deb && apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    # Point google-chrome-stable at our wrapper which adds --no-sandbox (required for root)
+    ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable
 
 # ---------- Blender ----------
 ARG BLENDER_VERSION=""
