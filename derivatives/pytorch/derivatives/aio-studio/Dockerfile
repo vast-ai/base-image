@@ -1,4 +1,4 @@
-ARG AIO_BASE=robatvastai/aio-studio:base
+ARG AIO_BASE=robatvastai/aio-studio:base-2026-04-01
 
 FROM ${AIO_BASE}
 
@@ -212,6 +212,7 @@ RUN \
     sed -i 's/enforce_eager_for_vllm = bool(is_rocm or is_jetson)/is_blackwell = False\n            try:\n                cc = torch.cuda.get_device_capability()\n                is_blackwell = cc[0] >= 12\n            except Exception:\n                pass\n            enforce_eager_for_vllm = bool(is_rocm or is_jetson or is_blackwell)/' \
         acestep/llm_inference.py && \
     UV_PROJECT_ENVIRONMENT=/venv/ace-step uv sync && \
+    uv pip install --no-cache-dir bitsandbytes && \
     # UI looks for .venv in the project root
     ln -s /venv/ace-step .venv && \
     # Clone and install ace-step-ui
