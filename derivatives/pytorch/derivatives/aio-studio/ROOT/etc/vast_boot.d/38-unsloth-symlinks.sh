@@ -15,6 +15,11 @@ if [[ -d "${WORKSPACE}/unsloth" ]]; then
     # copied stale CPU-only binaries from a previous run)
     mkdir -p "${WORKSPACE}/unsloth/llama.cpp"
     ln -sfn /opt/llama.cpp-cuda "${WORKSPACE}/unsloth/llama.cpp/build/bin"
-    # Re-register shared libs (ldconfig ran at build time but paths changed)
+fi
+
+# Register llama.cpp CUDA shared libs (must run every boot — the ldconfig
+# conf may not survive image rebuilds or layer changes)
+if [[ -d /opt/llama.cpp-cuda ]]; then
+    echo "/opt/llama.cpp-cuda" > /etc/ld.so.conf.d/llama-cpp.conf
     ldconfig
 fi
