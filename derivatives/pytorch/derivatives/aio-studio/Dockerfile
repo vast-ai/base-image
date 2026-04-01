@@ -172,12 +172,12 @@ RUN \
     unsloth studio setup && \
     # Replace Unsloth's CPU-only llama.cpp with pre-built CUDA binaries (ai-dock).
     # Install to /opt/llama.cpp-cuda (outside workspace sync path) and symlink.
-    mkdir -p /opt/llama.cpp-cuda && \
+    mkdir -p /opt/llama-cpp-gpu && \
     wget -qO- "https://github.com/ai-dock/llama.cpp-cuda/releases/download/${LLAMA_CPP_VERSION}/llama.cpp-${LLAMA_CPP_VERSION}-cuda-12.8.tar.gz" \
-        | tar xz --strip-components=1 -C /opt/llama.cpp-cuda && \
+        | tar xz --strip-components=1 -C /opt/llama-cpp-gpu && \
     rm -rf /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
-    ln -sf /opt/llama.cpp-cuda /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
-    echo "/opt/llama.cpp-cuda" > /etc/ld.so.conf.d/llama-cpp.conf && \
+    ln -sf /opt/llama-cpp-gpu /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
+    echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig
 
 # ---------- Whisper WebUI (base: torch-2.7.1) ----------

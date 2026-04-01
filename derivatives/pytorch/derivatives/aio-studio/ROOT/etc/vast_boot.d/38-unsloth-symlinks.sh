@@ -14,12 +14,12 @@ if [[ -d "${WORKSPACE}/unsloth" ]]; then
     # Ensure llama.cpp points to the CUDA binaries (workspace sync may have
     # copied stale CPU-only binaries from a previous run)
     mkdir -p "${WORKSPACE}/unsloth/llama.cpp"
-    ln -sfn /opt/llama.cpp-cuda "${WORKSPACE}/unsloth/llama.cpp/build/bin"
+    ln -sfn /opt/llama-cpp-gpu "${WORKSPACE}/unsloth/llama.cpp/build/bin"
 fi
 
 # Register llama.cpp CUDA shared libs (must run every boot — the ldconfig
 # conf may not survive image rebuilds or layer changes)
-if [[ -d /opt/llama.cpp-cuda ]]; then
-    echo "/opt/llama.cpp-cuda" > /etc/ld.so.conf.d/llama-cpp.conf
+if [[ -d /opt/llama-cpp-gpu ]]; then
+    echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf
     ldconfig
 fi
