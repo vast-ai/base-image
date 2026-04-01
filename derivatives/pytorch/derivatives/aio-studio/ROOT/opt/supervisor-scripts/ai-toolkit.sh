@@ -24,5 +24,4 @@ cleanup_ai_toolkit() {
 }
 trap cleanup_ai_toolkit EXIT INT TERM
 
-${AI_TOOLKIT_START_CMD:-npm run start} 2>&1 &
-wait $!
+pty ${AI_TOOLKIT_START_CMD:-npm run start} 2>&1
