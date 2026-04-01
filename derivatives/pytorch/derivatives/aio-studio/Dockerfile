@@ -152,7 +152,6 @@ RUN \
     uv pip install --no-cache-dir -r requirements.txt
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
-ARG LLAMA_CPP_VERSION=b8606
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
@@ -167,16 +166,12 @@ RUN \
     # Patch install_python_stack.py to use cu128 torch backend
     find /venv/unsloth/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
-    # Run studio setup — installs Python deps + frontend + CPU-only llama.cpp
+    # Build llama.cpp from source (Unsloth pins its own tested version)
+    export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
     export SKIP_STUDIO_BASE=1 && \
     unsloth studio setup && \
-    # Replace Unsloth's CPU-only llama.cpp with pre-built CUDA binaries (ai-dock).
-    # Install to /opt/llama.cpp-cuda (outside workspace sync path) and symlink.
-    mkdir -p /opt/llama-cpp-gpu && \
-    wget -qO- "https://github.com/ai-dock/llama.cpp-cuda/releases/download/${LLAMA_CPP_VERSION}/llama.cpp-${LLAMA_CPP_VERSION}-cuda-12.8.tar.gz" \
-        | tar xz --strip-components=1 -C /opt/llama-cpp-gpu && \
-    rm -rf /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
-    ln -sf /opt/llama-cpp-gpu /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
+    # Copy llama.cpp binaries to a fixed path outside workspace sync
+    cp -a /opt/workspace-internal/unsloth/llama.cpp/build/bin /opt/llama-cpp-gpu && \
     echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig
 
