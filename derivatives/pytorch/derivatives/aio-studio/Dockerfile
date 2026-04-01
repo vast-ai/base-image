@@ -167,11 +167,15 @@ RUN \
     # Patch install_python_stack.py to use cu128 torch backend
     find /venv/unsloth/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
-    # Install pre-built llama.cpp CUDA binaries (ai-dock) instead of compiling
-    mkdir -p /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
+    # Install pre-built llama.cpp CUDA binaries (ai-dock) to a fixed path
+    # outside the unsloth data tree so workspace sync can't overwrite them.
+    # Unsloth finds them via the llama.cpp symlink in its data dir.
+    mkdir -p /opt/llama.cpp-cuda && \
     wget -qO- "https://github.com/ai-dock/llama.cpp-cuda/releases/download/${LLAMA_CPP_VERSION}/llama.cpp-${LLAMA_CPP_VERSION}-cuda-12.8.tar.gz" \
-        | tar xz --strip-components=1 -C /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
-    echo "/opt/workspace-internal/unsloth/llama.cpp/build/bin" > /etc/ld.so.conf.d/llama-cpp.conf && \
+        | tar xz --strip-components=1 -C /opt/llama.cpp-cuda && \
+    mkdir -p /opt/workspace-internal/unsloth/llama.cpp && \
+    ln -sf /opt/llama.cpp-cuda /opt/workspace-internal/unsloth/llama.cpp/build/bin && \
+    echo "/opt/llama.cpp-cuda" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig && \
     # Run studio setup — skips llama.cpp build since binaries already exist
     export SKIP_STUDIO_BASE=1 && \

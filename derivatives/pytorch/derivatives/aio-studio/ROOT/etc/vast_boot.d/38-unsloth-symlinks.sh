@@ -11,4 +11,8 @@ if [[ -d "${WORKSPACE}/unsloth" ]]; then
     rm -rf /opt/workspace-internal/unsloth
     ln -sfn "${WORKSPACE}/unsloth" /opt/workspace-internal/unsloth
     ln -sfn "${WORKSPACE}/unsloth" /root/.unsloth
+    # Ensure llama.cpp points to the CUDA binaries (workspace sync may have
+    # copied stale CPU-only binaries from a previous run)
+    mkdir -p "${WORKSPACE}/unsloth/llama.cpp"
+    ln -sfn /opt/llama.cpp-cuda "${WORKSPACE}/unsloth/llama.cpp/build/bin"
 fi
