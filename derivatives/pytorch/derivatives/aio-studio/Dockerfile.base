@@ -4,11 +4,11 @@ FROM ${PYTORCH_BASE}
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
-LABEL org.opencontainers.image.description="AIO Studio base image — system deps, desktop, Blender."
+LABEL org.opencontainers.image.description="AIO Studio base image — system deps, desktop infrastructure."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Ensure uv pulls CUDA 12.8 wheels for torch ecosystem packages
-ENV UV_TORCH_BACKEND=cu128
+ENV UV_TORCH_BACKEND=${PYTORCH_BACKEND}
 
 # ---------- System dependencies (all apps merged) ----------
 RUN \
@@ -202,23 +202,6 @@ RUN \
     # Point google-chrome-stable at our wrapper which adds --no-sandbox (required for root)
     ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable
 
-# Blender
-ARG BLENDER_VERSION=""
-RUN \
-    set -euo pipefail && \
-    if [ -z "$BLENDER_VERSION" ]; then \
-        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
-        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
-            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
-    fi && \
-    cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    tar xf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
-
 # Desktop environment variables
 ENV XDG_RUNTIME_DIR="/run/user/1001"
 ENV DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1001/dbus/session_bus_socket"
@@ -253,3 +236,6 @@ ENV XIM=fcitx
 ENV XMODIFIERS="@im=fcitx"
 
 RUN mkdir -p "${XDG_RUNTIME_DIR}/dbus"
+
+# Desktop supervisor scripts, configs, PAM, polkit, D-Bus, KDE, Chrome wrapper
+COPY ./ROOT_BASE /

@@ -221,6 +221,23 @@ RUN \
     npm install && \
     cp .env.example .env
 
+# ---------- Blender ----------
+ARG BLENDER_VERSION=""
+RUN \
+    set -euo pipefail && \
+    if [ -z "$BLENDER_VERSION" ]; then \
+        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
+            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+    fi && \
+    cd /opt && \
+    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+    tar xf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+    ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
+    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
+    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+
 # ==========================================================================
 # Final assembly
 # ==========================================================================
