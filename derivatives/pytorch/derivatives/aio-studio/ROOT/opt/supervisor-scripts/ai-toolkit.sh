@@ -13,9 +13,16 @@ echo "Starting AI Toolkit"
 
 cd "${WORKSPACE}/ai-toolkit/ui"
 
-# Run via background+wait so cleanup_generic.sh can kill orphan training
-# processes (run.py) that escape the process group.
-# Cannot use the pty shell function in a subshell, so inline the logic.
-CMD="${AI_TOOLKIT_START_CMD:-npm run start}"
-$CMD 2>&1 &
+# AI Toolkit's Node worker spawns run.py training jobs in a new session
+# (start_new_session=True), so they detach from the process group and
+# survive supervisor stop. Override the cleanup trap to kill them by pattern.
+cleanup_ai_toolkit() {
+    echo "Stopping AI Toolkit and training jobs..."
+    pkill -TERM -f "ai-toolkit/run\.py" 2>/dev/null
+    sleep 2
+    pkill -KILL -f "ai-toolkit/run\.py" 2>/dev/null
+}
+trap cleanup_ai_toolkit EXIT INT TERM
+
+${AI_TOOLKIT_START_CMD:-npm run start} 2>&1 &
 wait $!
