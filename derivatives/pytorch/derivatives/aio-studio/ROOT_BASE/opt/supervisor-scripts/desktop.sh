@@ -134,10 +134,10 @@ wait_socket "${XDG_RUNTIME_DIR}/dbus/session_bus_socket" "D-Bus session"
 # --- 3. X server (Xvfb) ---
 # Create X11 socket dir as root (user can't create in sticky /tmp)
 mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-# Force Mesa software EGL — NVIDIA's EGL tries GBM which needs a real DRM
-# device and segfaults in a virtual framebuffer context.
-export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-run_bg_user "x-server" Xvfb "${DISPLAY}" \
+# Force Mesa software EGL for Xvfb only — NVIDIA's EGL tries GBM which
+# needs a real DRM device and segfaults in a virtual framebuffer context.
+# Other processes (VirtualGL, Blender, etc.) must use NVIDIA EGL for GPU accel.
+run_bg_user "x-server" env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json Xvfb "${DISPLAY}" \
     -ac -screen 0 "8192x4096x${DISPLAY_CDEPTH}" \
     -dpi "${DISPLAY_DPI}" +extension "GLX" +extension "RANDR" +extension "MIT-SHM" \
     +iglx +render -nolisten "tcp" -noreset -shmem
