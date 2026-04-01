@@ -13,4 +13,9 @@ echo "Starting AI Toolkit"
 
 cd "${WORKSPACE}/ai-toolkit/ui"
 
-pty ${AI_TOOLKIT_START_CMD:-npm run start} 2>&1
+# Run via background+wait so cleanup_generic.sh can kill orphan training
+# processes (run.py) that escape the process group.
+# Cannot use the pty shell function in a subshell, so inline the logic.
+CMD="${AI_TOOLKIT_START_CMD:-npm run start}"
+$CMD 2>&1 &
+wait $!
