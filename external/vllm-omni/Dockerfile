@@ -34,18 +34,6 @@ RUN \
 
 ### Begin vLLM-Omni specific configuration ###
 
-# Install flash-attention from pre-built wheel (matched to image Python/PyTorch/CUDA versions)
-RUN \
-    set -euo pipefail && \
-    PYTHON_VER=$(python3 -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')") && \
-    TORCH_VER=$(python3 -c "import torch; print('.'.join(torch.__version__.split('.')[:2]))") && \
-    CXX11_ABI=$(python3 -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')") && \
-    FA_VERSION=2.8.3 && \
-    WHL="flash_attn-${FA_VERSION}+cu12torch${TORCH_VER}cxx11abi${CXX11_ABI}-${PYTHON_VER}-${PYTHON_VER}-linux_x86_64.whl" && \
-    URL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VERSION}/${WHL}" && \
-    echo "[flash-attn] Installing ${WHL}" && \
-    uv pip install --system --no-cache-dir "${URL}"
-
 # Install Model UI (lightweight web interface)
 COPY --from=base_image_source tools/model-ui /opt/model-ui
 RUN uv venv /opt/model-ui/venv && \
