@@ -152,6 +152,7 @@ RUN \
     uv pip install --no-cache-dir -r requirements.txt
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
+ARG UNSLOTH_VERSION=0.1.35-Beta
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
