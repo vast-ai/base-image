@@ -92,7 +92,7 @@ jobs:
           repository: Comfy-Org/ComfyUI
           age-threshold-seconds: "999999999"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.COMFYUI_REF && 'manual' || 'manual' }}
+          trigger: ${{ inputs.COMFYUI_REF && 'manual' || github.event_name }}
           manual-ref: ${{ inputs.COMFYUI_REF }}
           default-ref: master
 
@@ -103,7 +103,7 @@ jobs:
           repository: jamiepine/voicebox
           age-threshold-seconds: "999999999"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.VOICEBOX_REF && 'manual' || 'manual' }}
+          trigger: ${{ inputs.VOICEBOX_REF && 'manual' || github.event_name }}
           manual-ref: ${{ inputs.VOICEBOX_REF }}
           default-ref: main
 
@@ -114,7 +114,7 @@ jobs:
           repository: jhj0517/Whisper-WebUI
           age-threshold-seconds: "999999999"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.WHISPER_REF && 'manual' || 'manual' }}
+          trigger: ${{ inputs.WHISPER_REF && 'manual' || github.event_name }}
           manual-ref: ${{ inputs.WHISPER_REF }}
           default-ref: master
 
@@ -125,7 +125,7 @@ jobs:
           repository: ace-step/ACE-Step-1.5
           age-threshold-seconds: "999999999"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.ACE_STEP_REF && 'manual' || 'manual' }}
+          trigger: ${{ inputs.ACE_STEP_REF && 'manual' || github.event_name }}
           manual-ref: ${{ inputs.ACE_STEP_REF }}
           default-ref: main
 

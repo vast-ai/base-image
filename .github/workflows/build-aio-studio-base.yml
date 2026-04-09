@@ -28,6 +28,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      FULL_IMAGE: ${{ steps.build.outputs.FULL_IMAGE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +47,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         run: |
           NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE }}"
           REPO="${{ inputs.DOCKERHUB_REPO }}"
@@ -63,6 +66,7 @@ jobs:
             . --push
 
           echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_ENV
+          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_OUTPUT
           echo "### Base Image Built" >> $GITHUB_STEP_SUMMARY
           echo "\`${NAMESPACE}/${REPO}:${TAG}\`" >> $GITHUB_STEP_SUMMARY
 
@@ -86,7 +90,7 @@ jobs:
       build-result: ${{ needs.build.result }}
       image-name: "AIO Studio Base"
       image-ref: "base"
-      image-tags: '["${{ needs.build.outputs.FULL_IMAGE || ''  }}"]'
+      image-tags: ${{ needs.build.outputs.FULL_IMAGE && format('["{0}"]', needs.build.outputs.FULL_IMAGE) || '[]' }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:

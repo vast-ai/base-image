@@ -146,8 +146,7 @@ sleep 1
 
 # --- 4. VirtualGL desktop patcher ---
 if [[ "${DISABLE_VGL,,}" != "true" ]] && nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -n1 | grep -q .; then
-    log "Starting VirtualGL desktop patcher..."
-    runuser -u user -- /opt/supervisor-scripts/vgl-desktop-patcher.sh 2>&1 | sed -u 's/^/[vgl] /' &
+    run_bg_user "vgl" /opt/supervisor-scripts/vgl-desktop-patcher.sh
 else
     log "VirtualGL skipped (no GPU or DISABLE_VGL=true)"
 fi
@@ -240,6 +239,7 @@ run_bg_user "selkies" selkies-gstreamer \
         sleep 5
     done
 ) &
+PIDS+=($!)
 
 # --- All services started ---
 log "=========================================="
