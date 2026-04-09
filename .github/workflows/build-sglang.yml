@@ -69,8 +69,9 @@ jobs:
         uses: ./.github/actions/check-dockerhub-release
         with:
           repository: lmsysorg/sglang
-          version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-cu[0-9]+-amd64$"
-          version-extract: "s/^(v[0-9]+\\.[0-9]+\\.[0-9]+)-.*/\\1/"
+          # Upstream tag scheme (v0.5.10+): bare semver = default CUDA (12.9),
+          # -cu130 etc. for explicit CUDA variants, optional .postN suffix.
+          version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+(\\.post[0-9]+)?$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           trigger: ${{ inputs.SGLANG_VERSION && github.event_name || 'schedule' }}
           manual-version: ${{ inputs.SGLANG_VERSION }}
@@ -91,16 +92,20 @@ jobs:
           VARIANTS=$(cat /tmp/variants.json)
           echo "Available variants: $VARIANTS"
 
-          # Convert variant tags to build matrix
-          # Upstream tags are now arch-specific: v0.5.9-cu129-amd64, v0.5.9-cu130-amd64, etc.
-          # Filter to amd64 only, exclude runtime/xeon/cann variants
-          # Extract CUDA version generically: cu129 -> 12.9, cu130 -> 13.0
-          MATRIX=$(echo "$VARIANTS" | jq -c '
-            map(select(endswith("-amd64")))
-            | map(select(test("-(runtime|xeon|cann)") | not))
+          # Convert variant tags to build matrix.
+          # Upstream tag scheme (v0.5.10+): multi-arch manifests, no -amd64 suffix.
+          #   <ver>           -> default CUDA 12.9
+          #   <ver>-cu130     -> CUDA 13.0
+          # Exclude rocm/xeon/cann/runtime variants and unrelated post/rc siblings
+          # by exact-matching ^<VERSION>(-cu[0-9]+)?$.
+          MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
+            map(select(test("^" + $ver + "(-cu[0-9]+)?$")))
             | map(
                 . as $tag
-                | ($tag | capture("-cu(?<raw>[0-9]+)-amd64$") | .raw) as $cu
+                | (if $tag | test("-cu[0-9]+$")
+                   then ($tag | capture("-cu(?<raw>[0-9]+)$") | .raw)
+                   else "129"
+                   end) as $cu
                 | {
                     tag: $tag,
                     cuda: ($cu[0:($cu | length) - 1] + "." + $cu[($cu | length) - 1:])
@@ -113,7 +118,7 @@ jobs:
 
           MATRIX_SIZE=$(echo "$MATRIX" | jq 'length')
           if [[ "$MATRIX_SIZE" -eq 0 ]]; then
-            echo "::error::No valid amd64 image variants found for $VERSION"
+            echo "::error::No valid image variants found for $VERSION"
             exit 1
           fi
 
@@ -216,11 +221,12 @@ jobs:
 
       - name: Build and push
         run: |
-          # Upstream SGLang images are now arch-specific (no multi-arch manifests)
+          # Upstream SGLang CUDA images are multi-arch manifests (amd64 + arm64).
           if [[ "${{ inputs.MULTI_ARCH }}" == "true" ]]; then
-            echo "::warning::Multi-arch not supported for SGLang (upstream images are arch-specific). Building amd64 only."
+            platforms="linux/amd64,linux/arm64"
+          else
+            platforms="linux/amd64"
           fi
-          platforms="linux/amd64"
 
           cd external/sglang
           docker buildx build \
