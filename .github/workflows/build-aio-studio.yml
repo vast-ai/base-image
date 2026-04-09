@@ -1,0 +1,303 @@
+# Build AIO Studio app image (Dockerfile)
+# All 8 apps + Blender + Chrome on top of the base image.
+# Scheduled bi-weekly, or manual trigger with ref overrides.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Optional:
+#   SLACK_WEBHOOK_URL
+
+name: Build AIO Studio Image
+
+on:
+  schedule:
+    # Bi-weekly: 1st and 15th of each month at midnight UTC
+    - cron: '0 0 1,15 * *'
+
+  workflow_dispatch:
+    inputs:
+      AIO_BASE:
+        description: "Base image (from build-aio-studio-base)"
+        required: true
+        default: "vastai/aio-studio:base-2026-03-31"
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "aio-studio"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (default: date)"
+        required: false
+      # App ref overrides — leave empty for auto-detection
+      COMFYUI_REF:
+        description: "ComfyUI ref (empty = latest release)"
+        required: false
+      FORGE_REF:
+        description: "SD Forge ref (empty = latest commit)"
+        required: false
+      VOICEBOX_REF:
+        description: "Voicebox ref (empty = latest release)"
+        required: false
+      AI_TOOLKIT_REF:
+        description: "AI Toolkit ref (empty = latest commit)"
+        required: false
+      WAN2GP_REF:
+        description: "Wan2GP ref (empty = latest commit)"
+        required: false
+      WHISPER_REF:
+        description: "Whisper WebUI ref (empty = latest release)"
+        required: false
+      ACE_STEP_REF:
+        description: "ACE Step ref (empty = latest release)"
+        required: false
+
+env:
+  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-03-31"
+  DEFAULT_DOCKERHUB_REPO: "aio-studio"
+
+jobs:
+  # ── Resolve latest refs for all apps ──
+  resolve-refs:
+    runs-on: ubuntu-latest
+    outputs:
+      comfyui-ref: ${{ steps.comfyui.outputs.ref }}
+      forge-ref: ${{ steps.forge.outputs.ref }}
+      voicebox-ref: ${{ steps.voicebox.outputs.ref }}
+      ai-toolkit-ref: ${{ steps.ai-toolkit.outputs.ref }}
+      wan2gp-ref: ${{ steps.wan2gp.outputs.ref }}
+      whisper-ref: ${{ steps.whisper.outputs.ref }}
+      ace-step-ref: ${{ steps.ace-step.outputs.ref }}
+      ace-step-ui-ref: ${{ steps.ace-step-ui.outputs.ref }}
+      image-tag: ${{ steps.tag.outputs.tag }}
+      should-run: ${{ steps.decision.outputs.should-run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - secrets not configured"
+          fi
+
+      # Apps with releases — resolve latest tag
+      # Apps with releases — resolve latest tag (always, no age gating)
+      - name: Resolve ComfyUI ref
+        id: comfyui
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: Comfy-Org/ComfyUI
+          age-threshold-seconds: "999999999"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trigger: ${{ inputs.COMFYUI_REF && 'manual' || github.event_name }}
+          manual-ref: ${{ inputs.COMFYUI_REF }}
+          default-ref: master
+
+      - name: Resolve Voicebox ref
+        id: voicebox
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: jamiepine/voicebox
+          age-threshold-seconds: "999999999"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trigger: ${{ inputs.VOICEBOX_REF && 'manual' || github.event_name }}
+          manual-ref: ${{ inputs.VOICEBOX_REF }}
+          default-ref: main
+
+      - name: Resolve Whisper WebUI ref
+        id: whisper
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: jhj0517/Whisper-WebUI
+          age-threshold-seconds: "999999999"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trigger: ${{ inputs.WHISPER_REF && 'manual' || github.event_name }}
+          manual-ref: ${{ inputs.WHISPER_REF }}
+          default-ref: master
+
+      - name: Resolve ACE Step ref
+        id: ace-step
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: ace-step/ACE-Step-1.5
+          age-threshold-seconds: "999999999"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trigger: ${{ inputs.ACE_STEP_REF && 'manual' || github.event_name }}
+          manual-ref: ${{ inputs.ACE_STEP_REF }}
+          default-ref: main
+
+      # Apps without releases — resolve latest commit
+      - name: Resolve SD Forge ref
+        id: forge
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.FORGE_REF }}" ]]; then
+            echo "ref=${{ inputs.FORGE_REF }}" >> $GITHUB_OUTPUT
+          else
+            REF=$(git ls-remote https://github.com/Haoming02/sd-webui-forge-classic.git HEAD | cut -f1 | cut -c1-7)
+            echo "ref=${REF}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Resolve AI Toolkit ref
+        id: ai-toolkit
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.AI_TOOLKIT_REF }}" ]]; then
+            echo "ref=${{ inputs.AI_TOOLKIT_REF }}" >> $GITHUB_OUTPUT
+          else
+            REF=$(git ls-remote https://github.com/ostris/ai-toolkit.git HEAD | cut -f1 | cut -c1-7)
+            echo "ref=${REF}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Resolve Wan2GP ref
+        id: wan2gp
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.WAN2GP_REF }}" ]]; then
+            echo "ref=${{ inputs.WAN2GP_REF }}" >> $GITHUB_OUTPUT
+          else
+            REF=$(git ls-remote https://github.com/deepbeepmeep/Wan2GP.git HEAD | cut -f1 | cut -c1-7)
+            echo "ref=${REF}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Resolve ACE Step UI ref
+        id: ace-step-ui
+        shell: bash
+        run: |
+          REF=$(git ls-remote https://github.com/fspecii/ace-step-ui.git HEAD | cut -f1 | cut -c1-7)
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+
+      - name: Generate image tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.CUSTOM_IMAGE_TAG }}" ]]; then
+            echo "tag=${{ inputs.CUSTOM_IMAGE_TAG }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Resolved Refs" >> $GITHUB_STEP_SUMMARY
+          echo "| App | Ref |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| ComfyUI | \`${{ steps.comfyui.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SD Forge | \`${{ steps.forge.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Voicebox | \`${{ steps.voicebox.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| AI Toolkit | \`${{ steps.ai-toolkit.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Wan2GP | \`${{ steps.wan2gp.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Whisper WebUI | \`${{ steps.whisper.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACE Step | \`${{ steps.ace-step.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACE Step UI | \`${{ steps.ace-step-ui.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | **${{ steps.tag.outputs.tag }}** |" >> $GITHUB_STEP_SUMMARY
+
+  # ── Build app image ──
+  build:
+    needs: resolve-refs
+    if: needs.resolve-refs.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE }}"
+          REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          TAG="${{ needs.resolve-refs.outputs.image-tag }}"
+          AIO_BASE="${{ inputs.AIO_BASE || env.DEFAULT_AIO_BASE }}"
+
+          cd derivatives/pytorch/derivatives/aio-studio
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg AIO_BASE="${AIO_BASE}" \
+            --build-arg COMFYUI_REF=${{ needs.resolve-refs.outputs.comfyui-ref }} \
+            --build-arg FORGE_REF=${{ needs.resolve-refs.outputs.forge-ref }} \
+            --build-arg VOICEBOX_REF=${{ needs.resolve-refs.outputs.voicebox-ref }} \
+            --build-arg AI_TOOLKIT_REF=${{ needs.resolve-refs.outputs.ai-toolkit-ref }} \
+            --build-arg WAN2GP_REF=${{ needs.resolve-refs.outputs.wan2gp-ref }} \
+            --build-arg WHISPER_REF=${{ needs.resolve-refs.outputs.whisper-ref }} \
+            --build-arg ACE_STEP_REF=${{ needs.resolve-refs.outputs.ace-step-ref }} \
+            --build-arg ACE_STEP_UI_REF=${{ needs.resolve-refs.outputs.ace-step-ui-ref }} \
+            --build-context comfyui=../comfyui \
+            -t "${NAMESPACE}/${REPO}:${TAG}" \
+            -t "${NAMESPACE}/${REPO}:latest" \
+            . --push
+
+          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_ENV
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [resolve-refs, build]
+    if: always() && needs.resolve-refs.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          else
+            TAGS="[]"
+          fi
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [resolve-refs, build, collect-tags]
+    if: always() && needs.resolve-refs.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "AIO Studio"
+      image-ref: ${{ needs.resolve-refs.outputs.image-tag }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
