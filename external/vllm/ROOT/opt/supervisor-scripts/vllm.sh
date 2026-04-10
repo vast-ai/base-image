@@ -52,10 +52,10 @@ fi
 ## Automatically use all GPUs
 AUTO_PARALLEL_ARGS=""
 # Rewrite var name
-AUTO_PARALLEL="${AUTO_PARALLEL:-true}"                                                                           
-  if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-size || $VLLM_ARGS =~ data-parallel-size ]]; then                                                                                      
-      AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"                                                       
-  fi 
+AUTO_PARALLEL="${AUTO_PARALLEL:-true}"
+if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-size || $VLLM_ARGS =~ data-parallel-size ]]; then
+    AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"
+fi
 
 # Read complex args from /etc/vllm-args.conf if env vars were unsuitable
 eval "pty vllm serve "${VLLM_MODEL:-}" ${VLLM_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/vllm-args.conf ]] && cat /etc/vllm-args.conf)" 2>&1
