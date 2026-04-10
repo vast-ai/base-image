@@ -54,11 +54,7 @@ AUTO_PARALLEL_ARGS=""
 # Rewrite var name
 AUTO_PARALLEL="${AUTO_PARALLEL:-true}"
 if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $VLLM_ARGS =~ tensor-parallel-size || $VLLM_ARGS =~ data-parallel-size ]]; then
-    if [[ $VLLM_ARGS =~ enable-expert-parallel ]]; then
-        AUTO_PARALLEL_ARGS="--tensor-parallel-size 1 --data-parallel-size $GPU_COUNT"
-    else
-        AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"
-    fi
+    AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"
 fi
 
 # Read complex args from /etc/vllm-args.conf if env vars were unsuitable
