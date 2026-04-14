@@ -137,6 +137,15 @@ To build a variant with modifications:
 2. Trigger a manual build. Your changes will be included in the built image.
 3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/ace-step-api.conf` and `ROOT/etc/supervisor/conf.d/ace-step-ui.conf`, with startup scripts in `ROOT/opt/supervisor-scripts/`.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **ACE-Step 1.5** — MIT ([upstream](https://github.com/ace-step/ACE-Step-1.5))
+- **ACE-Step UI** — Unknown ([upstream](https://github.com/fspecii/ace-step-ui))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [ACE-Step 1.5 Documentation](https://github.com/ace-step/ACE-Step-1.5)

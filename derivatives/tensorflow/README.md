@@ -360,6 +360,14 @@ supervisorctl reload
 ```
 
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **TensorFlow** — Apache-2.0 ([upstream](https://github.com/tensorflow/tensorflow))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Tensorflow Home](https://www.tensorflow.org/)

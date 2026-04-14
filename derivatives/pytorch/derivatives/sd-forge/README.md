@@ -101,6 +101,14 @@ docker buildx build \
     -t yournamespace/reforge .
 ```
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Stable Diffusion WebUI Forge** — AGPL-3.0 ([upstream](https://github.com/lllyasviel/stable-diffusion-webui-forge))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Stable Diffusion WebUI Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge)

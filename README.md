@@ -492,6 +492,14 @@ docker buildx build \
 ./build.sh --list                        # Show all available configurations
 ```
 
+## Third-Party Licenses
+
+Each derivative image ships a `/LICENSES.md` file at the filesystem root that
+lists the vendor application(s) bundled in that image, their license types,
+upstream repositories, and where to find the corresponding license files inside
+the container. See the "Licenses" section in each derivative's README for a
+summary.
+
 ## License
 
 See [LICENSE.md](LICENSE.md) for details.

@@ -1,0 +1,25 @@
+# Third-Party Licenses
+
+This image bundles the following vendor application(s). Each is the property of
+its respective authors and is distributed under the license shown below. The
+full license text for each application is included with its source inside this
+image at the path indicated.
+
+## PyTorch
+
+- **License:** BSD-3-Clause
+- **Upstream:** https://github.com/pytorch/pytorch
+- **License file in image:** Included in the pip-installed package under
+  `/venv/main/lib/python3.*/site-packages/torch-*.dist-info/LICENSE`
+
+## ACE-Step 1.5
+
+- **License:** MIT
+- **Upstream:** https://github.com/ace-step/ACE-Step-1.5
+- **License file in image:** `$WORKSPACE/ACE-Step-1.5/LICENSE`
+
+## ACE-Step UI
+
+- **License:** Unknown (no license file in upstream repository)
+- **Upstream:** https://github.com/fspecii/ace-step-ui
+- **License file in image:** N/A
