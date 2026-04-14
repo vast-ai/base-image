@@ -1,9 +1,10 @@
 # Third-Party Licenses
 
 This image bundles the following vendor application(s). Each is the property of
-its respective authors and is distributed under the license shown below. The
-full license text for each application is included with its source inside this
-image at the path indicated.
+its respective authors and is distributed under the license shown below. Where
+the vendor's source or LICENSE file is shipped inside this image at a known
+location, the path is given. Otherwise, the upstream repository is referenced
+as the canonical source for the license text.
 
 ## Selkies-GStreamer
 
@@ -16,8 +17,9 @@ image at the path indicated.
 
 - **License:** Apache-2.0
 - **Upstream:** https://guacamole.apache.org/
-- **License file in image:** Compiled from source; see the upstream project
-  for the full license text.
+- **License file in image:** Compiled from source. The Apache-2.0 license text
+  is available at `/usr/share/common-licenses/Apache-2.0` in the Debian/Ubuntu
+  base image.
 
 ## Blender
 

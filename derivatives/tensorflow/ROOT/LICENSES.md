@@ -6,15 +6,9 @@ the vendor's source or LICENSE file is shipped inside this image at a known
 location, the path is given. Otherwise, the upstream repository is referenced
 as the canonical source for the license text.
 
-## PyTorch
+## TensorFlow
 
-- **License:** BSD-3-Clause
-- **Upstream:** https://github.com/pytorch/pytorch
+- **License:** Apache-2.0
+- **Upstream:** https://github.com/tensorflow/tensorflow
 - **License file in image:** Included in the pip-installed package under
-  `/venv/main/lib/python3.*/site-packages/torch-*.dist-info/LICENSE`
-
-## SwarmUI
-
-- **License:** MIT
-- **Upstream:** https://github.com/mcmonkeyprojects/SwarmUI
-- **License file in image:** `$WORKSPACE/SwarmUI/LICENSE.txt`
+  `/venv/main/lib/python3.*/site-packages/tensorflow-*.dist-info/LICENSE`

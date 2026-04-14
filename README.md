@@ -494,11 +494,11 @@ docker buildx build \
 
 ## Third-Party Licenses
 
-Each derivative image ships a `/LICENSES.md` file at the filesystem root that
-lists the vendor application(s) bundled in that image, their license types,
-upstream repositories, and where to find the corresponding license files inside
-the container. See the "Licenses" section in each derivative's README for a
-summary.
+Most derivative and external images ship a `/LICENSES.md` file at the
+filesystem root that lists the vendor application(s) bundled in that image,
+their license types, upstream repositories, and (where known) the location of
+the corresponding license files inside the container. See the "Licenses"
+section in each image's README for a per-image summary.
 
 ## License
 
