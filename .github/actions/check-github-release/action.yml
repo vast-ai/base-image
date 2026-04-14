@@ -60,14 +60,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
-        # Manual triggers always proceed
-        if [[ "${{ inputs.trigger }}" != "schedule" ]]; then
-          echo "new-release=true" >> $GITHUB_OUTPUT
-          echo "Manual trigger - skipping release check"
-          exit 0
-        fi
-        
-        echo "Checking GitHub for new releases of ${{ inputs.repository }}..."
+        echo "Checking GitHub for latest release of ${{ inputs.repository }}..."
         
         AUTH_HEADER=""
         if [[ -n "$GH_TOKEN" ]]; then
@@ -84,7 +77,7 @@ runs:
         
         if [[ "$HTTP_CODE" != "200" ]]; then
           echo "::warning::GitHub API returned $HTTP_CODE"
-          echo "new-release=false" >> $GITHUB_OUTPUT
+          echo "new-release=${{ inputs.trigger != 'schedule' }}" >> $GITHUB_OUTPUT
           exit 0
         fi
         
@@ -100,25 +93,28 @@ runs:
         
         if [[ -z "$TAG" || -z "$UPDATED_AT" ]]; then
           echo "::warning::Could not parse release data"
-          echo "new-release=false" >> $GITHUB_OUTPUT
+          echo "new-release=${{ inputs.trigger != 'schedule' }}" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
+
         echo "release-tag=$TAG" >> $GITHUB_OUTPUT
         echo "published-at=$PUBLISHED_AT" >> $GITHUB_OUTPUT
         echo "updated-at=$UPDATED_AT" >> $GITHUB_OUTPUT
 
-        # Calculate age from updated_at — catches releases promoted from prerelease
         RELEASE_EPOCH=$(date -d "$UPDATED_AT" +%s)
         NOW_EPOCH=$(date +%s)
         AGE=$((NOW_EPOCH - RELEASE_EPOCH))
         AGE_HOURS=$((AGE / 3600))
-        
+
         echo "Latest: $TAG (updated $AGE_HOURS hours ago)"
-        
-        if [[ $AGE -lt ${{ inputs.age-threshold-seconds }} ]]; then
+
+        # new-release gates scheduled rebuilds by release age. Manual/workflow_dispatch
+        # runs always proceed regardless of age.
+        if [[ "${{ inputs.trigger }}" != "schedule" ]]; then
           echo "new-release=true" >> $GITHUB_OUTPUT
-          echo "✓ New release detected"
+        elif [[ $AGE -lt ${{ inputs.age-threshold-seconds }} ]]; then
+          echo "new-release=true" >> $GITHUB_OUTPUT
+          echo "New release detected"
         else
           echo "new-release=false" >> $GITHUB_OUTPUT
           echo "::notice::No new release in threshold period"
@@ -128,11 +124,11 @@ runs:
       id: resolve
       shell: bash
       run: |
-        # Priority: manual input > release tag > default
+        # Priority: manual input > latest release tag > default branch
         if [[ -n "${{ inputs.manual-ref }}" && "${{ inputs.trigger }}" != "schedule" ]]; then
           REF="${{ inputs.manual-ref }}"
           echo "Using manual ref: $REF"
-        elif [[ -n "${{ steps.check.outputs.release-tag }}" && "${{ inputs.trigger }}" == "schedule" ]]; then
+        elif [[ -n "${{ steps.check.outputs.release-tag }}" ]]; then
           REF="${{ steps.check.outputs.release-tag }}"
           echo "Using release tag: $REF"
         else
