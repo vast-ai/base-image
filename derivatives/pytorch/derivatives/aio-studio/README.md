@@ -196,7 +196,7 @@ This image ships the following vendor applications under their respective licens
 | Unsloth Studio | AGPL-3.0 | [unslothai/unsloth](https://github.com/unslothai/unsloth) |
 | Whisper WebUI | Apache-2.0 | [jhj0517/Whisper-WebUI](https://github.com/jhj0517/Whisper-WebUI) |
 | ACE-Step 1.5 | MIT | [ace-step/ACE-Step-1.5](https://github.com/ace-step/ACE-Step-1.5) |
-| ACE-Step UI | Unknown | [fspecii/ace-step-ui](https://github.com/fspecii/ace-step-ui) |
+| ACE-Step UI | MIT (per upstream README) | [fspecii/ace-step-ui](https://github.com/fspecii/ace-step-ui) |
 | Selkies-GStreamer | MPL-2.0 | [selkies-project/selkies-gstreamer](https://github.com/selkies-project/selkies-gstreamer) |
 | Blender | GPL-2.0-or-later | [blender.org](https://www.blender.org/) |
 

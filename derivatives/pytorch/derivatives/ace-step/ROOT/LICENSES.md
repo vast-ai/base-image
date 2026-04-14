@@ -21,6 +21,6 @@ as the canonical source for the license text.
 
 ## ACE-Step UI
 
-- **License:** Unknown (no license file in upstream repository)
+- **License:** MIT (per upstream README; no LICENSE file in the repository)
 - **Upstream:** https://github.com/fspecii/ace-step-ui
-- **License file in image:** N/A
+- **License file in image:** N/A (upstream ships no LICENSE file)

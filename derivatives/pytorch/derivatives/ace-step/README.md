@@ -142,7 +142,7 @@ To build a variant with modifications:
 This image ships vendor application(s) under the following license(s):
 
 - **ACE-Step 1.5** — MIT ([upstream](https://github.com/ace-step/ACE-Step-1.5))
-- **ACE-Step UI** — Unknown ([upstream](https://github.com/fspecii/ace-step-ui))
+- **ACE-Step UI** — MIT (per upstream README) ([upstream](https://github.com/fspecii/ace-step-ui))
 
 See `/LICENSES.md` in the image for license details and file locations.
 
