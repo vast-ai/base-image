@@ -99,6 +99,7 @@ This image ships vendor application(s) under the following license(s):
 
 - **Selkies-GStreamer** — MPL-2.0 ([upstream](https://github.com/selkies-project/selkies-gstreamer))
 - **Apache Guacamole** — Apache-2.0 ([upstream](https://guacamole.apache.org/))
+- **Blender** — GPL-2.0-or-later ([upstream](https://www.blender.org/))
 
 See `/LICENSES.md` in the image for license details and file locations.
 

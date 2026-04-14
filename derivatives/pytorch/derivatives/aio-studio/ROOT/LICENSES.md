@@ -73,3 +73,17 @@ image at the path indicated.
 - **License:** Unknown (no license file in upstream repository)
 - **Upstream:** https://github.com/fspecii/ace-step-ui
 - **License file in image:** N/A
+
+## Selkies-GStreamer
+
+- **License:** MPL-2.0
+- **Upstream:** https://github.com/selkies-project/selkies-gstreamer
+- **License file in image:** Included in the pip-installed package under
+  `/usr/lib/python3/dist-packages/selkies_gstreamer-*.dist-info/LICENSE`
+
+## Blender
+
+- **License:** GPL-2.0-or-later
+- **Upstream:** https://www.blender.org/
+- **License file in image:** `/opt/blender-*/copyright.txt` (and the full GPL
+  text under `/opt/blender-*/`)

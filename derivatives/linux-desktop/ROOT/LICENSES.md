@@ -18,3 +18,10 @@ image at the path indicated.
 - **Upstream:** https://guacamole.apache.org/
 - **License file in image:** Compiled from source; see the upstream project
   for the full license text.
+
+## Blender
+
+- **License:** GPL-2.0-or-later
+- **Upstream:** https://www.blender.org/
+- **License file in image:** `/opt/blender-*/copyright.txt` (and the full GPL
+  text under `/opt/blender-*/`)
