@@ -101,6 +101,18 @@ docker buildx build \
     -t yournamespace/reforge .
 ```
 
+## Licenses
+
+This image ships a Forge-based vendor application selected at build time via
+the `FORGE_REPO` build argument. The original Forge upstream
+([lllyasviel/stable-diffusion-webui-forge](https://github.com/lllyasviel/stable-diffusion-webui-forge))
+is AGPL-3.0; community forks (Classic, Neo, Reforge) inherit the same license
+unless their maintainers state otherwise. Confirm the license of the
+specific fork you build.
+
+See `/LICENSES.md` in the image for the upstream source, license, and file
+location of the variant baked into your build.
+
 ## Useful Links
 
 - [Stable Diffusion WebUI Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge)

@@ -397,6 +397,14 @@ export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:1234:1123
 supervisorctl reload
 ```
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **SwarmUI** — MIT ([upstream](https://github.com/mcmonkeyprojects/SwarmUI))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [SwarmUI](https://github.com/mcmonkeyprojects/SwarmUI)

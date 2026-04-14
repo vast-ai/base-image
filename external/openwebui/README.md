@@ -146,6 +146,15 @@ To build a variant with modifications:
 2. Trigger a manual build. Your changes will be included in the built image.
 3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/` and the startup scripts in `ROOT/opt/supervisor-scripts/`.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Open WebUI** — Open WebUI License (BSD-3-Clause + branding restriction) ([upstream](https://github.com/open-webui/open-webui))
+- **Ollama** — MIT ([upstream](https://github.com/ollama/ollama))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Open WebUI Documentation](https://docs.openwebui.com/)

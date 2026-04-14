@@ -395,6 +395,14 @@ export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:1234:1123
 supervisorctl reload
 ```
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Fooocus** — GPL-3.0 ([upstream](https://github.com/lllyasviel/Fooocus))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Fooocus](https://github.com/lllyasviel/Fooocus)

@@ -92,6 +92,14 @@ docker buildx build \
 
 The `PYTORCH_BACKEND` argument should match your CUDA version (e.g., `cu118`, `cu121`, `cu124`, `cu128`) or use `rocm` for AMD GPUs.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **PyTorch** — BSD-3-Clause ([upstream](https://github.com/pytorch/pytorch))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [PyTorch Documentation](https://pytorch.org/)

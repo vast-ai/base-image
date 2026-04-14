@@ -397,6 +397,14 @@ supervisorctl reload
 ```
 
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Stable Diffusion Web UI** — AGPL-3.0 ([upstream](https://github.com/AUTOMATIC1111/stable-diffusion-webui))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [AUTOMATIC1111 WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui)

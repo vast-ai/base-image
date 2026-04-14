@@ -163,6 +163,14 @@ To build a variant with modifications:
 2. Trigger a manual build. Your changes will be included in the built image.
 3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/sglang.conf` and the startup script in `ROOT/opt/supervisor-scripts/sglang.sh`.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **SGLang** — Apache-2.0 ([upstream](https://github.com/sgl-project/sglang))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [SGLang Documentation](https://docs.sglang.ai/)

@@ -182,6 +182,26 @@ docker buildx build \
 | `AI_TOOLKIT_REPO` | `https://github.com/ostris/ai-toolkit` | AI Toolkit repository |
 | `AI_TOOLKIT_REF` | `4ad14d2` | AI Toolkit git ref |
 
+## Licenses
+
+This image ships the following vendor applications under their respective licenses:
+
+| Application | License | Upstream |
+|------------|---------|----------|
+| ComfyUI | GPL-3.0 | [Comfy-Org/ComfyUI](https://github.com/Comfy-Org/ComfyUI) |
+| SD Forge (Classic) | AGPL-3.0 | [Haoming02/sd-webui-forge-classic](https://github.com/Haoming02/sd-webui-forge-classic) |
+| Voicebox | MIT | [jamiepine/voicebox](https://github.com/jamiepine/voicebox) |
+| Ostris AI Toolkit | MIT | [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit) |
+| Wan2GP | WanGP Community License 2.0 | [deepbeepmeep/Wan2GP](https://github.com/deepbeepmeep/Wan2GP) |
+| Unsloth Studio | AGPL-3.0 | [unslothai/unsloth](https://github.com/unslothai/unsloth) |
+| Whisper WebUI | Apache-2.0 | [jhj0517/Whisper-WebUI](https://github.com/jhj0517/Whisper-WebUI) |
+| ACE-Step 1.5 | MIT | [ace-step/ACE-Step-1.5](https://github.com/ace-step/ACE-Step-1.5) |
+| ACE-Step UI | MIT (per upstream README) | [fspecii/ace-step-ui](https://github.com/fspecii/ace-step-ui) |
+| Selkies-GStreamer | MPL-2.0 | [selkies-project/selkies-gstreamer](https://github.com/selkies-project/selkies-gstreamer) |
+| Blender | GPL-2.0-or-later | [blender.org](https://www.blender.org/) |
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Blender](https://www.blender.org/) · [ComfyUI](https://github.com/Comfy-Org/ComfyUI) · [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) · [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) · [ACE Step](https://github.com/ace-step/ACE-Step-1.5) · [Voicebox](https://github.com/jamiepine/voicebox) · [Whisper WebUI](https://github.com/jhj0517/Whisper-WebUI) · [AI Toolkit](https://github.com/ostris/ai-toolkit) · [Unsloth](https://github.com/unslothai/unsloth)

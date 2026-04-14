@@ -88,6 +88,16 @@ docker buildx build \
 |----------|---------|-------------|
 | `PYTORCH_BASE` | `vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-03-19` | PyTorch mini base image |
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Unsloth Studio** — AGPL-3.0 ([upstream](https://github.com/unslothai/unsloth))
+
+The Unsloth core library is Apache-2.0, but the Studio component (frontend and
+related tooling) is licensed under AGPL-3.0. See `/LICENSES.md` in the image
+for license details and file locations.
+
 ## Useful Links
 
 - [Unsloth Documentation](https://github.com/unslothai/unsloth)
