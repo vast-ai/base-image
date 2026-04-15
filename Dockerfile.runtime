@@ -9,6 +9,8 @@ ARG CUDA_VERSIONS="12-9"
 
 RUN \
     set -euo pipefail && \
+    set -f && \
+    [ -n "${CUDA_VERSIONS// }" ] || { echo "CUDA_VERSIONS must not be empty" >&2; exit 1; } && \
     apt-get update && \
     PACKAGES="" && \
     lowest_dotver="" && \
