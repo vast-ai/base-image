@@ -40,6 +40,8 @@ jobs:
       all-configs: ${{ steps.configs.outputs.all-configs }}
       mini-configs: ${{ steps.configs.outputs.mini-configs }}
       has-mini: ${{ steps.configs.outputs.has-mini }}
+      multi-configs: ${{ steps.configs.outputs.multi-configs }}
+      has-multi: ${{ steps.configs.outputs.has-multi }}
     steps:
       - name: Generate filtered config list
         id: configs
@@ -108,6 +110,15 @@ jobs:
             CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
           done
 
+          # Multi-torch variants: a base pytorch image with additional
+          # torch venvs layered in. Tag format:
+          #   ${NS}/pytorch:${key}-py${py}-${date}
+          # plus a default-python dated alias and a no-date latest alias.
+          # Format: key|primary_torch|primary_backend|cuda_minor|python_versions
+          ALL_MULTI_CONFIGS=(
+            "multi-210-291-271|2.10.0|cu128|12.9|312"
+          )
+
           MINI_CONFIGS_JSON="[]"
 
           for mini_config in "${ALL_MINI_CONFIGS[@]}"; do
@@ -132,6 +143,29 @@ jobs:
             echo "has-mini=false" >> $GITHUB_OUTPUT
           fi
 
+          MULTI_CONFIGS_JSON="[]"
+          for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
+            IFS='|' read -r key primary_torch primary_backend cuda_minor python_versions <<< "$multi_config"
+
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            MULTI_CONFIGS_JSON=$(echo "$MULTI_CONFIGS_JSON" | jq -c \
+              --arg key "$key" \
+              --arg primary_torch "$primary_torch" \
+              --arg primary_backend "$primary_backend" \
+              --arg cuda_minor "$cuda_minor" \
+              --arg python_versions "$python_versions" \
+              '. + [{"key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "python_versions": $python_versions}]')
+          done
+
+          if [[ $(echo "$MULTI_CONFIGS_JSON" | jq length) -gt 0 ]]; then
+            echo "has-multi=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-multi=false" >> $GITHUB_OUTPUT
+          fi
+
           {
             echo "configs<<CONFIGS_EOF"
             echo "${CONFIGS_JSON}"
@@ -146,6 +180,11 @@ jobs:
             echo "mini-configs<<MINI_CONFIGS_EOF"
             echo "${MINI_CONFIGS_JSON}"
             echo "MINI_CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "multi-configs<<MULTI_CONFIGS_EOF"
+            echo "${MULTI_CONFIGS_JSON}"
+            echo "MULTI_CONFIGS_EOF"
           } >> $GITHUB_OUTPUT
           echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
           echo "Mini configs: $(echo "$MINI_CONFIGS_JSON" | jq length)"
@@ -174,6 +213,8 @@ jobs:
           ALL_CONFIGS: ${{ needs.generate-configs.outputs.all-configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
+          MULTI_CONFIGS: ${{ needs.generate-configs.outputs.multi-configs }}
+          HAS_MULTI: ${{ needs.generate-configs.outputs.has-multi }}
         run: |
           set -euo pipefail
           DEFAULT_PYTHON="312"
@@ -216,6 +257,22 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                  echo "  ok: $SOURCE"
+                else
+                  echo "  MISSING: $SOURCE"
+                  MISSING+=("$SOURCE")
+                fi
+              done
+            done
+          fi
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
                 if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
@@ -317,6 +374,55 @@ jobs:
 
                 echo "$DATED_TAG" >> built-tags/tags.txt
               done
+            done
+          fi
+
+          # Promote multi-torch variants (layered pytorch images).
+          # Each config produces a dated prod tag per python, a dated
+          # default-python alias, and a no-date latest alias that the
+          # aio-studio / other consumers reference.
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            echo ""
+            echo "=== Promoting PyTorch multi-torch variants ==="
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
+
+              echo ""
+              echo "--- ${key} ---"
+
+              DEFAULT_DATED=""
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+                DATED_TAG="${NAMESPACE_PROD}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+
+                EXTRA_TAGS=""
+                if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
+                  DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${key}-${STAGING_DATE}"
+                  EXTRA_TAGS="--tag ${DATED_ALIAS}"
+                  DEFAULT_DATED="$DATED_TAG"
+                  echo "$DATED_ALIAS" >> built-tags/tags.txt
+                fi
+
+                echo "Promoting multi: ${SOURCE} -> ${DATED_TAG}"
+                docker buildx imagetools create \
+                  --tag "${DATED_TAG}" \
+                  ${EXTRA_TAGS} \
+                  "${SOURCE}"
+
+                echo "$DATED_TAG" >> built-tags/tags.txt
+              done
+
+              # Repoint the no-date latest alias at the default-python
+              # dated prod image we just pushed. Must come after the
+              # dated tags so the alias sits at the top of the tag list.
+              if [[ -n "$DEFAULT_DATED" ]]; then
+                LATEST_ALIAS="${NAMESPACE_PROD}/pytorch:${key}"
+                echo "Updating latest alias: ${LATEST_ALIAS} -> ${DEFAULT_DATED}"
+                docker buildx imagetools create --tag "${LATEST_ALIAS}" "${DEFAULT_DATED}"
+                echo "$LATEST_ALIAS" >> built-tags/tags.txt
+              fi
             done
           fi
 
@@ -468,6 +574,8 @@ jobs:
           ALL_CONFIGS: ${{ needs.generate-configs.outputs.all-configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
+          MULTI_CONFIGS: ${{ needs.generate-configs.outputs.multi-configs }}
+          HAS_MULTI: ${{ needs.generate-configs.outputs.has-multi }}
         run: |
           DEFAULT_PYTHON="312"
 
@@ -512,6 +620,22 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                  echo "  ok: $SOURCE"
+                else
+                  echo "  MISSING: $SOURCE"
+                  MISSING+=("$SOURCE")
+                fi
+              done
+            done
+          fi
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
                 if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
@@ -572,6 +696,27 @@ jobs:
                 echo "  ${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
                 echo "    -> ${NAMESPACE_PROD}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
               done
+            done
+          fi
+
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            echo ""
+            echo "=== Multi-torch Promotions ==="
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
+
+              echo ""
+              echo "--- ${key} ---"
+              for py_tag in ${python_versions}; do
+                echo "  ${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+                echo "    -> ${NAMESPACE_PROD}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+              done
+              echo "  + default python alias:"
+              echo "    -> ${NAMESPACE_PROD}/pytorch:${key}-${STAGING_DATE} (alias for py${DEFAULT_PYTHON})"
+              echo "  + latest alias:"
+              echo "    -> ${NAMESPACE_PROD}/pytorch:${key} -> ${key}-py${DEFAULT_PYTHON}-${STAGING_DATE}"
             done
           fi
 
