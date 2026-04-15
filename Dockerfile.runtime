@@ -9,7 +9,6 @@ ARG CUDA_VERSIONS="12-9"
 
 RUN \
     set -euo pipefail && \
-    set -f && \
     [ -n "${CUDA_VERSIONS// }" ] || { echo "CUDA_VERSIONS must not be empty" >&2; exit 1; } && \
     apt-get update && \
     PACKAGES="" && \
@@ -23,6 +22,7 @@ RUN \
         fi; \
     done && \
     PACKAGES="$PACKAGES libnccl2=*+cuda${lowest_dotver}" && \
+    set -f && \
     apt-get install -y --no-install-recommends $PACKAGES && \
     set +f && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
