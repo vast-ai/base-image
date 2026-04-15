@@ -69,7 +69,7 @@ jobs:
           repository: invoke-ai/InvokeAI
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: schedule
+          trigger: ${{ github.event_name }}
           tag-pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
           resolve-master-to-commit: "false"
 

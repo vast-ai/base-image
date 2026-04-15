@@ -71,7 +71,7 @@ jobs:
           repository: ostris/aitoolkit
           version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: schedule
+          trigger: ${{ github.event_name }}
 
       - name: Resolve AI Toolkit git ref
         id: resolve-ref
