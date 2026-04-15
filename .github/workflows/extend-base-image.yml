@@ -284,7 +284,7 @@ jobs:
           retention-days: 1
 
   extend-mini:
-    needs: [generate-matrix, merge-manifests]
+    needs: [generate-matrix]
     if: ${{ !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     permissions:
