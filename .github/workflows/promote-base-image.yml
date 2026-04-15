@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.configs.outputs.configs }}
+      all-configs: ${{ steps.configs.outputs.all-configs }}
       mini-tags: ${{ steps.configs.outputs.mini-tags }}
     steps:
       - name: Generate filtered config list
@@ -60,19 +61,24 @@ jobs:
           )
 
           CONFIGS_JSON="[]"
+          ALL_CONFIGS_JSON="[]"
 
           for config in "${ALL_CONFIGS[@]}"; do
             IFS='|' read -r key tag_template default_python <<< "$config"
+
+            ENTRY_JSON=$(jq -nc \
+              --arg key "$key" \
+              --arg tag_template "$tag_template" \
+              --arg default_python "$default_python" \
+              '{key: $key, tag_template: $tag_template, default_python: $default_python}')
+
+            ALL_CONFIGS_JSON=$(echo "$ALL_CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
 
             if [[ -n "$FILTER" && "$key" != *"$FILTER"* ]]; then
               continue
             fi
 
-            CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c \
-              --arg key "$key" \
-              --arg tag_template "$tag_template" \
-              --arg default_python "$default_python" \
-              '. + [{"key": $key, "tag_template": $tag_template, "default_python": $default_python}]')
+            CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
           done
 
           # Mini configs: key|mini_tag
@@ -97,6 +103,11 @@ jobs:
             echo "configs<<CONFIGS_EOF"
             echo "${CONFIGS_JSON}"
             echo "CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "all-configs<<ALL_CONFIGS_EOF"
+            echo "${ALL_CONFIGS_JSON}"
+            echo "ALL_CONFIGS_EOF"
           } >> $GITHUB_OUTPUT
           {
             echo "mini-tags<<MINI_TAGS_EOF"
@@ -127,11 +138,32 @@ jobs:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          ALL_CONFIGS: ${{ needs.generate-configs.outputs.all-configs }}
           MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           set -euo pipefail
           PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
+
+          # Capture the current target of every auto tag BEFORE we promote.
+          # We need this so the post-promotion auto-tag dance can restore
+          # auto tags for configs NOT being promoted in this run (keeping
+          # them pinned to their existing content while still re-pushing
+          # them so they appear at the top of the tag list).
+          declare -A AUTO_TARGET_PRE
+          ALL_COUNT=$(echo "$ALL_CONFIGS" | jq length)
+          for ((i=0; i<ALL_COUNT; i++)); do
+            at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
+            at_cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$at_cuda_ver" ]] && continue
+            AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${at_cuda_ver}-auto"
+            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              AUTO_TARGET_PRE[$at_cuda_ver]="${NAMESPACE_PROD}/base-image@${digest}"
+              echo "Captured existing auto tag: cuda-${at_cuda_ver}-auto @ ${digest}"
+            else
+              echo "No existing auto tag for cuda-${at_cuda_ver} (will be created if promoted)"
+            fi
+          done
 
           # Promote all base images (per-config, per-python)
           echo "=== Promoting base images ==="
@@ -192,31 +224,83 @@ jobs:
             done
           done
 
-          # Auto convenience tags MUST be created last.
+          # Auto convenience tags MUST be the most recently pushed tags.
           # The Vast.ai @vastai-automatic-tag backend resolves to the most
-          # recently pushed image for a given CUDA version. These auto tags
-          # point to the default Python variant (e.g. py312) so they must be
-          # the final push to ensure correct resolution ordering.
-          echo ""
-          echo "=== Creating auto convenience tags (must be last) ==="
+          # recently pushed image for a given CUDA version, so these auto
+          # tags must be the final push to ensure correct ordering.
+          #
+          # We run a two-phase dance over the FULL unfiltered config list
+          # (not just the configs promoted in this run). Phase A points
+          # every auto tag at a shared anchor image; Phase B points each
+          # back at its real target. The dance guarantees that every auto
+          # tag receives two fresh pushes at the end of this job — even
+          # for configs not promoted in this run — so their push
+          # timestamps always end up newer than any dated tag. Re-pushing
+          # the same digest is not sufficient: the registry only bumps
+          # the tag order when the underlying manifest changes.
+          #
+          # For configs promoted this run, the real target is the new
+          # dated default-python image. For configs NOT promoted, the
+          # real target is the digest we captured before promotion.
+          declare -A AUTO_TARGET_FINAL
+          for cuda_ver in "${!AUTO_TARGET_PRE[@]}"; do
+            AUTO_TARGET_FINAL[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]}"
+          done
           for ((i=0; i<CONFIG_COUNT; i++)); do
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
-
             cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
             [[ -z "$cuda_ver" ]] && continue
-
             dp_tag="${default_python//.}"
-            SOURCE="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
-            TARGET="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
-
-            echo "Auto-tag: ${SOURCE} -> ${TARGET}"
-            docker buildx imagetools create \
-              --tag "${TARGET}" \
-              "${SOURCE}"
-
-            echo "$TARGET" >> built-tags/tags.txt
+            AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
           done
+
+          # Pick an anchor for Phase A. Prefer a newly-promoted image so
+          # the anchor is guaranteed to exist; fall back to any captured
+          # pre-existing auto target if nothing was promoted this run.
+          ANCHOR=""
+          if [[ "$CONFIG_COUNT" -gt 0 ]]; then
+            anchor_template=$(echo "$CONFIGS" | jq -r ".[0].tag_template")
+            anchor_default_python=$(echo "$CONFIGS" | jq -r ".[0].default_python")
+            anchor_dp_tag="${anchor_default_python//.}"
+            ANCHOR="${NAMESPACE_PROD}/base-image:${anchor_template}-py${anchor_dp_tag}-${STAGING_DATE}"
+          elif [[ "${#AUTO_TARGET_PRE[@]}" -gt 0 ]]; then
+            for cuda_ver in "${!AUTO_TARGET_PRE[@]}"; do
+              ANCHOR="${AUTO_TARGET_PRE[$cuda_ver]}"
+              break
+            done
+          fi
+
+          if [[ -z "$ANCHOR" || "${#AUTO_TARGET_FINAL[@]}" -eq 0 ]]; then
+            echo "Skipping auto-tag dance (no anchor or no auto tags to update)"
+          else
+            echo ""
+            echo "=== Auto-tag dance Phase A: point every auto tag at anchor ==="
+            echo "    Anchor: ${ANCHOR}"
+            for ((i=0; i<ALL_COUNT; i++)); do
+              at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
+              cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+              [[ -z "$cuda_ver" ]] && continue
+              [[ -z "${AUTO_TARGET_FINAL[$cuda_ver]:-}" ]] && continue
+              AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+              echo "  ${AUTO_TAG_REF} -> anchor"
+              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${ANCHOR}"
+            done
+
+            echo ""
+            echo "=== Auto-tag dance Phase B: point each auto tag at final target ==="
+            for ((i=0; i<ALL_COUNT; i++)); do
+              at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
+              cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+              [[ -z "$cuda_ver" ]] && continue
+              TARGET="${AUTO_TARGET_FINAL[$cuda_ver]:-}"
+              [[ -z "$TARGET" ]] && continue
+              AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+              echo "  ${AUTO_TAG_REF} -> ${TARGET}"
+              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET}"
+              echo "$AUTO_TAG_REF" >> built-tags/tags.txt
+            done
+          fi
 
           echo ""
           echo "=== Promotion complete ==="
