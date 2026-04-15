@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       SGLANG_VERSION:
-        description: "SGLang version (e.g. v0.5.7, or 'nightly') - leave empty to simulate scheduled build"
+        description: "SGLang version (e.g. v0.5.7, or 'nightly') - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
@@ -73,7 +73,7 @@ jobs:
           # -cu130 etc. for explicit CUDA variants, optional .postN suffix.
           version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+(\\.post[0-9]+)?$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ inputs.SGLANG_VERSION && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.SGLANG_VERSION }}
 
       - name: Build matrix from variant tags

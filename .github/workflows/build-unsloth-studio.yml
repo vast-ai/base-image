@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       UNSLOTH_REF:
-        description: "Unsloth Studio release tag - leave empty to simulate scheduled build"
+        description: "Unsloth Studio release tag - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
@@ -66,7 +66,7 @@ jobs:
           repository: unslothai/unsloth
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.UNSLOTH_REF && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-ref: ${{ inputs.UNSLOTH_REF }}
           default-ref: ""
           # Only match studio release tags (v0.1.0-beta etc.), not llama.cpp builds (b8508)

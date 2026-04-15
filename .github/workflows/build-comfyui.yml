@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       COMFYUI_REF:
-        description: "ComfyUI git ref - leave empty to simulate scheduled build"
+        description: "ComfyUI git ref - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
@@ -67,7 +67,7 @@ jobs:
           repository: Comfy-Org/ComfyUI
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.COMFYUI_REF && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-ref: ${{ inputs.COMFYUI_REF }}
           default-ref: master
 

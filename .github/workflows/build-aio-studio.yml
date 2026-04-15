@@ -59,13 +59,13 @@ jobs:
   resolve-refs:
     runs-on: ubuntu-latest
     outputs:
-      comfyui-ref: ${{ steps.comfyui.outputs.ref }}
+      comfyui-ref: ${{ steps.comfyui.outputs.resolved-ref }}
       forge-ref: ${{ steps.forge.outputs.ref }}
-      voicebox-ref: ${{ steps.voicebox.outputs.ref }}
+      voicebox-ref: ${{ steps.voicebox.outputs.resolved-ref }}
       ai-toolkit-ref: ${{ steps.ai-toolkit.outputs.ref }}
       wan2gp-ref: ${{ steps.wan2gp.outputs.ref }}
-      whisper-ref: ${{ steps.whisper.outputs.ref }}
-      ace-step-ref: ${{ steps.ace-step.outputs.ref }}
+      whisper-ref: ${{ steps.whisper.outputs.resolved-ref }}
+      ace-step-ref: ${{ steps.ace-step.outputs.resolved-ref }}
       ace-step-ui-ref: ${{ steps.ace-step-ui.outputs.ref }}
       image-tag: ${{ steps.tag.outputs.tag }}
       should-run: ${{ steps.decision.outputs.should-run }}
@@ -194,13 +194,13 @@ jobs:
           echo "## Resolved Refs" >> $GITHUB_STEP_SUMMARY
           echo "| App | Ref |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|-----|" >> $GITHUB_STEP_SUMMARY
-          echo "| ComfyUI | \`${{ steps.comfyui.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ComfyUI | \`${{ steps.comfyui.outputs.resolved-ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| SD Forge | \`${{ steps.forge.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Voicebox | \`${{ steps.voicebox.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Voicebox | \`${{ steps.voicebox.outputs.resolved-ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| AI Toolkit | \`${{ steps.ai-toolkit.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Wan2GP | \`${{ steps.wan2gp.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Whisper WebUI | \`${{ steps.whisper.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| ACE Step | \`${{ steps.ace-step.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Whisper WebUI | \`${{ steps.whisper.outputs.resolved-ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACE Step | \`${{ steps.ace-step.outputs.resolved-ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| ACE Step UI | \`${{ steps.ace-step-ui.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Image Tag** | **${{ steps.tag.outputs.tag }}** |" >> $GITHUB_STEP_SUMMARY
 

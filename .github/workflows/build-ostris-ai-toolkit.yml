@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       AI_TOOLKIT_REF:
-        description: "Git ref (commit/branch) - leave empty to simulate scheduled build"
+        description: "Git ref (commit/branch) - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
@@ -71,7 +71,7 @@ jobs:
           repository: ostris/aitoolkit
           version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: schedule
+          trigger: ${{ github.event_name }}
 
       - name: Resolve AI Toolkit git ref
         id: resolve-ref

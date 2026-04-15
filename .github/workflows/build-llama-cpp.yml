@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       LLAMA_CPP_VERSION:
-        description: "Release tag (e.g. b5460) - leave empty to simulate scheduled build"
+        description: "Release tag (e.g. b5460) - leave empty for latest"
         required: false
       CUDA_VERSION:
         description: "CUDA version for binary package"
@@ -71,7 +71,7 @@ jobs:
         with:
           repository: ai-dock/llama.cpp-cuda
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ inputs.LLAMA_CPP_VERSION && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-ref: ${{ inputs.LLAMA_CPP_VERSION }}
           resolve-master-to-commit: "false"
 

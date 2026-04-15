@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       ACE_STEP_REF:
-        description: "ACE-Step git ref - leave empty to simulate scheduled build"
+        description: "ACE-Step git ref - leave empty for latest"
         required: false
       ACE_STEP_UI_REF:
         description: "ACE-Step UI git ref (default: main)"
