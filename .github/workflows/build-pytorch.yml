@@ -226,7 +226,8 @@ jobs:
           for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
             IFS='|' read -r key primary_torch primary_backend cuda_minor arches python_versions <<< "$multi_config"
 
-            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* ]]; then
+            # FILTER=mini also includes multi since multi layers on mini.
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
               continue
             fi
 
