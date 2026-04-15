@@ -231,17 +231,19 @@ jobs:
           #
           # We run a two-phase dance over the FULL unfiltered config list
           # (not just the configs promoted in this run). Phase A points
-          # every auto tag at a shared anchor image; Phase B points each
-          # back at its real target. The dance guarantees that every auto
-          # tag receives two fresh pushes at the end of this job — even
-          # for configs not promoted in this run — so their push
-          # timestamps always end up newer than any dated tag. Re-pushing
-          # the same digest is not sufficient: the registry only bumps
-          # the tag order when the underlying manifest changes.
-          #
-          # For configs promoted this run, the real target is the new
-          # dated default-python image. For configs NOT promoted, the
-          # real target is the digest we captured before promotion.
+          # every auto tag at a per-tag anchor whose digest differs from
+          # the auto tag's current and intended content; Phase B points
+          # each back at its real target. The dance guarantees that every
+          # auto tag receives two fresh pushes — even for configs not
+          # promoted in this run — so their push timestamps always end
+          # up newer than any dated tag. Re-pushing the same digest is
+          # not sufficient: the registry only bumps the tag order when
+          # the underlying manifest actually changes.
+
+          # Build the final-target map. For configs promoted this run,
+          # the real target is the new dated default-python image. For
+          # configs NOT promoted, the real target is the pre-captured
+          # digest ref.
           declare -A AUTO_TARGET_FINAL
           for cuda_ver in "${!AUTO_TARGET_PRE[@]}"; do
             AUTO_TARGET_FINAL[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]}"
@@ -255,52 +257,64 @@ jobs:
             AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
           done
 
-          # Pick an anchor for Phase A. Prefer a newly-promoted image so
-          # the anchor is guaranteed to exist; fall back to any captured
-          # pre-existing auto target if nothing was promoted this run.
-          ANCHOR=""
-          if [[ "$CONFIG_COUNT" -gt 0 ]]; then
-            anchor_template=$(echo "$CONFIGS" | jq -r ".[0].tag_template")
-            anchor_default_python=$(echo "$CONFIGS" | jq -r ".[0].default_python")
-            anchor_dp_tag="${anchor_default_python//.}"
-            ANCHOR="${NAMESPACE_PROD}/base-image:${anchor_template}-py${anchor_dp_tag}-${STAGING_DATE}"
-          elif [[ "${#AUTO_TARGET_PRE[@]}" -gt 0 ]]; then
-            for cuda_ver in "${!AUTO_TARGET_PRE[@]}"; do
-              ANCHOR="${AUTO_TARGET_PRE[$cuda_ver]}"
-              break
-            done
-          fi
+          # Resolve each final target to its digest so we can pick
+          # anchors whose content actually differs.
+          declare -A FINAL_DIGEST
+          for cuda_ver in "${!AUTO_TARGET_FINAL[@]}"; do
+            ref="${AUTO_TARGET_FINAL[$cuda_ver]}"
+            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              FINAL_DIGEST[$cuda_ver]="$d"
+            else
+              echo "WARN: could not resolve digest for ${ref}; cuda-${cuda_ver}-auto will be skipped in the dance"
+            fi
+          done
 
-          if [[ -z "$ANCHOR" || "${#AUTO_TARGET_FINAL[@]}" -eq 0 ]]; then
-            echo "Skipping auto-tag dance (no anchor or no auto tags to update)"
-          else
-            echo ""
-            echo "=== Auto-tag dance Phase A: point every auto tag at anchor ==="
-            echo "    Anchor: ${ANCHOR}"
-            for ((i=0; i<ALL_COUNT; i++)); do
-              at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
-              cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
-              [[ -z "$cuda_ver" ]] && continue
-              [[ -z "${AUTO_TARGET_FINAL[$cuda_ver]:-}" ]] && continue
-              AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
-              echo "  ${AUTO_TAG_REF} -> anchor"
-              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${ANCHOR}"
+          # Iterate auto tags in ALL_CONFIGS order and run the dance.
+          echo ""
+          echo "=== Auto-tag dance ==="
+          for ((i=0; i<ALL_COUNT; i++)); do
+            at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
+            cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+            TARGET_REF="${AUTO_TARGET_FINAL[$cuda_ver]:-}"
+            [[ -z "$TARGET_REF" ]] && continue
+            target_digest="${FINAL_DIGEST[$cuda_ver]:-}"
+            [[ -z "$target_digest" ]] && continue
+
+            # Pre-capture already stores a digest-qualified ref of the
+            # form <repo>@sha256:... — extract just the digest portion.
+            current_ref="${AUTO_TARGET_PRE[$cuda_ver]:-}"
+            current_digest=""
+            [[ -n "$current_ref" ]] && current_digest="${current_ref##*@}"
+
+            # Pick an anchor: any other config's final target whose
+            # digest differs from both current and intended.
+            anchor_ref=""
+            for ((j=0; j<ALL_COUNT; j++)); do
+              [[ "$j" -eq "$i" ]] && continue
+              cj_template=$(echo "$ALL_CONFIGS" | jq -r ".[$j].tag_template")
+              cj_cuda_ver=$(echo "$cj_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+              [[ -z "$cj_cuda_ver" ]] && continue
+              cand_digest="${FINAL_DIGEST[$cj_cuda_ver]:-}"
+              [[ -z "$cand_digest" ]] && continue
+              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
+                anchor_ref="${AUTO_TARGET_FINAL[$cj_cuda_ver]}"
+                break
+              fi
             done
 
-            echo ""
-            echo "=== Auto-tag dance Phase B: point each auto tag at final target ==="
-            for ((i=0; i<ALL_COUNT; i++)); do
-              at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
-              cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
-              [[ -z "$cuda_ver" ]] && continue
-              TARGET="${AUTO_TARGET_FINAL[$cuda_ver]:-}"
-              [[ -z "$TARGET" ]] && continue
-              AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
-              echo "  ${AUTO_TAG_REF} -> ${TARGET}"
-              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET}"
-              echo "$AUTO_TAG_REF" >> built-tags/tags.txt
-            done
-          fi
+            AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+            if [[ -z "$anchor_ref" ]]; then
+              echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; skipping dance (tag order will not advance)"
+              continue
+            fi
+
+            echo "  Phase A: ${AUTO_TAG_REF} -> anchor ${anchor_ref}"
+            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${anchor_ref}"
+            echo "  Phase B: ${AUTO_TAG_REF} -> ${TARGET_REF}"
+            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+            echo "$AUTO_TAG_REF" >> built-tags/tags.txt
+          done
 
           echo ""
           echo "=== Promotion complete ==="
