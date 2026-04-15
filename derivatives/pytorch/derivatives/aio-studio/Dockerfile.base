@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=robatvastai/pytorch:multi-210-291-271-cu128
+ARG PYTORCH_BASE=vastai/pytorch:multi-210-291-271-2026-04-15
 
 FROM ${PYTORCH_BASE}
 
