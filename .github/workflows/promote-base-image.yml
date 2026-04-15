@@ -360,12 +360,22 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Print promotion plan
         env:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          ALL_CONFIGS: ${{ needs.generate-configs.outputs.all-configs }}
           MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
         run: |
           echo "=== DRY RUN - Promotion Plan ==="
@@ -406,16 +416,104 @@ jobs:
           done
 
           echo ""
-          echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
+          echo "=== Auto-tag dance resolution ==="
+          echo "(Resolves against the live registry so you can verify"
+          echo " each auto tag's current digest, its intended final"
+          echo " digest, and the anchor that would be used in Phase A.)"
+          echo ""
+
+          ALL_COUNT=$(echo "$ALL_CONFIGS" | jq length)
+
+          # Capture current digests of every existing auto tag.
+          declare -A AUTO_TARGET_PRE
+          for ((i=0; i<ALL_COUNT; i++)); do
+            at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
+            at_cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$at_cuda_ver" ]] && continue
+            AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${at_cuda_ver}-auto"
+            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              AUTO_TARGET_PRE[$at_cuda_ver]="${NAMESPACE_PROD}/base-image@${digest}"
+            fi
+          done
+
+          # Build the final-target map (promoted configs override pre).
+          declare -A AUTO_TARGET_FINAL
+          for cuda_ver in "${!AUTO_TARGET_PRE[@]}"; do
+            AUTO_TARGET_FINAL[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]}"
+          done
           for ((i=0; i<CONFIG_COUNT; i++)); do
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
-
             cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
             [[ -z "$cuda_ver" ]] && continue
-
             dp_tag="${default_python//.}"
-            echo "  ${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE} -> ${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+            AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
+          done
+
+          # Resolve final target digests.
+          declare -A FINAL_DIGEST
+          for cuda_ver in "${!AUTO_TARGET_FINAL[@]}"; do
+            ref="${AUTO_TARGET_FINAL[$cuda_ver]}"
+            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              FINAL_DIGEST[$cuda_ver]="$d"
+            fi
+          done
+
+          for ((i=0; i<ALL_COUNT; i++)); do
+            at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
+            cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+            TARGET_REF="${AUTO_TARGET_FINAL[$cuda_ver]:-}"
+            AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
+
+            echo "--- cuda-${cuda_ver}-auto ---"
+            if [[ -z "$TARGET_REF" ]]; then
+              echo "  (no current auto tag and not in this promotion — skipped)"
+              echo ""
+              continue
+            fi
+
+            current_ref="${AUTO_TARGET_PRE[$cuda_ver]:-}"
+            current_digest=""
+            [[ -n "$current_ref" ]] && current_digest="${current_ref##*@}"
+            target_digest="${FINAL_DIGEST[$cuda_ver]:-}"
+
+            echo "  Current:       ${current_ref:-<none>}"
+            echo "  Current digest: ${current_digest:-<none>}"
+            echo "  Final target:   ${TARGET_REF}"
+            echo "  Final digest:   ${target_digest:-<unresolved>}"
+
+            if [[ -z "$target_digest" ]]; then
+              echo "  Phase A/B:     SKIP (final target digest not resolvable)"
+              echo ""
+              continue
+            fi
+
+            anchor_ref=""
+            anchor_digest=""
+            for ((j=0; j<ALL_COUNT; j++)); do
+              [[ "$j" -eq "$i" ]] && continue
+              cj_template=$(echo "$ALL_CONFIGS" | jq -r ".[$j].tag_template")
+              cj_cuda_ver=$(echo "$cj_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+              [[ -z "$cj_cuda_ver" ]] && continue
+              cand_digest="${FINAL_DIGEST[$cj_cuda_ver]:-}"
+              [[ -z "$cand_digest" ]] && continue
+              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
+                anchor_ref="${AUTO_TARGET_FINAL[$cj_cuda_ver]}"
+                anchor_digest="$cand_digest"
+                break
+              fi
+            done
+
+            if [[ -z "$anchor_ref" ]]; then
+              echo "  Phase A/B:     SKIP (no distinct anchor available)"
+            else
+              echo "  Phase A anchor: ${anchor_ref}"
+              echo "  Phase A digest: ${anchor_digest}"
+              echo "  Phase A:        ${AUTO_TAG_REF} -> ${anchor_ref}"
+              echo "  Phase B:        ${AUTO_TAG_REF} -> ${TARGET_REF}"
+            fi
+            echo ""
           done
 
   notify:
