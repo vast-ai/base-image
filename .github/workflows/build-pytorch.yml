@@ -173,6 +173,20 @@ jobs:
             done
           done
 
+          # Pre-pass: collect the (torch_ver, torch_backend) pairs
+          # required by any in-scope multi config. build-multi layers
+          # over a freshly-built mini, so the primary mini MUST be in
+          # the mini matrices even if FILTER wouldn't normally match
+          # it (e.g. FILTER=multi excludes every mini by substring).
+          REQUIRED_MINI_PAIRS="|"
+          for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
+            IFS='|' read -r mkey primary_torch primary_backend mcuda_minor marches mpython_versions <<< "$multi_config"
+            if [[ -n "$FILTER" && "$mkey" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+            REQUIRED_MINI_PAIRS="${REQUIRED_MINI_PAIRS}${primary_torch}:${primary_backend}|"
+          done
+
           # Mini configs
           MINI_BUILD_MATRIX="[]"
           MINI_MERGE_MATRIX="[]"
@@ -180,7 +194,15 @@ jobs:
           for mini_config in "${ALL_MINI_CONFIGS[@]}"; do
             IFS='|' read -r torch_ver key mini_base_tag torch_backend arches python_versions <<< "$mini_config"
 
+            filter_match=true
             if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              filter_match=false
+            fi
+            required_match=false
+            if [[ "$REQUIRED_MINI_PAIRS" == *"|${torch_ver}:${torch_backend}|"* ]]; then
+              required_match=true
+            fi
+            if [[ "$filter_match" == "false" && "$required_match" == "false" ]]; then
               continue
             fi
 
