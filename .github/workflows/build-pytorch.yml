@@ -63,6 +63,9 @@ jobs:
       mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
       mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
       has-mini: ${{ steps.matrix.outputs.has-mini }}
+      multi-build-matrix: ${{ steps.matrix.outputs.multi-build-matrix }}
+      multi-merge-matrix: ${{ steps.matrix.outputs.multi-merge-matrix }}
+      has-multi: ${{ steps.matrix.outputs.has-multi }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
       - name: Generate matrices
@@ -99,6 +102,15 @@ jobs:
             "2.11.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.11.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.11.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+          )
+
+          # Multi-torch configs: a primary mini pytorch image with
+          # additional torch venvs layered in. Each produces
+          #   ${NS}/pytorch:${key}-py${py}-${date}-${arch}
+          # and is later merged into a multi-arch manifest.
+          # Format: key|primary_torch|primary_backend|cuda_minor|arches|python_versions
+          ALL_MULTI_CONFIGS=(
+            "multi-210-291-271|2.10.0|cu128|12.9|linux/amd64,linux/arm64|312"
           )
 
           # Mini format: torch_ver|key|mini_base_tag|torch_backend|arches|python_versions
@@ -207,6 +219,47 @@ jobs:
             echo "has-mini=false" >> $GITHUB_OUTPUT
           fi
 
+          # Multi-torch configs
+          MULTI_BUILD_MATRIX="[]"
+          MULTI_MERGE_MATRIX="[]"
+
+          for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
+            IFS='|' read -r key primary_torch primary_backend cuda_minor arches python_versions <<< "$multi_config"
+
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            MULTI_MERGE_MATRIX=$(echo "$MULTI_MERGE_MATRIX" | jq -c \
+              --arg key "$key" \
+              --arg primary_torch "$primary_torch" \
+              --arg primary_backend "$primary_backend" \
+              --arg cuda_minor "$cuda_minor" \
+              --arg arches "$arches" \
+              --arg python_versions "$python_versions" \
+              '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arches": $arches, "python_versions": $python_versions}]')
+
+            IFS=',' read -ra ARCH_LIST <<< "$arches"
+            for arch in "${ARCH_LIST[@]}"; do
+              arch_suffix="${arch#linux/}"
+              MULTI_BUILD_MATRIX=$(echo "$MULTI_BUILD_MATRIX" | jq -c \
+                --arg key "$key" \
+                --arg primary_torch "$primary_torch" \
+                --arg primary_backend "$primary_backend" \
+                --arg cuda_minor "$cuda_minor" \
+                --arg arch "$arch" \
+                --arg arch_suffix "$arch_suffix" \
+                --arg python_versions "$python_versions" \
+                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+            done
+          done
+
+          if [[ $(echo "$MULTI_BUILD_MATRIX" | jq length) -gt 0 ]]; then
+            echo "has-multi=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-multi=false" >> $GITHUB_OUTPUT
+          fi
+
           # Output matrices
           {
             echo "build-matrix<<BUILD_MATRIX_EOF"
@@ -227,6 +280,16 @@ jobs:
             echo "mini-merge-matrix<<MINI_MERGE_MATRIX_EOF"
             echo "{\"include\":${MINI_MERGE_MATRIX}}"
             echo "MINI_MERGE_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "multi-build-matrix<<MULTI_BUILD_MATRIX_EOF"
+            echo "{\"include\":${MULTI_BUILD_MATRIX}}"
+            echo "MULTI_BUILD_MATRIX_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "multi-merge-matrix<<MULTI_MERGE_MATRIX_EOF"
+            echo "{\"include\":${MULTI_MERGE_MATRIX}}"
+            echo "MULTI_MERGE_MATRIX_EOF"
           } >> $GITHUB_OUTPUT
 
           echo "Build matrix entries: $(echo "$BUILD_MATRIX" | jq length)"
@@ -513,8 +576,132 @@ jobs:
           path: built-tags/
           retention-days: 1
 
+  build-multi:
+    needs: [generate-matrix, merge-mini-manifests]
+    if: ${{ needs.generate-matrix.outputs.has-multi == 'true' && !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.multi-build-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build multi-torch variants
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          CONFIG_KEY: ${{ matrix.config_key }}
+          PRIMARY_TORCH: ${{ matrix.primary_torch }}
+          PRIMARY_BACKEND: ${{ matrix.primary_backend }}
+          CUDA_MINOR: ${{ matrix.cuda_minor }}
+          ARCH: ${{ matrix.arch }}
+          ARCH_SUFFIX: ${{ matrix.arch_suffix }}
+          PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/built-tags"
+          cd derivatives/pytorch
+
+          for py_tag in ${PYTHON_VERSIONS}; do
+            # Layer on top of the freshly-built mini from this run
+            BASE="${NAMESPACE}/pytorch:${PRIMARY_TORCH}-${PRIMARY_BACKEND}-cuda-${CUDA_MINOR}-mini-py${py_tag}-${BUILD_DATE}"
+            TAG="${NAMESPACE}/pytorch:${CONFIG_KEY}-py${py_tag}-${BUILD_DATE}-${ARCH_SUFFIX}"
+
+            echo "=== Building multi-torch: ${CONFIG_KEY} py${py_tag} for ${ARCH} ==="
+            echo "    Base: ${BASE}"
+            docker buildx build \
+              --progress=plain \
+              --platform "${ARCH}" \
+              -f Dockerfile.multi-torch \
+              --build-arg PYTORCH_BASE="${BASE}" \
+              --build-arg PYTORCH_BACKEND="${PRIMARY_BACKEND}" \
+              --tag "${TAG}" \
+              --push .
+
+            echo "$TAG" >> "$GITHUB_WORKSPACE/built-tags/tags.txt"
+          done
+
+      - name: Upload multi tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-tags-${{ matrix.config_key }}-${{ matrix.arch_suffix }}
+          path: built-tags/
+          retention-days: 1
+
+  merge-multi-manifests:
+    needs: [generate-matrix, build-multi]
+    if: ${{ needs.generate-matrix.outputs.has-multi == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.multi-merge-matrix) }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Merge multi-torch manifests
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          CONFIG_KEY: ${{ matrix.config_key }}
+          ARCHES: ${{ matrix.arches }}
+          PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          mkdir -p built-tags
+
+          IFS=',' read -ra ARCH_LIST <<< "$ARCHES"
+
+          for py_tag in ${PYTHON_VERSIONS}; do
+            FINAL_TAG="${NAMESPACE}/pytorch:${CONFIG_KEY}-py${py_tag}-${BUILD_DATE}"
+            AMD64_TAG="${FINAL_TAG}-amd64"
+
+            echo "=== Merging multi manifest: ${FINAL_TAG} ==="
+            if [[ ${#ARCH_LIST[@]} -gt 1 ]]; then
+              ARM64_TAG="${FINAL_TAG}-arm64"
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                "${AMD64_TAG}" "${ARM64_TAG}"
+            else
+              docker buildx imagetools create \
+                -t "${FINAL_TAG}" \
+                "${AMD64_TAG}"
+            fi
+
+            echo "$FINAL_TAG" >> built-tags/tags.txt
+          done
+
+      - name: Upload multi manifest tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-manifest-tags-${{ matrix.config_key }}
+          path: built-tags/
+          retention-days: 1
+
   collect-tags:
-    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests]
+    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests, build-multi, merge-multi-manifests]
     if: always() && !inputs.DRY_RUN
     runs-on: ubuntu-latest
     outputs:
@@ -523,7 +710,7 @@ jobs:
       - name: Download all tag artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags-*}"
+          pattern: "{built-tags-*,manifest-tags-*,mini-tags-*,mini-manifest-tags-*,multi-tags-*,multi-manifest-tags-*}"
           path: all-tags/
 
       - name: Aggregate tags
@@ -553,6 +740,8 @@ jobs:
           MERGE_MATRIX: ${{ needs.generate-matrix.outputs.merge-matrix }}
           MINI_BUILD_MATRIX: ${{ needs.generate-matrix.outputs.mini-build-matrix }}
           HAS_MINI: ${{ needs.generate-matrix.outputs.has-mini }}
+          MULTI_BUILD_MATRIX: ${{ needs.generate-matrix.outputs.multi-build-matrix }}
+          HAS_MULTI: ${{ needs.generate-matrix.outputs.has-multi }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
           BASE_DATE: ${{ inputs.BASE_DATE }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
@@ -622,8 +811,31 @@ jobs:
             done
           fi
 
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            echo ""
+            MULTI_COUNT=$(echo "$MULTI_BUILD_MATRIX" | jq '[.include[] | select(.arch_suffix == "amd64")] | length')
+            echo "=== Multi-torch Builds (${MULTI_COUNT} configs) ==="
+            for ((i=0; i<$(echo "$MULTI_BUILD_MATRIX" | jq '.include | length'); i++)); do
+              arch_suffix=$(echo "$MULTI_BUILD_MATRIX" | jq -r ".include[$i].arch_suffix")
+              [[ "$arch_suffix" != "amd64" ]] && continue
+
+              key=$(echo "$MULTI_BUILD_MATRIX" | jq -r ".include[$i].config_key")
+              primary_torch=$(echo "$MULTI_BUILD_MATRIX" | jq -r ".include[$i].primary_torch")
+              primary_backend=$(echo "$MULTI_BUILD_MATRIX" | jq -r ".include[$i].primary_backend")
+              cuda_minor=$(echo "$MULTI_BUILD_MATRIX" | jq -r ".include[$i].cuda_minor")
+              python_versions=$(echo "$MULTI_BUILD_MATRIX" | jq -r ".include[$i].python_versions")
+
+              echo ""
+              echo "--- ${key} (torch ${primary_torch} ${primary_backend}) ---"
+              for py_tag in ${python_versions}; do
+                echo "  base: ${NAMESPACE_STAGING}/pytorch:${primary_torch}-${primary_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${BUILD_DATE}"
+                echo "    -> ${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${BUILD_DATE}"
+              done
+            done
+          fi
+
   notify:
-    needs: [generate-matrix, build, merge-manifests, collect-tags]
+    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests, build-multi, merge-multi-manifests, collect-tags]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
