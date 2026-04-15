@@ -15,7 +15,7 @@ on:
       PYTORCH_BASE:
         description: "Multi-torch base image"
         required: true
-        default: "vastai/pytorch:multi-210-291-271-cu128"
+        default: "vastai/pytorch:multi-210-291-271-2026-04-15"
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
         required: true

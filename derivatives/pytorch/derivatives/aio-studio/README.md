@@ -155,7 +155,7 @@ All build arguments have sensible defaults. Override as needed:
 
 ```bash
 docker buildx build \
-    --build-arg PYTORCH_BASE=robatvastai/pytorch:multi-210-291-271-cu128 \
+    --build-arg PYTORCH_BASE=vastai/pytorch:multi-210-291-271-2026-04-15 \
     --build-arg COMFYUI_REF=v0.18.1 \
     -t yournamespace/aio-studio .
 ```
@@ -164,7 +164,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `robatvastai/pytorch:multi-210-291-271-cu128` | PyTorch base image (multi-torch: 2.10, 2.9.1, 2.7.1) |
+| `PYTORCH_BASE` | `vastai/pytorch:multi-210-291-271-2026-04-15` | PyTorch base image (multi-torch: 2.10, 2.9.1, 2.7.1) |
 | `COMFYUI_REPO` | `https://github.com/Comfy-Org/ComfyUI` | ComfyUI repository |
 | `COMFYUI_REF` | `v0.18.1` | ComfyUI git ref |
 | `FORGE_REPO` | `https://github.com/Haoming02/sd-webui-forge-classic` | SD Forge repository |
