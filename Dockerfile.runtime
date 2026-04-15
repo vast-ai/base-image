@@ -24,6 +24,7 @@ RUN \
     done && \
     PACKAGES="$PACKAGES libnccl2=*+cuda${lowest_dotver}" && \
     apt-get install -y --no-install-recommends $PACKAGES && \
+    set +f && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Defend against environment clashes when syncing to volume
