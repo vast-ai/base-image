@@ -1,27 +1,39 @@
-# Extend an already-built base image with updated ROOT overlay files.
-# Used for rapid hotfixes and incremental updates without full rebuilds.
+# Hotfix extension: refresh the nvidia packages that Dockerfile.runtime
+# installs, in particular to re-pin libnccl2 against the installed CUDA
+# toolkit. CUDA_VERSIONS is derived from the already-installed
+# cuda-nvcc-<dashver> packages so this works for any runtime image.
 #
-# Sources from a dated production image (PROD_NAMESPACE/base-image:...-YYYY-MM-DD),
-# overlays updated files, and pushes to staging with a new date tag.
-# The resulting staging image can be promoted using the existing promote workflow.
+# This branch/Dockerfile is a utility — it is not intended to be merged.
 #
 # Usage:
 #   docker buildx build -f Dockerfile.extend \
-#     --build-arg BASE_IMAGE=PROD_NAMESPACE/base-image:cuda-12.9.1-...-py312-2026-03-18 \
-#     --tag staging/base-image:cuda-12.9.1-...-py312-2026-03-19 \
+#     --build-arg BASE_IMAGE=PROD_NAMESPACE/base-image:cuda-12.9.1-...-py312-2026-04-15 \
+#     --tag staging/base-image:cuda-12.9.1-...-py312-2026-04-16 \
 #     --push .
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Overlay updated files (supervisor scripts, instance tools, portal, etc.)
-COPY ./ROOT /
+RUN \
+    set -euo pipefail && \
+    CUDA_VERSIONS="$(dpkg-query -W -f='${Package}\n' 'cuda-nvcc-*' 2>/dev/null | sed -n 's/^cuda-nvcc-\([0-9][0-9]*-[0-9][0-9]*\)$/\1/p' | sort -u | tr '\n' ' ')" && \
+    [ -n "${CUDA_VERSIONS// }" ] || { echo "No cuda-nvcc-<ver> packages found; cannot derive CUDA_VERSIONS" >&2; exit 1; } && \
+    echo "Derived CUDA_VERSIONS=${CUDA_VERSIONS}" && \
+    apt-get update && \
+    PACKAGES="" && \
+    lowest_dotver="" && \
+    for ver in ${CUDA_VERSIONS}; do \
+        dashver="${ver//./-}" && \
+        dotver="${ver//-/.}" && \
+        PACKAGES="$PACKAGES cuda-compat-${dashver} cuda-nvcc-${dashver} cuda-cccl-${dashver} cuda-nvrtc-${dashver} libnpp-${dashver} libnvjpeg-${dashver} libcufft-${dashver}" && \
+        if [ -z "$lowest_dotver" ] || [ "$(printf '%s\n%s\n' "$dotver" "$lowest_dotver" | sort -V | head -n1)" = "$dotver" ]; then \
+            lowest_dotver="$dotver"; \
+        fi; \
+    done && \
+    PACKAGES="$PACKAGES libnccl2=*+cuda${lowest_dotver}" && \
+    set -f && \
+    apt-get install -y --no-install-recommends --allow-downgrades $PACKAGES && \
+    set +f && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Update the portal if present
-COPY portal-aio /opt/portal-aio
-
-# Add sox for torchaudio/torchcodec support
-RUN apt-get update && apt-get install -y --no-install-recommends sox && rm -rf /var/lib/apt/lists/*
-
-# Refresh environment hash to reflect any changes
 RUN env-hash > /.env_hash
