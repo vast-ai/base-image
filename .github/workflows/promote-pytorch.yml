@@ -37,8 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.configs.outputs.configs }}
+      all-configs: ${{ steps.configs.outputs.all-configs }}
       mini-configs: ${{ steps.configs.outputs.mini-configs }}
       has-mini: ${{ steps.configs.outputs.has-mini }}
+      multi-configs: ${{ steps.configs.outputs.multi-configs }}
+      has-multi: ${{ steps.configs.outputs.has-multi }}
     steps:
       - name: Generate filtered config list
         id: configs
@@ -85,22 +88,36 @@ jobs:
           )
 
           CONFIGS_JSON="[]"
+          ALL_CONFIGS_JSON="[]"
 
           for config in "${ALL_CONFIGS[@]}"; do
             IFS='|' read -r torch_ver key cuda_short python_versions <<< "$config"
+
+            ENTRY_JSON=$(jq -nc \
+              --arg torch_ver "$torch_ver" \
+              --arg key "$key" \
+              --arg cuda_short "$cuda_short" \
+              --arg python_versions "$python_versions" \
+              '{torch_version: $torch_ver, key: $key, cuda_short: $cuda_short, python_versions: $python_versions}')
+
+            ALL_CONFIGS_JSON=$(echo "$ALL_CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
 
             # Filter matches version or config key
             if [[ -n "$FILTER" && "$torch_ver" != *"$FILTER"* && "$key" != *"$FILTER"* ]]; then
               continue
             fi
 
-            CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c \
-              --arg torch_ver "$torch_ver" \
-              --arg key "$key" \
-              --arg cuda_short "$cuda_short" \
-              --arg python_versions "$python_versions" \
-              '. + [{"torch_version": $torch_ver, "key": $key, "cuda_short": $cuda_short, "python_versions": $python_versions}]')
+            CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
           done
+
+          # Multi-torch variants: a base pytorch image with additional
+          # torch venvs layered in. Tag format:
+          #   ${NS}/pytorch:${key}-py${py}-${date}
+          # plus a default-python dated alias and a no-date latest alias.
+          # Format: key|primary_torch|primary_backend|cuda_minor|python_versions
+          ALL_MULTI_CONFIGS=(
+            "multi-210-291-271|2.10.0|cu128|12.9|312"
+          )
 
           MINI_CONFIGS_JSON="[]"
 
@@ -126,15 +143,49 @@ jobs:
             echo "has-mini=false" >> $GITHUB_OUTPUT
           fi
 
+          MULTI_CONFIGS_JSON="[]"
+          for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
+            IFS='|' read -r key primary_torch primary_backend cuda_minor python_versions <<< "$multi_config"
+
+            # FILTER=mini also includes multi since multi layers on mini.
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
+              continue
+            fi
+
+            MULTI_CONFIGS_JSON=$(echo "$MULTI_CONFIGS_JSON" | jq -c \
+              --arg key "$key" \
+              --arg primary_torch "$primary_torch" \
+              --arg primary_backend "$primary_backend" \
+              --arg cuda_minor "$cuda_minor" \
+              --arg python_versions "$python_versions" \
+              '. + [{"key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "python_versions": $python_versions}]')
+          done
+
+          if [[ $(echo "$MULTI_CONFIGS_JSON" | jq length) -gt 0 ]]; then
+            echo "has-multi=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-multi=false" >> $GITHUB_OUTPUT
+          fi
+
           {
             echo "configs<<CONFIGS_EOF"
             echo "${CONFIGS_JSON}"
             echo "CONFIGS_EOF"
           } >> $GITHUB_OUTPUT
           {
+            echo "all-configs<<ALL_CONFIGS_EOF"
+            echo "${ALL_CONFIGS_JSON}"
+            echo "ALL_CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
             echo "mini-configs<<MINI_CONFIGS_EOF"
             echo "${MINI_CONFIGS_JSON}"
             echo "MINI_CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "multi-configs<<MULTI_CONFIGS_EOF"
+            echo "${MULTI_CONFIGS_JSON}"
+            echo "MULTI_CONFIGS_EOF"
           } >> $GITHUB_OUTPUT
           echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
           echo "Mini configs: $(echo "$MINI_CONFIGS_JSON" | jq length)"
@@ -160,12 +211,101 @@ jobs:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          ALL_CONFIGS: ${{ needs.generate-configs.outputs.all-configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
+          MULTI_CONFIGS: ${{ needs.generate-configs.outputs.multi-configs }}
+          HAS_MULTI: ${{ needs.generate-configs.outputs.has-multi }}
         run: |
           set -euo pipefail
           DEFAULT_PYTHON="312"
           mkdir -p built-tags
+
+          AUTO_TAG_MAP=(
+            "cuda-12.1.1-auto|cu126"
+            "cuda-12.4.1-auto|cu126"
+            "cuda-12.6.3-auto|cu126"
+            "cuda-12.8.1-auto|cu128"
+            "cuda-12.9.1-auto|cu128"
+            "cuda-13.0.2-auto|cu130"
+          )
+
+          # Pre-flight: every staging source we plan to promote must
+          # exist. Fail fast before clobbering prod tags.
+          echo "=== Pre-flight: verifying staging sources ==="
+          MISSING=()
+          CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            torch_ver=$(echo "$CONFIGS" | jq -r ".[$i].torch_version")
+            cuda_short=$(echo "$CONFIGS" | jq -r ".[$i].cuda_short")
+            python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
+            for py_tag in ${python_versions}; do
+              SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
+              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                echo "  ok: $SOURCE"
+              else
+                echo "  MISSING: $SOURCE"
+                MISSING+=("$SOURCE")
+              fi
+            done
+          done
+          if [[ "$HAS_MINI" == "true" ]]; then
+            MINI_COUNT=$(echo "$MINI_CONFIGS" | jq length)
+            for ((i=0; i<MINI_COUNT; i++)); do
+              torch_ver=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_version")
+              torch_backend=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_backend")
+              cuda_minor=$(echo "$MINI_CONFIGS" | jq -r ".[$i].cuda_minor")
+              python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                  echo "  ok: $SOURCE"
+                else
+                  echo "  MISSING: $SOURCE"
+                  MISSING+=("$SOURCE")
+                fi
+              done
+            done
+          fi
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                  echo "  ok: $SOURCE"
+                else
+                  echo "  MISSING: $SOURCE"
+                  MISSING+=("$SOURCE")
+                fi
+              done
+            done
+          fi
+          if [[ "${#MISSING[@]}" -gt 0 ]]; then
+            echo ""
+            echo "ERROR: ${#MISSING[@]} staging source(s) missing; aborting before any prod writes:"
+            printf '  %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "Pre-flight passed: all staging sources resolved."
+
+          # Capture the current target of every auto tag BEFORE we
+          # promote. The dance needs this so auto tags for backends
+          # NOT being promoted this run can still be re-pushed
+          # (pointed at their existing digest) to advance tag order.
+          declare -A AUTO_TARGET_PRE
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
+            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              AUTO_TARGET_PRE[$auto_tag]="${NAMESPACE_PROD}/pytorch@${digest}"
+              echo "Captured existing auto tag: ${auto_tag} @ ${digest}"
+            else
+              echo "No existing auto tag for ${auto_tag}"
+            fi
+          done
 
           # Promote full images
           echo "=== Promoting PyTorch full images ==="
@@ -238,45 +378,139 @@ jobs:
             done
           fi
 
-          # Auto convenience tags MUST be created last.
-          # Each auto-tag points to the LATEST torch version that supports
-          # the corresponding backend. If a future torch drops cu126, the
-          # 12.6.3-auto tag stays on the last torch that supported it.
-          echo ""
-          echo "=== Creating auto convenience tags (must be last) ==="
+          # Promote multi-torch variants (layered pytorch images).
+          # Each config produces a dated prod tag per python, a dated
+          # default-python alias, and a no-date latest alias that the
+          # aio-studio / other consumers reference.
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            echo ""
+            echo "=== Promoting PyTorch multi-torch variants ==="
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
 
-          # Map: host_cuda_auto_tag | backend_config_key
-          # backend_config_key is used to find the latest torch with that backend
-          AUTO_TAG_MAP=(
-            "cuda-12.1.1-auto|cu126"
-            "cuda-12.4.1-auto|cu126"
-            "cuda-12.6.3-auto|cu126"
-            "cuda-12.8.1-auto|cu128"
-            "cuda-12.9.1-auto|cu128"
-            "cuda-13.0.2-auto|cu130"
-          )
+              echo ""
+              echo "--- ${key} ---"
+
+              DEFAULT_DATED=""
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+                DATED_TAG="${NAMESPACE_PROD}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+
+                EXTRA_TAGS=""
+                if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
+                  DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${key}-${STAGING_DATE}"
+                  EXTRA_TAGS="--tag ${DATED_ALIAS}"
+                  DEFAULT_DATED="$DATED_TAG"
+                  echo "$DATED_ALIAS" >> built-tags/tags.txt
+                fi
+
+                echo "Promoting multi: ${SOURCE} -> ${DATED_TAG}"
+                docker buildx imagetools create \
+                  --tag "${DATED_TAG}" \
+                  ${EXTRA_TAGS} \
+                  "${SOURCE}"
+
+                echo "$DATED_TAG" >> built-tags/tags.txt
+              done
+
+              # Repoint the no-date latest alias at the default-python
+              # dated prod image we just pushed. Must come after the
+              # dated tags so the alias sits at the top of the tag list.
+              if [[ -n "$DEFAULT_DATED" ]]; then
+                LATEST_ALIAS="${NAMESPACE_PROD}/pytorch:${key}"
+                echo "Updating latest alias: ${LATEST_ALIAS} -> ${DEFAULT_DATED}"
+                docker buildx imagetools create --tag "${LATEST_ALIAS}" "${DEFAULT_DATED}"
+                echo "$LATEST_ALIAS" >> built-tags/tags.txt
+              fi
+            done
+          fi
+
+          # Auto convenience tags MUST be the most recently pushed tags.
+          # Each auto-tag points to the LATEST torch version that supports
+          # the corresponding backend (determined from the unfiltered
+          # ALL_CONFIGS). Promotions partial by filter must still re-push
+          # every auto tag so ordering stays correct.
+          #
+          # Two-phase dance: Phase A points each auto tag at a per-tag
+          # anchor whose digest differs from the auto tag's current and
+          # intended content; Phase B points it back at its real target.
+          # Both phases carry real manifest changes so every auto tag
+          # receives two fresh pushes, advancing the registry tag order.
+
+          echo ""
+          echo "=== Auto-tag dance ==="
+
+          # Build the final-target map per auto tag. For backends whose
+          # latest torch IS being promoted this run, target = new dated
+          # default-python prod image. For backends not in scope,
+          # target = pre-captured digest ref.
+          declare -A AUTO_TARGET_FINAL
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
+            BEST_VER=$(echo "$ALL_CONFIGS" | jq -r --arg k "$backend" \
+              '[.[] | select(.key == $k)] | sort_by(.torch_version | split(".") | map(tonumber)) | last | .torch_version // empty')
+            [[ -z "$BEST_VER" ]] && continue
+            CUDA_SHORT=$(echo "$ALL_CONFIGS" | jq -r --arg k "$backend" --arg v "$BEST_VER" \
+              '.[] | select(.key == $k and .torch_version == $v) | .cuda_short')
+            in_scope=$(echo "$CONFIGS" | jq --arg k "$backend" --arg v "$BEST_VER" \
+              '[.[] | select(.key == $k and .torch_version == $v)] | length')
+            if [[ "$in_scope" -gt 0 ]]; then
+              AUTO_TARGET_FINAL[$auto_tag]="${NAMESPACE_PROD}/pytorch:${BEST_VER}-cuda-${CUDA_SHORT}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
+            elif [[ -n "${AUTO_TARGET_PRE[$auto_tag]:-}" ]]; then
+              AUTO_TARGET_FINAL[$auto_tag]="${AUTO_TARGET_PRE[$auto_tag]}"
+            fi
+          done
+
+          # Resolve each final target to its digest so we can pick
+          # anchors whose content actually differs.
+          declare -A FINAL_DIGEST
+          for auto_tag in "${!AUTO_TARGET_FINAL[@]}"; do
+            ref="${AUTO_TARGET_FINAL[$auto_tag]}"
+            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              FINAL_DIGEST[$auto_tag]="$d"
+            else
+              echo "WARN: could not resolve digest for ${ref}; ${auto_tag} will be skipped"
+            fi
+          done
 
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
+            TARGET_REF="${AUTO_TARGET_FINAL[$auto_tag]:-}"
+            [[ -z "$TARGET_REF" ]] && continue
+            target_digest="${FINAL_DIGEST[$auto_tag]:-}"
+            [[ -z "$target_digest" ]] && continue
 
-            # Find the latest torch version that has this backend
-            BEST_VER=$(echo "$CONFIGS" | jq -r --arg k "$backend" \
-              '[.[] | select(.key == $k)] | sort_by(.torch_version | split(".") | map(tonumber)) | last | .torch_version // empty')
-            [[ -z "$BEST_VER" ]] && continue
+            current_ref="${AUTO_TARGET_PRE[$auto_tag]:-}"
+            current_digest=""
+            [[ -n "$current_ref" ]] && current_digest="${current_ref##*@}"
 
-            # Get the cuda_short for this backend+version
-            CUDA_SHORT=$(echo "$CONFIGS" | jq -r --arg k "$backend" --arg v "$BEST_VER" \
-              '.[] | select(.key == $k and .torch_version == $v) | .cuda_short')
+            # Pick an anchor from another AUTO_TAG_MAP entry whose
+            # final-target digest differs from both current and final.
+            anchor_ref=""
+            for other in "${AUTO_TAG_MAP[@]}"; do
+              IFS='|' read -r other_tag _ <<< "$other"
+              [[ "$other_tag" == "$auto_tag" ]] && continue
+              cand_digest="${FINAL_DIGEST[$other_tag]:-}"
+              [[ -z "$cand_digest" ]] && continue
+              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
+                anchor_ref="${AUTO_TARGET_FINAL[$other_tag]}"
+                break
+              fi
+            done
 
-            SOURCE="${NAMESPACE_PROD}/pytorch:${BEST_VER}-cuda-${CUDA_SHORT}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
-            TARGET="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+            if [[ -z "$anchor_ref" ]]; then
+              echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; skipping dance (tag order will not advance)"
+              continue
+            fi
 
-            echo "Auto-tag: ${SOURCE} -> ${TARGET} (latest ${backend} = ${BEST_VER})"
-            docker buildx imagetools create \
-              --tag "${TARGET}" \
-              "${SOURCE}"
-
-            echo "$TARGET" >> built-tags/tags.txt
+            echo "  Phase A: ${AUTO_TAG_REF} -> anchor ${anchor_ref}"
+            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${anchor_ref}"
+            echo "  Phase B: ${AUTO_TAG_REF} -> ${TARGET_REF}"
+            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+            echo "$AUTO_TAG_REF" >> built-tags/tags.txt
           done
 
           echo ""
@@ -323,19 +557,102 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Print promotion plan
         env:
           STAGING_DATE: ${{ inputs.STAGING_DATE }}
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          ALL_CONFIGS: ${{ needs.generate-configs.outputs.all-configs }}
           MINI_CONFIGS: ${{ needs.generate-configs.outputs.mini-configs }}
           HAS_MINI: ${{ needs.generate-configs.outputs.has-mini }}
+          MULTI_CONFIGS: ${{ needs.generate-configs.outputs.multi-configs }}
+          HAS_MULTI: ${{ needs.generate-configs.outputs.has-multi }}
         run: |
           DEFAULT_PYTHON="312"
 
           echo "=== DRY RUN - PyTorch Promotion Plan ==="
           echo "Staging date: $STAGING_DATE"
+          echo ""
+
+          AUTO_TAG_MAP=(
+            "cuda-12.1.1-auto|cu126"
+            "cuda-12.4.1-auto|cu126"
+            "cuda-12.6.3-auto|cu126"
+            "cuda-12.8.1-auto|cu128"
+            "cuda-12.9.1-auto|cu128"
+            "cuda-13.0.2-auto|cu130"
+          )
+
+          # Pre-flight: mirror the real promote so missing images
+          # surface here, before we commit to running live.
+          echo "=== Pre-flight: verifying staging sources ==="
+          MISSING=()
+          CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            torch_ver=$(echo "$CONFIGS" | jq -r ".[$i].torch_version")
+            cuda_short=$(echo "$CONFIGS" | jq -r ".[$i].cuda_short")
+            python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
+            for py_tag in ${python_versions}; do
+              SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
+              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                echo "  ok: $SOURCE"
+              else
+                echo "  MISSING: $SOURCE"
+                MISSING+=("$SOURCE")
+              fi
+            done
+          done
+          if [[ "$HAS_MINI" == "true" ]]; then
+            MINI_COUNT=$(echo "$MINI_CONFIGS" | jq length)
+            for ((i=0; i<MINI_COUNT; i++)); do
+              torch_ver=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_version")
+              torch_backend=$(echo "$MINI_CONFIGS" | jq -r ".[$i].torch_backend")
+              cuda_minor=$(echo "$MINI_CONFIGS" | jq -r ".[$i].cuda_minor")
+              python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
+                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                  echo "  ok: $SOURCE"
+                else
+                  echo "  MISSING: $SOURCE"
+                  MISSING+=("$SOURCE")
+                fi
+              done
+            done
+          fi
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
+              for py_tag in ${python_versions}; do
+                SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                  echo "  ok: $SOURCE"
+                else
+                  echo "  MISSING: $SOURCE"
+                  MISSING+=("$SOURCE")
+                fi
+              done
+            done
+          fi
+          if [[ "${#MISSING[@]}" -gt 0 ]]; then
+            echo ""
+            echo "ERROR: ${#MISSING[@]} staging source(s) missing; real promote would abort:"
+            printf '  %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "Pre-flight passed: all staging sources resolved."
           echo ""
 
           echo "=== Full Image Promotions (in order) ==="
@@ -383,30 +700,142 @@ jobs:
             done
           fi
 
-          echo ""
-          echo "=== Auto Tags (created last for @vastai-automatic-tag resolution) ==="
-          echo "Each auto-tag points to the latest torch with that backend:"
+          if [[ "$HAS_MULTI" == "true" ]]; then
+            echo ""
+            echo "=== Multi-torch Promotions ==="
+            MULTI_COUNT=$(echo "$MULTI_CONFIGS" | jq length)
+            for ((i=0; i<MULTI_COUNT; i++)); do
+              key=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].key")
+              python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
 
-          AUTO_TAG_MAP=(
-            "cuda-12.1.1-auto|cu126"
-            "cuda-12.4.1-auto|cu126"
-            "cuda-12.6.3-auto|cu126"
-            "cuda-12.8.1-auto|cu128"
-            "cuda-12.9.1-auto|cu128"
-            "cuda-13.0.2-auto|cu130"
-          )
+              echo ""
+              echo "--- ${key} ---"
+              for py_tag in ${python_versions}; do
+                echo "  ${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+                echo "    -> ${NAMESPACE_PROD}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
+              done
+              echo "  + default python alias:"
+              echo "    -> ${NAMESPACE_PROD}/pytorch:${key}-${STAGING_DATE} (alias for py${DEFAULT_PYTHON})"
+              echo "  + latest alias:"
+              echo "    -> ${NAMESPACE_PROD}/pytorch:${key} -> ${key}-py${DEFAULT_PYTHON}-${STAGING_DATE}"
+            done
+          fi
+
+          echo ""
+          echo "=== Auto-tag dance resolution ==="
+          echo "(Each auto-tag points to the latest torch with its"
+          echo " backend, determined from the unfiltered ALL_CONFIGS.)"
+          echo ""
+
+          # Capture current digests of every existing auto tag.
+          declare -A AUTO_TARGET_PRE
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
+            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              AUTO_TARGET_PRE[$auto_tag]="${NAMESPACE_PROD}/pytorch@${digest}"
+            fi
+          done
+
+          # Build the final-target map (in-scope backends override pre).
+          declare -A AUTO_TARGET_FINAL
+          declare -A BEST_INFO
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
+            BEST_VER=$(echo "$ALL_CONFIGS" | jq -r --arg k "$backend" \
+              '[.[] | select(.key == $k)] | sort_by(.torch_version | split(".") | map(tonumber)) | last | .torch_version // empty')
+            [[ -z "$BEST_VER" ]] && continue
+            CUDA_SHORT=$(echo "$ALL_CONFIGS" | jq -r --arg k "$backend" --arg v "$BEST_VER" \
+              '.[] | select(.key == $k and .torch_version == $v) | .cuda_short')
+            BEST_INFO[$auto_tag]="${backend} ${BEST_VER} ${CUDA_SHORT}"
+            in_scope=$(echo "$CONFIGS" | jq --arg k "$backend" --arg v "$BEST_VER" \
+              '[.[] | select(.key == $k and .torch_version == $v)] | length')
+            if [[ "$in_scope" -gt 0 ]]; then
+              AUTO_TARGET_FINAL[$auto_tag]="${NAMESPACE_PROD}/pytorch:${BEST_VER}-cuda-${CUDA_SHORT}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
+            elif [[ -n "${AUTO_TARGET_PRE[$auto_tag]:-}" ]]; then
+              AUTO_TARGET_FINAL[$auto_tag]="${AUTO_TARGET_PRE[$auto_tag]}"
+            fi
+          done
+
+          # Resolve final target digests. For in-scope backends the
+          # prod-side dated tag does not exist yet, so resolve via the
+          # staging source that would be copied to prod.
+          declare -A FINAL_DIGEST
+          for entry in "${AUTO_TAG_MAP[@]}"; do
+            IFS='|' read -r auto_tag backend <<< "$entry"
+            info="${BEST_INFO[$auto_tag]:-}"
+            [[ -z "$info" ]] && continue
+            read -r bi_backend bi_ver bi_cuda <<< "$info"
+            in_scope=$(echo "$CONFIGS" | jq --arg k "$bi_backend" --arg v "$bi_ver" \
+              '[.[] | select(.key == $k and .torch_version == $v)] | length')
+            if [[ "$in_scope" -gt 0 ]]; then
+              staging_ref="${NAMESPACE_STAGING}/pytorch:${bi_ver}-cuda-${bi_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
+              if d=$(docker buildx imagetools inspect "$staging_ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+                FINAL_DIGEST[$auto_tag]="$d"
+              else
+                echo "WARN: could not resolve staging source ${staging_ref}"
+              fi
+            elif [[ -n "${AUTO_TARGET_PRE[$auto_tag]:-}" ]]; then
+              FINAL_DIGEST[$auto_tag]="${AUTO_TARGET_PRE[$auto_tag]##*@}"
+            fi
+          done
 
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
+            TARGET_REF="${AUTO_TARGET_FINAL[$auto_tag]:-}"
+            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
+            info="${BEST_INFO[$auto_tag]:-}"
 
-            BEST_VER=$(echo "$CONFIGS" | jq -r --arg k "$backend" \
-              '[.[] | select(.key == $k)] | sort_by(.torch_version | split(".") | map(tonumber)) | last | .torch_version // empty')
-            [[ -z "$BEST_VER" ]] && continue
+            echo "--- ${auto_tag} ---"
+            if [[ -n "$info" ]]; then
+              read -r bi_backend bi_ver bi_cuda <<< "$info"
+              echo "  Latest ${bi_backend}: torch ${bi_ver} (cuda-${bi_cuda})"
+            fi
+            if [[ -z "$TARGET_REF" ]]; then
+              echo "  (no current auto tag and backend not in this promotion — skipped)"
+              echo ""
+              continue
+            fi
 
-            CUDA_SHORT=$(echo "$CONFIGS" | jq -r --arg k "$backend" --arg v "$BEST_VER" \
-              '.[] | select(.key == $k and .torch_version == $v) | .cuda_short')
+            current_ref="${AUTO_TARGET_PRE[$auto_tag]:-}"
+            current_digest=""
+            [[ -n "$current_ref" ]] && current_digest="${current_ref##*@}"
+            target_digest="${FINAL_DIGEST[$auto_tag]:-}"
 
-            echo "  ${NAMESPACE_PROD}/pytorch:${BEST_VER}-cuda-${CUDA_SHORT}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE} -> ${NAMESPACE_PROD}/pytorch:${auto_tag} (latest ${backend} = ${BEST_VER})"
+            echo "  Current:       ${current_ref:-<none>}"
+            echo "  Current digest: ${current_digest:-<none>}"
+            echo "  Final target:   ${TARGET_REF}"
+            echo "  Final digest:   ${target_digest:-<unresolved>}"
+
+            if [[ -z "$target_digest" ]]; then
+              echo "  Phase A/B:     SKIP (final target digest not resolvable)"
+              echo ""
+              continue
+            fi
+
+            anchor_ref=""
+            anchor_digest=""
+            for other in "${AUTO_TAG_MAP[@]}"; do
+              IFS='|' read -r other_tag _ <<< "$other"
+              [[ "$other_tag" == "$auto_tag" ]] && continue
+              cand_digest="${FINAL_DIGEST[$other_tag]:-}"
+              [[ -z "$cand_digest" ]] && continue
+              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
+                anchor_ref="${AUTO_TARGET_FINAL[$other_tag]}"
+                anchor_digest="$cand_digest"
+                break
+              fi
+            done
+
+            if [[ -z "$anchor_ref" ]]; then
+              echo "  Phase A/B:     SKIP (no distinct anchor available)"
+            else
+              echo "  Phase A anchor: ${anchor_ref}"
+              echo "  Phase A digest: ${anchor_digest}"
+              echo "  Phase A:        ${AUTO_TAG_REF} -> ${anchor_ref}"
+              echo "  Phase B:        ${AUTO_TAG_REF} -> ${TARGET_REF}"
+            fi
+            echo ""
           done
 
   notify:

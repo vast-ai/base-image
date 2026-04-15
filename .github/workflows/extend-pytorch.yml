@@ -222,7 +222,8 @@ jobs:
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           DEFAULT_PYTHON="312"
-          mkdir -p built-tags
+          mkdir -p "$GITHUB_WORKSPACE/built-tags"
+          cd derivatives/pytorch
 
           for py_tag in ${PYTHON_VERSIONS}; do
             SOURCE="${PROD_NAMESPACE}/pytorch:${PYTORCH_VERSION}-cuda-${CUDA_SHORT}-py${py_tag}-24.04-${SOURCE_DATE}"
@@ -233,7 +234,7 @@ jobs:
             if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
               ALIAS_TAG="${NAMESPACE}/pytorch:${PYTORCH_VERSION}-cuda-${CUDA_SHORT}-24.04-${BUILD_DATE}-${ARCH_SUFFIX}"
               TAGS+=" --tag ${ALIAS_TAG}"
-              echo "$ALIAS_TAG" >> built-tags/tags.txt
+              echo "$ALIAS_TAG" >> "$GITHUB_WORKSPACE/built-tags/tags.txt"
             fi
 
             echo "=== Extending pytorch ${PYTORCH_VERSION} cuda-${CUDA_SHORT} py${py_tag} for ${ARCH} ==="
@@ -246,7 +247,7 @@ jobs:
               ${TAGS} \
               --push .
 
-            echo "$PRIMARY_TAG" >> built-tags/tags.txt
+            echo "$PRIMARY_TAG" >> "$GITHUB_WORKSPACE/built-tags/tags.txt"
           done
 
       - name: Upload built tags
@@ -322,7 +323,7 @@ jobs:
           retention-days: 1
 
   extend-mini:
-    needs: [generate-matrix, merge-manifests]
+    needs: [generate-matrix]
     if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     permissions:
@@ -359,7 +360,8 @@ jobs:
           SOURCE_DATE: ${{ inputs.SOURCE_DATE }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          mkdir -p built-tags
+          mkdir -p "$GITHUB_WORKSPACE/built-tags"
+          cd derivatives/pytorch
 
           for py_tag in ${PYTHON_VERSIONS}; do
             SOURCE="${PROD_NAMESPACE}/pytorch:${PYTORCH_VERSION}-${TORCH_BACKEND}-cuda-${CUDA_MINOR}-mini-py${py_tag}-${SOURCE_DATE}"
@@ -375,7 +377,7 @@ jobs:
               --tag "${TAG}" \
               --push .
 
-            echo "$TAG" >> built-tags/tags.txt
+            echo "$TAG" >> "$GITHUB_WORKSPACE/built-tags/tags.txt"
           done
 
       - name: Upload mini tags
