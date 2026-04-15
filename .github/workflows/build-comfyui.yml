@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       COMFYUI_REF:
-        description: "ComfyUI git ref - leave empty to simulate scheduled build"
+        description: "ComfyUI git ref - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"

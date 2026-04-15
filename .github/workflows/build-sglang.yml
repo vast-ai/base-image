@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       SGLANG_VERSION:
-        description: "SGLang version (e.g. v0.5.7, or 'nightly') - leave empty to simulate scheduled build"
+        description: "SGLang version (e.g. v0.5.7, or 'nightly') - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"

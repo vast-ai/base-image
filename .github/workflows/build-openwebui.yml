@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       OPENWEBUI_VERSION:
-        description: "Open WebUI version (e.g. v0.8.2) - leave empty to simulate scheduled build"
+        description: "Open WebUI version (e.g. v0.8.2) - leave empty for latest"
         required: false
       OLLAMA_VERSION:
         description: "Ollama version (e.g. 0.15.2) - leave empty to auto-detect"

@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       OLLAMA_VERSION:
-        description: "Ollama version (e.g. 0.6.2) - leave empty to simulate scheduled build"
+        description: "Ollama version (e.g. 0.6.2) - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"

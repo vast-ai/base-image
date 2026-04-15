@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       VLLM_OMNI_VERSION:
-        description: "vLLM-Omni version (e.g. v0.14.0, or 'nightly') - leave empty to simulate scheduled build"
+        description: "vLLM-Omni version (e.g. v0.14.0, or 'nightly') - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"

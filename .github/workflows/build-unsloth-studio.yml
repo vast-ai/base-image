@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       UNSLOTH_REF:
-        description: "Unsloth Studio release tag - leave empty to simulate scheduled build"
+        description: "Unsloth Studio release tag - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
