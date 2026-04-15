@@ -60,7 +60,7 @@ jobs:
           repository: ollama/ollama
           version-pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ inputs.OLLAMA_VERSION && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.OLLAMA_VERSION }}
 
       - name: Determine if build should run

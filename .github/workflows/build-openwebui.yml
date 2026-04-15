@@ -66,7 +66,7 @@ jobs:
           version-pattern: "^v[0-9]+\\.[0-9]+(\\.[0-9]+)?-cuda$"
           version-extract: "s/-cuda$//"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ inputs.OPENWEBUI_VERSION && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.OPENWEBUI_VERSION }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -77,7 +77,7 @@ jobs:
           repository: ollama/ollama
           tag-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: "999999999"
-          trigger: ${{ inputs.OLLAMA_VERSION && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-ref: ${{ inputs.OLLAMA_VERSION && format('v{0}', inputs.OLLAMA_VERSION) || '' }}
           resolve-master-to-commit: "false"
           github-token: ${{ secrets.GITHUB_TOKEN }}

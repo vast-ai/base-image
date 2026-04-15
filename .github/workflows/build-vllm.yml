@@ -71,7 +71,7 @@ jobs:
           repository: vllm/vllm-openai
           version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          trigger: ${{ inputs.VLLM_VERSION && github.event_name || 'schedule' }}
+          trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.VLLM_VERSION }}
 
       - name: Build matrix from variant tags
