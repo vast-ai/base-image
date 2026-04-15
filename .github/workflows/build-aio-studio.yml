@@ -19,7 +19,7 @@ on:
       AIO_BASE:
         description: "Base image (from build-aio-studio-base)"
         required: true
-        default: "vastai/aio-studio:base-2026-03-31"
+        default: "vastai/aio-studio:base-2026-04-15"
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
         required: true
@@ -51,7 +51,7 @@ on:
         required: false
 
 env:
-  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-03-31"
+  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-04-15"
   DEFAULT_DOCKERHUB_REPO: "aio-studio"
 
 jobs:
