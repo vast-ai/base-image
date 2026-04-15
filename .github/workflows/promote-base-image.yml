@@ -450,12 +450,28 @@ jobs:
             AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
           done
 
-          # Resolve final target digests.
+          # Resolve final target digests. In dry-run the prod-side
+          # dated tags don't exist yet, so resolve promoted configs via
+          # the staging source that would be copied to prod, and fall
+          # back to the pre-captured digest for configs not promoted
+          # in this run.
           declare -A FINAL_DIGEST
-          for cuda_ver in "${!AUTO_TARGET_FINAL[@]}"; do
-            ref="${AUTO_TARGET_FINAL[$cuda_ver]}"
-            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
+            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ -z "$cuda_ver" ]] && continue
+            dp_tag="${default_python//.}"
+            staging_ref="${NAMESPACE_STAGING}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
+            if d=$(docker buildx imagetools inspect "$staging_ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
               FINAL_DIGEST[$cuda_ver]="$d"
+            else
+              echo "WARN: could not resolve staging source ${staging_ref}"
+            fi
+          done
+          for cuda_ver in "${!AUTO_TARGET_PRE[@]}"; do
+            if [[ -z "${FINAL_DIGEST[$cuda_ver]:-}" ]]; then
+              FINAL_DIGEST[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]##*@}"
             fi
           done
 
