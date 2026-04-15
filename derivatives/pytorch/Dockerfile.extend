@@ -1,0 +1,41 @@
+# Hotfix extension for PyTorch images: refresh the nvidia packages
+# installed under the base layer so libnccl2 can be re-pinned against
+# the CUDA toolkit already present in the image. CUDA_VERSIONS is
+# derived at build time from the already-installed cuda-nvcc-<dashver>
+# packages, so this Dockerfile works for any pytorch variant without
+# having to encode cuda versions in the workflow.
+#
+# This branch/Dockerfile is a utility — it is not intended to be merged.
+#
+# Usage:
+#   docker buildx build -f derivatives/pytorch/Dockerfile.extend \
+#     --build-arg BASE_IMAGE=PROD_NAMESPACE/pytorch:...-YYYY-MM-DD \
+#     --tag staging/pytorch:...-YYYY-MM-DD \
+#     --push .
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+RUN \
+    set -euo pipefail && \
+    CUDA_VERSIONS="$(dpkg-query -W -f='${Package}\n' 'cuda-nvcc-*' 2>/dev/null | sed -n 's/^cuda-nvcc-\([0-9][0-9]*-[0-9][0-9]*\)$/\1/p' | sort -u | tr '\n' ' ')" && \
+    [ -n "${CUDA_VERSIONS// }" ] || { echo "No cuda-nvcc-<ver> packages found; cannot derive CUDA_VERSIONS" >&2; exit 1; } && \
+    echo "Derived CUDA_VERSIONS=${CUDA_VERSIONS}" && \
+    apt-get update && \
+    PACKAGES="" && \
+    lowest_dotver="" && \
+    for ver in ${CUDA_VERSIONS}; do \
+        dashver="${ver//./-}" && \
+        dotver="${ver//-/.}" && \
+        PACKAGES="$PACKAGES cuda-compat-${dashver} cuda-nvcc-${dashver} cuda-cccl-${dashver} cuda-nvrtc-${dashver} libnpp-${dashver} libnvjpeg-${dashver} libcufft-${dashver}" && \
+        if [ -z "$lowest_dotver" ] || [ "$(printf '%s\n%s\n' "$dotver" "$lowest_dotver" | sort -V | head -n1)" = "$dotver" ]; then \
+            lowest_dotver="$dotver"; \
+        fi; \
+    done && \
+    PACKAGES="$PACKAGES libnccl2=*+cuda${lowest_dotver}" && \
+    set -f && \
+    apt-get install -y --no-install-recommends --allow-downgrades $PACKAGES && \
+    set +f && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN env-hash > /.env_hash
