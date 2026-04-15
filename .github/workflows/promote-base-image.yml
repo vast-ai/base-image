@@ -143,7 +143,49 @@ jobs:
         run: |
           set -euo pipefail
           PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           mkdir -p built-tags
+
+          # Pre-flight: every staging source we plan to promote must
+          # exist. Fail fast with a full list of missing refs rather
+          # than clobbering prod tags and then dying half way through.
+          echo "=== Pre-flight: verifying staging sources ==="
+          MISSING=()
+          CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            for py_version in "${PYTHON_VERSIONS[@]}"; do
+              py_tag="${py_version//.}"
+              SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                echo "  ok: $SOURCE"
+              else
+                echo "  MISSING: $SOURCE"
+                MISSING+=("$SOURCE")
+              fi
+            done
+          done
+          MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
+          for ((i=0; i<MINI_COUNT; i++)); do
+            mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
+            for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+              py_tag="${py_version//.}"
+              SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                echo "  ok: $SOURCE"
+              else
+                echo "  MISSING: $SOURCE"
+                MISSING+=("$SOURCE")
+              fi
+            done
+          done
+          if [[ "${#MISSING[@]}" -gt 0 ]]; then
+            echo ""
+            echo "ERROR: ${#MISSING[@]} staging source(s) missing; aborting before any prod writes:"
+            printf '  %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "Pre-flight passed: all staging sources resolved."
 
           # Capture the current target of every auto tag BEFORE we promote.
           # We need this so the post-promotion auto-tag dance can restore
