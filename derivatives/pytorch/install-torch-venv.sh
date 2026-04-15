@@ -9,8 +9,11 @@ TARGETARCH="$3"
 VENV="/venv/torch-${TORCH_VER}"
 
 echo "=== Creating venv for torch ${TORCH_VER} at ${VENV} ==="
-/opt/miniforge3/bin/conda create -p "${VENV}" \
-    python="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" -y
+# Match the python minor version of /venv/main so the extra torch
+# venv stays aligned with the base image's primary python, not
+# whatever python3 happens to resolve to on PATH.
+PY_MINOR=$(/venv/main/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+/opt/miniforge3/bin/conda create -p "${VENV}" python="${PY_MINOR}" -y
 
 # Look up pinned companion versions, filtering amd64-only packages on other arches
 COMPANIONS=$(jq -r --arg v "${TORCH_VER}" --arg arch "${TARGETARCH}" \

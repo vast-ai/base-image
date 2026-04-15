@@ -502,7 +502,13 @@ jobs:
 
             AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
             if [[ -z "$anchor_ref" ]]; then
-              echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; skipping dance (tag order will not advance)"
+              # No distinct anchor (e.g. fresh namespace, only one
+              # auto tag resolvable). Fall back to a direct update so
+              # correctness does not depend on the dance being
+              # possible — only the tag-order optimisation is lost.
+              echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; falling back to direct update (tag order will not advance)"
+              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+              echo "$AUTO_TAG_REF" >> built-tags/tags.txt
               continue
             fi
 
