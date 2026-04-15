@@ -71,8 +71,8 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/base-image:cuda-13.2-mini-py312-2026-03-26
-          - vastai/base-image:cuda-12.9-mini-py312-2026-03-26
+          - vastai/base-image:cuda-13.2-mini-py312-2026-04-15
+          - vastai/base-image:cuda-12.9-mini-py312-2026-04-15
           - vastai/base-image:stock-ubuntu24.04-py312-2026-03-26
 
     steps:
