@@ -425,6 +425,50 @@ jobs:
           echo ""
 
           PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+
+          # Pre-flight: verify every staging source exists. Dry-run
+          # must flag missing images because promote always runs after
+          # a dry-run — we want problems visible before the real job
+          # begins clobbering prod tags.
+          echo "=== Pre-flight: verifying staging sources ==="
+          MISSING=()
+          CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<CONFIG_COUNT; i++)); do
+            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            for py_version in "${PYTHON_VERSIONS[@]}"; do
+              py_tag="${py_version//.}"
+              SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                echo "  ok: $SOURCE"
+              else
+                echo "  MISSING: $SOURCE"
+                MISSING+=("$SOURCE")
+              fi
+            done
+          done
+          MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
+          for ((i=0; i<MINI_COUNT; i++)); do
+            mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
+            for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
+              py_tag="${py_version//.}"
+              SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                echo "  ok: $SOURCE"
+              else
+                echo "  MISSING: $SOURCE"
+                MISSING+=("$SOURCE")
+              fi
+            done
+          done
+          if [[ "${#MISSING[@]}" -gt 0 ]]; then
+            echo ""
+            echo "ERROR: ${#MISSING[@]} staging source(s) missing; real promote would abort:"
+            printf '  %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "Pre-flight passed: all staging sources resolved."
+          echo ""
 
           echo "=== Base Image Promotions (in order) ==="
           CONFIG_COUNT=$(echo "$CONFIGS" | jq length)
