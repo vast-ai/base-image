@@ -18,7 +18,7 @@ export ACESTEP_LM_MODEL_PATH=${ACESTEP_LM_MODEL_PATH:=acestep-5Hz-lm-4B}
 # Start ACE Step API in background
 echo "Starting ACE Step API..."
 cd "${WORKSPACE}/ACE-Step-1.5"
-pty acestep-api --port 8001 &
+(pty acestep-api --port 8001) &
 API_PID=$!
 
 # Wait for ACE Step API to be ready
