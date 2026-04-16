@@ -212,6 +212,7 @@ RUN \
         acestep/llm_inference.py && \
     # Strip torch ecosystem deps — provided by the base venv
     sed -i '/^[[:space:]]*"torch[>=<;",]/d; /^[[:space:]]*"torchvision[>=<;",]/d; /^[[:space:]]*"torchaudio[>=<;",]/d; /^[[:space:]]*"torchcodec[>=<;",]/d' pyproject.toml && \
+    uv pip install --no-cache-dir hatchling && \
     uv pip install --no-cache-dir --no-build-isolation ./acestep/third_parts/nano-vllm . && \
     uv pip install --no-cache-dir bitsandbytes && \
     # UI looks for .venv in the project root
