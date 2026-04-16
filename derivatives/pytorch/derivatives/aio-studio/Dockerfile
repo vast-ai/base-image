@@ -211,10 +211,10 @@ RUN \
     sed -i 's/enforce_eager_for_vllm = bool(is_rocm or is_jetson)/is_blackwell = False\n            try:\n                cc = torch.cuda.get_device_capability()\n                is_blackwell = cc[0] >= 12\n            except Exception:\n                pass\n            enforce_eager_for_vllm = bool(is_rocm or is_jetson or is_blackwell)/' \
         acestep/llm_inference.py && \
     # Pin torch ecosystem to versions from the base venv
-    torch_ver=$(python -c "import torch; print(torch.__version__.split('+')[0])") && \
-    tv_ver=$(python -c "import torchvision; print(torchvision.__version__.split('+')[0])") && \
-    ta_ver=$(python -c "import torchaudio; print(torchaudio.__version__.split('+')[0])") && \
-    tc_ver=$(python -c "import torchcodec; print(torchcodec.__version__.split('+')[0])" 2>/dev/null || true) && \
+    torch_ver=$(python -c "import torch; print(torch.__version__)") && \
+    tv_ver=$(python -c "import torchvision; print(torchvision.__version__)") && \
+    ta_ver=$(python -c "import torchaudio; print(torchaudio.__version__)") && \
+    tc_ver=$(python -c "import torchcodec; print(torchcodec.__version__)" 2>/dev/null || true) && \
     sed -i '/^[[:space:]]*"torch\(vision\|audio\|codec\)\{0,1\}[>=<;",]/d' pyproject.toml && \
     sed -i '/^required-environments/,/^\]/d' pyproject.toml && \
     tc_pin="" && [ -n "${tc_ver}" ] && tc_pin="\n    \"torchcodec==${tc_ver}\"," && \
