@@ -210,6 +210,13 @@ RUN \
     # Blackwell (compute >= 12) fix: CUDA graph capture fails in nanovllm
     sed -i 's/enforce_eager_for_vllm = bool(is_rocm or is_jetson)/is_blackwell = False\n            try:\n                cc = torch.cuda.get_device_capability()\n                is_blackwell = cc[0] >= 12\n            except Exception:\n                pass\n            enforce_eager_for_vllm = bool(is_rocm or is_jetson or is_blackwell)/' \
         acestep/llm_inference.py && \
+    # Pin torch ecosystem to versions from the base venv
+    torch_ver=$(python -c "import torch; print(torch.__version__.split('+')[0])") && \
+    tv_ver=$(python -c "import torchvision; print(torchvision.__version__.split('+')[0])") && \
+    ta_ver=$(python -c "import torchaudio; print(torchaudio.__version__.split('+')[0])") && \
+    tc_ver=$(python -c "import torchcodec; print(torchcodec.__version__.split('+')[0])") && \
+    sed -i '/^[[:space:]]*"torch\(vision\|audio\|codec\)\{0,1\}[>=<;",]/d' pyproject.toml && \
+    sed -i "s|^dependencies = \[|dependencies = [\n    \"torch==${torch_ver}\",\n    \"torchvision==${tv_ver}\",\n    \"torchaudio==${ta_ver}\",\n    \"torchcodec==${tc_ver}\",|" pyproject.toml && \
     UV_PROJECT_ENVIRONMENT=/venv/ace-step uv sync && \
     uv pip install --no-cache-dir bitsandbytes && \
     # UI looks for .venv in the project root
