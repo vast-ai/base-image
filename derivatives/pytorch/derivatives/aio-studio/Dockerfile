@@ -214,9 +214,10 @@ RUN \
     torch_ver=$(python -c "import torch; print(torch.__version__.split('+')[0])") && \
     tv_ver=$(python -c "import torchvision; print(torchvision.__version__.split('+')[0])") && \
     ta_ver=$(python -c "import torchaudio; print(torchaudio.__version__.split('+')[0])") && \
-    tc_ver=$(python -c "import torchcodec; print(torchcodec.__version__.split('+')[0])") && \
+    tc_ver=$(python -c "import torchcodec; print(torchcodec.__version__.split('+')[0])" 2>/dev/null || true) && \
     sed -i '/^[[:space:]]*"torch\(vision\|audio\|codec\)\{0,1\}[>=<;",]/d' pyproject.toml && \
-    sed -i "s|^dependencies = \[|dependencies = [\n    \"torch==${torch_ver}\",\n    \"torchvision==${tv_ver}\",\n    \"torchaudio==${ta_ver}\",\n    \"torchcodec==${tc_ver}\",|" pyproject.toml && \
+    tc_pin="" && [ -n "${tc_ver}" ] && tc_pin="\n    \"torchcodec==${tc_ver}\"," && \
+    sed -i "s|^dependencies = \[|dependencies = [\n    \"torch==${torch_ver}\",\n    \"torchvision==${tv_ver}\",\n    \"torchaudio==${ta_ver}\",${tc_pin}|" pyproject.toml && \
     UV_PROJECT_ENVIRONMENT=/venv/ace-step uv sync && \
     uv pip install --no-cache-dir bitsandbytes && \
     # UI looks for .venv in the project root
