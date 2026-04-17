@@ -151,6 +151,14 @@ To build a variant with modifications:
 2. Trigger a manual build. Your changes will be included in the built image.
 3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/ollama.conf` and the startup script in `ROOT/opt/supervisor-scripts/ollama.sh`.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Ollama** — MIT ([upstream](https://github.com/ollama/ollama))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Ollama Documentation](https://github.com/ollama/ollama/blob/main/docs/README.md)

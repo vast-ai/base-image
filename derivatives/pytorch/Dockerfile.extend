@@ -1,0 +1,13 @@
+# Placeholder extend Dockerfile for PyTorch images.
+#
+# Dockerfile.extend is invoked by the Extend PyTorch workflow to layer
+# last-minute changes over an already-promoted pytorch image without a
+# full rebuild. By default it is a no-op — it simply passes the base
+# image through unchanged.
+#
+# When a hotfix is needed, add the required RUN/COPY steps below,
+# push, and trigger the Extend PyTorch workflow. Revert this file to
+# its no-op form after the hotfix has been promoted.
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}

@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py311-2026-03-26
+ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py311-2026-04-15
 
 FROM ${PYTORCH_BASE}
 
@@ -9,6 +9,9 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
+
+# Ensure uv pulls CUDA 12.8 wheels for torch ecosystem packages
+ENV UV_TORCH_BACKEND=cu128
 
 # Required or we will not build
 ARG ACE_STEP_REF
@@ -26,6 +29,9 @@ RUN \
     git clone https://github.com/ace-step/ACE-Step-1.5 && \
     cd ACE-Step-1.5 && \
     git checkout "${ACE_STEP_REF}" && \
+    # Blackwell (compute >= 12) fix: CUDA graph capture fails in nanovllm
+    sed -i 's/enforce_eager_for_vllm = bool(is_rocm or is_jetson)/is_blackwell = False\n            try:\n                cc = torch.cuda.get_device_capability()\n                is_blackwell = cc[0] >= 12\n            except Exception:\n                pass\n            enforce_eager_for_vllm = bool(is_rocm or is_jetson or is_blackwell)/' \
+        acestep/llm_inference.py && \
     UV_PROJECT_ENVIRONMENT=/venv/main uv sync && \
     # UI is not aware of the correct venv path and looks up this dir for python
     ln -s /venv/main .venv && \

@@ -1,0 +1,27 @@
+# Extend a PyTorch image with supplementary torch venvs.
+# Each additional version gets its own layer and venv at /venv/torch-X.Y.Z
+# The base image's /venv/main is left untouched.
+#
+# Usage:
+#   docker buildx build -f Dockerfile.multi-torch \
+#     --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15 \
+#     --build-arg PYTORCH_BACKEND=cu128 \
+#     -t my-multi-torch .
+
+ARG PYTORCH_BASE
+FROM ${PYTORCH_BASE}
+
+ARG PYTORCH_BACKEND
+ARG TARGETARCH
+
+COPY ./torch-companions.json /tmp/torch-companions.json
+COPY ./install-torch-venv.sh /tmp/install-torch-venv.sh
+
+# Each version is a separate layer for better caching
+RUN /tmp/install-torch-venv.sh 2.9.1 "${PYTORCH_BACKEND}" "${TARGETARCH}"
+RUN /tmp/install-torch-venv.sh 2.7.1 "${PYTORCH_BACKEND}" "${TARGETARCH}"
+
+RUN rm -f /tmp/install-torch-venv.sh /tmp/torch-companions.json
+
+# Refresh environment hash
+RUN env-hash > /.env_hash

@@ -395,6 +395,14 @@ supervisorctl reload
 ```
 
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Kohya's GUI** — Apache-2.0 ([upstream](https://github.com/bmaltais/kohya_ss))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Kohya's GUI](https://github.com/bmaltais/kohya_ss)

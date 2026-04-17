@@ -1,0 +1,6 @@
+[Allow all actions]
+Identity=unix-user:*
+Action=*
+ResultActive=yes
+ResultAny=yes
+ResultInactive=yes

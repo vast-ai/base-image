@@ -78,7 +78,7 @@ The following patches are applied at build time:
 cd base-image/derivatives/pytorch/derivatives/unsloth-studio
 
 docker buildx build \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-03-19 \
+    --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15 \
     -t yournamespace/unsloth-studio .
 ```
 
@@ -86,7 +86,17 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-03-19` | PyTorch mini base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15` | PyTorch mini base image |
+
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Unsloth Studio** — AGPL-3.0 ([upstream](https://github.com/unslothai/unsloth))
+
+The Unsloth core library is Apache-2.0, but the Studio component (frontend and
+related tooling) is licensed under AGPL-3.0. See `/LICENSES.md` in the image
+for license details and file locations.
 
 ## Useful Links
 

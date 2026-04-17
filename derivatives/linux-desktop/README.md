@@ -93,6 +93,16 @@ yournamespace/linux-desktop:ubuntu24.04-2026-02-01
 
 The workflow runs monthly on the 1st of each month. GitHub disables scheduled workflows on forks by default — to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Selkies-GStreamer** — MPL-2.0 ([upstream](https://github.com/selkies-project/selkies-gstreamer))
+- **Apache Guacamole** — Apache-2.0 ([upstream](https://guacamole.apache.org/))
+- **Blender** — GPL-2.0-or-later ([upstream](https://www.blender.org/))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Selkies Project](https://github.com/selkies-project)

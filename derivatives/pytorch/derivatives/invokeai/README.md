@@ -133,6 +133,14 @@ To build a variant with modifications:
 2. Trigger a manual build. Your changes will be included in the built image.
 3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/invokeai.conf` and the startup script in `ROOT/opt/supervisor-scripts/invokeai.sh`.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **InvokeAI** — Apache-2.0 ([upstream](https://github.com/invoke-ai/InvokeAI))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [InvokeAI Documentation](https://invoke-ai.github.io/InvokeAI/)

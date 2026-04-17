@@ -1,0 +1,97 @@
+# Build AIO Studio base image (Dockerfile.base)
+# System deps, desktop infrastructure, create_app_venv helper.
+# Rarely changes — trigger manually when desktop/system deps update.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Optional:
+#   SLACK_WEBHOOK_URL
+
+name: Build AIO Studio Base Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      PYTORCH_BASE:
+        description: "Multi-torch base image"
+        required: true
+        default: "vastai/pytorch:multi-210-291-271-2026-04-15"
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "aio-studio"
+      CUSTOM_IMAGE_TAG:
+        description: "Base tag suffix (default: date)"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      FULL_IMAGE: ${{ steps.build.outputs.FULL_IMAGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        run: |
+          NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE }}"
+          REPO="${{ inputs.DOCKERHUB_REPO }}"
+          TAG_SUFFIX="${{ inputs.CUSTOM_IMAGE_TAG || '' }}"
+          if [ -z "$TAG_SUFFIX" ]; then
+            TAG_SUFFIX="$(date -u +%Y-%m-%d)"
+          fi
+          TAG="base-${TAG_SUFFIX}"
+
+          cd derivatives/pytorch/derivatives/aio-studio
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg PYTORCH_BASE=${{ inputs.PYTORCH_BASE }} \
+            -f Dockerfile.base \
+            -t "${NAMESPACE}/${REPO}:${TAG}" \
+            . --push
+
+          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_ENV
+          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_OUTPUT
+          echo "### Base Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "\`${NAMESPACE}/${REPO}:${TAG}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Record built tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.FULL_IMAGE }}" > built-tags/tag.txt
+
+      - name: Upload built tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag
+          path: built-tags/
+          retention-days: 1
+
+  notify:
+    needs: build
+    if: always()
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.build.result }}
+      image-name: "AIO Studio Base"
+      image-ref: "base"
+      image-tags: ${{ needs.build.outputs.FULL_IMAGE && format('["{0}"]', needs.build.outputs.FULL_IMAGE) || '[]' }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
