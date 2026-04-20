@@ -393,7 +393,7 @@ except Exception:
             if [[ -n "$content" ]]; then
                 display="${content:0:120}"
                 [[ ${#content} -gt 120 ]] && display="${display}..."
-                [[ "$content_kind" == "reasoning" ]] && echo "    (reasoning_content only)"
+                [[ "$content_kind" == "reasoning" ]] && echo "    (reasoning_content/thinking_content only)"
                 echo "    response: ${display}"
             else
                 echo "    (no visible content — reasoning/empty output, but inference ran)"
