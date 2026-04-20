@@ -314,7 +314,11 @@ else
     echo "  endpoint: ${VLLM_TEST_ENDPOINT} (/v1/chat/completions)"
     echo "  model: ${SERVED_MODEL}"
 
-    # Test prompts — exercise different aspects of the model
+    # Test prompts — exercise different aspects of the model.
+    # We only care that the server ran inference (produced completion tokens),
+    # not that the content looks right. Reasoning models may emit empty
+    # `content` / `reasoning_content` and still be serving correctly, so
+    # completion_tokens > 0 is the pass signal.
     declare -a PROMPTS=(
         "Say hello in one sentence."
         "What is 2+2? Reply with just the number."
@@ -322,14 +326,16 @@ else
     )
     inference_pass=0
     inference_fail=0
-    inference_warn=0
 
     for i in "${!PROMPTS[@]}"; do
         prompt="${PROMPTS[$i]}"
         echo ""
         echo "  request $((i+1))/${#PROMPTS[@]}: ${prompt}"
 
-        response=$(curl -sf --max-time 60 "${VLLM_API}/v1/chat/completions" \
+        # Capture body and HTTP status separately so we can diagnose non-2xx.
+        http_body=$(mktemp)
+        http_code=$(curl -s --max-time 60 -o "$http_body" -w '%{http_code}' \
+            "${VLLM_API}/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d "$(python3 -c "
 import json, sys
@@ -339,67 +345,74 @@ print(json.dumps({
     'temperature': 0.1
 }))
 " "$SERVED_MODEL" "$prompt")" 2>/dev/null)
+        response=$(cat "$http_body")
+        rm -f "$http_body"
 
-        if [[ -z "$response" ]]; then
-            echo "    FAIL: empty response"
+        if [[ "$http_code" != "200" ]]; then
+            echo "    FAIL: HTTP ${http_code}"
+            [[ -n "$response" ]] && echo "    body: ${response:0:200}"
             inference_fail=$((inference_fail + 1))
             continue
         fi
 
-        # Parse response: extract content, token counts, finish reason
+        # Parse response: extract token counts, finish reason, any content.
         eval "$(echo "$response" | python3 -c "
 import sys, json, shlex
 try:
     d = json.load(sys.stdin)
-    c = d.get('choices', [{}])[0]
+    c = (d.get('choices') or [{}])[0]
     m = c.get('message', {})
     content = (m.get('content') or '').strip()
     reasoning = (m.get('reasoning_content') or m.get('thinking_content') or '').strip()
-    msg = content or reasoning
     finish = c.get('finish_reason', '?')
     usage = d.get('usage', {})
-    prompt_tok = usage.get('prompt_tokens', '?')
-    compl_tok = usage.get('completion_tokens', '?')
+    prompt_tok = usage.get('prompt_tokens', 0)
+    compl_tok = usage.get('completion_tokens', 0)
+    msg = content or reasoning
+    kind = 'content' if content else ('reasoning' if reasoning else 'none')
     print(f'finish_reason={shlex.quote(str(finish))}')
     print(f'prompt_tokens={shlex.quote(str(prompt_tok))}')
     print(f'compl_tokens={shlex.quote(str(compl_tok))}')
     print(f'content={shlex.quote(msg)}')
-    print(f'is_reasoning={shlex.quote(\"true\" if reasoning and not content else \"false\")}')
-except Exception as e:
-    print(f'finish_reason=error prompt_tokens=0 compl_tokens=0 content= is_reasoning=false')
+    print(f'content_kind={shlex.quote(kind)}')
+    print(f'parse_ok=true')
+except Exception:
+    print('finish_reason=error prompt_tokens=0 compl_tokens=0 content= content_kind=none parse_ok=false')
 " 2>/dev/null)"
 
-        if [[ -n "$content" ]]; then
-            # Got content (regular or reasoning) — pass
-            display="${content:0:120}"
-            [[ ${#content} -gt 120 ]] && display="${display}..."
-            [[ "$is_reasoning" == "true" ]] && echo "    (reasoning_content)"
-            echo "    response: ${display}"
+        if [[ "${parse_ok:-false}" != "true" ]]; then
+            echo "    FAIL: malformed response"
+            echo "    raw: ${response:0:200}"
+            inference_fail=$((inference_fail + 1))
+            continue
+        fi
+
+        # Inference ran if the model produced any completion tokens — even
+        # if content is empty (reasoning model truncated, filtered, etc.).
+        if (( ${compl_tokens:-0} > 0 )); then
+            if [[ -n "$content" ]]; then
+                display="${content:0:120}"
+                [[ ${#content} -gt 120 ]] && display="${display}..."
+                [[ "$content_kind" == "reasoning" ]] && echo "    (reasoning_content only)"
+                echo "    response: ${display}"
+            else
+                echo "    (no visible content — reasoning/empty output, but inference ran)"
+            fi
             echo "    tokens: ${prompt_tokens} prompt → ${compl_tokens} completion, finish=${finish_reason}"
             inference_pass=$((inference_pass + 1))
-        elif [[ "$finish_reason" == "length" ]]; then
-            # Token budget exhausted (likely reasoning consumed all tokens) — warn, not fail
-            echo "    WARN: finish_reason=length with no visible content (reasoning may have consumed all tokens)"
-            echo "    tokens: ${prompt_tokens} prompt → ${compl_tokens} completion"
-            inference_warn=$((inference_warn + 1))
         else
-            echo "    FAIL: no content (finish_reason=${finish_reason})"
+            echo "    FAIL: 0 completion tokens (finish_reason=${finish_reason})"
             echo "    raw: ${response:0:200}"
             inference_fail=$((inference_fail + 1))
         fi
     done
 
     echo ""
-    echo "  inference: ${inference_pass}/${#PROMPTS[@]} passed, ${inference_warn} length-limited, ${inference_fail} failed"
-    if [[ $inference_fail -gt 0 && $inference_pass -eq 0 && $inference_warn -eq 0 ]]; then
-        # Total failure — no prompt produced any output at all
-        fail_later "inference" "${inference_fail}/${#PROMPTS[@]} inference requests failed"
-    elif [[ $inference_fail -gt 0 ]]; then
-        # Partial failure — some worked, some didn't; warn but don't fail the test
-        echo "  WARN: ${inference_fail} inference request(s) returned no content"
-    elif [[ $inference_pass -eq 0 && $inference_warn -gt 0 ]]; then
-        # All prompts hit token limit — model is serving but config may need tuning
-        echo "  WARN: all prompts hit max_tokens with no visible content (reasoning model?)"
+    echo "  inference: ${inference_pass}/${#PROMPTS[@]} produced completion tokens, ${inference_fail} failed"
+    if (( inference_pass == 0 )); then
+        fail_later "inference" "no prompts produced completion tokens (${inference_fail}/${#PROMPTS[@]} failed)"
+    elif (( inference_fail > 0 )); then
+        echo "  WARN: ${inference_fail} request(s) failed, but server is serving inference"
     fi
 fi
 
