@@ -18,6 +18,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
+# uv hardlinks break volume sync; force copy (matches vastai/base-image)
+ENV UV_LINK_MODE=copy
 WORKDIR /
 
 COPY --from=base_image_source /ROOT /
