@@ -35,7 +35,7 @@ Choose the CUDA variant that matches your driver's major version. Within that fa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Directory for models, outputs, and configurations |
-| `WAN2GP_PORT` | `17860` | Gradio server port (internal) |
+| `WAN2GP_PORT` | `7860` | Gradio server port (internal) |
 | `WAN2GP_ARGS` | (none) | Extra CLI args appended to `python wgp.py` |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
@@ -44,7 +44,7 @@ Choose the CUDA variant that matches your driver's major version. Within that fa
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
-| Wan2GP | 17860 | 17860 |
+| Wan2GP | 17860 | 7860 |
 | Jupyter | 8080 | 8080 |
 
 ### Service Management

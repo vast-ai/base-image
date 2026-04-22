@@ -8,7 +8,7 @@ This template gives you a **low-VRAM video generation environment** with Wan2GP 
 
 **Think:** *"Generate high-quality AI video clips on consumer GPUs."*
 
-> **Latest builds:** Docker images are automatically rebuilt when new upstream commits are detected. The default template tag is updated less frequently to allow for QA testing. To use a newly built image before it becomes the template default, select a specific version from the **version tag dropdown** on the template configuration page.
+> **Latest builds:** Docker images are rebuilt automatically on a periodic schedule, and are only pushed when the resolved upstream ref produces a new tag. The default template tag is updated less frequently to allow for QA testing. To use a newly built image before it becomes the template default, select a specific version from the **version tag dropdown** on the template configuration page.
 
 ---
 
@@ -36,7 +36,7 @@ This is **perfect** if you:
 ### **Step 1: Configure Your Setup**
 Set your preferred configuration via environment variables:
 - **`WORKSPACE`**: Custom workspace directory
-- **`WAN2GP_PORT`**: Override the default internal port (17860)
+- **`WAN2GP_PORT`**: Override the default internal port (7860)
 - **`WAN2GP_ARGS`**: Additional CLI flags for `wgp.py`
 - **`PROVISIONING_SCRIPT`**: URL to auto-download dependencies on first boot
 
@@ -61,13 +61,13 @@ Open the Wan2GP UI, select a model, enter a prompt, and start generating.
 |--------|----------|----------------|
 | **Web Interface** | All generation operations | Click "Open" button |
 | **SSH Terminal** | System administration | [SSH access](https://docs.vast.ai/instances/sshscp) |
-| **SSH Tunnel** | Bypass authentication | [SSH port forwarding](https://docs.vast.ai/instances/sshscp) to port 17860 |
+| **SSH Tunnel** | Bypass authentication | [SSH port forwarding](https://docs.vast.ai/instances/sshscp) to port 7860 |
 
 ### **Port Reference**
 | Service | External Port | Internal Port |
 |---------|---------------|---------------|
 | Instance Portal | 1111 | 11111 |
-| Wan2GP | 17860 | 17860 |
+| Wan2GP | 17860 | 7860 |
 | Jupyter | 8080 | 8080 |
 
 ### **Service Management**
@@ -81,7 +81,7 @@ Open the Wan2GP UI, select a model, enter a prompt, and start generating.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Workspace directory |
-| `WAN2GP_PORT` | `17860` | Gradio server port |
+| `WAN2GP_PORT` | `7860` | Gradio server port |
 | `WAN2GP_ARGS` | (none) | Extra CLI args appended to `python wgp.py` |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 

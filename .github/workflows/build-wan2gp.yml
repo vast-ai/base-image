@@ -36,9 +36,11 @@ on:
 env:
   DEFAULT_DOCKERHUB_REPO: "wan2gp"
   DEFAULT_MULTI_ARCH: "false"
-  # 12 hours
-  RELEASE_AGE_THRESHOLD: 43200
   WAN2GP_GITHUB_REPO: "deepbeepmeep/Wan2GP"
+  WAN2GP_BRANCH: "main"
+  # 12 hours (matches the schedule cron) — scheduled runs skip if the latest
+  # upstream commit is older than this.
+  COMMIT_AGE_THRESHOLD: 43200
 
 jobs:
   preflight:
@@ -63,39 +65,57 @@ jobs:
 
       - name: Resolve Wan2GP git ref
         id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ -n "${{ inputs.WAN2GP_REF }}" ]]; then
-            REF="${{ inputs.WAN2GP_REF }}"
-            echo "Using manual ref: $REF"
-          else
-            echo "Resolving HEAD of main branch..."
-            COMMIT=$(git ls-remote "https://github.com/${{ env.WAN2GP_GITHUB_REPO }}.git" refs/heads/main | cut -f1 | cut -c1-7)
-            if [[ -n "$COMMIT" ]]; then
-              REF="$COMMIT"
-              echo "Resolved main → $REF"
-            else
-              echo "::error::Could not resolve HEAD of main branch"
-              exit 1
-            fi
+          MANUAL_REF="${{ inputs.WAN2GP_REF }}"
+
+          if [[ -n "$MANUAL_REF" ]]; then
+            echo "Using manual ref: $MANUAL_REF"
+            echo "ref=$MANUAL_REF" >> $GITHUB_OUTPUT
+            echo "commit-age=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
-          echo "ref=$REF" >> $GITHUB_OUTPUT
+          echo "Resolving HEAD of ${{ env.WAN2GP_BRANCH }} branch via GitHub API..."
+          RESPONSE=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.WAN2GP_GITHUB_REPO }}/commits/${{ env.WAN2GP_BRANCH }}")
+          COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
+          COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')
+
+          if [[ "$COMMIT_SHA" == "null" || -z "$COMMIT_SHA" ]]; then
+            echo "::error::Could not resolve HEAD of ${{ env.WAN2GP_BRANCH }} branch"
+            exit 1
+          fi
+
+          COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+
+          echo "Resolved ${{ env.WAN2GP_BRANCH }} → $COMMIT_SHA (${AGE}s old)"
+          echo "ref=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit-age=$AGE" >> $GITHUB_OUTPUT
 
       - name: Determine if build should run
         id: decision
         run: |
           SECRETS="${{ steps.secrets.outputs.available }}"
           MANUAL_REF="${{ inputs.WAN2GP_REF }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
+          COMMIT_AGE="${{ steps.resolve-ref.outputs.commit-age }}"
 
           if [[ "$SECRETS" != "true" ]]; then
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - Required secrets not configured"
           elif [[ -n "$MANUAL_REF" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
-          else
+            echo "✓ Manual build for ref: $RESOLVED_REF"
+          elif [[ "$COMMIT_AGE" -le "${{ env.COMMIT_AGE_THRESHOLD }}" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Scheduled build for ref: ${{ steps.resolve-ref.outputs.ref }}"
+            echo "✓ Scheduled build for ref: $RESOLVED_REF (${COMMIT_AGE}s old ≤ ${{ env.COMMIT_AGE_THRESHOLD }}s threshold)"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping scheduled build - latest upstream commit is ${COMMIT_AGE}s old (threshold ${{ env.COMMIT_AGE_THRESHOLD }}s)"
           fi
 
   build:
