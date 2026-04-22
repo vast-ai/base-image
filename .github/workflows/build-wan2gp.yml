@@ -100,14 +100,14 @@ jobs:
         id: decision
         run: |
           SECRETS="${{ steps.secrets.outputs.available }}"
-          MANUAL_REF="${{ inputs.WAN2GP_REF }}"
+          TRIGGER="${{ github.event_name }}"
           RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
           COMMIT_AGE="${{ steps.resolve-ref.outputs.commit-age }}"
 
           if [[ "$SECRETS" != "true" ]]; then
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - Required secrets not configured"
-          elif [[ -n "$MANUAL_REF" ]]; then
+          elif [[ "$TRIGGER" == "workflow_dispatch" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
             echo "✓ Manual build for ref: $RESOLVED_REF"
           elif [[ "$COMMIT_AGE" -le "${{ env.COMMIT_AGE_THRESHOLD }}" ]]; then
