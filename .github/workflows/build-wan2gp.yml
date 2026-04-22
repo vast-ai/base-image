@@ -1,0 +1,4 @@
+name: Build Wan2GP Image
+
+on:
+  workflow_dispatch:
