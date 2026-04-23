@@ -167,8 +167,11 @@ runs:
 
         if [[ "$TRIGGER" != "schedule" ]]; then
           # Manual/workflow_dispatch: always proceed, but let manual-version override.
+          # When overriding, clear upload-time — the timestamp we fetched
+          # describes the PyPI-latest version, not the one we're actually building.
           if [[ -n "$MANUAL_VERSION" ]]; then
             echo "resolved-version=$MANUAL_VERSION" >> "$GITHUB_OUTPUT"
+            echo "upload-time=" >> "$GITHUB_OUTPUT"
             echo "Using manual version: $MANUAL_VERSION"
           fi
           echo "new-release=true" >> "$GITHUB_OUTPUT"

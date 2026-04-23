@@ -23,7 +23,7 @@ RUN \
 # Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
 # everything into our existing venv (avoids a duplicate torch install), then
 # run studio setup for frontend build + llama.cpp + all python deps.
-ARG UNSLOTH_VERSION=""
+ARG UNSLOTH_VERSION=
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
