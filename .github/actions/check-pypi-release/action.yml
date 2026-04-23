@@ -59,10 +59,27 @@ runs:
         set -euo pipefail
         echo "Checking PyPI for latest release of ${PKG}..."
 
-        # Sanity-check manual-version before it ever reaches $GITHUB_OUTPUT,
+        # Validate any version string that might flow into $GITHUB_OUTPUT,
         # so newlines or other funky chars can't corrupt the outputs file.
-        if [[ -n "$MANUAL_VERSION" && ! "$MANUAL_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
-          echo "::error::Invalid manual-version '$MANUAL_VERSION' (expected ^[0-9A-Za-z][0-9A-Za-z._+-]*$)"
+        version_re='^[0-9A-Za-z][0-9A-Za-z._+-]*$'
+        if [[ -n "$MANUAL_VERSION" && ! "$MANUAL_VERSION" =~ $version_re ]]; then
+          echo "::error::Invalid manual-version '$MANUAL_VERSION' (expected $version_re)"
+          exit 1
+        fi
+        if [[ -n "$DEFAULT_VERSION" && ! "$DEFAULT_VERSION" =~ $version_re ]]; then
+          echo "::error::Invalid default-version '$DEFAULT_VERSION' (expected $version_re)"
+          exit 1
+        fi
+
+        # Normalize include-prereleases to strict "true"/"false" for jq --argjson,
+        # and ensure age-threshold-seconds is an integer before `-lt`.
+        case "${INCLUDE_PRERELEASES,,}" in
+          true|1|yes)  INCLUDE_PRERELEASES=true ;;
+          false|0|no|"") INCLUDE_PRERELEASES=false ;;
+          *) echo "::error::Invalid include-prereleases '$INCLUDE_PRERELEASES' (expected true/false)"; exit 1 ;;
+        esac
+        if [[ ! "$AGE_THRESHOLD" =~ ^[0-9]+$ ]]; then
+          echo "::error::Invalid age-threshold-seconds '$AGE_THRESHOLD' (expected non-negative integer)"
           exit 1
         fi
 
@@ -117,8 +134,21 @@ runs:
 
         if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
           echo "::warning::No PyPI releases matched filters for ${PKG}"
-          echo "new-release=false" >> "$GITHUB_OUTPUT"
-          echo "resolved-version=" >> "$GITHUB_OUTPUT"
+          if [[ "$TRIGGER" != "schedule" ]]; then
+            # Manual trigger with no matching release: same reasoning as the
+            # PyPI-unavailable path — honor caller's fallback, otherwise fail
+            # loudly rather than silently no-op'ing.
+            FALLBACK="${MANUAL_VERSION:-$DEFAULT_VERSION}"
+            if [[ -z "$FALLBACK" ]]; then
+              echo "::error::No PyPI releases matched filters and no manual-version/default-version provided"
+              exit 1
+            fi
+            echo "new-release=true" >> "$GITHUB_OUTPUT"
+            echo "resolved-version=$FALLBACK" >> "$GITHUB_OUTPUT"
+          else
+            echo "new-release=false" >> "$GITHUB_OUTPUT"
+            echo "resolved-version=" >> "$GITHUB_OUTPUT"
+          fi
           echo "upload-time=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
