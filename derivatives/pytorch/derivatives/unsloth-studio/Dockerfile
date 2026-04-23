@@ -23,12 +23,14 @@ RUN \
 # Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
 # everything into our existing venv (avoids a duplicate torch install), then
 # run studio setup for frontend build + llama.cpp + all python deps.
+ARG UNSLOTH_VERSION=""
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
     . /venv/main/bin/activate && \
     torch_version_pre="$(python -c 'import torch; print(torch.__version__)')" && \
-    uv pip install --no-cache-dir --torch-backend=cu128 unsloth && \
+    unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
+    uv pip install --no-cache-dir --torch-backend=cu128 "$unsloth_spec" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
