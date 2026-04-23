@@ -14,13 +14,19 @@ while [ -f "/.provisioning" ]; do
     sleep 10
 done
 
-# Wait for the Whisper API to be ready so the UI backend calls succeed on first load
+# Only wait for the API when it's configured in the portal; otherwise run standalone
+# so the documented "UI-only" mode (remove "Whisper API" from /etc/portal.yaml) works.
+PORTAL_CONFIG_PATH=${PORTAL_CONFIG_PATH:-/etc/portal.yaml}
 WHISPER_API_HEALTH_URL=${WHISPER_API_HEALTH_URL:-http://localhost:8000/docs}
-until (curl -s -o /dev/null -w '%{http_code}' "${WHISPER_API_HEALTH_URL}" || echo "000") | grep -q 200; do
-    echo "Waiting for Whisper API at ${WHISPER_API_HEALTH_URL}..."
-    sleep 5
-done
-echo "Whisper API is up!"
+if [ -f "${PORTAL_CONFIG_PATH}" ] && grep -qiE '^[^#].*Whisper[ _-]API' "${PORTAL_CONFIG_PATH}"; then
+    until (curl -s -o /dev/null -w '%{http_code}' "${WHISPER_API_HEALTH_URL}" || echo "000") | grep -q 200; do
+        echo "Waiting for Whisper API at ${WHISPER_API_HEALTH_URL}..."
+        sleep 5
+    done
+    echo "Whisper API is up!"
+else
+    echo "Whisper API not in ${PORTAL_CONFIG_PATH}; skipping API readiness wait (UI-only mode)"
+fi
 
 echo "Starting Whisper WebUI"
 

@@ -92,18 +92,24 @@ jobs:
         id: decision
         run: |
           SECRETS="${{ steps.secrets.outputs.available }}"
-          MANUAL_REF="${{ inputs.WHISPER_REF }}"
+          TRIGGER="${{ github.event_name }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
           NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
 
           if [[ "$SECRETS" != "true" ]]; then
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - Required secrets not configured"
-          elif [[ -n "$MANUAL_REF" ]]; then
+          elif [[ "$TRIGGER" == "workflow_dispatch" ]]; then
+            # Manual dispatch: always build, but fail fast if no ref could be resolved
+            if [[ -z "$RESOLVED_REF" ]]; then
+              echo "::error::workflow_dispatch requested a build but no ref could be resolved (manual input empty and release lookup returned no tag)"
+              exit 1
+            fi
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
-          elif [[ "$NEW_RELEASE" == "true" ]]; then
+            echo "✓ Manual build for ref: $RESOLVED_REF"
+          elif [[ "$NEW_RELEASE" == "true" && -n "$RESOLVED_REF" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ New GitHub release detected, building ref: ${{ steps.resolve-ref.outputs.ref }}"
+            echo "✓ New GitHub release detected, building ref: $RESOLVED_REF"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - No new release detected on GitHub"

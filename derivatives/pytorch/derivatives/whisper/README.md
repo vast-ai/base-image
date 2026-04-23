@@ -64,8 +64,9 @@ supervisorctl status whisper-api whisper-ui
 supervisorctl restart whisper-api
 supervisorctl restart whisper-ui
 
-# Run UI only (skip API startup by removing Whisper API from /etc/portal.yaml, then restart)
-supervisorctl restart whisper-api
+# Run UI only: remove the Whisper API entry from /etc/portal.yaml, then restart both
+# (the API exits via exit_portal.sh; the UI detects it's not configured and starts solo)
+supervisorctl restart whisper-api whisper-ui
 ```
 
 Removing a service's display name from `/etc/portal.yaml` causes its Supervisor script to exit on start (via `exit_portal.sh`), so you can run the API alone, the UI alone, or both.
