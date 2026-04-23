@@ -1,0 +1,19 @@
+# Stub so "Build Whisper Image" is registered on the default branch and can be
+# dispatched against the whisper-docker-image feature branch via:
+#   gh workflow run "Build Whisper Image" --ref whisper-docker-image
+# Replaced with the full workflow when PR #154 merges.
+
+name: Build Whisper Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stub notice
+        run: |
+          echo "This is a stub of Build Whisper Image on the default branch."
+          echo "The real workflow lives on the whisper-docker-image branch until its PR merges."
+          echo "Re-run this workflow with --ref whisper-docker-image to build against the branch."
