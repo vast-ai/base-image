@@ -59,6 +59,13 @@ runs:
         set -euo pipefail
         echo "Checking PyPI for latest release of ${PKG}..."
 
+        # Sanity-check manual-version before it ever reaches $GITHUB_OUTPUT,
+        # so newlines or other funky chars can't corrupt the outputs file.
+        if [[ -n "$MANUAL_VERSION" && ! "$MANUAL_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
+          echo "::error::Invalid manual-version '$MANUAL_VERSION' (expected ^[0-9A-Za-z][0-9A-Za-z._+-]*$)"
+          exit 1
+        fi
+
         RESPONSE_FILE=$(mktemp)
         HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
           -H "Accept: application/json" \
@@ -66,10 +73,16 @@ runs:
 
         if [[ "$HTTP_CODE" != "200" ]]; then
           echo "::warning::PyPI API returned $HTTP_CODE for ${PKG}"
-          # Non-schedule triggers proceed with whatever fallback the caller provides.
           if [[ "$TRIGGER" != "schedule" ]]; then
+            # Manual trigger: proceed with whatever fallback the caller gave us.
+            # No fallback means the caller asked for "latest" but we can't
+            # resolve it — fail loudly rather than silently no-op'ing the build.
             FALLBACK="${MANUAL_VERSION:-$DEFAULT_VERSION}"
-            echo "new-release=$([[ -n "$FALLBACK" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+            if [[ -z "$FALLBACK" ]]; then
+              echo "::error::PyPI unavailable and no manual-version/default-version provided"
+              exit 1
+            fi
+            echo "new-release=true" >> "$GITHUB_OUTPUT"
             echo "resolved-version=$FALLBACK" >> "$GITHUB_OUTPUT"
           else
             echo "new-release=false" >> "$GITHUB_OUTPUT"
@@ -79,20 +92,23 @@ runs:
           exit 0
         fi
 
-        # Pick the most-recently-uploaded non-yanked release whose version matches
-        # the optional pattern. Sorting by upload_time_iso_8601 avoids needing
-        # PEP 440 version ordering in bash.
+        # Pick the most-recently-uploaded release whose version matches the
+        # optional pattern. Yanked files are filtered per-file (a partial yank
+        # doesn't disqualify a version), and the prerelease filter excludes
+        # only PEP 440 prerelease segments (a/b/rc/dev/pre/alpha/beta) — it
+        # still allows post-releases, epochs, and local versions. Sorting by
+        # upload_time_iso_8601 avoids needing PEP 440 version ordering in bash.
         LATEST=$(jq -c \
           --arg pattern "$VERSION_PATTERN" \
           --argjson prereleases "$INCLUDE_PRERELEASES" '
             .releases
             | to_entries
+            | map({key: .key, value: (.value | map(select(.yanked != true)))})
             | map(select(.value | length > 0))
-            | map(select(.value[0].yanked != true))
             | map(select(($pattern == "") or (.key | test($pattern))))
             | (if $prereleases then .
-               else map(select(.key | test("^[0-9]+(\\.[0-9]+)*$"))) end)
-            | map({version: .key, uploaded: (.value | map(.upload_time_iso_8601) | sort | last)})
+               else map(select(.key | ascii_downcase | test("^(?:[0-9]+!)?[0-9]+(?:\\.[0-9]+)*(?:(?:[._-]?post[._-]?[0-9]*)|(?:-[0-9]+))?(?:\\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$"))) end)
+            | map({version: .key, uploaded: (.value | map(.upload_time_iso_8601) | map(select(. != null)) | sort | last)})
             | map(select(.uploaded != null))
             | sort_by(.uploaded)
             | reverse
