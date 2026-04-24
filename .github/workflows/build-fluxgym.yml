@@ -1,0 +1,19 @@
+# Stub so "Build FluxGym Image" is registered on the default branch and can be
+# dispatched against the fluxgym-docker-image feature branch via:
+#   gh workflow run "Build FluxGym Image" --ref fluxgym-docker-image
+# Replaced with the full workflow when PR #153 merges.
+
+name: Build FluxGym Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stub notice
+        run: |
+          echo "This is a stub of Build FluxGym Image on the default branch."
+          echo "The real workflow lives on the fluxgym-docker-image branch until its PR merges."
+          echo "Re-run this workflow with --ref fluxgym-docker-image to build against the branch."
