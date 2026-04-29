@@ -5,7 +5,8 @@
 # DOCKERHUB_NAMESPACE
 # Optional:
 # SLACK_WEBHOOK_URL
-# Note: Build matrix will need periodic updates as new Pytorch images become available
+#
+# Release detection: Checks GitHub (jamiepine/voicebox) for new release tags.
 
 name: Build Voicebox Image
 
@@ -17,10 +18,10 @@ on:
   workflow_dispatch:
     inputs:
       VOICEBOX_REF:
-        description: "Voicebox git ref - leave empty to simulate scheduled build"
+        description: "Git ref (release tag, e.g. v0.3.1) - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
-        description: "Push to username/<repo>"
+        description: "Push to namespace/<repo>"
         required: true
         default: "voicebox"
       MULTI_ARCH:
@@ -33,7 +34,6 @@ on:
         required: false
 
 env:
-  DEFAULT_VOICEBOX_REF: "main"
   DEFAULT_DOCKERHUB_REPO: "voicebox"
   DEFAULT_MULTI_ARCH: "false"
   # 12 hours
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      voicebox-ref: ${{ steps.release-check.outputs.resolved-ref }}
+      voicebox-ref: ${{ steps.resolve-ref.outputs.ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,25 +60,60 @@ jobs:
             echo "::notice::Skipping - secrets not configured"
           fi
 
-      - name: Check release and resolve ref
+      - name: Check GitHub for new release
         id: release-check
+        if: ${{ !inputs.VOICEBOX_REF }}
         uses: ./.github/actions/check-github-release
         with:
           repository: jamiepine/voicebox
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          trigger: ${{ inputs.VOICEBOX_REF && github.event_name || 'schedule' }}
-          manual-ref: ${{ inputs.VOICEBOX_REF }}
-          default-ref: main
+          # Always pass 'schedule' so the action fetches the latest release tag,
+          # even on workflow_dispatch. The decision step ignores the new-release
+          # verdict for manual builds, so manual runs never gate on release age.
+          trigger: schedule
+
+      - name: Resolve Voicebox ref
+        id: resolve-ref
+        run: |
+          if [[ -n "${{ inputs.VOICEBOX_REF }}" ]]; then
+            REF="${{ inputs.VOICEBOX_REF }}"
+            echo "Using manual ref: $REF"
+          elif [[ -n "${{ steps.release-check.outputs.release-tag }}" ]]; then
+            REF="${{ steps.release-check.outputs.release-tag }}"
+            echo "Using release tag: $REF"
+          else
+            REF=""
+            echo "::notice::No ref resolved"
+          fi
+
+          echo "ref=$REF" >> $GITHUB_OUTPUT
 
       - name: Determine if build should run
         id: decision
         run: |
-          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          TRIGGER="${{ github.event_name }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
+          NEW_RELEASE="${{ steps.release-check.outputs.new-release }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ "$TRIGGER" == "workflow_dispatch" ]]; then
+            # Manual dispatch: always build, but fail fast if no ref could be resolved
+            if [[ -z "$RESOLVED_REF" ]]; then
+              echo "::error::workflow_dispatch requested a build but no ref could be resolved (manual input empty and release lookup returned no tag)"
+              exit 1
+            fi
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building ref: ${{ steps.release-check.outputs.resolved-ref }}"
+            echo "✓ Manual build for ref: $RESOLVED_REF"
+          elif [[ "$NEW_RELEASE" == "true" && -n "$RESOLVED_REF" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "✓ New GitHub release detected, building ref: $RESOLVED_REF"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - No new release detected on GitHub"
           fi
 
   build:
