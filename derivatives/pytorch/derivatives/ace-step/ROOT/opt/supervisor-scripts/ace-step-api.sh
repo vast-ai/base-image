@@ -16,4 +16,4 @@ done
 echo "Starting ACE Step API"
 
 cd "${WORKSPACE}/ACE-Step-1.5"
-UV_PROJECT_ENVIRONMENT=/venv/main pty uv run acestep-api --port 8001
+pty acestep-api --port 8001
