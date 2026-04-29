@@ -23,12 +23,14 @@ RUN \
 # Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
 # everything into our existing venv (avoids a duplicate torch install), then
 # run studio setup for frontend build + llama.cpp + all python deps.
+ARG UNSLOTH_VERSION=
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
     . /venv/main/bin/activate && \
     torch_version_pre="$(python -c 'import torch; print(torch.__version__)')" && \
-    uv pip install --no-cache-dir --torch-backend=cu128 unsloth && \
+    unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
+    uv pip install --no-cache-dir --torch-backend=cu128 "$unsloth_spec" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
@@ -37,6 +39,12 @@ RUN \
     # Patch install_python_stack.py to use cu128 torch backend instead of auto-detection
     find /venv/main/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
+    # Patch setup.sh to build llama.cpp with portable CPU dispatch instead of -march=native.
+    # Without this, the build host's AVX-512 leaks into libggml-cpu.so and SIGILLs on
+    # any runtime CPU lacking AVX-512 (e.g. Zen 2). GGML_CPU_ALL_VARIANTS produces
+    # per-microarch backends selected at runtime.
+    find /venv/main/lib -name 'setup.sh' -path '*/studio/*' \
+        -exec sed -i 's|-DGGML_NATIVE=ON|-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON|' {} + && \
     # Skip prebuilt llama.cpp (needs nvidia-smi), go straight to source build
     export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
     export SKIP_STUDIO_BASE=1 && \

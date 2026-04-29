@@ -1,0 +1,195 @@
+# .github/actions/check-pypi-release/action.yml
+name: Check PyPI Release
+description: Check for a new release on PyPI and resolve the version to build
+
+inputs:
+  package:
+    description: "PyPI package name (e.g. unsloth)"
+    required: true
+  age-threshold-seconds:
+    description: "Max age in seconds to consider a release 'new' for scheduled runs"
+    required: false
+    default: "86400"
+  trigger:
+    description: "What triggered the workflow (github.event_name)"
+    required: true
+  manual-version:
+    description: "Version provided via manual trigger (if any)"
+    required: false
+    default: ""
+  default-version:
+    description: "Fallback version if the PyPI query fails and no manual version was given"
+    required: false
+    default: ""
+  version-pattern:
+    description: "Regex to filter candidate version strings (e.g. '^[0-9]+\\.[0-9]+\\.[0-9]+$'). Empty matches all."
+    required: false
+    default: ""
+  include-prereleases:
+    description: "Whether to consider PEP 440 pre-releases (rc/a/b/dev). Default false."
+    required: false
+    default: "false"
+
+outputs:
+  new-release:
+    description: "Whether a new release was found (always true for manual/non-schedule triggers when a version is resolved)"
+    value: ${{ steps.result.outputs.new-release }}
+  resolved-version:
+    description: "The version to use for building"
+    value: ${{ steps.result.outputs.resolved-version }}
+  upload-time:
+    description: "Upload timestamp of the resolved release (ISO 8601)"
+    value: ${{ steps.result.outputs.upload-time }}
+
+runs:
+  using: composite
+  steps:
+    - name: Query PyPI for latest release
+      id: check
+      shell: bash
+      env:
+        PKG: ${{ inputs.package }}
+        TRIGGER: ${{ inputs.trigger }}
+        MANUAL_VERSION: ${{ inputs.manual-version }}
+        DEFAULT_VERSION: ${{ inputs.default-version }}
+        AGE_THRESHOLD: ${{ inputs.age-threshold-seconds }}
+        VERSION_PATTERN: ${{ inputs.version-pattern }}
+        INCLUDE_PRERELEASES: ${{ inputs.include-prereleases }}
+      run: |
+        set -euo pipefail
+        echo "Checking PyPI for latest release of ${PKG}..."
+
+        # Validate any version string that might flow into $GITHUB_OUTPUT,
+        # so newlines or other funky chars can't corrupt the outputs file.
+        version_re='^[0-9A-Za-z][0-9A-Za-z._+-]*$'
+        if [[ -n "$MANUAL_VERSION" && ! "$MANUAL_VERSION" =~ $version_re ]]; then
+          echo "::error::Invalid manual-version '$MANUAL_VERSION' (expected $version_re)"
+          exit 1
+        fi
+        if [[ -n "$DEFAULT_VERSION" && ! "$DEFAULT_VERSION" =~ $version_re ]]; then
+          echo "::error::Invalid default-version '$DEFAULT_VERSION' (expected $version_re)"
+          exit 1
+        fi
+
+        # Normalize include-prereleases to strict "true"/"false" for jq --argjson,
+        # and ensure age-threshold-seconds is an integer before `-lt`.
+        case "${INCLUDE_PRERELEASES,,}" in
+          true|1|yes)  INCLUDE_PRERELEASES=true ;;
+          false|0|no|"") INCLUDE_PRERELEASES=false ;;
+          *) echo "::error::Invalid include-prereleases '$INCLUDE_PRERELEASES' (expected true/false)"; exit 1 ;;
+        esac
+        if [[ ! "$AGE_THRESHOLD" =~ ^[0-9]+$ ]]; then
+          echo "::error::Invalid age-threshold-seconds '$AGE_THRESHOLD' (expected non-negative integer)"
+          exit 1
+        fi
+
+        RESPONSE_FILE=$(mktemp)
+        HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
+          -H "Accept: application/json" \
+          "https://pypi.org/pypi/${PKG}/json" || echo "000")
+
+        if [[ "$HTTP_CODE" != "200" ]]; then
+          echo "::warning::PyPI API returned $HTTP_CODE for ${PKG}"
+          if [[ "$TRIGGER" != "schedule" ]]; then
+            # Manual trigger: proceed with whatever fallback the caller gave us.
+            # No fallback means the caller asked for "latest" but we can't
+            # resolve it — fail loudly rather than silently no-op'ing the build.
+            FALLBACK="${MANUAL_VERSION:-$DEFAULT_VERSION}"
+            if [[ -z "$FALLBACK" ]]; then
+              echo "::error::PyPI unavailable and no manual-version/default-version provided"
+              exit 1
+            fi
+            echo "new-release=true" >> "$GITHUB_OUTPUT"
+            echo "resolved-version=$FALLBACK" >> "$GITHUB_OUTPUT"
+          else
+            echo "new-release=false" >> "$GITHUB_OUTPUT"
+            echo "resolved-version=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "upload-time=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Pick the most-recently-uploaded release whose version matches the
+        # optional pattern. Yanked files are filtered per-file (a partial yank
+        # doesn't disqualify a version), and the prerelease filter excludes
+        # only PEP 440 prerelease segments (a/b/rc/dev/pre/alpha/beta) — it
+        # still allows post-releases, epochs, and local versions. Sorting by
+        # upload_time_iso_8601 avoids needing PEP 440 version ordering in bash.
+        LATEST=$(jq -c \
+          --arg pattern "$VERSION_PATTERN" \
+          --argjson prereleases "$INCLUDE_PRERELEASES" '
+            .releases
+            | to_entries
+            | map({key: .key, value: (.value | map(select(.yanked != true)))})
+            | map(select(.value | length > 0))
+            | map(select(($pattern == "") or (.key | test($pattern))))
+            | (if $prereleases then .
+               else map(select(.key | ascii_downcase | test("^(?:[0-9]+!)?[0-9]+(?:\\.[0-9]+)*(?:(?:[._-]?post[._-]?[0-9]*)|(?:-[0-9]+))?(?:\\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$"))) end)
+            | map({version: .key, uploaded: (.value | map(.upload_time_iso_8601) | map(select(. != null)) | sort | last)})
+            | map(select(.uploaded != null))
+            | sort_by(.uploaded)
+            | reverse
+            | .[0] // empty
+          ' < "$RESPONSE_FILE")
+
+        if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+          echo "::warning::No PyPI releases matched filters for ${PKG}"
+          if [[ "$TRIGGER" != "schedule" ]]; then
+            # Manual trigger with no matching release: same reasoning as the
+            # PyPI-unavailable path — honor caller's fallback, otherwise fail
+            # loudly rather than silently no-op'ing.
+            FALLBACK="${MANUAL_VERSION:-$DEFAULT_VERSION}"
+            if [[ -z "$FALLBACK" ]]; then
+              echo "::error::No PyPI releases matched filters and no manual-version/default-version provided"
+              exit 1
+            fi
+            echo "new-release=true" >> "$GITHUB_OUTPUT"
+            echo "resolved-version=$FALLBACK" >> "$GITHUB_OUTPUT"
+          else
+            echo "new-release=false" >> "$GITHUB_OUTPUT"
+            echo "resolved-version=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "upload-time=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        VERSION=$(echo "$LATEST" | jq -r '.version')
+        UPLOAD_TIME=$(echo "$LATEST" | jq -r '.uploaded')
+
+        echo "resolved-version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "upload-time=$UPLOAD_TIME" >> "$GITHUB_OUTPUT"
+
+        RELEASE_EPOCH=$(date -d "$UPLOAD_TIME" +%s)
+        NOW_EPOCH=$(date +%s)
+        AGE=$((NOW_EPOCH - RELEASE_EPOCH))
+        AGE_HOURS=$((AGE / 3600))
+        echo "Latest ${PKG}: $VERSION (uploaded $AGE_HOURS hours ago)"
+
+        if [[ "$TRIGGER" != "schedule" ]]; then
+          # Manual/workflow_dispatch: always proceed, but let manual-version override.
+          # When overriding, clear upload-time — the timestamp we fetched
+          # describes the PyPI-latest version, not the one we're actually building.
+          if [[ -n "$MANUAL_VERSION" ]]; then
+            echo "resolved-version=$MANUAL_VERSION" >> "$GITHUB_OUTPUT"
+            echo "upload-time=" >> "$GITHUB_OUTPUT"
+            echo "Using manual version: $MANUAL_VERSION"
+          fi
+          echo "new-release=true" >> "$GITHUB_OUTPUT"
+        elif [[ $AGE -lt $AGE_THRESHOLD ]]; then
+          echo "new-release=true" >> "$GITHUB_OUTPUT"
+          echo "New release detected (within threshold)"
+        else
+          echo "new-release=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::No new ${PKG} release within threshold period"
+        fi
+
+    - name: Emit final outputs
+      id: result
+      shell: bash
+      run: |
+        # The `check` step writes the authoritative values; this step just
+        # re-exports them so callers see a consistent output surface even when
+        # `check` exits early.
+        echo "new-release=${{ steps.check.outputs.new-release }}" >> "$GITHUB_OUTPUT"
+        echo "resolved-version=${{ steps.check.outputs.resolved-version }}" >> "$GITHUB_OUTPUT"
+        echo "upload-time=${{ steps.check.outputs.upload-time }}" >> "$GITHUB_OUTPUT"

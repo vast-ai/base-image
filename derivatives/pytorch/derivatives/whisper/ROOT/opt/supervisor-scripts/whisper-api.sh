@@ -4,16 +4,18 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh" "ACE Step API"
+. "${utils}/exit_portal.sh" "Whisper API"
+
+echo "Starting Whisper API"
 
 . /venv/main/bin/activate
 
+# Wait for provisioning to complete
 while [ -f "/.provisioning" ]; do
     echo "$PROC_NAME startup paused until instance provisioning has completed (/.provisioning present)"
-    sleep 5
+    sleep 10
 done
 
-echo "Starting ACE Step API"
+cd "${WORKSPACE}/Whisper-WebUI"
 
-cd "${WORKSPACE}/ACE-Step-1.5"
-pty acestep-api --port 8001
+pty uvicorn backend.main:app ${WHISPER_API_ARGS:---host 0.0.0.0 --port 8000} 2>&1

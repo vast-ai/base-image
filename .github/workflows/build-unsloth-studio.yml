@@ -16,8 +16,8 @@ on:
 
   workflow_dispatch:
     inputs:
-      UNSLOTH_REF:
-        description: "Unsloth Studio release tag - leave empty for latest"
+      UNSLOTH_VERSION:
+        description: "Unsloth PyPI version - leave empty for latest"
         required: false
       DOCKERHUB_REPO:
         description: "Push to username/<repo>"
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      unsloth-ref: ${{ steps.release-check.outputs.resolved-ref }}
+      unsloth-version: ${{ steps.release-check.outputs.resolved-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,26 +59,21 @@ jobs:
             echo "::notice::Skipping - secrets not configured"
           fi
 
-      - name: Check release and resolve ref
+      - name: Check PyPI release
         id: release-check
-        uses: ./.github/actions/check-github-release
+        uses: ./.github/actions/check-pypi-release
         with:
-          repository: unslothai/unsloth
+          package: unsloth
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           trigger: ${{ github.event_name }}
-          manual-ref: ${{ inputs.UNSLOTH_REF }}
-          default-ref: ""
-          # Only match studio release tags (v0.1.0-beta etc.), not llama.cpp builds (b8508)
-          tag-pattern: "^v"
-          resolve-master-to-commit: "false"
+          manual-version: ${{ inputs.UNSLOTH_VERSION }}
 
       - name: Determine if build should run
         id: decision
         run: |
           if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building ref: ${{ steps.release-check.outputs.resolved-ref }}"
+            echo "✓ Building unsloth ${{ steps.release-check.outputs.resolved-version }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
           fi
@@ -133,7 +128,7 @@ jobs:
 
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [ -z "$IMAGE_TAG_BASE" ]; then
-            IMAGE_TAG_BASE="${{ needs.preflight.outputs.unsloth-ref }}"
+            IMAGE_TAG_BASE="${{ needs.preflight.outputs.unsloth-version }}"
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || 'unsloth-studio' }}"
@@ -164,6 +159,7 @@ jobs:
           docker buildx build \
             --platform "$platforms" \
             --build-arg PYTORCH_BASE=${{ matrix.base_image }} \
+            --build-arg UNSLOTH_VERSION=${{ needs.preflight.outputs.unsloth-version }} \
             -t ${{ env.FULL_IMAGE }} \
             . --push
 
@@ -214,7 +210,7 @@ jobs:
     with:
       build-result: ${{ needs.build.result }}
       image-name: "Unsloth Studio"
-      image-ref: ${{ needs.preflight.outputs.unsloth-ref }}
+      image-ref: ${{ needs.preflight.outputs.unsloth-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
