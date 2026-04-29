@@ -212,6 +212,13 @@ RUN \
         acestep/llm_inference.py && \
     # Strip torch ecosystem deps — provided by the base venv
     sed -i '/^[[:space:]]*"torch[>=<;",]/d; /^[[:space:]]*"torchvision[>=<;",]/d; /^[[:space:]]*"torchaudio[>=<;",]/d; /^[[:space:]]*"torchcodec[>=<;",]/d' pyproject.toml && \
+    # Fail loudly if upstream pyproject formatting changes and the strip misses a dep —
+    # silent passthrough would let uv pip install clobber the base venv's torch stack
+    if grep -qE '^[[:space:]]*"(torch|torchvision|torchaudio|torchcodec)([^A-Za-z0-9_-]|$)' pyproject.toml; then \
+        echo "ERROR: torch ecosystem deps still present in pyproject.toml after strip:" >&2; \
+        grep -nE '^[[:space:]]*"(torch|torchvision|torchaudio|torchcodec)' pyproject.toml >&2; \
+        exit 1; \
+    fi && \
     uv pip install --no-cache-dir hatchling && \
     uv pip install --no-cache-dir --no-build-isolation ./acestep/third_parts/nano-vllm . && \
     uv pip install --no-cache-dir bitsandbytes && \
