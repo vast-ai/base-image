@@ -95,7 +95,6 @@ jobs:
       matrix:
         base_image:
           - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-03-26
-          - vastai/pytorch:2.9.1-cu130-cuda-13.2-mini-py312-2026-03-26
 
     steps:
       - name: Checkout

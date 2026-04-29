@@ -70,7 +70,7 @@ supervisorctl tail -f voicebox
 cd base-image/derivatives/pytorch/derivatives/voicebox
 
 docker buildx build \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-03-19 \
+    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-03-26 \
     --build-arg VOICEBOX_REF=v0.3.1 \
     -t yournamespace/voicebox .
 ```
@@ -79,7 +79,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-03-19` | PyTorch mini base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-03-26` | PyTorch mini base image |
 | `VOICEBOX_REF` | (required) | Git commit, tag, or branch to build from |
 
 ## Building with GitHub Actions
@@ -111,11 +111,10 @@ Go to **Actions > Build Voicebox Image > Run workflow** and fill in the inputs:
 | `MULTI_ARCH` | Build for both `amd64` and `arm64` (default: `false`) |
 | `CUSTOM_IMAGE_TAG` | Override the version portion of the tag (e.g. `my-custom-build`) |
 
-The workflow builds two images per run with different CUDA versions:
+Each run builds one image per entry in the workflow's base-image matrix, e.g.:
 
 ```
 yourusername/voicebox:v0.3.1-cuda-12.9-py312
-yourusername/voicebox:v0.3.1-cuda-13.1-py312
 ```
 
 To customize which PyTorch base images are used, modify the `matrix.base_image` array in `.github/workflows/build-voicebox.yml`.
