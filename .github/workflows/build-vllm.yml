@@ -91,17 +91,21 @@ jobs:
           echo "Available variants: $VARIANTS"
           
           # Convert variant tags to build matrix.
-          # Key off explicit -cuNNN suffix only — the unsuffixed base tag's
-          # CUDA version tracks whatever vLLM currently defaults to (was 12.9,
-          # now 13.0), so relying on it produces mistagged images and
-          # duplicates whichever -cuNNN variant matches the current default.
-          MATRIX=$(echo "$VARIANTS" | jq -c '
+          # Prefer explicit -cuNNN suffixes. As of v0.20.1 vLLM stopped
+          # publishing -cu130 entirely, so the unsuffixed base tag now IS
+          # the CUDA 13.0 image. Treat the bare $VERSION tag as CUDA 13.0
+          # only when no explicit -cu130 variant exists, so older releases
+          # that still ship both don't produce duplicate CUDA 13.0 builds.
+          MATRIX=$(echo "$VARIANTS" | jq -c --arg version "$VERSION" '
             map(
               # Skip arch-specific tags (we use multi-arch builds)
               select(test("-(x86_64|aarch64)") | not)
               # Skip ubuntu2404 (and any other non-CUDA) variants
               | select(test("-ubuntu") | not)
             )
+            | . as $variants
+            | ($variants | any(endswith("-cu130"))) as $has_cu130
+            | $variants
             | map(
               if endswith("-cu130") then
                 {tag: ., cuda: "13.0"}
@@ -109,6 +113,8 @@ jobs:
                 {tag: ., cuda: "12.9"}
               elif endswith("-cu128") then
                 {tag: ., cuda: "12.8"}
+              elif . == $version and ($has_cu130 | not) then
+                {tag: ., cuda: "13.0"}
               else
                 empty
               end
