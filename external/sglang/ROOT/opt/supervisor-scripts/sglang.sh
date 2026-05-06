@@ -34,5 +34,23 @@ fi
 
 # Force Caches to be written in workspace (vols)
 export HOME=${WORKSPACE}
+
+# unbuffer (used by `pty`) setsids its leaf into a new session, so killasgroup
+# can't reach the running sglang. The kernel's PTY hangup that normally kills
+# such a leaf when its master dies also doesn't kill sglang, because sglang
+# serve installs a SIGHUP handler that swallows the signal. Override the
+# generic cleanup trap to kill the orphaned sglang directly by command pattern
+# (mirrors the approach used in aio-studio's ai-toolkit.sh for run.py).
+cleanup_sglang() {
+    echo "Stopping sglang..."
+    pkill -TERM -f 'sglang serve' 2>/dev/null
+    for _ in {1..50}; do
+        pgrep -f 'sglang serve' >/dev/null 2>&1 || break
+        sleep 0.1
+    done
+    pkill -KILL -f 'sglang serve' 2>/dev/null
+}
+trap cleanup_sglang EXIT INT TERM
+
 # Read complex args from /etc/sglang-args.conf if env vars were unsuitable
 eval "pty sglang serve --model-path "${SGLANG_MODEL:-}" ${SGLANG_ARGS:-} ${AUTO_PARALLEL_ARGS} $([[ -f /etc/sglang-args.conf ]] && cat /etc/sglang-args.conf)" 2>&1
