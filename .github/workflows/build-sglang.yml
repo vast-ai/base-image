@@ -93,23 +93,34 @@ jobs:
           echo "Available variants: $VARIANTS"
 
           # Convert variant tags to build matrix.
-          # Upstream tag scheme (v0.5.10+): multi-arch manifests, no -amd64 suffix.
-          #   <ver>           -> default CUDA 12.9
-          #   <ver>-cu130     -> CUDA 13.0
-          # Exclude rocm/xeon/cann/runtime variants and unrelated post/rc siblings
-          # by exact-matching ^<VERSION>(-cu[0-9]+)?$.
+          # Upstream tag scheme (v0.5.11+): multi-arch manifests, no -amd64 suffix.
+          # SGLang flipped the default CUDA from 12.9 to 13.0 in v0.5.11, so
+          # the bare <ver> tag now IS the CUDA 13.0 image (and is published
+          # alongside an explicit -cu130 alias). Prefer explicit -cuNNN
+          # suffixes; treat the bare $VERSION tag as CUDA 13.0 only when no
+          # -cu130 variant exists, so releases that ship both don't produce
+          # a duplicate CUDA 13.0 build (and the bare doesn't get mistagged
+          # as 12.9, clobbering the real -cu129 image at push time).
+          # Exclude rocm/xeon/cann/runtime variants by exact-matching
+          # ^<VERSION>(-cu[0-9]+)?$.
           MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
             map(select(test("^" + $ver + "(-cu[0-9]+)?$")))
+            | . as $variants
+            | ($variants | any(endswith("-cu130"))) as $has_cu130
+            | $variants
             | map(
                 . as $tag
-                | (if $tag | test("-cu[0-9]+$")
-                   then ($tag | capture("-cu(?<raw>[0-9]+)$") | .raw)
-                   else "129"
-                   end) as $cu
-                | {
-                    tag: $tag,
-                    cuda: ($cu[0:($cu | length) - 1] + "." + $cu[($cu | length) - 1:])
-                  }
+                | if $tag | endswith("-cu130") then
+                    {tag: $tag, cuda: "13.0"}
+                  elif $tag | endswith("-cu129") then
+                    {tag: $tag, cuda: "12.9"}
+                  elif $tag | endswith("-cu128") then
+                    {tag: $tag, cuda: "12.8"}
+                  elif $tag == $ver and ($has_cu130 | not) then
+                    {tag: $tag, cuda: "13.0"}
+                  else
+                    empty
+                  end
               )
           ')
 
