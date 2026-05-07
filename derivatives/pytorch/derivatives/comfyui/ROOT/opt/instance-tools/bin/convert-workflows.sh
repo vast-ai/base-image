@@ -13,14 +13,21 @@ COMFYUI_URL="http://localhost:${COMFYUI_PORT}"
 
 SOURCE_DIR="${WORKSPACE}/ComfyUI/user/default/workflows"
 OUTPUT_DIR="/opt/comfyui-api-wrapper/payloads"
+# Bare API-format workflow output (no request envelope). Used as the
+# pyworker benchmark input via BENCHMARK_JSON_PATH; the pyworker wraps
+# it in the request envelope itself.
+WORKFLOW_DIR="/opt/comfyui-api-wrapper/workflows"
 
 converted=0
 skipped=0
 failed=0
+# Filename of the first workflow successfully converted in this run, used
+# below as the symlink target for ${WORKFLOW_DIR}/pyworker_benchmark.json.
+first_converted=""
 
 log() { echo "[convert-workflows] $*"; }
 
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${WORKFLOW_DIR}"
 
 # Check for workflows to convert
 shopt -s nullglob
@@ -105,9 +112,23 @@ for filepath in "${json_files[@]}"; do
     jq -n --argjson workflow "$api_json" '{input: {workflow_json: $workflow}}' \
         > "${OUTPUT_DIR}/${filename}"
 
-    log "  Converted ${filename} -> ${OUTPUT_DIR}/${filename}"
+    # Also write the bare workflow alongside, for consumers that need the
+    # un-enveloped form (e.g. the pyworker's BENCHMARK_JSON_PATH).
+    printf '%s\n' "$api_json" > "${WORKFLOW_DIR}/${filename}"
+
+    log "  Converted ${filename} -> ${OUTPUT_DIR}/${filename}, ${WORKFLOW_DIR}/${filename}"
     converted=$((converted + 1))
+    [[ -z "$first_converted" ]] && first_converted="${filename}"
 done
+
+# Maintain a stable symlink so the pyworker can use a hard-coded
+# BENCHMARK_JSON_PATH (or its built-in well-known fallback) without
+# needing to know the workflow's actual filename. Use a relative target so
+# the link survives if the directory is bind-mounted elsewhere.
+if [[ -n "$first_converted" ]]; then
+    ln -sfn "$first_converted" "${WORKFLOW_DIR}/pyworker_benchmark.json"
+    log "Linked ${WORKFLOW_DIR}/pyworker_benchmark.json -> ${first_converted}"
+fi
 
 log "Done: ${converted} converted, ${skipped} skipped, ${failed} failed"
 exit 0
