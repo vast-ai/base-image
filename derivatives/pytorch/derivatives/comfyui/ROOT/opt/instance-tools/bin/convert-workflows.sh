@@ -13,6 +13,10 @@ COMFYUI_URL="http://localhost:${COMFYUI_PORT}"
 
 SOURCE_DIR="${WORKSPACE}/ComfyUI/user/default/workflows"
 OUTPUT_DIR="/opt/comfyui-api-wrapper/payloads"
+# Bare API-format workflow output (no request envelope). Used as the
+# pyworker benchmark input via BENCHMARK_JSON_PATH; the pyworker wraps
+# it in the request envelope itself.
+WORKFLOW_DIR="/opt/comfyui-api-wrapper/workflows"
 
 converted=0
 skipped=0
@@ -20,7 +24,7 @@ failed=0
 
 log() { echo "[convert-workflows] $*"; }
 
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${WORKFLOW_DIR}"
 
 # Check for workflows to convert
 shopt -s nullglob
@@ -105,7 +109,11 @@ for filepath in "${json_files[@]}"; do
     jq -n --argjson workflow "$api_json" '{input: {workflow_json: $workflow}}' \
         > "${OUTPUT_DIR}/${filename}"
 
-    log "  Converted ${filename} -> ${OUTPUT_DIR}/${filename}"
+    # Also write the bare workflow alongside, for consumers that need the
+    # un-enveloped form (e.g. the pyworker's BENCHMARK_JSON_PATH).
+    printf '%s\n' "$api_json" > "${WORKFLOW_DIR}/${filename}"
+
+    log "  Converted ${filename} -> ${OUTPUT_DIR}/${filename}, ${WORKFLOW_DIR}/${filename}"
     converted=$((converted + 1))
 done
 
