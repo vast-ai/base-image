@@ -10,6 +10,17 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
+# Start the instance test runner before provisioning, not after.
+# The base image still ships the boot script as 85-instance-test.sh (it runs
+# after 75-provisioning-manifest.sh); rename it to 70- so the test runner's
+# HTTP results server is up before provisioning begins and a client can watch
+# it live. This is a stopgap until the base image is rebuilt with the rename
+# already in place — at which point 85-instance-test.sh is absent and this
+# is a no-op.
+RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ]; then \
+        mv /etc/vast_boot.d/85-instance-test.sh /etc/vast_boot.d/70-instance-test.sh; \
+    fi
+
 # Required or we will not build
 ARG COMFYUI_REF
 
