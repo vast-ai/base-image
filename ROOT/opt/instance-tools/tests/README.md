@@ -23,7 +23,7 @@ tests/
 Discovers and executes test scripts in sort order. Writes JSON results to `/var/log/test-results.json` after each test, enabling real-time monitoring.
 
 **Modes:**
-- **Automated** — launched by boot script (`/etc/vast_boot.d/85-instance-test.sh`) when `INSTANCE_TEST=true`. Starts an HTTP/SSE results server on port 10199, waits for a client to connect, posts results to optional webhook on completion. The test *client* (`run_test.py`) handles instance stop/destroy.
+- **Automated** — launched by boot script (`/etc/vast_boot.d/70-instance-test.sh`) when `INSTANCE_TEST=true`. Runs *before* provisioning, so the runner's HTTP/SSE results server (port 10199) is up within seconds of boot and a client can connect and watch provisioning live. Waits for a client to connect, posts results to an optional webhook on completion. The test *client* (`run_test.py`) handles instance stop/destroy.
 - **Manual** — auto-detected when run from a TTY (interactive shell). No HTTP server, no webhook, no instance stop. Can also be forced with `--manual` / `--auto` flags.
 
 **Per-test timeout:** Each test gets 3600s (1 hour) by default, configurable via `INSTANCE_TEST_DEFAULT_TIMEOUT`. Override per-test with a `# TEST_TIMEOUT=N` comment in the script header (see `12-provisioning.sh`).

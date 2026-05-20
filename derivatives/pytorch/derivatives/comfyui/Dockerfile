@@ -10,6 +10,23 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
+# Start the instance test runner before provisioning, not after.
+# The base image still ships the boot script as 85-instance-test.sh (it runs
+# after 75-provisioning-manifest.sh); rename it to 70- so the test runner's
+# HTTP results server is up before provisioning begins and a client can watch
+# it live. This is a stopgap until the base image is rebuilt with the rename
+# already in place — at which point 85-instance-test.sh is absent and this
+# is a no-op.
+#
+# Two-step (mv -n then unconditional rm) so a future base image that already
+# ships 70- (e.g. partially-applied rename, or a derivative layer added one)
+# is never clobbered: mv -n preserves any existing 70-, and the rm cleans up
+# any leftover 85- so boot_default.sh does not source two runner launchers.
+RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ]; then \
+        mv -n /etc/vast_boot.d/85-instance-test.sh /etc/vast_boot.d/70-instance-test.sh; \
+        rm -f /etc/vast_boot.d/85-instance-test.sh; \
+    fi
+
 # Required or we will not build
 ARG COMFYUI_REF
 
@@ -26,8 +43,22 @@ RUN \
     git clone https://github.com/Comfy-Org/ComfyUI && \
     cd /opt/workspace-internal/ComfyUI && \
     git checkout "${COMFYUI_REF}" && \
-    uv pip install --no-cache-dir \
-        -r requirements.txt && \
+    # ComfyUI ships two managers now: the legacy ComfyUI-Manager custom node
+    # (cloned below) and a built-in manager activated by passing --enable-manager
+    # (optionally with --enable-manager-legacy-ui) to main.py. The legacy
+    # manager stays the default so existing templates keep working without
+    # changing COMFYUI_ARGS. When the COMFYUI_REF supports it, we also pull
+    # in the new manager's deps (manager_requirements) and comfy-cli, so a
+    # user who DOES add --enable-manager to COMFYUI_ARGS doesn't need an
+    # image rebuild — the new path just works. manager_requirements is only
+    # present on recent ComfyUI refs, so guard the install: older tags
+    # (which we still want to rebuild with the test runner reorder) keep
+    # building cleanly, just without the new-manager opt-in available.
+    if [ -f manager_requirements ]; then \
+        uv pip install --no-cache-dir -r requirements.txt -r manager_requirements comfy-cli; \
+    else \
+        uv pip install --no-cache-dir -r requirements.txt; \
+    fi && \
     # Avoid Jupyter directory display bug
     cd /opt/workspace-internal/ComfyUI/models/ && \
     ln -s checkpoints ckpt && \
