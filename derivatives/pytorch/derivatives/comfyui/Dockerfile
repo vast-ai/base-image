@@ -43,8 +43,16 @@ RUN \
     git clone https://github.com/Comfy-Org/ComfyUI && \
     cd /opt/workspace-internal/ComfyUI && \
     git checkout "${COMFYUI_REF}" && \
+    # ComfyUI ships two managers now: the legacy ComfyUI-Manager custom node
+    # (cloned below) and a built-in manager activated by passing --enable-manager
+    # (optionally with --enable-manager-legacy-ui) to main.py. The legacy
+    # manager stays the default so existing templates keep working without
+    # changing COMFYUI_ARGS. We also install the new manager's deps
+    # (manager_requirements) and comfy-cli here so a user who DOES add
+    # --enable-manager to COMFYUI_ARGS doesn't need an image rebuild — the
+    # new path just works.
     uv pip install --no-cache-dir \
-        -r requirements.txt && \
+        -r requirements.txt -r manager_requirements comfy-cli && \
     # Avoid Jupyter directory display bug
     cd /opt/workspace-internal/ComfyUI/models/ && \
     ln -s checkpoints ckpt && \
