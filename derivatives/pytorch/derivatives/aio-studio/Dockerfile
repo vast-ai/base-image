@@ -254,9 +254,15 @@ RUN \
     ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable
 
 # ---------- Blender ----------
+# Blender ships separate archives per arch: amd64 -> linux-x64, arm64 -> linux-arm64.
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) BLENDER_ARCH="x64" ;; \
+        arm64) BLENDER_ARCH="arm64" ;; \
+        *) echo "Unsupported TARGETARCH for Blender: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
     if [ -z "$BLENDER_VERSION" ]; then \
         MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
             grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
@@ -264,11 +270,11 @@ RUN \
             grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
     fi && \
     cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    tar xf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
+    tar xf "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
+    ln -s "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender" /usr/bin/blender && \
+    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.desktop" /usr/share/applications && \
+    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.svg" /usr/share/icons/hicolor/scalable/apps/
 
 # ==========================================================================
 # Final assembly

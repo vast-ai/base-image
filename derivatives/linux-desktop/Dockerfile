@@ -222,16 +222,24 @@ RUN \
     echo "/usr/local/nvidia/lib" >> /etc/ld.so.conf.d/nvidia.conf && \
     echo "/usr/local/nvidia/lib64" >> /etc/ld.so.conf.d/nvidia.conf
 
-# Install Selkies
-# AMD64 only until fix
+# Install Selkies (amd64 only — upstream only publishes amd64 release artifacts).
+# On other arches (e.g. aarch64/sbsa for Grace Blackwell) skip the install AND
+# drop the supervisor program so the image boots without trying to launch a
+# missing service; the Tomcat + Guacamole stack below remains the remote-access
+# path on ARM64.
 RUN \
     set -euo pipefail && \
-    cd /opt && \
-    SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
-    cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
-    cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && /usr/bin/pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && rm -f "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
-    cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
-    cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && rm -f selkies-js-interposer.deb
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        cd /opt && \
+        SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
+        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
+        cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && /usr/bin/pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && rm -f "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
+        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
+        cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && rm -f selkies-js-interposer.deb; \
+    else \
+        echo "Skipping Selkies install on ${TARGETARCH}; dropping supervisor program."; \
+        rm -f /etc/supervisor/conf.d/selkies.conf; \
+    fi
 
 # Clean up build-only packages installed for NVIDIA VAAPI
 RUN apt-get purge -y --auto-remove \
@@ -420,24 +428,30 @@ RUN \
     update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
     update-alternatives --set x-www-browser /usr/bin/google-chrome-stable
 
-# Blender - version passed via build arg, or auto-detected if empty
+# Blender - version passed via build arg, or auto-detected if empty.
+# Blender ships separate archives per arch: amd64 -> linux-x64, arm64 -> linux-arm64.
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) BLENDER_ARCH="x64" ;; \
+        arm64) BLENDER_ARCH="arm64" ;; \
+        *) echo "Unsupported TARGETARCH for Blender: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
     if [ -z "$BLENDER_VERSION" ]; then \
         MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
             grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
         BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
             grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
     fi && \
-    echo "Installing Blender version: ${BLENDER_VERSION}" && \
+    echo "Installing Blender version: ${BLENDER_VERSION} (${BLENDER_ARCH})" && \
     cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    tar xvf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
+    tar xvf "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
+    rm "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
+    ln -s "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender" /usr/bin/blender && \
+    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.desktop" /usr/share/applications && \
+    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.svg" /usr/share/icons/hicolor/scalable/apps/
 
 
 # GPU benchmarks
