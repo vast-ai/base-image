@@ -185,7 +185,7 @@ jobs:
         id: expand
         if: steps.decision.outputs.should-run == 'true'
         run: |
-          MERGE_MATRIX='${{ steps.nightly-check.outputs.is-nightly == ''true'' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}'
+          MERGE_MATRIX='${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}'
 
           # Cross-product the variants matrix with native-runner arch entries.
           # Each build job pulls matrix.arch.{platform,suffix,runs_on}.
