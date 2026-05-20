@@ -2,8 +2,11 @@
 name: Merge Arch Manifests
 description: >-
   Stitch per-arch tags (pushed earlier by build-arch-image) into a single
-  multi-arch manifest at the final tag. Optionally also creates alias tags
-  pointing at the same manifest (for default-python aliases etc.).
+  multi-arch manifest at the final tag, using crane. Optionally also creates
+  alias tags pointing at the same manifest (for default-python aliases etc.).
+  Uses `crane index append` for the merge and `crane copy` for aliases —
+  cross-mounts blobs registry-side instead of streaming them through this
+  runner (see retag.sh for the same rationale applied to plain retags).
 
 inputs:
   final-tag:
@@ -19,7 +22,8 @@ inputs:
   extra-tags:
     description: >-
       Optional multiline list of additional tags to point at the same manifest
-      (e.g. an alias without -pyXXX). One tag per line.
+      (e.g. an alias without -pyXXX). One tag per line. Created via
+      `crane copy` so cross-repo aliases stay registry-side too.
     required: false
     default: ""
   dockerhub-username:
@@ -37,8 +41,8 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+    - name: Set up crane
+      uses: imjasonh/setup-crane@v0.4
 
     - name: Docker Hub login
       uses: docker/login-action@v3
@@ -55,26 +59,27 @@ runs:
       run: |
         set -euo pipefail
 
-        # Build the list of per-arch source tags from the comma-separated arches input.
-        source_tags=()
+        # Build the list of per-arch source manifests from the comma-separated arches input.
+        manifest_flags=()
         IFS=',' read -ra ARCH_LIST <<< "${ARCHES}"
         for arch in "${ARCH_LIST[@]}"; do
           arch="${arch// }"
           [[ -z "$arch" ]] && continue
-          source_tags+=("${FINAL_TAG}-${arch}")
+          manifest_flags+=(--manifest "${FINAL_TAG}-${arch}")
         done
 
-        # Collect target tags: the final-tag plus any extras (one per line).
-        target_flags=(-t "${FINAL_TAG}")
+        echo "=== Building index ${FINAL_TAG} from arches: ${ARCHES} ==="
+        crane index append \
+          --tag "${FINAL_TAG}" \
+          "${manifest_flags[@]}"
+
+        # Aliases: crane copy keeps blob mounts registry-side, so even
+        # cross-repository aliases don't pull image bytes through the runner.
         while IFS= read -r extra; do
           extra="${extra// }"
           [[ -z "$extra" ]] && continue
-          target_flags+=(-t "$extra")
+          echo "=== Aliasing ${FINAL_TAG} -> ${extra} ==="
+          crane copy "${FINAL_TAG}" "${extra}"
         done <<< "${EXTRA_TAGS_RAW}"
-
-        echo "=== Merging into ${FINAL_TAG} from: ${source_tags[*]} ==="
-        docker buildx imagetools create \
-          "${target_flags[@]}" \
-          "${source_tags[@]}"
 
         echo "Created manifest: ${FINAL_TAG}"
