@@ -15,7 +15,14 @@
 # For each generated file the test prints a one-line metadata summary
 # (filename, type, mimetype, size, and any S3 url) — the file bytes stay on
 # the instance.
-# TEST_TIMEOUT=7200
+#
+# TEST_TIMEOUT sizing: HEALTH_TIMEOUT (1800s) + N × GENERATE_TIMEOUT (1800s).
+# 14400s covers boot-time health plus up to ~7 worst-case payloads at the
+# full per-payload cap, comfortably above any realistic
+# PROVISIONING_COMFYUI_WORKFLOWS count. Templates with very long video
+# workflows can override COMFYUI_GENERATE_TIMEOUT; templates with many
+# workflows should also override to keep N × GENERATE_TIMEOUT in budget.
+# TEST_TIMEOUT=14400
 source "$(dirname "$0")/../lib.sh"
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -106,7 +113,12 @@ wait_for_service_health() {
                 test_fail "${svc} crash loop: ${restart_count} restarts detected (bad config or OOM?)"
             fi
         fi
-        last_pid="$cur_pid"
+        # Only overwrite last_pid when we actually saw a pid. Transient
+        # supervisor states (BACKOFF, STARTING between restarts) drop
+        # the pid back to empty, and clobbering last_pid then would lose
+        # the previous live pid — the next RUNNING(new-pid) would slip
+        # past the restart comparison.
+        [[ -n "$cur_pid" ]] && last_pid="$cur_pid"
 
         if (( elapsed - last_report >= 30 )); then
             last_report=$elapsed

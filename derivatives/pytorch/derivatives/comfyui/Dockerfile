@@ -47,12 +47,18 @@ RUN \
     # (cloned below) and a built-in manager activated by passing --enable-manager
     # (optionally with --enable-manager-legacy-ui) to main.py. The legacy
     # manager stays the default so existing templates keep working without
-    # changing COMFYUI_ARGS. We also install the new manager's deps
-    # (manager_requirements) and comfy-cli here so a user who DOES add
-    # --enable-manager to COMFYUI_ARGS doesn't need an image rebuild — the
-    # new path just works.
-    uv pip install --no-cache-dir \
-        -r requirements.txt -r manager_requirements comfy-cli && \
+    # changing COMFYUI_ARGS. When the COMFYUI_REF supports it, we also pull
+    # in the new manager's deps (manager_requirements) and comfy-cli, so a
+    # user who DOES add --enable-manager to COMFYUI_ARGS doesn't need an
+    # image rebuild — the new path just works. manager_requirements is only
+    # present on recent ComfyUI refs, so guard the install: older tags
+    # (which we still want to rebuild with the test runner reorder) keep
+    # building cleanly, just without the new-manager opt-in available.
+    if [ -f manager_requirements ]; then \
+        uv pip install --no-cache-dir -r requirements.txt -r manager_requirements comfy-cli; \
+    else \
+        uv pip install --no-cache-dir -r requirements.txt; \
+    fi && \
     # Avoid Jupyter directory display bug
     cd /opt/workspace-internal/ComfyUI/models/ && \
     ln -s checkpoints ckpt && \
