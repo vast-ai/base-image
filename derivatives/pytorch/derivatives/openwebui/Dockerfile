@@ -13,6 +13,7 @@ COPY ./ROOT /
 # Required or we will not build
 ARG OPENWEBUI_REF
 ARG OLLAMA_REF
+ARG TARGETARCH
 
 # Do not expose this port.  Exposed and proxied port is 11434
 ENV OLLAMA_HOST="0.0.0.0:21434"
