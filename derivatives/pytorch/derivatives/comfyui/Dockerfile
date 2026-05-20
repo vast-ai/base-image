@@ -17,8 +17,14 @@ COPY ./ROOT /
 # it live. This is a stopgap until the base image is rebuilt with the rename
 # already in place — at which point 85-instance-test.sh is absent and this
 # is a no-op.
-RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ] && [ ! -f /etc/vast_boot.d/70-instance-test.sh ]; then \
-        mv /etc/vast_boot.d/85-instance-test.sh /etc/vast_boot.d/70-instance-test.sh; \
+#
+# Two-step (mv -n then unconditional rm) so a future base image that already
+# ships 70- (e.g. partially-applied rename, or a derivative layer added one)
+# is never clobbered: mv -n preserves any existing 70-, and the rm cleans up
+# any leftover 85- so boot_default.sh does not source two runner launchers.
+RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ]; then \
+        mv -n /etc/vast_boot.d/85-instance-test.sh /etc/vast_boot.d/70-instance-test.sh; \
+        rm -f /etc/vast_boot.d/85-instance-test.sh; \
     fi
 
 # Required or we will not build

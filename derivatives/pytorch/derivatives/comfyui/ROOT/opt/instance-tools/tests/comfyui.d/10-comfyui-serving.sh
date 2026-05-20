@@ -38,8 +38,18 @@ has_gpu || test_skip "no GPU detected — ComfyUI workflow execution requires a 
 
 _dump_log() {
     local svc="$1"
-    echo "  last log lines for ${svc}:"
-    supervisorctl tail -3000 "$svc" 2>/dev/null | tail -20 | sed 's/^/    /' || true
+    # logging.sh in /opt/supervisor-scripts/utils tees every supervised
+    # service's stdout to /var/log/<PROC_NAME>.log (the clean, ANSI-stripped
+    # log; matches the convention used by the vllm and llama serving tests).
+    # supervisorctl tail is unreliable here because the supervisor confs set
+    # stdout_logfile=/dev/stdout, which is not a regular log file.
+    local log="/var/log/${svc}.log"
+    if [[ -f "$log" ]]; then
+        echo "  last 20 lines of ${log}:"
+        tail -20 "$log" | sed 's/^/    /'
+    else
+        echo "  (no log file at ${log})"
+    fi
 }
 
 # ── Wait for a supervisor service to become HTTP-healthy ─────────────
@@ -63,17 +73,30 @@ wait_for_service_health() {
         state=$(echo "$sup_line" | awk '{print $2}')
         cur_pid=$(echo "$sup_line" | grep -oP 'pid \K[0-9]+' || true)
 
-        if [[ "$state" == "FATAL" ]]; then
-            echo "  ${svc} entered FATAL state — supervisor gave up restarting"
-            _dump_log "$svc"
-            test_fail "${svc} service FATAL (supervisor stopped restarting)"
-        fi
-
-        if [[ "$state" != "RUNNING" && "$state" != "STARTING" ]]; then
-            echo "  ${svc} service in state: ${state:-unknown}"
-            _dump_log "$svc"
-            test_fail "${svc} service not running (state: ${state:-unknown})"
-        fi
+        # Supervisor state lifecycle: STOPPED → STARTING → RUNNING; on crash
+        # → BACKOFF (transient, waiting to retry) → STARTING. RUNNING /
+        # STARTING / BACKOFF / STOPPING are normal in-flight states — the
+        # restart counter below catches crash loops via PID changes, and
+        # HEALTH_TIMEOUT bounds the overall wait. Only FATAL (supervisor
+        # gave up) and EXITED / STOPPED (autorestart not retrying) warrant
+        # an immediate fail.
+        case "$state" in
+            RUNNING|STARTING|BACKOFF|STOPPING)
+                ;;
+            FATAL)
+                echo "  ${svc} entered FATAL state — supervisor gave up restarting"
+                _dump_log "$svc"
+                test_fail "${svc} service FATAL (supervisor stopped restarting)"
+                ;;
+            EXITED|STOPPED)
+                echo "  ${svc} unexpectedly ${state} (no longer serving)"
+                _dump_log "$svc"
+                test_fail "${svc} service ${state} (no autorestart pending)"
+                ;;
+            *)
+                echo "  ${svc} in state: ${state:-unknown}"
+                ;;
+        esac
 
         if [[ -n "$last_pid" && -n "$cur_pid" && "$cur_pid" != "$last_pid" ]]; then
             restart_count=$((restart_count + 1))
