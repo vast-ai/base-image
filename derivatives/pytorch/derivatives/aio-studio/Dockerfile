@@ -7,6 +7,12 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="AIO Studio image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
+# xformers and sageattention publish CUDA-only amd64 wheels; the helper below
+# selects them only on amd64 so ARM64 (aarch64/sbsa, e.g. Grace Blackwell)
+# builds do not fail on dependency resolution. Mirrors the amd64_only pattern
+# used by the pytorch base's torch-companions.json.
+ARG TARGETARCH
+
 # ---------- ComfyUI ----------
 ARG COMFYUI_REPO=https://github.com/Comfy-Org/ComfyUI
 ARG COMFYUI_REF=v0.18.2
@@ -14,7 +20,9 @@ RUN \
     set -euo pipefail && \
     create_app_venv comfyui main && \
     . /venv/comfyui/bin/activate && \
-    uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
+    fi && \
     uv pip install --no-cache-dir onnxruntime-gpu insightface && \
     cd /opt/workspace-internal/ && \
     git clone "${COMFYUI_REPO}" ComfyUI && \
@@ -48,7 +56,9 @@ RUN \
     set -euo pipefail && \
     create_app_venv forge main && \
     . /venv/forge/bin/activate && \
-    uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
+    fi && \
     cd /opt/workspace-internal/ && \
     git clone "${FORGE_REPO}" stable-diffusion-webui-forge && \
     cd stable-diffusion-webui-forge && \

@@ -12,6 +12,7 @@ COPY ./ROOT /
 
 # Required or we will not build
 ARG KOHYA_REF
+ARG TARGETARCH
 
 # Kohya's GUI provides some great install scripts for local use, but we will manually configure everything we need
 RUN \
@@ -19,8 +20,16 @@ RUN \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
-    # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir xformers torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
+    # xformers publishes amd64-only CUDA wheels; skip on other arches
+    # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
+    # not fail the build. The strip on requirements_linux.txt below already
+    # makes xformers optional at runtime.
+    EXTRA_ACCEL_PKGS="" && \
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        EXTRA_ACCEL_PKGS="xformers"; \
+    fi && \
+    # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
+    uv pip install --no-cache-dir ${EXTRA_ACCEL_PKGS} torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
     # Get Kohya and install dependencies (We will unpin torch & xformers)
     cd /opt/workspace-internal/ && \
     git clone --recursive https://github.com/bmaltais/kohya_ss.git && \

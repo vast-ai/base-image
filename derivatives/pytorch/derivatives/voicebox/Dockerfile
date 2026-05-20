@@ -12,6 +12,7 @@ COPY ./ROOT /
 
 # Required or we will not build
 ARG VOICEBOX_REF
+ARG TARGETARCH
 
 RUN \
     set -euo pipefail && \
@@ -30,7 +31,13 @@ RUN \
     # Install Python dependencies (strip torch pin — already installed)
     cd backend && \
     sed -i '/^torch>=/d' requirements.txt && \
-    uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl && \
+    # The flash-attn release wheel is amd64-only (linux_x86_64). On other
+    # arches (e.g. aarch64/sbsa for Grace Blackwell) skip the explicit URL
+    # install and let requirements.txt resolve flash-attn from sdist if it
+    # is actually required at runtime.
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; \
+    fi && \
     uv pip install --no-cache-dir -r requirements.txt && \
     uv pip install --no-cache-dir --no-deps chatterbox-tts && \
     uv pip install --no-cache-dir --no-deps hume-tada && \

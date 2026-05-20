@@ -29,6 +29,7 @@ RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ]; then \
 
 # Required or we will not build
 ARG COMFYUI_REF
+ARG TARGETARCH
 
 RUN \
     set -euo pipefail && \
@@ -36,8 +37,16 @@ RUN \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # xformers and sageattention publish CUDA-only amd64 wheels; skip on other
+    # arches (e.g. aarch64/sbsa for Grace Blackwell) so the build does not fail
+    # on dependency resolution. Mirrors the amd64_only pattern used by the
+    # pytorch base's torch-companions.json.
+    EXTRA_ACCEL_PKGS="" && \
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        EXTRA_ACCEL_PKGS="xformers sageattention==1.0.6"; \
+    fi && \
     # Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir torch=="${PYTORCH_VERSION}" xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
+    uv pip install --no-cache-dir torch=="${PYTORCH_VERSION}" ${EXTRA_ACCEL_PKGS} --torch-backend "${PYTORCH_BACKEND}" && \
     # Get ComfyUI and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
     git clone https://github.com/Comfy-Org/ComfyUI && \

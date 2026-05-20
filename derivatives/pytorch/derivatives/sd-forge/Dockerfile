@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
 # Required or we will not build
 ARG FORGE_REPO
 ARG FORGE_REF
+ARG TARGETARCH
 
 RUN \
     set -euo pipefail && \
@@ -27,8 +28,15 @@ RUN \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
-    # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir xformers torch==$PYTORCH_VERSION --torch-backend "${PYTORCH_BACKEND}" && \
+    # xformers publishes amd64-only CUDA wheels; skip on other arches
+    # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
+    # not fail the build.
+    EXTRA_ACCEL_PKGS="" && \
+    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+        EXTRA_ACCEL_PKGS="xformers"; \
+    fi && \
+    # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
+    uv pip install --no-cache-dir ${EXTRA_ACCEL_PKGS} torch==$PYTORCH_VERSION --torch-backend "${PYTORCH_BACKEND}" && \
     uv pip install --no-cache-dir onnxruntime-gpu insightface && \
     # Get Forge and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
