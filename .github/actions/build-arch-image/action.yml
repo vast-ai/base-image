@@ -1,11 +1,11 @@
 # .github/actions/build-arch-image/action.yml
 name: Build Arch Image
 description: >-
-  Build and push a single-arch Docker image, suffixed -amd64 or -arm64.
+  Build and push a single-arch Docker image to ${tag-base}-${arch_suffix}.
   Designed to be called once per arch in a matrix; pair with merge-arch-manifests
-  to stitch the per-arch tags into a multi-arch manifest. No QEMU — caller is
-  expected to run on a native-arch runner (ubuntu-latest for amd64,
-  ubuntu-24.04-arm for arm64).
+  to stitch the per-arch tags into a multi-arch index at the production tag.
+  No QEMU — caller is expected to run on a native-arch runner (ubuntu-latest
+  for amd64, ubuntu-24.04-arm for arm64).
 
 inputs:
   context:
@@ -19,11 +19,13 @@ inputs:
   arch:
     description: "Target platform — linux/amd64 or linux/arm64"
     required: true
-  final-tag:
+  tag-base:
     description: >-
-      The multi-arch tag this image will eventually be merged into
-      (e.g. vastai/comfy:master-cuda-12.9-py312). The action pushes
-      ${final-tag}-${arch_suffix}.
+      The repo:tag prefix this build pushes to; the action appends
+      -${arch_suffix} (e.g. tag-base=vastai-staging/comfy:master-cuda-12.9-py312
+      pushes vastai-staging/comfy:master-cuda-12.9-py312-amd64). Typically a
+      staging namespace; merge-arch-manifests reads from here and assembles
+      the multi-arch index at a different (production) tag.
     required: true
   build-args:
     description: "Multiline KEY=VALUE pairs passed as --build-arg"
@@ -67,7 +69,7 @@ runs:
         ARCH: ${{ inputs.arch }}
         CONTEXT: ${{ inputs.context }}
         DOCKERFILE: ${{ inputs.dockerfile }}
-        FINAL_TAG: ${{ inputs.final-tag }}
+        TAG_BASE: ${{ inputs.tag-base }}
         BUILD_ARGS_RAW: ${{ inputs.build-args }}
         BUILD_CONTEXTS_RAW: ${{ inputs.build-contexts }}
       run: |
@@ -75,7 +77,7 @@ runs:
 
         # Derive arch suffix from platform (linux/amd64 -> amd64)
         ARCH_SUFFIX="${ARCH#linux/}"
-        ARCH_TAG="${FINAL_TAG}-${ARCH_SUFFIX}"
+        ARCH_TAG="${TAG_BASE}-${ARCH_SUFFIX}"
 
         echo "arch-suffix=${ARCH_SUFFIX}" >> "$GITHUB_OUTPUT"
         echo "arch-tag=${ARCH_TAG}" >> "$GITHUB_OUTPUT"

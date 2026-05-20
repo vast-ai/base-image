@@ -1,27 +1,35 @@
 # .github/actions/merge-arch-manifests/action.yml
 name: Merge Arch Manifests
 description: >-
-  Stitch per-arch tags (pushed earlier by build-arch-image) into a single
-  multi-arch manifest at the final tag, using crane. Optionally also creates
-  alias tags pointing at the same manifest (for default-python aliases etc.).
+  Stitch per-arch tags (pushed earlier by build-arch-image) into a multi-arch
+  index at the production tag, using crane. The source per-arch tags typically
+  live in a staging namespace so the production namespace's tag listing stays
+  clean. Optionally creates alias tags pointing at the same index.
   Uses `crane index append` for the merge and `crane copy` for aliases —
-  cross-mounts blobs registry-side instead of streaming them through this
+  cross-mounts blobs registry-side instead of streaming them through the
   runner (see retag.sh for the same rationale applied to plain retags).
 
 inputs:
-  final-tag:
+  target-tag:
     description: >-
-      The multi-arch tag to create (e.g. vastai/comfy:master-cuda-12.9-py312).
-      Expects ${final-tag}-amd64 and ${final-tag}-arm64 to already exist on
-      the registry.
+      The multi-arch (production) tag to create — e.g.
+      vastai/comfy:master-cuda-12.9-py312.
     required: true
+  source-tag-base:
+    description: >-
+      The repo:tag prefix that build-arch-image pushed per-arch artifacts to.
+      crane reads ${source-tag-base}-amd64 / -arm64 (per the arches input) and
+      assembles the index at target-tag. Defaults to target-tag if omitted
+      (same-namespace pattern).
+    required: false
+    default: ""
   arches:
     description: "Comma-separated arch suffixes to merge (default: amd64,arm64)"
     required: false
     default: "amd64,arm64"
   extra-tags:
     description: >-
-      Optional multiline list of additional tags to point at the same manifest
+      Optional multiline list of additional tags to point at the same index
       (e.g. an alias without -pyXXX). One tag per line. Created via
       `crane copy` so cross-repo aliases stay registry-side too.
     required: false
@@ -35,8 +43,8 @@ inputs:
 
 outputs:
   manifest-tag:
-    description: "The multi-arch manifest tag that was created"
-    value: ${{ inputs.final-tag }}
+    description: "The multi-arch index tag that was created"
+    value: ${{ inputs.target-tag }}
 
 runs:
   using: composite
@@ -53,11 +61,15 @@ runs:
     - name: Merge arch manifests
       shell: bash
       env:
-        FINAL_TAG: ${{ inputs.final-tag }}
+        TARGET_TAG: ${{ inputs.target-tag }}
+        SOURCE_TAG_BASE: ${{ inputs.source-tag-base }}
         ARCHES: ${{ inputs.arches }}
         EXTRA_TAGS_RAW: ${{ inputs.extra-tags }}
       run: |
         set -euo pipefail
+
+        # Fall back to target-tag if no separate source base was given.
+        : "${SOURCE_TAG_BASE:=${TARGET_TAG}}"
 
         # Build the list of per-arch source manifests from the comma-separated arches input.
         manifest_flags=()
@@ -65,12 +77,13 @@ runs:
         for arch in "${ARCH_LIST[@]}"; do
           arch="${arch// }"
           [[ -z "$arch" ]] && continue
-          manifest_flags+=(--manifest "${FINAL_TAG}-${arch}")
+          manifest_flags+=(--manifest "${SOURCE_TAG_BASE}-${arch}")
         done
 
-        echo "=== Building index ${FINAL_TAG} from arches: ${ARCHES} ==="
+        echo "=== Building index ${TARGET_TAG} from arches: ${ARCHES} ==="
+        echo "    source base: ${SOURCE_TAG_BASE}"
         crane index append \
-          --tag "${FINAL_TAG}" \
+          --tag "${TARGET_TAG}" \
           "${manifest_flags[@]}"
 
         # Aliases: crane copy keeps blob mounts registry-side, so even
@@ -78,8 +91,8 @@ runs:
         while IFS= read -r extra; do
           extra="${extra// }"
           [[ -z "$extra" ]] && continue
-          echo "=== Aliasing ${FINAL_TAG} -> ${extra} ==="
-          crane copy "${FINAL_TAG}" "${extra}"
+          echo "=== Aliasing ${TARGET_TAG} -> ${extra} ==="
+          crane copy "${TARGET_TAG}" "${extra}"
         done <<< "${EXTRA_TAGS_RAW}"
 
-        echo "Created manifest: ${FINAL_TAG}"
+        echo "Created manifest: ${TARGET_TAG}"
