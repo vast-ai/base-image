@@ -67,7 +67,22 @@ wait_for_service_health() {
     local svc="$1" url="$2" label="$3"
     local elapsed=0 last_report=0 restart_count=0 last_pid cur_pid sup_line state status
 
-    last_pid=$(supervisorctl status "$svc" 2>/dev/null | grep -oP 'pid \K[0-9]+' || true)
+    # Sanity check before entering the long-running loop. If the program
+    # is not registered with supervisor (typo, missing conf, renamed
+    # service) the loop below would happily burn the full HEALTH_TIMEOUT
+    # polling a URL with no listener while supervisorctl permanently
+    # reports "<svc>: ERROR (no such process)". Same idea if supervisord
+    # itself is not reachable.
+    sup_line=$(supervisorctl status "$svc" 2>&1)
+    if [[ -z "$sup_line" ]]; then
+        test_fail "${svc}: supervisorctl returned no output (is supervisord running?)"
+    fi
+    if [[ "$sup_line" == *"no such process"* ]]; then
+        echo "  ${svc}: ${sup_line}"
+        test_fail "${svc} is not registered with supervisor — check service name / conf"
+    fi
+
+    last_pid=$(echo "$sup_line" | grep -oP 'pid \K[0-9]+' || true)
 
     while (( elapsed < HEALTH_TIMEOUT )); do
         status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)
