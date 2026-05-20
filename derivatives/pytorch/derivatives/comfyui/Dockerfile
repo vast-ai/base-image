@@ -17,7 +17,7 @@ COPY ./ROOT /
 # it live. This is a stopgap until the base image is rebuilt with the rename
 # already in place — at which point 85-instance-test.sh is absent and this
 # is a no-op.
-RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ]; then \
+RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ] && [ ! -f /etc/vast_boot.d/70-instance-test.sh ]; then \
         mv /etc/vast_boot.d/85-instance-test.sh /etc/vast_boot.d/70-instance-test.sh; \
     fi
 
