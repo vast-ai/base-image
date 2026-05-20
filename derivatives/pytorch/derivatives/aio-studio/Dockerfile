@@ -7,11 +7,12 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="AIO Studio image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
-# xformers and sageattention publish CUDA-only amd64 wheels; the helper below
-# selects them only on amd64 so ARM64 (aarch64/sbsa, e.g. Grace Blackwell)
-# builds do not fail on dependency resolution. Mirrors the amd64_only pattern
-# used by the pytorch base's torch-companions.json.
-ARG TARGETARCH
+# xformers, sageattention, and the pinned Blender archive only ship amd64
+# artifacts. The RUN blocks below use `dpkg --print-architecture` rather than
+# ${TARGETARCH:-amd64} so that builds without buildx (no auto-injected
+# TARGETARCH) detect the actual container arch instead of silently
+# mis-selecting amd64. Mirrors the amd64_only pattern used by the pytorch
+# base's torch-companions.json.
 
 # ---------- ComfyUI ----------
 ARG COMFYUI_REPO=https://github.com/Comfy-Org/ComfyUI
@@ -20,7 +21,7 @@ RUN \
     set -euo pipefail && \
     create_app_venv comfyui main && \
     . /venv/comfyui/bin/activate && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
     fi && \
     uv pip install --no-cache-dir onnxruntime-gpu insightface && \
@@ -56,7 +57,7 @@ RUN \
     set -euo pipefail && \
     create_app_venv forge main && \
     . /venv/forge/bin/activate && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
     fi && \
     cd /opt/workspace-internal/ && \
@@ -258,10 +259,10 @@ RUN \
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
-    case "${TARGETARCH:-amd64}" in \
+    case "$(dpkg --print-architecture)" in \
         amd64) BLENDER_ARCH="x64" ;; \
         arm64) BLENDER_ARCH="arm64" ;; \
-        *) echo "Unsupported TARGETARCH for Blender: ${TARGETARCH}"; exit 1 ;; \
+        *) echo "Unsupported arch for Blender: $(dpkg --print-architecture)"; exit 1 ;; \
     esac && \
     if [ -z "$BLENDER_VERSION" ]; then \
         MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \

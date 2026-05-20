@@ -229,7 +229,7 @@ RUN \
 # path on ARM64.
 RUN \
     set -euo pipefail && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         cd /opt && \
         SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
         cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
@@ -237,7 +237,7 @@ RUN \
         cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
         cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && rm -f selkies-js-interposer.deb; \
     else \
-        echo "Skipping Selkies install on ${TARGETARCH}; dropping supervisor program."; \
+        echo "Skipping Selkies install on $(dpkg --print-architecture); dropping supervisor program."; \
         rm -f /etc/supervisor/conf.d/selkies.conf; \
     fi
 
@@ -433,10 +433,10 @@ RUN \
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
-    case "${TARGETARCH:-amd64}" in \
+    case "$(dpkg --print-architecture)" in \
         amd64) BLENDER_ARCH="x64" ;; \
         arm64) BLENDER_ARCH="arm64" ;; \
-        *) echo "Unsupported TARGETARCH for Blender: ${TARGETARCH}"; exit 1 ;; \
+        *) echo "Unsupported arch for Blender: $(dpkg --print-architecture)"; exit 1 ;; \
     esac && \
     if [ -z "$BLENDER_VERSION" ]; then \
         MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \

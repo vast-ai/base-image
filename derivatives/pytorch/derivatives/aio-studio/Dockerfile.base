@@ -44,12 +44,13 @@ RUN \
 # flash-attn into torch-2.9.1 (large compiled wheel — shared by all 2.9.1 children)
 # Wheel is amd64-only (linux_x86_64); on other arches (e.g. aarch64/sbsa for
 # Grace Blackwell) skip — downstream apps that need flash-attn must resolve
-# it from sdist.
-ARG TARGETARCH
+# it from sdist. dpkg --print-architecture reflects the actual container
+# arch — unlike ${TARGETARCH:-amd64}, it doesn't silently mis-select amd64
+# when buildx hasn't injected TARGETARCH.
 RUN \
     set -euo pipefail && \
     . /venv/torch-2.9.1/bin/activate && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; \
     fi
 
@@ -178,7 +179,7 @@ RUN \
 # and falls back to VNC.
 RUN \
     set -euo pipefail && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
         cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
         cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
@@ -189,7 +190,7 @@ RUN \
         apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && \
         rm -f *.deb && apt-get clean && rm -rf /var/lib/apt/lists/*; \
     else \
-        echo "Skipping Selkies install on ${TARGETARCH}"; \
+        echo "Skipping Selkies install on $(dpkg --print-architecture)"; \
     fi
 
 # KDE Plasma desktop environment

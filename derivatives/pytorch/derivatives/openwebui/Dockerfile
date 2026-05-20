@@ -13,7 +13,6 @@ COPY ./ROOT /
 # Required or we will not build
 ARG OPENWEBUI_REF
 ARG OLLAMA_REF
-ARG TARGETARCH
 
 # Do not expose this port.  Exposed and proxied port is 11434
 ENV OLLAMA_HOST="0.0.0.0:21434"
@@ -25,11 +24,16 @@ RUN \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # dpkg --print-architecture reflects the actual container arch — unlike
+    # ${TARGETARCH:-amd64}, it doesn't silently mis-select amd64 when buildx
+    # hasn't injected TARGETARCH. Used both for the xformers gate (amd64-only
+    # CUDA wheels) and to pick the right Ollama release tarball.
+    ARCH="$(dpkg --print-architecture)" && \
     # xformers publishes amd64-only CUDA wheels; skip on other arches
     # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
     # not fail the build.
     EXTRA_ACCEL_PKGS="" && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "${ARCH}" == "amd64" ]]; then \
         EXTRA_ACCEL_PKGS="xformers"; \
     fi && \
     # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
@@ -40,7 +44,7 @@ RUN \
     # Get open-webui
     uv pip install --no-cache-dir open-webui==${OPENWEBUI_REF} && \
     # Get Ollama
-    wget -O /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/${OLLAMA_REF}/ollama-linux-${TARGETARCH:-amd64}.tgz && \
+    wget -O /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/${OLLAMA_REF}/ollama-linux-${ARCH}.tgz && \
     tar -C /usr -xzf /tmp/ollama.tgz && \
     rm -f /tmp/ollama.tgz && \
     # Ensure Ollama data persists on the workspace - WebUI directory is created on startup

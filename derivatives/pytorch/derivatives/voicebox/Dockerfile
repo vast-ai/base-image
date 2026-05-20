@@ -12,7 +12,6 @@ COPY ./ROOT /
 
 # Required or we will not build
 ARG VOICEBOX_REF
-ARG TARGETARCH
 
 RUN \
     set -euo pipefail && \
@@ -34,8 +33,10 @@ RUN \
     # The flash-attn release wheel is amd64-only (linux_x86_64). On other
     # arches (e.g. aarch64/sbsa for Grace Blackwell) skip the explicit URL
     # install and let requirements.txt resolve flash-attn from sdist if it
-    # is actually required at runtime.
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    # is actually required at runtime. dpkg --print-architecture reflects
+    # the actual container arch — unlike ${TARGETARCH:-amd64}, it doesn't
+    # silently mis-select amd64 when buildx hasn't injected TARGETARCH.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; \
     fi && \
     uv pip install --no-cache-dir -r requirements.txt && \

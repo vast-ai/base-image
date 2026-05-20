@@ -12,7 +12,6 @@ COPY ./ROOT /
 
 # Required or we will not build
 ARG OOBABOOGA_REF
-ARG TARGETARCH
 
 RUN \
     set -euo pipefail && \
@@ -22,9 +21,11 @@ RUN \
     torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
     # xformers publishes amd64-only CUDA wheels; skip on other arches
     # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
-    # not fail the build.
+    # not fail the build. dpkg --print-architecture reflects the actual
+    # container arch — unlike ${TARGETARCH:-amd64}, it doesn't silently
+    # mis-select amd64 when buildx hasn't injected TARGETARCH.
     EXTRA_ACCEL_PKGS="" && \
-    if [[ "${TARGETARCH:-amd64}" == "amd64" ]]; then \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         EXTRA_ACCEL_PKGS="xformers"; \
     fi && \
     # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
