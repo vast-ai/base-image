@@ -1,0 +1,80 @@
+# .github/actions/merge-arch-manifests/action.yml
+name: Merge Arch Manifests
+description: >-
+  Stitch per-arch tags (pushed earlier by build-arch-image) into a single
+  multi-arch manifest at the final tag. Optionally also creates alias tags
+  pointing at the same manifest (for default-python aliases etc.).
+
+inputs:
+  final-tag:
+    description: >-
+      The multi-arch tag to create (e.g. vastai/comfy:master-cuda-12.9-py312).
+      Expects ${final-tag}-amd64 and ${final-tag}-arm64 to already exist on
+      the registry.
+    required: true
+  arches:
+    description: "Comma-separated arch suffixes to merge (default: amd64,arm64)"
+    required: false
+    default: "amd64,arm64"
+  extra-tags:
+    description: >-
+      Optional multiline list of additional tags to point at the same manifest
+      (e.g. an alias without -pyXXX). One tag per line.
+    required: false
+    default: ""
+  dockerhub-username:
+    description: "Docker Hub username (pass secrets.DOCKERHUB_USERNAME)"
+    required: true
+  dockerhub-token:
+    description: "Docker Hub token (pass secrets.DOCKERHUB_TOKEN)"
+    required: true
+
+outputs:
+  manifest-tag:
+    description: "The multi-arch manifest tag that was created"
+    value: ${{ inputs.final-tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Docker Hub login
+      uses: docker/login-action@v3
+      with:
+        username: ${{ inputs.dockerhub-username }}
+        password: ${{ inputs.dockerhub-token }}
+
+    - name: Merge arch manifests
+      shell: bash
+      env:
+        FINAL_TAG: ${{ inputs.final-tag }}
+        ARCHES: ${{ inputs.arches }}
+        EXTRA_TAGS_RAW: ${{ inputs.extra-tags }}
+      run: |
+        set -euo pipefail
+
+        # Build the list of per-arch source tags from the comma-separated arches input.
+        source_tags=()
+        IFS=',' read -ra ARCH_LIST <<< "${ARCHES}"
+        for arch in "${ARCH_LIST[@]}"; do
+          arch="${arch// }"
+          [[ -z "$arch" ]] && continue
+          source_tags+=("${FINAL_TAG}-${arch}")
+        done
+
+        # Collect target tags: the final-tag plus any extras (one per line).
+        target_flags=(-t "${FINAL_TAG}")
+        while IFS= read -r extra; do
+          extra="${extra// }"
+          [[ -z "$extra" ]] && continue
+          target_flags+=(-t "$extra")
+        done <<< "${EXTRA_TAGS_RAW}"
+
+        echo "=== Merging into ${FINAL_TAG} from: ${source_tags[*]} ==="
+        docker buildx imagetools create \
+          "${target_flags[@]}" \
+          "${source_tags[@]}"
+
+        echo "Created manifest: ${FINAL_TAG}"
