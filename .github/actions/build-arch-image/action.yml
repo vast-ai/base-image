@@ -13,7 +13,7 @@ inputs:
     required: false
     default: "."
   dockerfile:
-    description: "Path to Dockerfile, relative to repo root"
+    description: "Path to Dockerfile, relative to context"
     required: false
     default: "Dockerfile"
   arch:
@@ -96,11 +96,18 @@ runs:
           build_ctx_flags+=(--build-context "$line")
         done <<< "${BUILD_CONTEXTS_RAW}"
 
+        # buildx -f is resolved relative to CWD, not to the build context, so
+        # join them ourselves to match the documented "relative to context"
+        # semantic. Without this we'd accidentally pick up a Dockerfile from
+        # the repo root.
+        DOCKERFILE_PATH="${CONTEXT%/}/${DOCKERFILE}"
+
         echo "=== Building ${ARCH_TAG} for ${ARCH} ==="
+        echo "    dockerfile: ${DOCKERFILE_PATH}"
         docker buildx build \
           --progress=plain \
           --platform "${ARCH}" \
-          -f "${DOCKERFILE}" \
+          -f "${DOCKERFILE_PATH}" \
           "${build_arg_flags[@]}" \
           "${build_ctx_flags[@]}" \
           --tag "${ARCH_TAG}" \
