@@ -110,10 +110,8 @@ RUN \
         python3-numpy \
         python3-setuptools \
         python3-wheel \
-        rar \
         svt-av1 \
         unar \
-        unrar \
         vainfo \
         vdpauinfo \
         websockify \
@@ -167,8 +165,16 @@ RUN \
         libxtst6:i386 \
         libxv1:i386 \
     ) && \
+    # `rar` and `unrar` are proprietary closed-source archivers (RarLab);
+    # Ubuntu noble only publishes them for amd64/i386. Skip on arm64 — the
+    # free `unar` (already in BASE_PACKAGES) handles both RAR extraction
+    # and a wider set of formats, so arm64 users still have an unarchiver.
+    AMD64_ONLY_PACKAGES=( \
+        rar \
+        unrar \
+    ) && \
     if [[ $TARGETARCH == "amd64" ]]; then \
-        apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}" "${I386_PACKAGES[@]}"; \
+        apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}" "${I386_PACKAGES[@]}" "${AMD64_ONLY_PACKAGES[@]}"; \
     else \
         apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}"; \
     fi && \
