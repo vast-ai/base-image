@@ -83,7 +83,9 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ${{ matrix.arch.runs_on }}
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    # No `environment:` gate here — this workflow only writes to the staging
+    # namespace. The production-environment gate is on promote-linux-desktop's
+    # `promote` job, which is where prod writes actually happen.
 
     permissions:
       contents: read
