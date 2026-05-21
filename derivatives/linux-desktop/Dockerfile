@@ -473,13 +473,7 @@ RUN \
 # GPU benchmarks
 RUN \
     set -euo pipefail && \
-    apt-get update && apt-get install --no-install-recommends -y glmark2 && \
-    cd /tmp && \
-    wget -O Unigine_Heaven-4.0.run https://assets.unigine.com/d/Unigine_Heaven-4.0.run && \
-    chmod +x Unigine_Heaven-4.0.run && \
-    ./Unigine_Heaven-4.0.run --target /opt/unigine-heaven --noexec && \
-    ln -s /opt/unigine-heaven/heaven /usr/local/bin/heaven && \
-    rm -f /tmp/Unigine_Heaven-4.0.run
+    apt-get update && apt-get install --no-install-recommends -y glmark2
 
 # Switch to user for simplicity.  We will switch back to root as all Vast.ai instances default to root login anyway
 ENV XDG_RUNTIME_DIR="/run/user/1001"
