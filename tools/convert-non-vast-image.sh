@@ -2,6 +2,15 @@
 
 set -euo pipefail
 
+# Host CPU architecture (amd64 / arm64). Used to pick the right release
+# artifacts for cloudflared and syncthing below. dpkg returns the same
+# token shape upstream uses in their release URLs, so substituting it
+# directly works for both. Querying dpkg here (rather than relying on
+# the caller having `ARG TARGETARCH` declared and exported) keeps this
+# script self-sufficient regardless of how the calling Dockerfile is
+# structured.
+ARCH="$(dpkg --print-architecture)"
+
 # Install a reasonable set of packages over the source image
 apt-get update
 
@@ -127,7 +136,7 @@ uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11
 uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt
 deactivate
 
-wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}
+wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}
 chmod +x /opt/portal-aio/tunnel_manager/cloudflared
 # Make these portal-provided tools easily reachable
 ln -s /opt/portal-aio/caddy_manager/caddy /opt/instance-tools/bin/caddy
@@ -220,7 +229,7 @@ rm -f /opt/supervisor-scripts/tensorboard.sh
 
 # Install Syncthing
 SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')"
-SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz"
+SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${ARCH}-v${SYNCTHING_VERSION}.tar.gz"
 mkdir -p /opt/syncthing/config /opt/syncthing/data
 wget -O /opt/syncthing.tar.gz "$SYNCTHING_URL"
 (cd /opt && tar -zxf syncthing.tar.gz -C /opt/syncthing/ --strip-components=1)
