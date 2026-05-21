@@ -1,0 +1,52 @@
+# Stub on main so the workflow appears in GitHub's Actions UI dropdown,
+# letting it be triggered against a feature branch via `workflow_dispatch`.
+# The real implementation lives on the `arm64-readiness` branch and will
+# replace this file when that PR merges.
+#
+# To run the actual promote logic before the merge:
+#   gh workflow run promote-linux-desktop.yml --ref arm64-readiness \
+#       -f STAGING_DATE=YYYY-MM-DD
+#   ...or in the UI: pick "Run workflow", select the feature branch.
+# GitHub reads the workflow definition (and its inputs) from whatever
+# ref is selected at trigger time; this main-branch stub only exists to
+# register the trigger.
+
+name: Promote Linux Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      STAGING_DATE:
+        description: "Date suffix to promote (e.g. 2026-05-21) — only used when triggered from a feature branch with the real implementation"
+        required: true
+        type: string
+      DOCKERHUB_REPO:
+        description: "Repo name in both staging and production namespaces"
+        required: true
+        default: "linux-desktop"
+      FILTER:
+        description: "Filter configs by pattern (e.g. cuda-12, stock)"
+        required: false
+        default: ""
+      DRY_RUN:
+        description: "Print what would be promoted without promoting"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain stub
+        run: |
+          echo "This is the main-branch stub of Promote Linux Desktop."
+          echo "It exists so the workflow appears in the Actions UI; the real"
+          echo "promote logic is on the arm64-readiness branch."
+          echo ""
+          echo "Re-trigger this workflow with the feature branch selected:"
+          echo "  gh workflow run promote-linux-desktop.yml --ref arm64-readiness \\"
+          echo "      -f STAGING_DATE=${{ inputs.STAGING_DATE }}"
+          echo ""
+          echo "When arm64-readiness merges to main this stub gets replaced by"
+          echo "the real implementation."
