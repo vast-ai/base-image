@@ -1,6 +1,16 @@
 # Build SD Forge variants (lllyasviel, reforge, classic, neo) from upstream repos
-# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
 # Optional: SLACK_WEBHOOK_URL
+#
+# Multi-arch strategy: each (variant, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-variant merge
+# job then uses crane to assemble the multi-arch index at the PRODUCTION tag.
+# No QEMU emulation.
 
 name: Build SD Forge Image
 
@@ -29,18 +39,12 @@ on:
         description: "Push to namespace/<repo>"
         required: true
         default: "sd-forge"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "sd-forge"
-  DEFAULT_MULTI_ARCH: "false"
   PYTORCH_BASE: "vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py311-2026-04-15"
   # 7 days in seconds
   COMMIT_AGE_THRESHOLD: 604800
@@ -50,7 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      matrix: ${{ steps.build-matrix.outputs.matrix }}
+      build-matrix: ${{ steps.expand.outputs.build-matrix }}
+      merge-matrix: ${{ steps.build-matrix.outputs.matrix }}
       forge-refs: ${{ steps.build-matrix.outputs.forge-refs }}
     steps:
       - name: Checkout
@@ -59,12 +64,17 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
       - name: Build variant matrix
@@ -117,7 +127,7 @@ jobs:
                 echo "Skipping $name - latest commit is ${AGE}s old (threshold: ${COMMIT_AGE_THRESHOLD}s)"
                 continue
               fi
-              echo "✓ $name has recent activity (${AGE}s old)"
+              echo "$name has recent activity (${AGE}s old)"
             fi
 
             # Apply manual ref override if provided for a single variant
@@ -155,7 +165,7 @@ jobs:
 
           if [[ "$SECRETS" == "true" && "$MATRIX_SIZE" -gt 0 ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building $MATRIX_SIZE variant(s)"
+            echo "Building $MATRIX_SIZE variant(s)"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
             if [[ "$SECRETS" != "true" ]]; then
@@ -165,11 +175,31 @@ jobs:
             fi
           fi
 
+      - name: Expand matrix with arch axis
+        id: expand
+        if: steps.decision.outputs.should-run == 'true'
+        run: |
+          MERGE_MATRIX='${{ steps.build-matrix.outputs.matrix }}'
+
+          # Cross-product the variants matrix with native-runner arch entries.
+          # Each build job pulls matrix.arch.{platform,suffix,runs_on}.
+          ARCHES_JSON='[
+            {"platform": "linux/amd64", "suffix": "amd64", "runs_on": "ubuntu-latest"},
+            {"platform": "linux/arm64", "suffix": "arm64", "runs_on": "ubuntu-24.04-arm"}
+          ]'
+          BUILD_MATRIX=$(echo "$MERGE_MATRIX" | jq -c --argjson arches "$ARCHES_JSON" '
+            [.[] as $v | $arches[] as $a | $v + {arch: $a}]
+          ')
+
+          echo "Merge matrix: $MERGE_MATRIX"
+          echo "Build matrix: $BUILD_MATRIX"
+
+          echo "build-matrix=$BUILD_MATRIX" >> $GITHUB_OUTPUT
+
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
 
     permissions:
       contents: read
@@ -177,7 +207,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.preflight.outputs.matrix) }}
+        include: ${{ fromJson(needs.preflight.outputs.build-matrix) }}
 
     steps:
       - name: Checkout
@@ -186,24 +216,10 @@ jobs:
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker Hub login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive image tag
-        id: meta
+      - name: Derive staging tag
         run: |
           PYTORCH_BASE="${{ env.PYTORCH_BASE }}"
           TAG="${PYTORCH_BASE##*:}"
-
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
 
           if [ -z "$CUDA_VERSION" ]; then
@@ -222,43 +238,78 @@ jobs:
           fi
 
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-          # Create safe ID from variant name
-          MATRIX_ID=$(echo "$VARIANT" | md5sum | cut -c1-8)
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
 
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
-          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
 
-          echo "Derived image tag: $IMAGE_TAG"
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/sd-forge
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ env.PYTORCH_BASE }}
+            FORGE_REPO=${{ matrix.repo }}
+            FORGE_REF=${{ matrix.ref }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          PYTORCH_BASE="${{ env.PYTORCH_BASE }}"
+          TAG="${PYTORCH_BASE##*:}"
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          VARIANT="${{ matrix.variant }}"
+          REF="${{ matrix.ref }}"
+          DATE=$(date -u +%Y-%m-%d)
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            IMAGE_TAG_BASE="${VARIANT}-${REF}-${DATE}"
           fi
 
-          platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-          cd derivatives/pytorch/derivatives/sd-forge
-          docker buildx build \
-            --platform "$platforms" \
-            --build-arg PYTORCH_BASE=${{ env.PYTORCH_BASE }} \
-            --build-arg FORGE_REPO=${{ matrix.repo }} \
-            --build-arg FORGE_REF=${{ matrix.ref }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
 
-      - name: Record built tag
+          MATRIX_ID=$(echo "$VARIANT" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -266,7 +317,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -293,11 +344,11 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      build-result: ${{ needs.merge-manifests.result }}
       image-name: "SD Forge"
       image-ref: ${{ needs.preflight.outputs.forge-refs }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
