@@ -14,11 +14,13 @@
 # merge job then uses crane to assemble the multi-arch index at the
 # PRODUCTION tag. No QEMU emulation.
 #
-# Currently amd64-only: Wan2GP's upstream requirements.txt pins two
-# packages with no aarch64 Linux wheels — `torchcodec==0.10.0` (PyPI ships
-# Linux wheels only as manylinux_2_28_x86_64) and `onnxruntime-gpu` from
-# the Azure ort-cuda-13-nightly index (manylinux_x86_64 only). Re-enable
-# arm64 when both upstream pins gain aarch64 wheels; see the build job's
+# Currently amd64-only: Wan2GP's upstream requirements.txt pulls
+# `onnxruntime-gpu` from the Azure ort-cuda-13-nightly index, which only
+# publishes manylinux_x86_64 wheels. onnxruntime-gpu is actively used
+# (dwpose, voice conversion), so we can't strip it like we strip the
+# (dead) torchcodec pin in the Dockerfile. Re-enable arm64 when the
+# upstream gains aarch64 wheels (PyPI's stable onnxruntime-gpu is also
+# x86_64-only — would need that to change first); see the build job's
 # matrix comment for the re-enable trigger.
 
 name: Build Wan2GP Image
@@ -144,11 +146,13 @@ jobs:
       matrix:
         base_image:
           - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15
-        # arm64 is intentionally absent: Wan2GP's upstream requirements pin
-        # `torchcodec==0.10.0` (manylinux_2_28_x86_64 only on PyPI) and
-        # `onnxruntime-gpu` from the Azure ort-cuda-13-nightly index
-        # (manylinux_x86_64 only). Re-add when both upstream pins gain
-        # aarch64 wheels (and update merge-manifests `arches` below).
+        # arm64 is intentionally absent: Wan2GP requires onnxruntime-gpu
+        # (pulled from the Azure ort-cuda-13-nightly index), which has no
+        # aarch64 wheels — and PyPI's stable onnxruntime-gpu is also
+        # x86_64-only. The Dockerfile strips Wan2GP's (dead) torchcodec
+        # pin so that blocker is already neutralized. Re-add the arm64
+        # entry once onnxruntime-gpu has aarch64 CUDA wheels (and update
+        # merge-manifests `arches` below).
         arch:
           - { platform: linux/amd64, suffix: amd64, runs-on: ubuntu-latest }
 
@@ -244,10 +248,9 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
-          # amd64-only until Wan2GP's upstream requirements gain aarch64
-          # wheels for torchcodec + onnxruntime-gpu (see build matrix
-          # comment above). Add `arm64` back to this list when the matrix
-          # gains arm64.
+          # amd64-only until onnxruntime-gpu gains aarch64 CUDA wheels
+          # (see build matrix comment above). Add `arm64` back to this
+          # list when the matrix gains arm64.
           arches: amd64
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}

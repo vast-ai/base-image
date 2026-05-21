@@ -28,6 +28,16 @@ RUN \
     git clone "${WAN2GP_REPO}" Wan2GP && \
     cd Wan2GP && \
     git checkout "${WAN2GP_REF}" && \
+    # Strip upstream's torchcodec pin from requirements before installing.
+    # Wan2GP pins torchcodec==0.10.0 but never imports torchcodec anywhere
+    # in its source — it's a dead dep. torchcodec's PyPI metadata declares
+    # no torch requirement, so without this strip uv silently replaces the
+    # pytorch base's pinned torchcodec (0.5 on torch 2.7.1) with 0.10.0,
+    # which was built against torch 2.10's ABI. The torch_version_pre/post
+    # assertion below only catches torch itself, not torchcodec, so the
+    # mismatch slips through to runtime as undefined behavior. Keep the
+    # base's torchcodec authoritative.
+    sed -i '/^torchcodec[<>=]/d' requirements.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     # Test 1: Verify PyTorch version is unaltered
     torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
