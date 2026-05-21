@@ -1,6 +1,23 @@
 # .github/workflows/build-openwebui.yml
-# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
 # Optional: SLACK_WEBHOOK_URL
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-base_image
+# merge job then uses crane to assemble the multi-arch index at the
+# PRODUCTION tag. No QEMU emulation.
+#
+# Upstream `ghcr.io/open-webui/open-webui:<ver>-cuda` ships multi-arch
+# (amd64 + arm64) at every recent version, so the same FROM line works
+# unchanged on both runners. Ollama publishes per-arch tarballs at the
+# canonical filename `ollama-linux-${ARCH}.tar.zst`; the Dockerfile uses
+# `dpkg --print-architecture` to pick the right one.
+
 name: Build Open WebUI Image
 
 on:
@@ -20,18 +37,12 @@ on:
         description: "Push to username/<repo>"
         required: true
         default: "openwebui"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "openwebui"
-  DEFAULT_MULTI_ARCH: "false"
   # 12 hours
   RELEASE_AGE_THRESHOLD: 43200
 
@@ -49,12 +60,17 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
       - name: Check Open WebUI release
@@ -95,7 +111,7 @@ jobs:
 
           if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && -n "$OPENWEBUI_VERSION" && -n "$OLLAMA_VERSION" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building Open WebUI $OPENWEBUI_VERSION with Ollama $OLLAMA_VERSION"
+            echo "Building Open WebUI $OPENWEBUI_VERSION with Ollama $OLLAMA_VERSION"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
 
@@ -113,8 +129,7 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
 
     permissions:
       contents: read
@@ -125,6 +140,9 @@ jobs:
       matrix:
         base_image:
           - ghcr.io/open-webui/open-webui
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
 
     steps:
       - name: Checkout
@@ -133,12 +151,6 @@ jobs:
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: GHCR login (for pulling base image)
         uses: docker/login-action@v3
         with:
@@ -146,14 +158,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker Hub login (for pushing)
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive image tag
-        id: meta
+      - name: Derive staging tag
         run: |
           OPENWEBUI_VERSION="${{ needs.preflight.outputs.openwebui-version }}"
           OLLAMA_VERSION="${{ needs.preflight.outputs.ollama-version }}"
@@ -165,47 +170,76 @@ jobs:
             IMAGE_TAG="${OPENWEBUI_VERSION}"
           fi
 
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
-
-          # Create a safe filename from the matrix value
-          MATRIX_ID=$(echo "${{ matrix.base_image }}" | md5sum | cut -c1-8)
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
           echo "OPENWEBUI_BASE=$OPENWEBUI_BASE" >> $GITHUB_ENV
           echo "OLLAMA_VERSION=$OLLAMA_VERSION" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
-          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
 
-          echo "Building from: $OPENWEBUI_BASE"
+          echo "Building from: $OPENWEBUI_BASE (arch=${{ matrix.arch.suffix }})"
           echo "Ollama version: $OLLAMA_VERSION"
-          echo "Output tag: $FULL_IMAGE"
 
-      - name: Build and push
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: external/openwebui
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            OPENWEBUI_BASE=${{ env.OPENWEBUI_BASE }}
+            OLLAMA_VERSION=${{ env.OLLAMA_VERSION }}
+          build-contexts: |
+            base_image_source=.
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - ghcr.io/open-webui/open-webui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          OPENWEBUI_VERSION="${{ needs.preflight.outputs.openwebui-version }}"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG" ]]; then
+            IMAGE_TAG="${OPENWEBUI_VERSION}"
           fi
 
-          platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-          cd external/openwebui
-          docker buildx build \
-            --platform "$platforms" \
-            --build-context base_image_source=../.. \
-            --build-arg OPENWEBUI_BASE=${{ env.OPENWEBUI_BASE }} \
-            --build-arg OLLAMA_VERSION=${{ env.OLLAMA_VERSION }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
 
-      - name: Record built tag
+          MATRIX_ID=$(echo "${{ matrix.base_image }}" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -213,7 +247,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -240,11 +274,11 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      build-result: ${{ needs.merge-manifests.result }}
       image-name: "Open WebUI"
       image-ref: ${{ needs.preflight.outputs.openwebui-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

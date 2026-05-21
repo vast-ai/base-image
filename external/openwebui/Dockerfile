@@ -24,7 +24,6 @@ COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
-ARG TARGETARCH
 RUN \
     set -euo pipefail && \
     chmod +x /tmp/convert-non-vast-image.sh && \
@@ -39,11 +38,16 @@ ENV OLLAMA_BASE_URL=http://localhost:21434
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
-# Install Ollama from GitHub releases
+# Install Ollama from GitHub releases — the release filename includes the
+# Ollama project's arch suffix (amd64/arm64), which matches dpkg's output.
+# Use dpkg --print-architecture (queries the actual container arch) rather
+# than ${TARGETARCH:-amd64} (silently mis-selects amd64 if buildx hasn't
+# injected the variable).
 ARG OLLAMA_VERSION
 RUN \
     set -euo pipefail && \
-    curl -fsSL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-${TARGETARCH:-amd64}.tar.zst" \
+    ARCH="$(dpkg --print-architecture)" && \
+    curl -fsSL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-${ARCH}.tar.zst" \
         -o /tmp/ollama.tar.zst && \
     tar --use-compress-program=unzstd -xf /tmp/ollama.tar.zst -C /usr && \
     rm /tmp/ollama.tar.zst && \
