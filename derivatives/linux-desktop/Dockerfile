@@ -436,21 +436,33 @@ RUN \
     vlc-plugin-video-splitter \
     vlc-plugin-visualization
 
-# Google Chrome (amd64-only — Google does not publish a Linux arm64 build of
-# Chrome. The dpkg --print-architecture in the URL would resolve to arm64 on
-# aarch64 hosts and 404 against Google's CDN. arm64 desktop images ship
-# without a pre-installed browser; users can install Firefox or another
-# arm64-supported browser at runtime.)
+# Default browser:
+#   amd64 -> Google Chrome (no aarch64 .deb from Google, so amd64 only)
+#   arm64 -> Firefox from Mozilla's official APT repo (the Ubuntu noble
+#            `firefox` package is a snap transitional and snap doesn't work
+#            in containers; Mozilla's own apt repo publishes real .debs for
+#            both amd64 and arm64). The Pin-Priority pin makes apt prefer
+#            Mozilla's deb over the Ubuntu snap stub.
+# Both paths end with `update-alternatives --set x-www-browser ...` so
+# downstream code that opens the system browser works on either arch.
 RUN \
     set -euo pipefail && \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         cd /tmp && \
         curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
         apt-get install -y ./google-chrome-stable.deb && \
+        rm -f google-chrome-stable.deb && \
         update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
         update-alternatives --set x-www-browser /usr/bin/google-chrome-stable; \
     else \
-        echo "Skipping Google Chrome install on $(dpkg --print-architecture); no aarch64 Chrome from Google."; \
+        install -d -m 0755 /etc/apt/keyrings && \
+        curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc && \
+        echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list && \
+        printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla && \
+        apt-get update && \
+        apt-get install --no-install-recommends -y firefox && \
+        apt-get clean && rm -rf /var/lib/apt/lists/* && \
+        update-alternatives --set x-www-browser /usr/bin/firefox; \
     fi
 
 # Blender - version passed via build arg, or auto-detected if empty.
