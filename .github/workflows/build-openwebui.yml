@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      openwebui-version: ${{ steps.openwebui-check.outputs.resolved-version }}
+      openwebui-version: ${{ steps.openwebui-check.outputs.resolved-ref }}
       ollama-version: ${{ steps.decision.outputs.ollama-version }}
     steps:
       - name: Checkout
@@ -73,17 +73,25 @@ jobs:
             echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
+      # We resolve the Open WebUI version via the GitHub Releases API (which
+      # is date-ordered) rather than paginating GHCR package versions. The
+      # GHCR /packages/container/.../versions endpoint returns thousands of
+      # commit-hashed builds and the matching v*-cuda semver tags fall well
+      # beyond the first 1000, so the previous check-ghcr-release call kept
+      # returning new-release=false even when fresh releases were live. Each
+      # GitHub release has a corresponding `${tag}-cuda` image on GHCR
+      # (verified across v0.8..v0.9), so we append `-cuda` when constructing
+      # OPENWEBUI_BASE below.
       - name: Check Open WebUI release
         id: openwebui-check
-        uses: ./.github/actions/check-ghcr-release
+        uses: ./.github/actions/check-github-release
         with:
-          owner: open-webui
-          package: open-webui
-          version-pattern: "^v[0-9]+\\.[0-9]+(\\.[0-9]+)?-cuda$"
-          version-extract: "s/-cuda$//"
+          repository: open-webui/open-webui
+          tag-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           trigger: ${{ github.event_name }}
-          manual-version: ${{ inputs.OPENWEBUI_VERSION }}
+          manual-ref: ${{ inputs.OPENWEBUI_VERSION }}
+          resolve-master-to-commit: "false"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check Ollama release
@@ -103,7 +111,7 @@ jobs:
         run: |
           SECRETS="${{ steps.secrets.outputs.available }}"
           NEW_RELEASE="${{ steps.openwebui-check.outputs.new-release }}"
-          OPENWEBUI_VERSION="${{ steps.openwebui-check.outputs.resolved-version }}"
+          OPENWEBUI_VERSION="${{ steps.openwebui-check.outputs.resolved-ref }}"
           OLLAMA_VERSION="${{ steps.ollama-check.outputs.resolved-ref }}"
           OLLAMA_VERSION="${OLLAMA_VERSION#v}"
 
