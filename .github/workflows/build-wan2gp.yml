@@ -135,7 +135,7 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ${{ matrix.arch.runs-on }}
+    runs-on: ${{ matrix.arch.runs_on }}
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
 
     permissions:
@@ -154,7 +154,7 @@ jobs:
         # entry once onnxruntime-gpu has aarch64 CUDA wheels (and update
         # merge-manifests `arches` below).
         arch:
-          - { platform: linux/amd64, suffix: amd64, runs-on: ubuntu-latest }
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
 
     steps:
       - name: Checkout

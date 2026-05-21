@@ -92,7 +92,7 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ${{ matrix.arch.runs-on }}
+    runs-on: ${{ matrix.arch.runs_on }}
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
 
     permissions:
@@ -105,8 +105,8 @@ jobs:
           - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15
           - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-04-15
         arch:
-          - { platform: linux/amd64, suffix: amd64, runs-on: ubuntu-latest }
-          - { platform: linux/arm64, suffix: arm64, runs-on: ubuntu-24.04-arm }
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
 
     steps:
       - name: Checkout

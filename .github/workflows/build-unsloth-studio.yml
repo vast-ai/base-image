@@ -90,7 +90,7 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ${{ matrix.arch.runs-on }}
+    runs-on: ${{ matrix.arch.runs_on }}
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
 
     permissions:
@@ -106,7 +106,7 @@ jobs:
         # wheels as of v0.17.0+cu128. Re-add when upstream torchao ships
         # aarch64 wheels (and update merge-manifests `arches` below).
         arch:
-          - { platform: linux/amd64, suffix: amd64, runs-on: ubuntu-latest }
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
 
     steps:
       - name: Checkout

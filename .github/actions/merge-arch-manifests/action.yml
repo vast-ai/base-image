@@ -82,7 +82,15 @@ runs:
 
         echo "=== Building index ${TARGET_TAG} from arches: ${ARCHES} ==="
         echo "    source base: ${SOURCE_TAG_BASE}"
+        # --docker-empty-base forces a fresh scratch index. Without it, crane
+        # pulls the existing target tag as the base and APPENDS the
+        # per-arch manifests to whatever was already there — so re-runs
+        # against the same tag accumulate duplicate platform entries and
+        # leave a non-deterministic index. Empty base makes the merge
+        # idempotent: the resulting index always contains exactly the
+        # manifests listed via -m.
         crane index append \
+          --docker-empty-base \
           --tag "${TARGET_TAG}" \
           "${manifest_flags[@]}"
 
