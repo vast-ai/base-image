@@ -200,7 +200,17 @@ RUN \
     curl -fsSL -O "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL_VERSION}/virtualgl_${VIRTUALGL_VERSION}_${TARGETARCH}.deb" && \
     apt-get install -y ./virtualgl_${VIRTUALGL_VERSION}_${TARGETARCH}.deb && \
     chmod -f u+s /usr/lib/libvglfaker.so /usr/lib/libvglfaker-nodl.so /usr/lib/libdlfaker.so /usr/lib/libgefaker.so && \
-    ln -sf /usr/lib/libvglfaker.so /usr/lib/x86_64-linux-gnu/libvglfaker.so && \
+    # Multiarch directory varies by host CPU: x86_64-linux-gnu on amd64,
+    # aarch64-linux-gnu on arm64. Derive it so the libvglfaker.so symlink
+    # lands in the right place (the arm64 dir does not even exist on amd64
+    # systems and vice versa, so a hardcoded path breaks one of the two).
+    case "$(dpkg --print-architecture)" in \
+        amd64) MULTIARCH_DIR="x86_64-linux-gnu" ;; \
+        arm64) MULTIARCH_DIR="aarch64-linux-gnu" ;; \
+        *) echo "Unsupported arch for VirtualGL symlink: $(dpkg --print-architecture)"; exit 1 ;; \
+    esac && \
+    mkdir -p "/usr/lib/${MULTIARCH_DIR}" && \
+    ln -sf /usr/lib/libvglfaker.so "/usr/lib/${MULTIARCH_DIR}/libvglfaker.so" && \
     if [[ $TARGETARCH == "amd64" ]]; then \
         curl -fsSL -O "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL_VERSION}/virtualgl32_${VIRTUALGL_VERSION}_${TARGETARCH}.deb" && \
         apt-get install -y ./virtualgl32_${VIRTUALGL_VERSION}_${TARGETARCH}.deb && \
