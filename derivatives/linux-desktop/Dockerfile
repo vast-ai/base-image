@@ -436,15 +436,26 @@ RUN \
     vlc-plugin-video-splitter \
     vlc-plugin-visualization
 
-# Default browser:
-#   amd64 -> Google Chrome (no aarch64 .deb from Google, so amd64 only)
-#   arm64 -> Firefox from Mozilla's official APT repo (the Ubuntu noble
-#            `firefox` package is a snap transitional and snap doesn't work
-#            in containers; Mozilla's own apt repo publishes real .debs for
-#            both amd64 and arm64). The Pin-Priority pin makes apt prefer
-#            Mozilla's deb over the Ubuntu snap stub.
-# Both paths end with `update-alternatives --set x-www-browser ...` so
-# downstream code that opens the system browser works on either arch.
+# Firefox (both arches) via Mozilla's official APT repo. The Ubuntu noble
+# `firefox` package is a snap transitional and snap doesn't work in
+# containers; Mozilla's own apt repo (packages.mozilla.org/apt) publishes
+# real .debs for both amd64 and arm64. The Pin-Priority pin makes apt
+# prefer Mozilla's deb over the Ubuntu snap stub.
+RUN \
+    set -euo pipefail && \
+    install -d -m 0755 /etc/apt/keyrings && \
+    curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc && \
+    echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list && \
+    printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla && \
+    apt-get update && \
+    apt-get install --no-install-recommends -y firefox && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Google Chrome (amd64 only — Google doesn't publish an aarch64 .deb).
+# Installed alongside Firefox; the update-alternatives below makes Chrome
+# the default `x-www-browser` on amd64 so existing user-facing behavior
+# is preserved. On arm64 the default stays at Firefox (set automatically
+# when firefox is the only x-www-browser candidate apt installed).
 RUN \
     set -euo pipefail && \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
@@ -455,14 +466,7 @@ RUN \
         update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
         update-alternatives --set x-www-browser /usr/bin/google-chrome-stable; \
     else \
-        install -d -m 0755 /etc/apt/keyrings && \
-        curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc && \
-        echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list && \
-        printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla && \
-        apt-get update && \
-        apt-get install --no-install-recommends -y firefox && \
-        apt-get clean && rm -rf /var/lib/apt/lists/* && \
-        update-alternatives --set x-www-browser /usr/bin/firefox; \
+        echo "Skipping Google Chrome on $(dpkg --print-architecture); Firefox above is the default browser."; \
     fi
 
 # Blender - version passed via build arg, or auto-detected if empty.
