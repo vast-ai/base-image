@@ -12,6 +12,10 @@
 # pushes an arch-suffixed tag to the STAGING namespace. A per-base_image
 # merge job then uses crane to assemble the multi-arch index at the
 # PRODUCTION tag. No QEMU emulation.
+#
+# Currently amd64-only: `torchao` (transitive via unsloth) lacks arm64
+# wheels as of v0.17.0+cu128, so the arm64 matrix entry is intentionally
+# absent. See the build job's matrix comment for the re-enable trigger.
 
 name: Build Unsloth Studio Image
 
@@ -97,9 +101,12 @@ jobs:
       matrix:
         base_image:
           - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15
+        # arm64 is intentionally absent: `torchao` (transitive via
+        # unsloth-zoo>=2026.5.3 -> unsloth) only publishes amd64 manylinux
+        # wheels as of v0.17.0+cu128. Re-add when upstream torchao ships
+        # aarch64 wheels (and update merge-manifests `arches` below).
         arch:
           - { platform: linux/amd64, suffix: amd64, runs-on: ubuntu-latest }
-          - { platform: linux/arm64, suffix: arm64, runs-on: ubuntu-24.04-arm }
 
     steps:
       - name: Checkout
@@ -190,6 +197,11 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # amd64-only until upstream torchao ships arm64 wheels (see build
+          # matrix comment above). Keep the merge step in place so the
+          # production tag still resolves through the standard staging->prod
+          # path; add `arm64` back to this list when the matrix gains arm64.
+          arches: amd64
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
