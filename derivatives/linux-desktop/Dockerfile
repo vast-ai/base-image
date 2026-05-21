@@ -436,13 +436,22 @@ RUN \
     vlc-plugin-video-splitter \
     vlc-plugin-visualization
 
-# Google Chrome
+# Google Chrome (amd64-only — Google does not publish a Linux arm64 build of
+# Chrome. The dpkg --print-architecture in the URL would resolve to arm64 on
+# aarch64 hosts and 404 against Google's CDN. arm64 desktop images ship
+# without a pre-installed browser; users can install Firefox or another
+# arm64-supported browser at runtime.)
 RUN \
-    cd /tmp && \
-    curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
-    apt-get install -y ./google-chrome-stable.deb && \
-    update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
-    update-alternatives --set x-www-browser /usr/bin/google-chrome-stable
+    set -euo pipefail && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        cd /tmp && \
+        curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
+        apt-get install -y ./google-chrome-stable.deb && \
+        update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
+        update-alternatives --set x-www-browser /usr/bin/google-chrome-stable; \
+    else \
+        echo "Skipping Google Chrome install on $(dpkg --print-architecture); no aarch64 Chrome from Google."; \
+    fi
 
 # Blender - version passed via build arg, or auto-detected if empty.
 # Blender ships separate archives per arch: amd64 -> linux-x64, arm64 -> linux-arm64.
