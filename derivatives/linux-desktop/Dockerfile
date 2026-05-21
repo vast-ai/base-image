@@ -469,30 +469,39 @@ RUN \
         echo "Skipping Google Chrome on $(dpkg --print-architecture); Firefox above is the default browser."; \
     fi
 
-# Blender - version passed via build arg, or auto-detected if empty.
-# Blender ships separate archives per arch: amd64 -> linux-x64, arm64 -> linux-arm64.
+# Blender:
+#   amd64 -> install from Blender's official tarball at the latest release
+#            (auto-detected, overridable via the BLENDER_VERSION build arg).
+#            The Blender project only publishes linux-x64 tarballs — no
+#            Linux arm64 builds exist in the release archive at any version.
+#   arm64 -> install from Ubuntu noble's apt repo (blender 4.0.2+dfsg).
+#            Older than the official tarball but a real working package;
+#            sidesteps the Ubuntu snap transitional that wouldn't function
+#            in a container.
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
-    case "$(dpkg --print-architecture)" in \
-        amd64) BLENDER_ARCH="x64" ;; \
-        arm64) BLENDER_ARCH="arm64" ;; \
-        *) echo "Unsupported arch for Blender: $(dpkg --print-architecture)"; exit 1 ;; \
-    esac && \
-    if [ -z "$BLENDER_VERSION" ]; then \
-        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
-        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
-            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
-    fi && \
-    echo "Installing Blender version: ${BLENDER_VERSION} (${BLENDER_ARCH})" && \
-    cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
-    tar xvf "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
-    rm "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        if [ -z "$BLENDER_VERSION" ]; then \
+            MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+                grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+            BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
+                grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+        fi && \
+        echo "Installing Blender ${BLENDER_VERSION} (amd64 tarball)" && \
+        cd /opt && \
+        wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        tar xvf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/; \
+    else \
+        echo "Installing Blender from Ubuntu noble apt (arm64; no official Linux arm64 tarball exists)" && \
+        apt-get update && \
+        apt-get install --no-install-recommends -y blender && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 
 # GPU benchmarks
