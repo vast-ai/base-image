@@ -36,7 +36,13 @@ RUN \
     fi && \
     # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
     uv pip install --no-cache-dir ${EXTRA_ACCEL_PKGS} torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
-    uv pip install --no-cache-dir onnxruntime-gpu && \
+    # onnxruntime-gpu has no aarch64 wheels at any version (manylinux x86_64
+    # + win_amd64 only). A1111's ROOP / face-restoration extensions use it
+    # when installed; on arm64 we skip the install — the rest of the image
+    # still works, those extensions just won't be GPU-accelerated.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir onnxruntime-gpu; \
+    fi && \
     # Get A1111 and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
     git clone --recursive https://github.com/AUTOMATIC1111/stable-diffusion-webui && \
