@@ -1,0 +1,49 @@
+# Stub on main so the workflow appears in GitHub's Actions UI dropdown,
+# letting it be triggered against the feature branch via `workflow_dispatch`.
+# The real implementation lives on the `arm64-readiness` branch and will
+# replace this file when that PR merges.
+#
+# Default behavior of the real workflow: when triggered with no A1111_REF
+# input, it resolves HEAD of AUTOMATIC1111/stable-diffusion-webui's `dev`
+# branch via the GitHub API and uses that short SHA as the build ref.
+# Scheduled cron and unmodified manual dispatches both end up building
+# off dev.
+#
+# To run the real promote logic before the merge:
+#   gh workflow run build-a1111.yml --ref arm64-readiness
+#   ...or in the UI: pick "Run workflow", select the feature branch.
+# GitHub reads the workflow definition (and its inputs) from whatever
+# ref is selected at trigger time; this main-branch stub only exists to
+# register the trigger.
+
+name: Build A1111 Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      A1111_REF:
+        description: "Git ref (commit/branch/tag) - leave empty for HEAD of dev — only used when triggered from a feature branch with the real implementation"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "a1111"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain stub
+        run: |
+          echo "This is the main-branch stub of Build A1111 Image."
+          echo "It exists so the workflow appears in the Actions UI; the real"
+          echo "build logic is on the arm64-readiness branch."
+          echo ""
+          echo "Re-trigger this workflow with the feature branch selected:"
+          echo "  gh workflow run build-a1111.yml --ref arm64-readiness"
+          echo ""
+          echo "When arm64-readiness merges to main this stub gets replaced by"
+          echo "the real implementation."
