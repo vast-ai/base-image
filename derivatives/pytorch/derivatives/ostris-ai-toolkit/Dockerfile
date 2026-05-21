@@ -26,16 +26,19 @@ RUN \
     git checkout "${AI_TOOLKIT_REF}" && \
     # Fixes known issue with toolkit 6870ab4
     uv pip install --no-cache-dir timm==1.0.22 && \
-    # No torchcodec strip needed: the pytorch base (torch 2.9.1) ships
-    # torchcodec 0.9.1, which exactly matches ai-toolkit's pin. Aligns
-    # with the upstream DGX install path (dgx_instructions.md pins torch
-    # 2.9.1 too). Mismatched bases (e.g. torch 2.7.1) would silently
-    # clobber the base's torchcodec via uv pip install — torchcodec's
-    # PyPI metadata declares no torch requirement, and the
-    # torch_version_pre/post assertion below only checks torch itself.
-    # If this Dockerfile is ever re-pointed at a different torch base,
-    # check torch-companions.json: torchcodec must match ai-toolkit's
-    # requirements_base.txt pin to avoid the silent ABI clobber.
+    # Strip all base-provided torch ecosystem pins from upstream
+    # requirements so the pytorch base remains the single source of
+    # truth for those versions. ai-toolkit currently pins torchcodec
+    # in requirements_base.txt; future upstream changes might add
+    # torch/torchvision/torchaudio pins too. Without this defensive
+    # strip, any version skew between an upstream pin and the base
+    # silently clobbers the base — torchcodec's PyPI metadata declares
+    # no torch requirement (no resolver constraint to catch the
+    # mismatch), and the torch_version_pre/post assertion below only
+    # validates torch itself. torchao is NOT stripped here: it isn't
+    # in the pytorch base, so ai-toolkit's explicit pin is what
+    # installs it.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements_base.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     cd ui && \
     npm install && \
