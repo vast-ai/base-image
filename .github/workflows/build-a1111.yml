@@ -191,6 +191,7 @@ jobs:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
       fail-fast: false
       matrix:
