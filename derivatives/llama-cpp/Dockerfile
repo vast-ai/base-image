@@ -22,15 +22,21 @@ RUN \
     ldconfig && \
     rm -rf /var/lib/apt/lists/*
 
-# Download and install llama.cpp-cuda binaries
+# Download and install llama.cpp-cuda binaries.
+# Upstream `ai-dock/llama.cpp-cuda` publishes one tarball per host CPU arch:
+#   llama.cpp-<ver>-cuda-<cuda>-amd64.tar.gz  (x86_64 hosts)
+#   llama.cpp-<ver>-cuda-<cuda>-arm64.tar.gz  (aarch64 hosts — Grace Hopper / Grace Blackwell / DGX Spark)
+# Both contain the same CUDA-compute-capability set; only the host CPU
+# binaries differ. Pick by `dpkg --print-architecture`.
 ARG LLAMA_CPP_VERSION
 ARG CUDA_VERSION=12.8
 ENV CUDA_VERSION=${CUDA_VERSION}
 RUN \
     set -euo pipefail && \
     [[ -n "${LLAMA_CPP_VERSION}" ]] || { echo "Must specify LLAMA_CPP_VERSION"; exit 1; } && \
+    ARCH="$(dpkg --print-architecture)" && \
     mkdir -p /opt/llama.cpp && \
-    package_name="llama.cpp-${LLAMA_CPP_VERSION}-cuda-${CUDA_VERSION}.tar.gz" && \
+    package_name="llama.cpp-${LLAMA_CPP_VERSION}-cuda-${CUDA_VERSION}-${ARCH}.tar.gz" && \
     download_url="https://github.com/ai-dock/llama.cpp-cuda/releases/download/${LLAMA_CPP_VERSION}/${package_name}" && \
     wget -O "/opt/llama.cpp/${package_name}" "${download_url}" && \
     cd /opt/llama.cpp && tar xf "${package_name}" && \
