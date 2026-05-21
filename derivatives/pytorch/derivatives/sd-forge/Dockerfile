@@ -26,7 +26,8 @@ RUN \
     [[ -n "${FORGE_REPO}" && -n "${FORGE_REF}" ]] || { echo "Must specify FORGE_REPO and FORGE_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # xformers publishes amd64-only CUDA wheels; skip on other arches
     # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
     # not fail the build. dpkg --print-architecture reflects the actual
@@ -46,8 +47,12 @@ RUN \
     git checkout "${FORGE_REF}" && \
     # Patch neo's interactive version check
     sed -i 's/    launch_utils.verify_version()/#    launch_utils.verify_version()  # bypassed for Docker/'  launch.py && \
-    uv pip install --no-cache-dir \
-        -r $([[ -f requirements_versions.txt ]] && echo "requirements_versions.txt" || echo "requirements.txt") && \
+    # Strip base-provided torch ecosystem pins from whichever upstream
+    # requirements file we install from. Single source of truth = the
+    # pytorch base; the diff-based assertion at the end catches drift.
+    forge_req="$([[ -f requirements_versions.txt ]] && echo requirements_versions.txt || echo requirements.txt)" && \
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' "$forge_req" && \
+    uv pip install --no-cache-dir -r "$forge_req" && \
     # Download custom models into the build if you want them - None included in default build
     # wget -O /opt/workspace-internal/stable-diffusion-webui-forge/models/Stable-diffusion/model1.safetensors https://url.to.files/model1.safetensors && \
     # wget -O /opt/workspace-internal/stable-diffusion-webui-forge/models/Stable-diffusion/model2.safetensors https://url.to.files/model2.safetensors && \
@@ -68,9 +73,9 @@ RUN \
             --no-half \
             --port 11404 \
             --exit && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

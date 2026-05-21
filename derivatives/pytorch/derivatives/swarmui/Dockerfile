@@ -21,7 +21,8 @@ RUN \
     [[ -n "${SWARMUI_REF}" ]] || { echo "Must specify SWARMUI_REF"; exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # xformers publishes amd64-only CUDA wheels; skip on other arches
     # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
     # not fail the build. dpkg --print-architecture reflects the actual
@@ -54,9 +55,9 @@ RUN \
         { echo "Installation timed out after 120 seconds"; exit 1; } && \
     # Fix animation issues - SwarmUi does not install this automatically
     uv pip install --no-cache-dir imageio_ffmpeg && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

@@ -34,8 +34,10 @@ RUN \
     set -euo pipefail && \
     [[ -n "${COMFYUI_REF}" ]] || { echo "Must specify COMFYUI_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
-    # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    # The torch-only check we used to do here was the gap that let silent
+    # torchcodec ABI clobbers slip through in other derivatives.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # xformers and sageattention publish CUDA-only amd64 wheels; skip on other
     # arches (e.g. aarch64/sbsa for Grace Blackwell) so the build does not fail
     # on dependency resolution. Mirrors the amd64_only pattern used by the
@@ -64,7 +66,15 @@ RUN \
     # present on recent ComfyUI refs, so guard the install: older tags
     # (which we still want to rebuild with the test runner reorder) keep
     # building cleanly, just without the new-manager opt-in available.
+    # Strip any base-provided torch ecosystem pins from upstream requirements
+    # so the pytorch base remains the single source of truth. ComfyUI does
+    # not currently pin these in requirements.txt, but the strip is a
+    # defensive guard — upstream changes have introduced such pins in the
+    # past (see wan2gp / ostris-ai-toolkit cases) and the diff-based
+    # assertion at the end of this RUN catches any drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
     if [ -f manager_requirements ]; then \
+        sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' manager_requirements && \
         uv pip install --no-cache-dir -r requirements.txt -r manager_requirements comfy-cli; \
     else \
         uv pip install --no-cache-dir -r requirements.txt; \
@@ -75,6 +85,7 @@ RUN \
     # Install critical custom nodes
     cd /opt/workspace-internal/ComfyUI/custom_nodes && \
     git clone https://github.com/Comfy-Org/ComfyUI-Manager && \
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' ComfyUI-Manager/requirements.txt && \
     uv pip install --no-cache-dir -r ComfyUI-Manager/requirements.txt && \
     git clone https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint && \
     # Quick startup test in CPU mode to ensure requirements ready and startup succeeds
@@ -87,9 +98,11 @@ RUN \
             --disable-auto-launch \
             --quick-test-for-ci && \
     mkdir -p /opt/workspace-internal/ComfyUI/user/default/ComfyUI-Manager/components && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec)
+    # versions are unchanged. Catches silent ABI clobbers that the
+    # torch-only check used to miss.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 ENV COMFYUI_ARGS="--disable-auto-launch --enable-cors-header --port 18188"
 

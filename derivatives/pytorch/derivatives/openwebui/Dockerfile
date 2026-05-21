@@ -23,7 +23,8 @@ RUN \
     [[ -n "${OLLAMA_REF}" ]] || { echo "Must specify OLLAMA_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # dpkg --print-architecture reflects the actual container arch — unlike
     # ${TARGETARCH:-amd64}, it doesn't silently mis-select amd64 when buildx
     # hasn't injected TARGETARCH. Used both for the xformers gate (amd64-only
@@ -59,9 +60,9 @@ RUN \
     cp /tmp/llama.cpp/build/bin/llama-* /opt/llama.cpp/bin && \
     rm -rf /tmp/llama.cpp && \
     mkdir -p /opt/workspace-internal/llama.cpp/models/ && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; } && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; } && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

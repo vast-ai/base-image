@@ -18,7 +18,8 @@ RUN \
     [[ -n "${KOHYA_REF}" ]] || { echo "Must specify KOHYA_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # xformers publishes amd64-only CUDA wheels; skip on other arches
     # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
     # not fail the build. The strip on requirements_linux.txt below already
@@ -37,8 +38,12 @@ RUN \
     cd /opt/workspace-internal/kohya_ss && \
     git checkout "${KOHYA_REF}" && \
     git submodule update --init --recursive && \
-    # Allow installation with alternative torch versions and disable bundled tensorboard
-    grep -v "^--extra-index-url\|^torch==\|^torchvision==\|^xformers==\|^tensorboard\|^tensorflow" requirements_linux.txt > requirements_linux_modified.txt && \
+    # Strip the four base-provided torch ecosystem packages (uniform pattern
+    # across all pytorch-base derivatives) plus xformers/tensorboard/tensorflow
+    # and the --extra-index-url line that points pip at the wrong index.
+    # The diff-based torch ecosystem assertion at the end of this RUN catches
+    # any drift.
+    grep -vE '^--extra-index-url|^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])|^xformers==|^tensorboard|^tensorflow' requirements_linux.txt > requirements_linux_modified.txt && \
     uv pip install --no-cache-dir \
         torch=="${PYTORCH_VERSION}" \
         -r requirements_linux_modified.txt && \
@@ -49,9 +54,9 @@ RUN \
     # Set up a default accelerate profile
     mkdir -p "/root/.cache/huggingface/accelerate" && \
     cp config_files/accelerate/default_config.yaml /root/.cache/huggingface/accelerate/default_config.yaml && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

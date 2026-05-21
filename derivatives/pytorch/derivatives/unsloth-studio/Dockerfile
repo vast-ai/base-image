@@ -28,7 +28,8 @@ RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
     . /venv/main/bin/activate && \
-    torch_version_pre="$(python -c 'import torch; print(torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
     uv pip install --no-cache-dir --torch-backend=cu128 "$unsloth_spec" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
@@ -52,9 +53,10 @@ RUN \
     # Add llama.cpp shared libs to linker search path
     echo "/opt/workspace-internal/unsloth/llama.cpp/build/bin" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig && \
-    # Verify PyTorch version not clobbered
-    torch_version_post="$(python -c 'import torch; print(torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec)
+    # versions are unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

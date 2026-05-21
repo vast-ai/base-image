@@ -23,7 +23,8 @@ RUN \
     [[ -n "${A1111_REF}" ]] || { echo "Must specify A1111_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # xformers publishes amd64-only CUDA wheels; skip on other arches
     # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
     # not fail the build. dpkg --print-architecture reflects the actual
@@ -41,6 +42,10 @@ RUN \
     git clone --recursive https://github.com/AUTOMATIC1111/stable-diffusion-webui && \
     cd /opt/workspace-internal/stable-diffusion-webui && \
     git checkout "${A1111_REF}" && \
+    # Strip base-provided torch ecosystem pins from upstream requirements so
+    # the pytorch base remains the single source of truth. The diff-based
+    # assertion at the end of this RUN catches any drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements_versions.txt && \
     uv pip install --no-cache-dir \
         -r requirements_versions.txt && \
     # Download custom models into the build if you want them - None included in default build
@@ -58,9 +63,11 @@ RUN \
             --no-half \
             --port 11404 \
             --exit && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec)
+    # versions are unchanged. Catches silent ABI clobbers that the
+    # torch-only check used to miss.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
