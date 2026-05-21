@@ -26,6 +26,18 @@ RUN \
     git checkout "${AI_TOOLKIT_REF}" && \
     # Fixes known issue with toolkit 6870ab4
     uv pip install --no-cache-dir timm==1.0.22 && \
+    # Strip upstream's torchcodec pin from requirements_base.txt before
+    # installing. ai-toolkit pins torchcodec==0.9.1, which was built
+    # against torch 2.10's ABI; torchcodec's PyPI metadata declares no
+    # torch requirement, so without this strip uv silently replaces the
+    # pytorch base's pinned torchcodec (0.5 on torch 2.7.1) with 0.9.1.
+    # The torch_version_pre/post assertion below only checks torch
+    # itself, not torchcodec, so the mismatch slips through to runtime.
+    # ai-toolkit uses torchcodec transitively (torchaudio.load() in
+    # toolkit/dataloader_mixins.py routes through torchcodec under
+    # torchaudio 2.x), so keeping the base's matching torchcodec 0.5 is
+    # the correct fix; the explicit pin was wrong.
+    sed -i '/^torchcodec[<>=]/d' requirements_base.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     cd ui && \
     npm install && \
