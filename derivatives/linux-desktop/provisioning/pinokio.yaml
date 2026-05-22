@@ -1,0 +1,86 @@
+# Pinokio desktop-app provisioning manifest (converted from
+# provisioning_scripts/pinokio.sh).
+#
+# Usage: point the instance at this file via the PROVISIONING_MANIFEST
+# environment variable, e.g.
+#   PROVISIONING_MANIFEST=https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/linux-desktop/provisioning_manifests/pinokio.yaml
+#
+# The AppImage install is inherently imperative (resolve the latest release
+# via the GitHub API, pick the host-arch asset, extract the AppImage), so it
+# lives in post_commands. The .desktop launcher is declarative and is written
+# by write_files_late. Running through the provisioner (rather than as a bare
+# PROVISIONING_SCRIPT) gives this retries, failure handling, idempotency, and
+# unified logging.
+#
+# arm64: Pinokio publishes per-arch Linux AppImages —
+#   x86_64 -> Pinokio-<ver>.AppImage
+#   arm64  -> Pinokio-<ver>-arm64.AppImage
+# The post_command derives the suffix from `dpkg --print-architecture`.
+#
+# IMPORTANT — variable syntax: the provisioner expands every ${...} in this
+# manifest from the instance environment *before* the shell runs (see the
+# provisioner README, "Environment Variable Expansion"). So inside the
+# post_command, shell-internal variables are written as bare `$var` (never
+# `${var}`) to keep them out of that pass. Only genuine instance env vars
+# that we want injected at provision time use the `${ENV:-default}` form:
+# PINOKIO_VERSION (below) and WORKSPACE (in the .desktop Exec line).
+
+version: 1
+
+write_files_late:
+  - path: /home/user/Desktop/Pinokio.desktop
+    permissions: "0755"
+    owner: "user"
+    content: |
+      [Desktop Entry]
+      Version=1.0
+      Type=Application
+      Name=Pinokio
+      Comment=Pinokio Application
+      Exec=env HOME=${WORKSPACE:-/workspace} APPDIR=/opt/pinokio /opt/pinokio/AppRun --no-sandbox %U
+      Icon=/opt/pinokio/pinokio.png
+      Terminal=false
+      Categories=Utility;
+      StartupNotify=true
+
+post_commands:
+  - |
+    set -euo pipefail
+    mkdir -p /home/user/Desktop
+    cd /tmp
+
+    # The PINOKIO_VERSION:-  expression on the next line is filled in by the
+    # provisioner's manifest expansion from the instance env (empty if unset).
+    # Everything below uses bare $var so the shell — not the manifest
+    # expander — evaluates it.
+    VERSION="${PINOKIO_VERSION:-}"
+    if [ -z "$VERSION" ]; then
+      VERSION="$(curl -fsSL https://api.github.com/repos/pinokiocomputer/pinokio/releases/latest | jq -r .tag_name 2>/dev/null || true)"
+    fi
+    if [ -z "$VERSION" ]; then
+      VERSION=v7.2.6
+    fi
+    VNUM="$(printf '%s' "$VERSION" | sed 's/^v//')"
+
+    # Pinokio's Linux AppImage filename is arch-specific: x86_64 is the bare
+    # name, arm64 carries an -arm64 suffix.
+    ARCH="$(dpkg --print-architecture)"
+    if [ "$ARCH" = amd64 ]; then
+      ARCH_SUFFIX=""
+    elif [ "$ARCH" = arm64 ]; then
+      ARCH_SUFFIX="-arm64"
+    else
+      echo "Unsupported arch for Pinokio: $ARCH"
+      exit 1
+    fi
+
+    FILE_NAME="Pinokio-$VNUM$ARCH_SUFFIX.AppImage"
+    wget -O "$FILE_NAME" "https://github.com/pinokiocomputer/pinokio/releases/download/$VERSION/$FILE_NAME"
+    chmod +x "$FILE_NAME"
+    ./"$FILE_NAME" --appimage-extract
+
+    # Re-runnable: clear any prior extraction before moving the new one in.
+    rm -rf /opt/pinokio
+    mv /tmp/squashfs-root /opt/pinokio
+    chown -R user:root /opt/pinokio
+    rm -f "/tmp/$FILE_NAME"
