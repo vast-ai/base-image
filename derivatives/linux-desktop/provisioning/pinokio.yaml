@@ -45,7 +45,11 @@ write_files_late:
 
 post_commands:
   - |
-    set -euo pipefail
+    # NOTE: the provisioner runs post_commands under /bin/sh (dash on
+    # Ubuntu), not bash — so this block must stay POSIX sh. In particular
+    # `set -o pipefail` is a bashism dash rejects ("Illegal option -o
+    # pipefail"); use `set -eu` only, and avoid [[ ]], arrays, etc.
+    set -eu
     mkdir -p /home/user/Desktop
     cd /tmp
 
