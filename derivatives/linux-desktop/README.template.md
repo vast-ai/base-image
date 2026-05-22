@@ -107,11 +107,17 @@ When creating SSH port forwards, use the internal ports listed above. These port
 
 ### **Pre-installed Applications**
 - **Blender** - 3D modeling and rendering
-- **Google Chrome** - Web browser
-- **GPU Benchmarks** - glmark2 and Unigine Heaven for testing GPU performance
+- **Firefox** - Web browser (all architectures)
+- **Google Chrome** - Web browser (x86_64 only; Google does not publish an aarch64 build)
+- **GPU Benchmarks** - glmark2 for testing GPU performance
 
 ### **Dynamic Provisioning**
-Need specific software installed automatically? Set the `PROVISIONING_SCRIPT` environment variable to a plain-text script URL (GitHub, Gist, etc.), and we'll run your setup script on first boot!
+Need specific software installed automatically? You have two options, both run on first boot:
+
+- **`PROVISIONING_MANIFEST`** *(recommended)* - URL or local path to a declarative YAML manifest. The provisioner handles ordering, retries, idempotency, and logging for you. A ready-to-use example that installs the [Pinokio](https://pinokio.computer/) launcher (x86_64 **and** arm64) lives at [`provisioning/pinokio.yaml`](provisioning/pinokio.yaml).
+- **`PROVISIONING_SCRIPT`** - URL to a plain-text shell script (GitHub, Gist, etc.) for fully imperative setups.
+
+If both are set, the manifest runs first and the script runs as its final phase.
 
 ### **Multiple Access Methods**
 | Method | Best For | What You Get |
@@ -137,6 +143,7 @@ Need specific software installed automatically? Set the `PROVISIONING_SCRIPT` en
 | `AUTH_EXCLUDE` | | Disable authentication for specific ports (e.g. `6006,8384`) |
 | `ENABLE_HTTPS` | `false` | Enable or disable TLS |
 | `PORTAL_CONFIG` | See docs | Configures the Instance Portal and application startup |
+| `PROVISIONING_MANIFEST` | | URL or path to a declarative YAML provisioning manifest (recommended; e.g. `provisioning/pinokio.yaml`) |
 | `PROVISIONING_SCRIPT` | | URL pointing to a shell script (GitHub Repo, Gist) |
 | `SELKIES_ENCODER` | `x264enc` | Video encoder (`x264enc` or `nvh264enc`) |
 | `VNC_PASSWORD` | `$OPEN_BUTTON_TOKEN` | Custom password for VNC connections |
