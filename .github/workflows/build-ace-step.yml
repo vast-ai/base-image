@@ -167,9 +167,15 @@ jobs:
       matrix:
         base_image:
           - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py311-2026-04-15
+        # arm64 is intentionally absent: ACE-Step-1.5's pyproject.toml
+        # declares `torchao ; platform_machine == 'aarch64'`, and torchao
+        # ships no aarch64 wheels (manylinux_x86_64 only), so the upstream
+        # resolver makes the package uninstallable on arm64. Stripping the
+        # marker would produce a degraded/broken arm64 image since upstream
+        # added torchao deliberately for aarch64. Re-add when torchao ships
+        # aarch64 wheels (and update merge-manifests `arches` below).
         arch:
           - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
-          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
 
     steps:
       - name: Checkout
@@ -262,6 +268,11 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # amd64-only until upstream torchao ships arm64 wheels (see build
+          # matrix comment above). Keep the merge step in place so the
+          # production tag still resolves through the standard staging->prod
+          # path; add `arm64` back to this list when the matrix gains arm64.
+          arches: amd64
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
