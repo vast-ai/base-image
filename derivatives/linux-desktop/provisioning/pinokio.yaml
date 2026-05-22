@@ -82,5 +82,18 @@ post_commands:
     # Re-runnable: clear any prior extraction before moving the new one in.
     rm -rf /opt/pinokio
     mv /tmp/squashfs-root /opt/pinokio
+
+    # Fix the extracted AppRun's APPDIR detection. The bundled AppRun only
+    # resolves APPDIR correctly when the AppImage is *mounted* (the runtime
+    # sets APPDIR). We run it from an extracted tree, so APPDIR is unset and
+    # AppRun's fallback walks up looking for a dir containing $1 — which
+    # fails when $1 is a flag like --no-sandbox, leaving APPDIR empty and
+    # BIN=/pinokio ("AppRun: line 45: /pinokio: No such file or directory").
+    # Inject a self-locating APPDIR right after the shebang so every
+    # invocation (desktop launcher or terminal) resolves it to /opt/pinokio.
+    # (Single-quoted $(...)/$0 — no ${...} — so the provisioner's manifest
+    # env-expansion leaves it intact for the shell.)
+    sed -i '1a export APPDIR="$(dirname "$(readlink -f "$0")")"' /opt/pinokio/AppRun
+
     chown -R user:root /opt/pinokio
     rm -f "/tmp/$FILE_NAME"
