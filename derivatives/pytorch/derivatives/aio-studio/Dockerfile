@@ -7,12 +7,15 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="AIO Studio image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
-# xformers, sageattention, and the pinned Blender archive only ship amd64
-# artifacts. The RUN blocks below use `dpkg --print-architecture` rather than
-# ${TARGETARCH:-amd64} so that builds without buildx (no auto-injected
-# TARGETARCH) detect the actual container arch instead of silently
-# mis-selecting amd64. Mirrors the amd64_only pattern used by the pytorch
-# base's torch-companions.json.
+# xformers, sageattention, and onnxruntime-gpu ship amd64-only artifacts
+# (xformers/sageattention CUDA wheels are manylinux_x86_64-only; onnxruntime-gpu
+# has no aarch64 wheels at any version). The RUN blocks below use
+# `dpkg --print-architecture` rather than ${TARGETARCH:-amd64} so that
+# builds without buildx (no auto-injected TARGETARCH) detect the actual
+# container arch instead of silently mis-selecting amd64. The Blender
+# install handles both arches by selecting the linux-x64 vs linux-arm64
+# artifact via the same arch detection. Mirrors the amd64_only pattern
+# used by the pytorch base's torch-companions.json.
 
 # ---------- ComfyUI ----------
 ARG COMFYUI_REPO=https://github.com/Comfy-Org/ComfyUI
@@ -24,7 +27,13 @@ RUN \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
     fi && \
-    uv pip install --no-cache-dir onnxruntime-gpu insightface && \
+    # onnxruntime-gpu (and insightface, which uses it for face detection/swap)
+    # has no aarch64 wheels at any version. Gate the same way as xformers so
+    # arm64 builds skip these — those extensions just won't be available
+    # there, the rest of ComfyUI still works.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir onnxruntime-gpu insightface; \
+    fi && \
     cd /opt/workspace-internal/ && \
     git clone "${COMFYUI_REPO}" ComfyUI && \
     cd ComfyUI && \

@@ -31,7 +31,14 @@ RUN \
     fi && \
     # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
     uv pip install --no-cache-dir ${EXTRA_ACCEL_PKGS} torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
-    uv pip install --no-cache-dir onnxruntime-gpu insightface && \
+    # onnxruntime-gpu has no aarch64 wheels at any version (manylinux x86_64
+    # + win_amd64 only). insightface uses it for face detection / face-swap
+    # extensions; on arm64 we skip both — the rest of the image still works,
+    # those extensions just won't be available. Same shape as the sd-forge
+    # onnxruntime block.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir onnxruntime-gpu insightface; \
+    fi && \
     # Get Fooocus and install dependencies (torch should not be pinned to a specific version in the requirements.txt - If it is then our build will probably fail)
     cd /opt/workspace-internal/ && \
     git clone https://github.com/lllyasviel/Fooocus && \
