@@ -1,4 +1,4 @@
-# Build ComfyUI image - works on main repo (scheduled + manual) and forks (manual)
+# Build ComfyUI image — runs on schedule and via manual `workflow_dispatch` on the main repo (and via manual dispatch on forks).
 # Required repository secrets:
 # DOCKERHUB_USERNAME
 # DOCKERHUB_TOKEN
