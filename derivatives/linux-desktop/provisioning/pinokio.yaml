@@ -3,7 +3,7 @@
 #
 # Usage: point the instance at this file via the PROVISIONING_MANIFEST
 # environment variable, e.g.
-#   PROVISIONING_MANIFEST=https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/linux-desktop/provisioning_manifests/pinokio.yaml
+#   PROVISIONING_MANIFEST=https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/linux-desktop/provisioning/pinokio.yaml
 #
 # The AppImage install is inherently imperative (resolve the latest release
 # via the GitHub API, pick the host-arch asset, extract the AppImage), so it
