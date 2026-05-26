@@ -461,8 +461,14 @@ RUN \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         cd /tmp && \
         curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
+        # The preceding Firefox step ended with `rm -rf /var/lib/apt/lists/*`,
+        # so apt has no package lists. Repopulate them before installing the
+        # local .deb — Chrome pulls in runtime deps (libnss3, fonts-liberation,
+        # etc.) that apt must resolve from the indexes.
+        apt-get update && \
         apt-get install -y ./google-chrome-stable.deb && \
         rm -f google-chrome-stable.deb && \
+        apt-get clean && rm -rf /var/lib/apt/lists/* && \
         update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
         update-alternatives --set x-www-browser /usr/bin/google-chrome-stable; \
     else \
