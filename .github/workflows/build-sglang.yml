@@ -184,8 +184,18 @@ jobs:
       - name: Expand matrix with arch axis
         id: expand
         if: steps.decision.outputs.should-run == 'true'
+        # Route the GHA conditional through an env var rather than
+        # interpolating it directly into a single-quoted bash assignment.
+        # The previous form embedded GHA's `== 'true'` string literal
+        # inside bash single quotes — it worked (GHA evaluates `${{ ... }}`
+        # before bash sees the line, so the inner single quotes never
+        # reach bash) but it's the same script-injection-prone pattern
+        # GitHub's docs warn against, and it confuses static analyzers.
+        # env: injection is the recommended pattern.
+        env:
+          MERGE_MATRIX_RAW: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}
         run: |
-          MERGE_MATRIX='${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}'
+          MERGE_MATRIX="$MERGE_MATRIX_RAW"
 
           # Cross-product the variants matrix with native-runner arch entries.
           # Each build job pulls matrix.arch.{platform,suffix,runs_on}.

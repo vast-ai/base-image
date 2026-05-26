@@ -254,37 +254,49 @@ RUN \
     npm install && \
     cp .env.example .env
 
-# ---------- Google Chrome ----------
+# ---------- Google Chrome (amd64 only — no aarch64 .deb from Google) ----------
 RUN \
-    cd /tmp && \
-    curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
-    apt-get update && apt-get install -y ./google-chrome-stable.deb && \
-    rm -f google-chrome-stable.deb && apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    # Point google-chrome-stable at our wrapper which adds --no-sandbox (required for root)
-    ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable
+    set -euo pipefail && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        cd /tmp && \
+        curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
+        apt-get update && apt-get install -y ./google-chrome-stable.deb && \
+        rm -f google-chrome-stable.deb && apt-get clean && rm -rf /var/lib/apt/lists/* && \
+        # Point google-chrome-stable at our wrapper which adds --no-sandbox (required for root)
+        ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable; \
+    else \
+        echo "Skipping Google Chrome on $(dpkg --print-architecture); Google does not publish an aarch64 .deb."; \
+    fi
 
 # ---------- Blender ----------
-# Blender ships separate archives per arch: amd64 -> linux-x64, arm64 -> linux-arm64.
+# Blender ships ONLY linux-x64 tarballs on the official archive — there is no
+# Linux arm64 tarball at any version (verified across 4.x..5.x). So on amd64
+# we install the latest official tarball; on arm64 we install Ubuntu's
+# distro-packaged blender (older, but a real working .deb). Same pattern as
+# derivatives/linux-desktop/Dockerfile.
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
-    case "$(dpkg --print-architecture)" in \
-        amd64) BLENDER_ARCH="x64" ;; \
-        arm64) BLENDER_ARCH="arm64" ;; \
-        *) echo "Unsupported arch for Blender: $(dpkg --print-architecture)"; exit 1 ;; \
-    esac && \
-    if [ -z "$BLENDER_VERSION" ]; then \
-        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
-        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
-            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
-    fi && \
-    cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
-    tar xf "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-${BLENDER_ARCH}/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        if [ -z "$BLENDER_VERSION" ]; then \
+            MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+                grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+            BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
+                grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+        fi && \
+        echo "Installing Blender ${BLENDER_VERSION} (amd64 tarball)" && \
+        cd /opt && \
+        wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        tar xf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/; \
+    else \
+        echo "Installing Blender from apt (arm64; no official Linux arm64 tarball exists)" && \
+        apt-get update && \
+        apt-get install --no-install-recommends -y blender && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # ==========================================================================
 # Final assembly
