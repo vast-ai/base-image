@@ -23,8 +23,8 @@ RUN \
     set -euo pipefail && \
     [[ -n "${FLUXGYM_REF}" ]] || { echo "Must specify FLUXGYM_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
-    # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # Clone FluxGym
     cd /opt/workspace-internal/ && \
     git clone "${FLUXGYM_REPO}" fluxgym && \
@@ -32,20 +32,27 @@ RUN \
     git checkout "${FLUXGYM_REF}" && \
     # Clone Kohya sd-scripts (sd3 branch) as a sibling tree inside fluxgym
     git clone -b "${SD_SCRIPTS_REF}" "${SD_SCRIPTS_REPO}" sd-scripts && \
+    # Strip base-provided torch ecosystem pins from both upstream
+    # requirements files so the pytorch base remains the single source of
+    # truth. The diff-based assertion at the end of this RUN catches drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' sd-scripts/requirements.txt requirements.txt && \
     # Install Kohya sd-scripts requirements first (fluxgym imports from it at runtime)
     (cd sd-scripts && uv pip install --no-cache-dir -r requirements.txt) && \
     # Install FluxGym requirements with pinned ecosystem versions.
-    # transformers==4.49.0 and peft<0.18 are load-bearing (auto-caption and training regressions otherwise)
+    # transformers==4.49.0 and peft<0.18 are load-bearing (auto-caption and training regressions otherwise).
+    # NOTE: don't re-list torch/torchvision/torchaudio here — the base
+    # already provides them, and adding them to this install with
+    # --torch-backend cu128 could trigger uv to re-resolve from the cu128
+    # index and clobber the base.
     uv pip install --no-cache-dir \
-        torch torchvision torchaudio bitsandbytes \
+        bitsandbytes \
         -r requirements.txt \
         'peft<0.18' \
         --torch-backend cu128 && \
     uv pip install --no-cache-dir transformers==4.49.0 && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN \

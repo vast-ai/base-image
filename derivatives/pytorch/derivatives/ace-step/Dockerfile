@@ -23,7 +23,8 @@ RUN \
     . /venv/main/bin/activate && \
     . /opt/nvm/nvm.sh && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # Clone and install ACE-Step 1.5
     cd /opt/workspace-internal/ && \
     git clone https://github.com/ace-step/ACE-Step-1.5 && \
@@ -54,10 +55,11 @@ RUN \
     cd server && \
     npm install && \
     cp .env.example .env && \
-    # Verify PyTorch version unchanged
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged. ace-step's pyproject.toml strip
+    # above prevents upstream pins from leaking through; this is the
+    # downstream sanity check that catches any other clobber path.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN \

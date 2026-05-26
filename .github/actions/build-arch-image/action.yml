@@ -1,0 +1,117 @@
+# .github/actions/build-arch-image/action.yml
+name: Build Arch Image
+description: >-
+  Build and push a single-arch Docker image to ${tag-base}-${arch_suffix}.
+  Designed to be called once per arch in a matrix; pair with merge-arch-manifests
+  to stitch the per-arch tags into a multi-arch index at the production tag.
+  No QEMU — caller is expected to run on a native-arch runner (ubuntu-latest
+  for amd64, ubuntu-24.04-arm for arm64).
+
+inputs:
+  context:
+    description: "Build context path (e.g. derivatives/pytorch/derivatives/comfyui)"
+    required: false
+    default: "."
+  dockerfile:
+    description: "Path to Dockerfile, relative to context"
+    required: false
+    default: "Dockerfile"
+  arch:
+    description: "Target platform — linux/amd64 or linux/arm64"
+    required: true
+  tag-base:
+    description: >-
+      The repo:tag prefix this build pushes to; the action appends
+      -${arch_suffix} (e.g. tag-base=vastai-staging/comfy:master-cuda-12.9-py312
+      pushes vastai-staging/comfy:master-cuda-12.9-py312-amd64). Typically a
+      staging namespace; merge-arch-manifests reads from here and assembles
+      the multi-arch index at a different (production) tag.
+    required: true
+  build-args:
+    description: "Multiline KEY=VALUE pairs passed as --build-arg"
+    required: false
+    default: ""
+  build-contexts:
+    description: "Multiline name=ref pairs passed as --build-context"
+    required: false
+    default: ""
+  dockerhub-username:
+    description: "Docker Hub username (pass secrets.DOCKERHUB_USERNAME)"
+    required: true
+  dockerhub-token:
+    description: "Docker Hub token (pass secrets.DOCKERHUB_TOKEN)"
+    required: true
+
+outputs:
+  arch-tag:
+    description: "The arch-suffixed tag that was pushed"
+    value: ${{ steps.build.outputs.arch-tag }}
+  arch-suffix:
+    description: "Just the arch suffix (amd64 or arm64)"
+    value: ${{ steps.build.outputs.arch-suffix }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Docker Hub login
+      uses: docker/login-action@v3
+      with:
+        username: ${{ inputs.dockerhub-username }}
+        password: ${{ inputs.dockerhub-token }}
+
+    - name: Build and push single-arch image
+      id: build
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        CONTEXT: ${{ inputs.context }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        TAG_BASE: ${{ inputs.tag-base }}
+        BUILD_ARGS_RAW: ${{ inputs.build-args }}
+        BUILD_CONTEXTS_RAW: ${{ inputs.build-contexts }}
+      run: |
+        set -euo pipefail
+
+        # Derive arch suffix from platform (linux/amd64 -> amd64)
+        ARCH_SUFFIX="${ARCH#linux/}"
+        ARCH_TAG="${TAG_BASE}-${ARCH_SUFFIX}"
+
+        echo "arch-suffix=${ARCH_SUFFIX}" >> "$GITHUB_OUTPUT"
+        echo "arch-tag=${ARCH_TAG}" >> "$GITHUB_OUTPUT"
+
+        # Assemble --build-arg flags from multiline input (one KEY=VALUE per line).
+        build_arg_flags=()
+        while IFS= read -r line; do
+          [[ -z "${line// }" ]] && continue
+          build_arg_flags+=(--build-arg "$line")
+        done <<< "${BUILD_ARGS_RAW}"
+
+        # Assemble --build-context flags from multiline input.
+        build_ctx_flags=()
+        while IFS= read -r line; do
+          [[ -z "${line// }" ]] && continue
+          build_ctx_flags+=(--build-context "$line")
+        done <<< "${BUILD_CONTEXTS_RAW}"
+
+        # buildx -f is resolved relative to CWD, not to the build context, so
+        # join them ourselves to match the documented "relative to context"
+        # semantic. Without this we'd accidentally pick up a Dockerfile from
+        # the repo root.
+        DOCKERFILE_PATH="${CONTEXT%/}/${DOCKERFILE}"
+
+        echo "=== Building ${ARCH_TAG} for ${ARCH} ==="
+        echo "    dockerfile: ${DOCKERFILE_PATH}"
+        docker buildx build \
+          --progress=plain \
+          --platform "${ARCH}" \
+          -f "${DOCKERFILE_PATH}" \
+          "${build_arg_flags[@]}" \
+          "${build_ctx_flags[@]}" \
+          --tag "${ARCH_TAG}" \
+          --push \
+          "${CONTEXT}"
+
+        echo "Pushed: ${ARCH_TAG}"

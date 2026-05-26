@@ -7,6 +7,16 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="AIO Studio image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
+# xformers, sageattention, and onnxruntime-gpu ship amd64-only artifacts
+# (xformers/sageattention CUDA wheels are manylinux_x86_64-only; onnxruntime-gpu
+# has no aarch64 wheels at any version). The RUN blocks below use
+# `dpkg --print-architecture` rather than ${TARGETARCH:-amd64} so that
+# builds without buildx (no auto-injected TARGETARCH) detect the actual
+# container arch instead of silently mis-selecting amd64. The Blender
+# install handles both arches by selecting the linux-x64 vs linux-arm64
+# artifact via the same arch detection. Mirrors the amd64_only pattern
+# used by the pytorch base's torch-companions.json.
+
 # ---------- ComfyUI ----------
 ARG COMFYUI_REPO=https://github.com/Comfy-Org/ComfyUI
 ARG COMFYUI_REF=v0.18.2
@@ -14,8 +24,16 @@ RUN \
     set -euo pipefail && \
     create_app_venv comfyui main && \
     . /venv/comfyui/bin/activate && \
-    uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
-    uv pip install --no-cache-dir onnxruntime-gpu insightface && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
+    fi && \
+    # onnxruntime-gpu (and insightface, which uses it for face detection/swap)
+    # has no aarch64 wheels at any version. Gate the same way as xformers so
+    # arm64 builds skip these — those extensions just won't be available
+    # there, the rest of ComfyUI still works.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir onnxruntime-gpu insightface; \
+    fi && \
     cd /opt/workspace-internal/ && \
     git clone "${COMFYUI_REPO}" ComfyUI && \
     cd ComfyUI && \
@@ -48,7 +66,9 @@ RUN \
     set -euo pipefail && \
     create_app_venv forge main && \
     . /venv/forge/bin/activate && \
-    uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}" && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
+    fi && \
     cd /opt/workspace-internal/ && \
     git clone "${FORGE_REPO}" stable-diffusion-webui-forge && \
     cd stable-diffusion-webui-forge && \
@@ -234,31 +254,49 @@ RUN \
     npm install && \
     cp .env.example .env
 
-# ---------- Google Chrome ----------
+# ---------- Google Chrome (amd64 only — no aarch64 .deb from Google) ----------
 RUN \
-    cd /tmp && \
-    curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
-    apt-get update && apt-get install -y ./google-chrome-stable.deb && \
-    rm -f google-chrome-stable.deb && apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    # Point google-chrome-stable at our wrapper which adds --no-sandbox (required for root)
-    ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable
+    set -euo pipefail && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        cd /tmp && \
+        curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
+        apt-get update && apt-get install -y ./google-chrome-stable.deb && \
+        rm -f google-chrome-stable.deb && apt-get clean && rm -rf /var/lib/apt/lists/* && \
+        # Point google-chrome-stable at our wrapper which adds --no-sandbox (required for root)
+        ln -sf /usr/local/bin/google-chrome /usr/bin/google-chrome-stable; \
+    else \
+        echo "Skipping Google Chrome on $(dpkg --print-architecture); Google does not publish an aarch64 .deb."; \
+    fi
 
 # ---------- Blender ----------
+# Blender ships ONLY linux-x64 tarballs on the official archive — there is no
+# Linux arm64 tarball at any version (verified across 4.x..5.x). So on amd64
+# we install the latest official tarball; on arm64 we install Ubuntu's
+# distro-packaged blender (older, but a real working .deb). Same pattern as
+# derivatives/linux-desktop/Dockerfile.
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
-    if [ -z "$BLENDER_VERSION" ]; then \
-        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
-        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
-            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
-    fi && \
-    cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    tar xf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        if [ -z "$BLENDER_VERSION" ]; then \
+            MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+                grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+            BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
+                grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+        fi && \
+        echo "Installing Blender ${BLENDER_VERSION} (amd64 tarball)" && \
+        cd /opt && \
+        wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        tar xf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/; \
+    else \
+        echo "Installing Blender from apt (arm64; no official Linux arm64 tarball exists)" && \
+        apt-get update && \
+        apt-get install --no-install-recommends -y blender && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # ==========================================================================
 # Final assembly

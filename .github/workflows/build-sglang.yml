@@ -1,6 +1,17 @@
 # .github/workflows/build-sglang.yml
-# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_NAMESPACE
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
 # Optional: SLACK_WEBHOOK_URL
+#
+# Multi-arch strategy: each (variant, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-variant merge
+# job then uses crane to assemble the multi-arch index at the PRODUCTION tag.
+# No QEMU emulation.
+
 name: Build SGLang Image
 
 on:
@@ -17,18 +28,12 @@ on:
         description: "Push to username/<repo>"
         required: true
         default: "sglang"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "sglang"
-  DEFAULT_MULTI_ARCH: "false"
   # 12 hours
   RELEASE_AGE_THRESHOLD: 43200
 
@@ -38,7 +43,8 @@ jobs:
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
       sglang-version: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.version || steps.release-check.outputs.resolved-version }}
-      base-images: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}
+      build-matrix: ${{ steps.expand.outputs.build-matrix }}
+      merge-matrix: ${{ steps.expand.outputs.merge-matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,12 +52,17 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
       - name: Handle nightly build
@@ -61,7 +72,7 @@ jobs:
           echo "is-nightly=true" >> $GITHUB_OUTPUT
           echo "version=nightly-$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
           echo 'matrix=[{"tag":"dev","cuda":"12.9"}]' >> $GITHUB_OUTPUT
-          echo "✓ Nightly build requested - using upstream 'dev' tag"
+          echo "Nightly build requested - using upstream 'dev' tag"
 
       - name: Check release and resolve version
         id: release-check
@@ -133,7 +144,7 @@ jobs:
             exit 1
           fi
 
-          echo "✓ Will build $MATRIX_SIZE image(s)"
+          echo "Will build $MATRIX_SIZE image(s)"
 
       - name: Determine if build should run
         id: decision
@@ -143,7 +154,7 @@ jobs:
           if [[ "${{ steps.nightly-check.outputs.is-nightly }}" == "true" ]]; then
             if [[ "$SECRETS" == "true" ]]; then
               echo "should-run=true" >> $GITHUB_OUTPUT
-              echo "✓ Building nightly"
+              echo "Building nightly"
             else
               echo "should-run=false" >> $GITHUB_OUTPUT
               echo "::notice::Skipping - Required secrets not configured"
@@ -157,7 +168,7 @@ jobs:
 
           if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && "$MATRIX_SIZE" -gt 0 ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building $MATRIX_SIZE image(s) for ${{ steps.release-check.outputs.resolved-version }}"
+            echo "Building $MATRIX_SIZE image(s) for ${{ steps.release-check.outputs.resolved-version }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
 
@@ -170,11 +181,42 @@ jobs:
             fi
           fi
 
+      - name: Expand matrix with arch axis
+        id: expand
+        if: steps.decision.outputs.should-run == 'true'
+        # Route the GHA conditional through an env var rather than
+        # interpolating it directly into a single-quoted bash assignment.
+        # The previous form embedded GHA's `== 'true'` string literal
+        # inside bash single quotes — it worked (GHA evaluates `${{ ... }}`
+        # before bash sees the line, so the inner single quotes never
+        # reach bash) but it's the same script-injection-prone pattern
+        # GitHub's docs warn against, and it confuses static analyzers.
+        # env: injection is the recommended pattern.
+        env:
+          MERGE_MATRIX_RAW: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.matrix || steps.build-matrix.outputs.matrix }}
+        run: |
+          MERGE_MATRIX="$MERGE_MATRIX_RAW"
+
+          # Cross-product the variants matrix with native-runner arch entries.
+          # Each build job pulls matrix.arch.{platform,suffix,runs_on}.
+          ARCHES_JSON='[
+            {"platform": "linux/amd64", "suffix": "amd64", "runs_on": "ubuntu-latest"},
+            {"platform": "linux/arm64", "suffix": "arm64", "runs_on": "ubuntu-24.04-arm"}
+          ]'
+          BUILD_MATRIX=$(echo "$MERGE_MATRIX" | jq -c --argjson arches "$ARCHES_JSON" '
+            [.[] as $v | $arches[] as $a | $v + {arch: $a}]
+          ')
+
+          echo "Merge matrix: $MERGE_MATRIX"
+          echo "Build matrix: $BUILD_MATRIX"
+
+          echo "merge-matrix=$MERGE_MATRIX" >> $GITHUB_OUTPUT
+          echo "build-matrix=$BUILD_MATRIX" >> $GITHUB_OUTPUT
+
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
 
     permissions:
       contents: read
@@ -182,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.preflight.outputs.base-images) }}
+        include: ${{ fromJson(needs.preflight.outputs.build-matrix) }}
 
     steps:
       - name: Checkout
@@ -191,20 +233,7 @@ jobs:
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker Hub login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive image tag
-        id: meta
+      - name: Derive staging tag
         run: |
           VERSION="${{ needs.preflight.outputs.sglang-version }}"
           SGLANG_BASE="lmsysorg/sglang:${{ matrix.tag }}"
@@ -217,42 +246,74 @@ jobs:
 
           # Format: v0.5.7-cuda-12.9
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${{ matrix.cuda }}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
-
-          # Create safe ID from matrix entry
-          MATRIX_ID=$(echo "${{ matrix.tag }}" | md5sum | cut -c1-8)
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
           echo "SGLANG_BASE=$SGLANG_BASE" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
-          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
 
-          echo "Building from: $SGLANG_BASE"
-          echo "Output tag: $FULL_IMAGE"
+          echo "Building from: $SGLANG_BASE (arch=${{ matrix.arch.suffix }})"
 
-      - name: Build and push
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: external/sglang
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            SGLANG_BASE=${{ env.SGLANG_BASE }}
+          build-contexts: |
+            base_image_source=.
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
         run: |
-          # Upstream SGLang CUDA images are multi-arch manifests (amd64 + arm64).
-          if [[ "${{ inputs.MULTI_ARCH }}" == "true" ]]; then
-            platforms="linux/amd64,linux/arm64"
-          else
-            platforms="linux/amd64"
+          VERSION="${{ needs.preflight.outputs.sglang-version }}"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="$VERSION"
           fi
 
-          cd external/sglang
-          docker buildx build \
-            --platform "$platforms" \
-            --build-context base_image_source=../.. \
-            --build-arg SGLANG_BASE=${{ env.SGLANG_BASE }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${{ matrix.cuda }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-      - name: Record built tag
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
+          MATRIX_ID=$(echo "${{ matrix.tag }}" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -260,7 +321,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -287,11 +348,11 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      build-result: ${{ needs.merge-manifests.result }}
       image-name: "SGLang"
       image-ref: ${{ needs.preflight.outputs.sglang-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

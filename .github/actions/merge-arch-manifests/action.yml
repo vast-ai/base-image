@@ -1,0 +1,106 @@
+# .github/actions/merge-arch-manifests/action.yml
+name: Merge Arch Manifests
+description: >-
+  Stitch per-arch tags (pushed earlier by build-arch-image) into a multi-arch
+  index at the production tag, using crane. The source per-arch tags typically
+  live in a staging namespace so the production namespace's tag listing stays
+  clean. Optionally creates alias tags pointing at the same index.
+  Uses `crane index append` for the merge and `crane copy` for aliases —
+  cross-mounts blobs registry-side instead of streaming them through the
+  runner (see retag.sh for the same rationale applied to plain retags).
+
+inputs:
+  target-tag:
+    description: >-
+      The multi-arch (production) tag to create — e.g.
+      vastai/comfy:master-cuda-12.9-py312.
+    required: true
+  source-tag-base:
+    description: >-
+      The repo:tag prefix that build-arch-image pushed per-arch artifacts to.
+      crane reads ${source-tag-base}-amd64 / -arm64 (per the arches input) and
+      assembles the index at target-tag. Defaults to target-tag if omitted
+      (same-namespace pattern).
+    required: false
+    default: ""
+  arches:
+    description: "Comma-separated arch suffixes to merge (default: amd64,arm64)"
+    required: false
+    default: "amd64,arm64"
+  extra-tags:
+    description: >-
+      Optional multiline list of additional tags to point at the same index
+      (e.g. an alias without -pyXXX). One tag per line. Created via
+      `crane copy` so cross-repo aliases stay registry-side too.
+    required: false
+    default: ""
+  dockerhub-username:
+    description: "Docker Hub username (pass secrets.DOCKERHUB_USERNAME)"
+    required: true
+  dockerhub-token:
+    description: "Docker Hub token (pass secrets.DOCKERHUB_TOKEN)"
+    required: true
+
+outputs:
+  manifest-tag:
+    description: "The multi-arch index tag that was created"
+    value: ${{ inputs.target-tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up crane
+      uses: imjasonh/setup-crane@v0.4
+
+    - name: Docker Hub login
+      uses: docker/login-action@v3
+      with:
+        username: ${{ inputs.dockerhub-username }}
+        password: ${{ inputs.dockerhub-token }}
+
+    - name: Merge arch manifests
+      shell: bash
+      env:
+        TARGET_TAG: ${{ inputs.target-tag }}
+        SOURCE_TAG_BASE: ${{ inputs.source-tag-base }}
+        ARCHES: ${{ inputs.arches }}
+        EXTRA_TAGS_RAW: ${{ inputs.extra-tags }}
+      run: |
+        set -euo pipefail
+
+        # Fall back to target-tag if no separate source base was given.
+        : "${SOURCE_TAG_BASE:=${TARGET_TAG}}"
+
+        # Build the list of per-arch source manifests from the comma-separated arches input.
+        manifest_flags=()
+        IFS=',' read -ra ARCH_LIST <<< "${ARCHES}"
+        for arch in "${ARCH_LIST[@]}"; do
+          arch="${arch// }"
+          [[ -z "$arch" ]] && continue
+          manifest_flags+=(--manifest "${SOURCE_TAG_BASE}-${arch}")
+        done
+
+        echo "=== Building index ${TARGET_TAG} from arches: ${ARCHES} ==="
+        echo "    source base: ${SOURCE_TAG_BASE}"
+        # --docker-empty-base forces a fresh scratch index. Without it, crane
+        # pulls the existing target tag as the base and APPENDS the
+        # per-arch manifests to whatever was already there — so re-runs
+        # against the same tag accumulate duplicate platform entries and
+        # leave a non-deterministic index. Empty base makes the merge
+        # idempotent: the resulting index always contains exactly the
+        # manifests listed via -m.
+        crane index append \
+          --docker-empty-base \
+          --tag "${TARGET_TAG}" \
+          "${manifest_flags[@]}"
+
+        # Aliases: crane copy keeps blob mounts registry-side, so even
+        # cross-repository aliases don't pull image bytes through the runner.
+        while IFS= read -r extra; do
+          extra="${extra// }"
+          [[ -z "$extra" ]] && continue
+          echo "=== Aliasing ${TARGET_TAG} -> ${extra} ==="
+          crane copy "${TARGET_TAG}" "${extra}"
+        done <<< "${EXTRA_TAGS_RAW}"
+
+        echo "Created manifest: ${TARGET_TAG}"

@@ -42,10 +42,17 @@ RUN \
 # ==========================================================================
 
 # flash-attn into torch-2.9.1 (large compiled wheel — shared by all 2.9.1 children)
+# Wheel is amd64-only (linux_x86_64); on other arches (e.g. aarch64/sbsa for
+# Grace Blackwell) skip — downstream apps that need flash-attn must resolve
+# it from sdist. dpkg --print-architecture reflects the actual container
+# arch — unlike ${TARGETARCH:-amd64}, it doesn't silently mis-select amd64
+# when buildx hasn't injected TARGETARCH.
 RUN \
     set -euo pipefail && \
     . /venv/torch-2.9.1/bin/activate && \
-    uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; \
+    fi
 
 # ==========================================================================
 # Helper: create an isolated app venv sharing only torch from a base venv
@@ -166,18 +173,25 @@ RUN \
         wayland-protocols libelf-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Selkies GStreamer (low-latency WebRTC streaming)
+# Selkies GStreamer (low-latency WebRTC streaming) — amd64 only (upstream
+# only publishes amd64 release artifacts). On other arches (e.g. aarch64/sbsa
+# for Grace Blackwell) skip; desktop.sh detects the missing binary at runtime
+# and falls back to VNC.
 RUN \
     set -euo pipefail && \
-    SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
-    cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
-    cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
-    pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && \
-    rm -f *.whl && \
-    cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
-    cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && \
-    apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && \
-    rm -f *.deb && apt-get clean && rm -rf /var/lib/apt/lists/*
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
+        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
+        cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
+        pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && \
+        rm -f *.whl && \
+        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
+        cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && \
+        apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && \
+        rm -f *.deb && apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    else \
+        echo "Skipping Selkies install on $(dpkg --print-architecture)"; \
+    fi
 
 # KDE Plasma desktop environment
 RUN \

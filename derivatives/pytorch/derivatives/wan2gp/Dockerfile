@@ -18,8 +18,11 @@ RUN \
     set -euo pipefail && \
     [[ -n "${WAN2GP_REF}" ]] || { echo "Must specify WAN2GP_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
-    # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    # Combined with the strip below + the diff-based assertion at the end,
+    # this catches silent ABI clobbers — the torch-only check we used to
+    # do here let them slip through.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # Wan2GP needs ALSA for SDL audio even in dummy mode
     apt-get update && apt-get install --no-install-recommends -y libasound2-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
@@ -28,11 +31,21 @@ RUN \
     git clone "${WAN2GP_REPO}" Wan2GP && \
     cd Wan2GP && \
     git checkout "${WAN2GP_REF}" && \
+    # Strip all base-provided torch ecosystem pins from upstream requirements
+    # so the pytorch base remains the single source of truth. Wan2GP pins
+    # torchcodec==0.10.0 but never imports torchcodec anywhere in its source
+    # (dead dep). More generally: torchcodec's PyPI metadata declares no
+    # torch requirement, and uv won't catch a torch/torch-ecosystem version
+    # skew via dependency resolution — the diff-based assertion below is
+    # what catches it now. Strip these four uniformly across all
+    # pytorch-base derivatives.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec)
+    # versions are unchanged. Catches silent ABI clobbers that the
+    # torch-only check used to miss.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN \

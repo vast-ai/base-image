@@ -1,15 +1,13 @@
-# Stub on main so the workflow appears in GitHub's Actions UI dropdown,
-# letting it be triggered against a feature branch via `workflow_dispatch`.
-# The real implementation lives on the `arm64-readiness` branch and will
-# replace this file when that PR merges.
+# Promote staging Linux Desktop images to production by retagging (no rebuild).
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (target of the copy)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (source of the copy)
+# Optional: SLACK_WEBHOOK_URL
 #
-# To run the actual promote logic before the merge:
-#   gh workflow run promote-linux-desktop.yml --ref arm64-readiness \
-#       -f STAGING_DATE=YYYY-MM-DD
-#   ...or in the UI: pick "Run workflow", select the feature branch.
-# GitHub reads the workflow definition (and its inputs) from whatever
-# ref is selected at trigger time; this main-branch stub only exists to
-# register the trigger.
+# Uses `crane copy` so each retag stays registry-side via blob mount — no
+# image bytes flow through the runner. Mirrors retag.sh's rationale.
 
 name: Promote Linux Desktop
 
@@ -17,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       STAGING_DATE:
-        description: "Date suffix to promote (e.g. 2026-05-21) — only used when triggered from a feature branch with the real implementation"
+        description: "Date suffix to promote (e.g. 2026-05-21)"
         required: true
         type: string
       DOCKERHUB_REPO:
@@ -34,19 +32,210 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  group: linux-desktop-promote
+  cancel-in-progress: false
+
 jobs:
-  stub:
+  generate-configs:
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.configs.outputs.configs }}
+    steps:
+      - name: Generate filtered config list
+        id: configs
+        run: |
+          FILTER="${{ inputs.FILTER }}"
+
+          # Tag stems that the build workflow produces, before the dated
+          # suffix. Keep in sync with build-linux-desktop.yml's matrix.
+          # Format: key|tag_stem
+          ALL_CONFIGS=(
+            "cuda-13.2-24|cuda-13.2-ubuntu24.04"
+            "cuda-12.9-24|cuda-12.9-ubuntu24.04"
+            "stock-24|ubuntu24.04"
+          )
+
+          CONFIGS_JSON="[]"
+          for config in "${ALL_CONFIGS[@]}"; do
+            IFS='|' read -r key tag_stem <<< "$config"
+            if [[ -n "$FILTER" && "$key" != *"$FILTER"* ]]; then
+              continue
+            fi
+            ENTRY_JSON=$(jq -nc --arg key "$key" --arg tag_stem "$tag_stem" \
+              '{key: $key, tag_stem: $tag_stem}')
+            CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
+          done
+
+          {
+            echo "configs<<CONFIGS_EOF"
+            echo "${CONFIGS_JSON}"
+            echo "CONFIGS_EOF"
+          } >> $GITHUB_OUTPUT
+          echo "Configs to promote: $(echo "$CONFIGS_JSON" | jq length)"
+
+  preflight:
+    needs: generate-configs
     runs-on: ubuntu-latest
     steps:
-      - name: Explain stub
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify every staging source exists
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          DOCKERHUB_REPO: ${{ inputs.DOCKERHUB_REPO }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+          CONFIGS: ${{ needs.generate-configs.outputs.configs }}
         run: |
-          echo "This is the main-branch stub of Promote Linux Desktop."
-          echo "It exists so the workflow appears in the Actions UI; the real"
-          echo "promote logic is on the arm64-readiness branch."
+          set -euo pipefail
+
+          # Fail fast on missing staging sources so the real promote
+          # never half-clobbers production tags.
+          MISSING=()
+          COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<COUNT; i++)); do
+            tag_stem=$(echo "$CONFIGS" | jq -r ".[$i].tag_stem")
+            SOURCE="${NAMESPACE_STAGING}/${DOCKERHUB_REPO}:${tag_stem}-${STAGING_DATE}"
+            if crane digest "$SOURCE" >/dev/null 2>&1; then
+              echo "  ok: $SOURCE"
+            else
+              echo "  MISSING: $SOURCE"
+              MISSING+=("$SOURCE")
+            fi
+          done
+
+          if [[ "${#MISSING[@]}" -gt 0 ]]; then
+            echo ""
+            echo "ERROR: ${#MISSING[@]} staging source(s) missing; aborting before any prod writes:"
+            printf '  %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "Pre-flight passed: all staging sources resolved."
+
+  promote:
+    needs: [generate-configs, preflight]
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Retag staging -> production
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_REPO: ${{ inputs.DOCKERHUB_REPO }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+          CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+        run: |
+          set -euo pipefail
+          mkdir -p promoted-tags
+
+          COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
+            tag_stem=$(echo "$CONFIGS" | jq -r ".[$i].tag_stem")
+
+            SOURCE="${NAMESPACE_STAGING}/${DOCKERHUB_REPO}:${tag_stem}-${STAGING_DATE}"
+            TARGET="${NAMESPACE_PROD}/${DOCKERHUB_REPO}:${tag_stem}-${STAGING_DATE}"
+
+            echo ""
+            echo "--- ${key} ---"
+            echo "Promoting: ${SOURCE} -> ${TARGET}"
+            crane copy "${SOURCE}" "${TARGET}"
+            echo "$TARGET" >> promoted-tags/tags.txt
+          done
+
           echo ""
-          echo "Re-trigger this workflow with the feature branch selected:"
-          echo "  gh workflow run promote-linux-desktop.yml --ref arm64-readiness \\"
-          echo "      -f STAGING_DATE=${{ inputs.STAGING_DATE }}"
+          echo "=== Promotion complete ==="
+
+      - name: Upload promoted tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-tags
+          path: promoted-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [promote]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "promoted-tags"
+          path: all-tags/
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(find all-tags -name '*.txt' -exec cat {} + | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found $(echo "$TAGS" | jq length) unique tags"
+          else
+            echo "::warning::No tags found"
+            TAGS="[]"
+          fi
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> $GITHUB_OUTPUT
+
+  dry-run:
+    needs: [generate-configs, preflight]
+    if: ${{ inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print promotion plan
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_REPO: ${{ inputs.DOCKERHUB_REPO }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+          CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+        run: |
+          echo "=== DRY RUN - Promotion Plan ==="
+          echo "Staging date: $STAGING_DATE"
           echo ""
-          echo "When arm64-readiness merges to main this stub gets replaced by"
-          echo "the real implementation."
+
+          COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
+            tag_stem=$(echo "$CONFIGS" | jq -r ".[$i].tag_stem")
+            echo "--- ${key} ---"
+            echo "  ${NAMESPACE_STAGING}/${DOCKERHUB_REPO}:${tag_stem}-${STAGING_DATE}"
+            echo "    -> ${NAMESPACE_PROD}/${DOCKERHUB_REPO}:${tag_stem}-${STAGING_DATE}"
+            echo ""
+          done
+
+  notify:
+    needs: [generate-configs, promote, collect-tags]
+    if: always() && !inputs.DRY_RUN
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.promote.result }}
+      image-name: "Linux Desktop (Production)"
+      image-ref: ${{ inputs.STAGING_DATE }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

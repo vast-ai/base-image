@@ -1,12 +1,23 @@
 # Build Llama.cpp image - works on main repo (scheduled + manual) and forks (manual)
 # Required repository secrets:
-# DOCKERHUB_USERNAME
-# DOCKERHUB_TOKEN
-# DOCKERHUB_NAMESPACE
-# Optional:
-# SLACK_WEBHOOK_URL
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
+# Optional: SLACK_WEBHOOK_URL
 #
 # Release detection: Polls GitHub (ai-dock/llama.cpp-cuda) for new release tags.
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-base_image
+# merge job then uses crane to assemble the multi-arch index at the
+# PRODUCTION tag. No QEMU emulation.
+#
+# Upstream `ai-dock/llama.cpp-cuda` now publishes both amd64 and arm64
+# tarballs per release (since release b9264+). The Dockerfile picks the
+# right one via `dpkg --print-architecture`, so the same Dockerfile build
+# path runs identically on both runner arches.
 
 name: Build Llama.cpp Image
 
@@ -28,18 +39,12 @@ on:
         description: "Push to namespace/<repo>"
         required: true
         default: "llama-cpp"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "llama-cpp"
-  DEFAULT_MULTI_ARCH: "false"
   DEFAULT_CUDA_VERSION: "12.8"
   # 7 days
   RELEASE_AGE_THRESHOLD: 604800
@@ -57,12 +62,17 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
       - name: Check GitHub for new release
@@ -84,7 +94,7 @@ jobs:
 
           if [[ "$SECRETS" == "true" && "$NEW_RELEASE" == "true" && -n "$VERSION" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building Llama.cpp $VERSION"
+            echo "Building Llama.cpp $VERSION"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
 
@@ -100,12 +110,73 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
 
     permissions:
       contents: read
 
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/base-image:cuda-12.9-mini-py312-2026-04-15
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          BASE_IMAGE="${{ matrix.base_image }}"
+          TAG="${BASE_IMAGE##*:}"
+
+          # Extract CUDA runtime version from cuda-X.Y
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+          if [[ -z "$CUDA_VERSION" ]]; then
+            echo "::error::Failed to parse base image: $BASE_IMAGE"
+            exit 1
+          fi
+
+          LLAMA_CPP_VERSION="${{ needs.preflight.outputs.llama-cpp-version }}"
+          CUDA_BIN_VERSION="${{ inputs.CUDA_VERSION || env.DEFAULT_CUDA_VERSION }}"
+
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG" ]]; then
+            IMAGE_TAG="${LLAMA_CPP_VERSION}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          echo "CUDA_BIN_VERSION=$CUDA_BIN_VERSION" >> $GITHUB_ENV
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/llama-cpp
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
+            LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }}
+            CUDA_VERSION=${{ env.CUDA_BIN_VERSION }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -116,82 +187,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Maximize build space
-        uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker Hub login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive image tag
-        id: meta
+      - name: Derive image tags
         run: |
           BASE_IMAGE="${{ matrix.base_image }}"
           TAG="${BASE_IMAGE##*:}"
-
-          # Extract CUDA runtime version from cuda-X.Y
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
 
-          if [[ -z "$CUDA_VERSION" ]]; then
-            echo "::error::Failed to parse base image: $BASE_IMAGE"
-            exit 1
-          fi
-
           LLAMA_CPP_VERSION="${{ needs.preflight.outputs.llama-cpp-version }}"
-          CUDA_BIN_VERSION="${{ inputs.CUDA_VERSION || env.DEFAULT_CUDA_VERSION }}"
-
-          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
-          if [[ -z "$IMAGE_TAG_BASE" ]]; then
-            IMAGE_TAG_BASE="${LLAMA_CPP_VERSION}-cuda-${CUDA_VERSION}"
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG" ]]; then
+            IMAGE_TAG="${LLAMA_CPP_VERSION}-cuda-${CUDA_VERSION}"
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-          # Create a safe filename from the matrix value
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
           MATRIX_ID=$(echo "$BASE_IMAGE" | md5sum | cut -c1-8)
-
-          echo "IMAGE_TAG=$IMAGE_TAG_BASE" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
           echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
-          echo "CUDA_BIN_VERSION=$CUDA_BIN_VERSION" >> $GITHUB_ENV
 
-          echo "Derived image tag: $IMAGE_TAG_BASE"
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
-          fi
-
-          platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
-
-          cd derivatives/llama-cpp
-          docker buildx build \
-            --platform "$platforms" \
-            --build-arg BASE_IMAGE=${{ matrix.base_image }} \
-            --build-arg LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }} \
-            --build-arg CUDA_VERSION=${{ env.CUDA_BIN_VERSION }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
-
-      - name: Record built tag
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -199,7 +230,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -226,11 +257,11 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      build-result: ${{ needs.merge-manifests.result }}
       image-name: "Llama.cpp"
       image-ref: ${{ needs.preflight.outputs.llama-cpp-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

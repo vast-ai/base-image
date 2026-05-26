@@ -18,9 +18,19 @@ RUN \
     [[ -n "${OOBABOOGA_REF}" ]] || { echo "Must specify OOBABOOGA_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
-    # Install xformers while pinning to the inherited torch version.  Fail build on dependency resolution if matching version is unavailable
-    uv pip install --no-cache-dir xformers torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    # xformers publishes amd64-only CUDA wheels; skip on other arches
+    # (e.g. aarch64/sbsa for Grace Blackwell) so dependency resolution does
+    # not fail the build. dpkg --print-architecture reflects the actual
+    # container arch — unlike ${TARGETARCH:-amd64}, it doesn't silently
+    # mis-select amd64 when buildx hasn't injected TARGETARCH.
+    EXTRA_ACCEL_PKGS="" && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        EXTRA_ACCEL_PKGS="xformers"; \
+    fi && \
+    # Pin to the inherited torch version. Fail build on dependency resolution if matching version is unavailable
+    uv pip install --no-cache-dir ${EXTRA_ACCEL_PKGS} torch=="${PYTORCH_VERSION}" --torch-backend "${PYTORCH_BACKEND}" && \
     # Get Oobabooga and install dependencies
     cd /opt/workspace-internal && \
     git clone https://github.com/oobabooga/text-generation-webui && \
@@ -29,14 +39,17 @@ RUN \
     # Upstream requirements pin CUDA wheels to cp313 — rewrite for cp312
     sed -i 's/cp313-cp313/cp312-cp312/g; s/python_version == "3.13"/python_version == "3.12"/g' \
         requirements/full/requirements.txt && \
+    # Strip base-provided torch ecosystem pins from upstream requirements so
+    # the pytorch base remains the single source of truth.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements/full/requirements.txt && \
     uv pip install --no-cache-dir \
         -r requirements/full/requirements.txt && \
     # Download custom models into the build if you want them - None included in default build
     # wget -O ${DATA_DIRECTORY}text-generation-webui/models/model https://url.to.files/model2 && \
     # wget -O ${DATA_DIRECTORY}text-generation-webui/models/Stable-diffusion/model2.safetensors https://url.to.files/model2 && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

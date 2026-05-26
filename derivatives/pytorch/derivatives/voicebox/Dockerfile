@@ -17,8 +17,8 @@ RUN \
     set -euo pipefail && \
     [[ -n "${VOICEBOX_REF}" ]] || { echo "Must specify VOICEBOX_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
-    # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print(torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # System dependencies
     apt-get update && \
     apt-get install -y --no-install-recommends sox && \
@@ -27,10 +27,21 @@ RUN \
     git clone https://github.com/jamiepine/voicebox.git && \
     cd /opt/voicebox && \
     git checkout "${VOICEBOX_REF}" && \
-    # Install Python dependencies (strip torch pin — already installed)
+    # Install Python dependencies — strip base-provided torch ecosystem pins
+    # from upstream requirements so the pytorch base remains the single
+    # source of truth. The diff-based assertion at the end of this RUN
+    # catches drift.
     cd backend && \
-    sed -i '/^torch>=/d' requirements.txt && \
-    uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl && \
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
+    # The flash-attn release wheel is amd64-only (linux_x86_64). On other
+    # arches (e.g. aarch64/sbsa for Grace Blackwell) skip the explicit URL
+    # install and let requirements.txt resolve flash-attn from sdist if it
+    # is actually required at runtime. dpkg --print-architecture reflects
+    # the actual container arch — unlike ${TARGETARCH:-amd64}, it doesn't
+    # silently mis-select amd64 when buildx hasn't injected TARGETARCH.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; \
+    fi && \
     uv pip install --no-cache-dir -r requirements.txt && \
     uv pip install --no-cache-dir --no-deps chatterbox-tts && \
     uv pip install --no-cache-dir --no-deps hume-tada && \
@@ -47,10 +58,9 @@ RUN \
     bun install --no-save && \
     cd web && bunx --bun vite build && \
     cp -r dist ../frontend && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print(torch.__version__)')" && \
-    [[ "$torch_version_pre" = "$torch_version_post" ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; } && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; } && \
     # Cleanup
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

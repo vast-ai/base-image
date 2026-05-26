@@ -110,10 +110,8 @@ RUN \
         python3-numpy \
         python3-setuptools \
         python3-wheel \
-        rar \
         svt-av1 \
         unar \
-        unrar \
         vainfo \
         vdpauinfo \
         websockify \
@@ -167,8 +165,16 @@ RUN \
         libxtst6:i386 \
         libxv1:i386 \
     ) && \
+    # `rar` and `unrar` are proprietary closed-source archivers (RarLab);
+    # Ubuntu noble only publishes them for amd64/i386. Skip on arm64 — the
+    # free `unar` (already in BASE_PACKAGES) handles both RAR extraction
+    # and a wider set of formats, so arm64 users still have an unarchiver.
+    AMD64_ONLY_PACKAGES=( \
+        rar \
+        unrar \
+    ) && \
     if [[ $TARGETARCH == "amd64" ]]; then \
-        apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}" "${I386_PACKAGES[@]}"; \
+        apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}" "${I386_PACKAGES[@]}" "${AMD64_ONLY_PACKAGES[@]}"; \
     else \
         apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}"; \
     fi && \
@@ -194,7 +200,17 @@ RUN \
     curl -fsSL -O "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL_VERSION}/virtualgl_${VIRTUALGL_VERSION}_${TARGETARCH}.deb" && \
     apt-get install -y ./virtualgl_${VIRTUALGL_VERSION}_${TARGETARCH}.deb && \
     chmod -f u+s /usr/lib/libvglfaker.so /usr/lib/libvglfaker-nodl.so /usr/lib/libdlfaker.so /usr/lib/libgefaker.so && \
-    ln -sf /usr/lib/libvglfaker.so /usr/lib/x86_64-linux-gnu/libvglfaker.so && \
+    # Multiarch directory varies by host CPU: x86_64-linux-gnu on amd64,
+    # aarch64-linux-gnu on arm64. Derive it so the libvglfaker.so symlink
+    # lands in the right place (the arm64 dir does not even exist on amd64
+    # systems and vice versa, so a hardcoded path breaks one of the two).
+    case "$(dpkg --print-architecture)" in \
+        amd64) MULTIARCH_DIR="x86_64-linux-gnu" ;; \
+        arm64) MULTIARCH_DIR="aarch64-linux-gnu" ;; \
+        *) echo "Unsupported arch for VirtualGL symlink: $(dpkg --print-architecture)"; exit 1 ;; \
+    esac && \
+    mkdir -p "/usr/lib/${MULTIARCH_DIR}" && \
+    ln -sf /usr/lib/libvglfaker.so "/usr/lib/${MULTIARCH_DIR}/libvglfaker.so" && \
     if [[ $TARGETARCH == "amd64" ]]; then \
         curl -fsSL -O "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL_VERSION}/virtualgl32_${VIRTUALGL_VERSION}_${TARGETARCH}.deb" && \
         apt-get install -y ./virtualgl32_${VIRTUALGL_VERSION}_${TARGETARCH}.deb && \
@@ -222,16 +238,24 @@ RUN \
     echo "/usr/local/nvidia/lib" >> /etc/ld.so.conf.d/nvidia.conf && \
     echo "/usr/local/nvidia/lib64" >> /etc/ld.so.conf.d/nvidia.conf
 
-# Install Selkies
-# AMD64 only until fix
+# Install Selkies (amd64 only — upstream only publishes amd64 release artifacts).
+# On other arches (e.g. aarch64/sbsa for Grace Blackwell) skip the install AND
+# drop the supervisor program so the image boots without trying to launch a
+# missing service; the Tomcat + Guacamole stack below remains the remote-access
+# path on ARM64.
 RUN \
     set -euo pipefail && \
-    cd /opt && \
-    SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
-    cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
-    cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && /usr/bin/pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && rm -f "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
-    cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
-    cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && rm -f selkies-js-interposer.deb
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        cd /opt && \
+        SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
+        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
+        cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && /usr/bin/pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && rm -f "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
+        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
+        cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && rm -f selkies-js-interposer.deb; \
+    else \
+        echo "Skipping Selkies install on $(dpkg --print-architecture); dropping supervisor program."; \
+        rm -f /etc/supervisor/conf.d/selkies.conf; \
+    fi
 
 # Clean up build-only packages installed for NVIDIA VAAPI
 RUN apt-get purge -y --auto-remove \
@@ -412,44 +436,84 @@ RUN \
     vlc-plugin-video-splitter \
     vlc-plugin-visualization
 
-# Google Chrome
+# Firefox (both arches) via Mozilla's official APT repo. The Ubuntu noble
+# `firefox` package is a snap transitional and snap doesn't work in
+# containers; Mozilla's own apt repo (packages.mozilla.org/apt) publishes
+# real .debs for both amd64 and arm64. The Pin-Priority pin makes apt
+# prefer Mozilla's deb over the Ubuntu snap stub.
 RUN \
-    cd /tmp && \
-    curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
-    apt-get install -y ./google-chrome-stable.deb && \
-    update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
-    update-alternatives --set x-www-browser /usr/bin/google-chrome-stable
+    set -euo pipefail && \
+    install -d -m 0755 /etc/apt/keyrings && \
+    curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc && \
+    echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list && \
+    printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla && \
+    apt-get update && \
+    apt-get install --no-install-recommends -y firefox && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Blender - version passed via build arg, or auto-detected if empty
+# Google Chrome (amd64 only — Google doesn't publish an aarch64 .deb).
+# Installed alongside Firefox; the update-alternatives below makes Chrome
+# the default `x-www-browser` on amd64 so existing user-facing behavior
+# is preserved. On arm64 the default stays at Firefox (set automatically
+# when firefox is the only x-www-browser candidate apt installed).
+RUN \
+    set -euo pipefail && \
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        cd /tmp && \
+        curl -o google-chrome-stable.deb -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" && \
+        # The preceding Firefox step ended with `rm -rf /var/lib/apt/lists/*`,
+        # so apt has no package lists. Repopulate them before installing the
+        # local .deb — Chrome pulls in runtime deps (libnss3, fonts-liberation,
+        # etc.) that apt must resolve from the indexes.
+        apt-get update && \
+        apt-get install -y ./google-chrome-stable.deb && \
+        rm -f google-chrome-stable.deb && \
+        apt-get clean && rm -rf /var/lib/apt/lists/* && \
+        update-alternatives --install /usr/bin/google-chrome-stable google-chrome-stable /usr/local/bin/google-chrome 100 && \
+        update-alternatives --set x-www-browser /usr/bin/google-chrome-stable; \
+    else \
+        echo "Skipping Google Chrome on $(dpkg --print-architecture); Firefox above is the default browser."; \
+    fi
+
+# Blender:
+#   amd64 -> install from Blender's official tarball at the latest release
+#            (auto-detected, overridable via the BLENDER_VERSION build arg).
+#            The Blender project only publishes linux-x64 tarballs — no
+#            Linux arm64 builds exist in the release archive at any version.
+#   arm64 -> install from Ubuntu noble's apt repo (blender 4.0.2+dfsg).
+#            Older than the official tarball but a real working package;
+#            sidesteps the Ubuntu snap transitional that wouldn't function
+#            in a container.
 ARG BLENDER_VERSION=""
 RUN \
     set -euo pipefail && \
-    if [ -z "$BLENDER_VERSION" ]; then \
-        MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
-            grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
-        BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
-            grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
-    fi && \
-    echo "Installing Blender version: ${BLENDER_VERSION}" && \
-    cd /opt && \
-    wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    tar xvf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
-    ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
-    cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        if [ -z "$BLENDER_VERSION" ]; then \
+            MAJOR_MINOR=$(curl -fsSL "https://download.blender.org/release/" | \
+                grep -oP 'Blender\K\d+\.\d+' | sort -V | tail -1) && \
+            BLENDER_VERSION=$(curl -fsSL "https://download.blender.org/release/Blender${MAJOR_MINOR}/" | \
+                grep -oP "blender-\K${MAJOR_MINOR}\.\d+" | sort -V | tail -1); \
+        fi && \
+        echo "Installing Blender ${BLENDER_VERSION} (amd64 tarball)" && \
+        cd /opt && \
+        wget "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        tar xvf "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        rm "blender-${BLENDER_VERSION}-linux-x64.tar.xz" && \
+        ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/bin/blender && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.desktop" /usr/share/applications && \
+        cp "/opt/blender-${BLENDER_VERSION}-linux-x64/blender.svg" /usr/share/icons/hicolor/scalable/apps/; \
+    else \
+        echo "Installing Blender from Ubuntu noble apt (arm64; no official Linux arm64 tarball exists)" && \
+        apt-get update && \
+        apt-get install --no-install-recommends -y blender && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 
 # GPU benchmarks
 RUN \
     set -euo pipefail && \
-    apt-get update && apt-get install --no-install-recommends -y glmark2 && \
-    cd /tmp && \
-    wget -O Unigine_Heaven-4.0.run https://assets.unigine.com/d/Unigine_Heaven-4.0.run && \
-    chmod +x Unigine_Heaven-4.0.run && \
-    ./Unigine_Heaven-4.0.run --target /opt/unigine-heaven --noexec && \
-    ln -s /opt/unigine-heaven/heaven /usr/local/bin/heaven && \
-    rm -f /tmp/Unigine_Heaven-4.0.run
+    apt-get update && apt-get install --no-install-recommends -y glmark2
 
 # Switch to user for simplicity.  We will switch back to root as all Vast.ai instances default to root login anyway
 ENV XDG_RUNTIME_DIR="/run/user/1001"

@@ -19,21 +19,24 @@ RUN \
     [[ -n "${WHISPER_REF}" ]] || { echo "Must specify WHISPER_REF" && exit 1; } && \
     . /venv/main/bin/activate && \
     # We have PyTorch pre-installed so we will check at the end of the install that it has not been clobbered
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # Clone Whisper-WebUI
     cd /opt/workspace-internal/ && \
     git clone "${WHISPER_REPO}" Whisper-WebUI && \
     cd Whisper-WebUI && \
     git checkout "${WHISPER_REF}" && \
-    # Strip torch pins — provided by the base venv
-    sed -i '/^torch[>=<]/d; /^torchaudio[>=<]/d; /^--extra-index-url.*pytorch/d' requirements.txt && \
+    # Strip base-provided torch ecosystem pins from upstream requirements and
+    # drop the --extra-index-url that points pip at the wrong torch wheel
+    # index. The pytorch base is the single source of truth; the diff-based
+    # assertion at the end of this RUN catches drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])|^--extra-index-url.*pytorch/d' requirements.txt backend/requirements-backend.txt && \
     # Ensure setuptools<78 for legacy pkg_resources in build deps
     uv pip install --no-cache-dir 'setuptools<78' && \
     uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt && \
-    # Test 1: Verify PyTorch version is unaltered
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN \

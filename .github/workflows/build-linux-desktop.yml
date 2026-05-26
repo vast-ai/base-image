@@ -1,10 +1,21 @@
-# Build Linux Desktop image - works on main repo (scheduled + manual) and forks (manual)
+# Build Linux Desktop image - manual trigger only.
 # Required repository secrets:
-# DOCKERHUB_USERNAME
-# DOCKERHUB_TOKEN
-# DOCKERHUB_NAMESPACE
-# Optional:
-# SLACK_WEBHOOK_URL
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final aliases set by promote-linux-desktop)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (all build outputs land here)
+# Optional: SLACK_WEBHOOK_URL
+#
+# Two-workflow pattern (mirrors build-base-image / build-pytorch):
+#   - this workflow: per-arch native builds push to STAGING, then a per-config
+#     merge job stitches them into a multi-arch index at the STAGING dated tag
+#   - promote-linux-desktop.yml: separate manual workflow that copies the
+#     chosen STAGING_DATE from staging to production via crane
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) —
+# no QEMU emulation. The merge uses `crane index append` to assemble the
+# index without streaming layers through the runner.
 
 name: Build Linux Desktop Image
 
@@ -15,24 +26,19 @@ on:
         description: "Push to namespace/<repo>"
         required: true
         default: "linux-desktop"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
-      CUSTOM_IMAGE_TAG:
-        description: "Custom tag suffix (replaces date)"
+      CUSTOM_IMAGE_TAG_SUFFIX:
+        description: "Custom suffix (replaces date in the tag)"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "linux-desktop"
-  DEFAULT_MULTI_ARCH: "false"
 
 jobs:
   preflight:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
+      tag-suffix: ${{ steps.derive.outputs.tag-suffix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,20 +46,35 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
+
+      - name: Derive tag suffix
+        id: derive
+        run: |
+          SUFFIX="${{ inputs.CUSTOM_IMAGE_TAG_SUFFIX }}"
+          if [[ -z "$SUFFIX" ]]; then
+            SUFFIX="$(date -u +%Y-%m-%d)"
+          fi
+          echo "tag-suffix=$SUFFIX" >> $GITHUB_OUTPUT
+          echo "Tag suffix for this run: $SUFFIX"
 
       - name: Determine if build should run
         id: decision
         run: |
           if [[ "${{ steps.secrets.outputs.available }}" == "true" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Build will proceed"
+            echo "Build will proceed"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
           fi
@@ -61,12 +82,79 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
+    # No `environment:` gate here — this workflow only writes to the staging
+    # namespace. The production-environment gate is on promote-linux-desktop's
+    # `promote` job, which is where prod writes actually happen.
 
     permissions:
       contents: read
 
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/base-image:cuda-13.2-mini-py312-2026-04-15
+          - vastai/base-image:cuda-12.9-mini-py312-2026-04-15
+          - vastai/base-image:stock-ubuntu24.04-py312-2026-03-26
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          BASE_IMAGE="${{ matrix.base_image }}"
+          TAG="${BASE_IMAGE##*:}"
+
+          # Extract CUDA version (empty for stock images)
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          # Extract Ubuntu version by running the base image. The base is
+          # multi-arch, so on the arm64 runner Docker pulls the arm64 variant
+          # for inspection. Same value either way, but doing it natively
+          # avoids QEMU.
+          UBUNTU_VERSION=$(docker run --rm --entrypoint bash ${{ matrix.base_image }} \
+            -c "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'")
+
+          SUFFIX="${{ needs.preflight.outputs.tag-suffix }}"
+          if [ -n "$CUDA_VERSION" ]; then
+            IMAGE_TAG="cuda-${CUDA_VERSION}-ubuntu${UBUNTU_VERSION}-${SUFFIX}"
+          else
+            IMAGE_TAG="ubuntu${UBUNTU_VERSION}-${SUFFIX}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Base image: $BASE_IMAGE"
+          echo "CUDA version: ${CUDA_VERSION:-none}"
+          echo "Ubuntu version: $UBUNTU_VERSION"
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/linux-desktop
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            VAST_BASE=${{ matrix.base_image }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -79,86 +167,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Maximize build space
-        uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker Hub login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive image tag
-        id: meta
+      - name: Derive staging index tag
         run: |
           BASE_IMAGE="${{ matrix.base_image }}"
           TAG="${BASE_IMAGE##*:}"
 
-          # Extract CUDA version (empty for stock images)
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
-
-          # Extract Ubuntu version from running container
           UBUNTU_VERSION=$(docker run --rm --entrypoint bash ${{ matrix.base_image }} \
             -c "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'")
 
-          # Build the image tag
-          BUILD_DATE=$(date -u +%Y-%m-%d)
-          IMAGE_TAG_SUFFIX="${{ inputs.CUSTOM_IMAGE_TAG }}"
-          if [ -z "$IMAGE_TAG_SUFFIX" ]; then
-            IMAGE_TAG_SUFFIX="$BUILD_DATE"
-          fi
-
+          SUFFIX="${{ needs.preflight.outputs.tag-suffix }}"
           if [ -n "$CUDA_VERSION" ]; then
-            IMAGE_TAG="cuda-${CUDA_VERSION}-ubuntu${UBUNTU_VERSION}-${IMAGE_TAG_SUFFIX}"
+            IMAGE_TAG="cuda-${CUDA_VERSION}-ubuntu${UBUNTU_VERSION}-${SUFFIX}"
           else
-            IMAGE_TAG="ubuntu${UBUNTU_VERSION}-${IMAGE_TAG_SUFFIX}"
+            IMAGE_TAG="ubuntu${UBUNTU_VERSION}-${SUFFIX}"
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          STAGING_TAG="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          echo "STAGING_TAG=$STAGING_TAG" >> $GITHUB_ENV
 
-          # Create a safe filename from the matrix value
           MATRIX_ID=$(echo "$BASE_IMAGE" | md5sum | cut -c1-8)
           echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
 
-          echo "Base image: $BASE_IMAGE"
-          echo "CUDA version: ${CUDA_VERSION:-none}"
-          echo "Ubuntu version: $UBUNTU_VERSION"
-          echo "Derived image tag: $IMAGE_TAG"
+      - name: Assemble multi-arch index in staging
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          # Both source and target are in staging — the cross-namespace
+          # copy to production happens in promote-linux-desktop.yml.
+          target-tag: ${{ env.STAGING_TAG }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
-          fi
-
-          platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
-
-          cd derivatives/linux-desktop
-          docker buildx build \
-            --platform "$platforms" \
-            --build-arg VAST_BASE=${{ matrix.base_image }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
-
-      - name: Record built tag
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.STAGING_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -166,7 +213,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -183,24 +230,22 @@ jobs:
         id: collect
         run: |
           if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
-            # Combine all tag files into JSON array
             TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
             echo "Found tags: $TAGS"
           else
             echo "::warning::No tags found - build may have failed"
             TAGS="[]"
           fi
-
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
-      image-name: "Linux Desktop"
-      image-ref: "latest"
+      build-result: ${{ needs.merge-manifests.result }}
+      image-name: "Linux Desktop (Staging)"
+      image-ref: ${{ needs.preflight.outputs.tag-suffix }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
       trigger: ${{ github.event_name }}
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -183,70 +183,80 @@ run_bg_user "x11vnc" /usr/bin/x11vnc \
     -rfbport 5900 -rfbauth "${XDG_RUNTIME_DIR}/.vncpasswd"
 log "VNC server listening on :5900"
 
-# --- 8. TURN server (for Selkies WebRTC NAT traversal) ---
-export TURN_HOST="${TURN_HOST:-${PUBLIC_IPADDR:-localhost}}"
-export TURN_PORT="${TURN_PORT:-${VAST_TCP_PORT_73478:-73478}}"
-export TURN_USERNAME="${TURN_USERNAME:-turnuser}"
-export TURN_PASSWORD="${TURN_PASSWORD:-${OPEN_BUTTON_TOKEN:-password}}"
+# Selkies (and its TURN companion) are skipped if the binary isn't present —
+# upstream only publishes amd64 release artifacts, so non-amd64 builds (e.g.
+# aarch64/sbsa Grace Blackwell) ship without it. VNC remains the remote-access
+# path; the resize loop is also Selkies-specific and is skipped together.
+if command -v selkies-gstreamer >/dev/null 2>&1; then
+    # --- 8. TURN server (for Selkies WebRTC NAT traversal) ---
+    export TURN_HOST="${TURN_HOST:-${PUBLIC_IPADDR:-localhost}}"
+    export TURN_PORT="${TURN_PORT:-${VAST_TCP_PORT_73478:-73478}}"
+    export TURN_USERNAME="${TURN_USERNAME:-turnuser}"
+    export TURN_PASSWORD="${TURN_PASSWORD:-${OPEN_BUTTON_TOKEN:-password}}"
 
-if [[ -n "${VAST_UDP_PORT_73478:-}" ]]; then
-    export TURN_PROTOCOL="${TURN_PROTOCOL:-udp}"
+    if [[ -n "${VAST_UDP_PORT_73478:-}" ]]; then
+        export TURN_PROTOCOL="${TURN_PROTOCOL:-udp}"
+    else
+        export TURN_PROTOCOL="${TURN_PROTOCOL:-tcp}"
+    fi
+
+    if [[ -z "${TURN_SERVER:-}" ]]; then
+        log "Starting TURN server (${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT})"
+        run_bg "coturn" turnserver -n -a \
+            --log-file=stdout --lt-cred-mech --fingerprint \
+            --no-stun --no-multicast-peers --no-cli --no-tlsv1 --no-tlsv1_1 \
+            --realm="vast.ai" \
+            --user="${TURN_USERNAME}:${TURN_PASSWORD}" \
+            -p "${VAST_UDP_PORT_73478:-${VAST_TCP_PORT_73478:-73478}}" \
+            -X "${PUBLIC_IPADDR:-localhost}"
+    else
+        log "Using external TURN server: ${TURN_SERVER}"
+    fi
+
+    # --- 9. Selkies GStreamer (low-latency WebRTC streaming) ---
+    . /opt/gstreamer/gst-env 2>/dev/null || true
+    rm -rf "${HOME}/.cache/gstreamer-1.0"
+    log "Starting Selkies streaming (encoder: ${SELKIES_ENCODER:-x264enc}, TURN: ${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT})"
+    run_bg_user "selkies" selkies-gstreamer \
+        --addr="127.0.0.1" \
+        --port="16100" \
+        --enable_https=false \
+        --encoder="${SELKIES_ENCODER:-x264enc}" \
+        --enable_basic_auth=false \
+        --enable_resize=false \
+        --turn_host="${TURN_HOST}" \
+        --turn_port="${TURN_PORT}" \
+        --turn_protocol="${TURN_PROTOCOL}" \
+        --turn_username="${TURN_USERNAME}" \
+        --turn_password="${TURN_PASSWORD}"
+
+    # --- Persistent display resize ---
+    # Selkies resets the display resolution when its pipeline (re)initializes.
+    # This background loop monitors and re-applies the target resolution.
+    (
+        TARGET="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
+        while true; do
+            CURRENT=$(DISPLAY=${DISPLAY} runuser -u user -- xrandr 2>/dev/null | grep '\*' | awk '{print $1}')
+            if [[ "$CURRENT" != "$TARGET" ]]; then
+                DISPLAY=${DISPLAY} runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "$TARGET" >/dev/null 2>&1 \
+                    && echo "[desktop] Display resized to $TARGET"
+            fi
+            sleep 5
+        done
+    ) &
+    PIDS+=($!)
 else
-    export TURN_PROTOCOL="${TURN_PROTOCOL:-tcp}"
+    log "Selkies not installed (arch=$(uname -m)); skipping Selkies + TURN. VNC remains available."
 fi
-
-if [[ -z "${TURN_SERVER:-}" ]]; then
-    log "Starting TURN server (${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT})"
-    run_bg "coturn" turnserver -n -a \
-        --log-file=stdout --lt-cred-mech --fingerprint \
-        --no-stun --no-multicast-peers --no-cli --no-tlsv1 --no-tlsv1_1 \
-        --realm="vast.ai" \
-        --user="${TURN_USERNAME}:${TURN_PASSWORD}" \
-        -p "${VAST_UDP_PORT_73478:-${VAST_TCP_PORT_73478:-73478}}" \
-        -X "${PUBLIC_IPADDR:-localhost}"
-else
-    log "Using external TURN server: ${TURN_SERVER}"
-fi
-
-# --- 9. Selkies GStreamer (low-latency WebRTC streaming) ---
-. /opt/gstreamer/gst-env 2>/dev/null || true
-rm -rf "${HOME}/.cache/gstreamer-1.0"
-log "Starting Selkies streaming (encoder: ${SELKIES_ENCODER:-x264enc}, TURN: ${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT})"
-run_bg_user "selkies" selkies-gstreamer \
-    --addr="127.0.0.1" \
-    --port="16100" \
-    --enable_https=false \
-    --encoder="${SELKIES_ENCODER:-x264enc}" \
-    --enable_basic_auth=false \
-    --enable_resize=false \
-    --turn_host="${TURN_HOST}" \
-    --turn_port="${TURN_PORT}" \
-    --turn_protocol="${TURN_PROTOCOL}" \
-    --turn_username="${TURN_USERNAME}" \
-    --turn_password="${TURN_PASSWORD}"
-
-# --- Persistent display resize ---
-# Selkies resets the display resolution when its pipeline (re)initializes.
-# This background loop monitors and re-applies the target resolution.
-(
-    TARGET="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
-    while true; do
-        CURRENT=$(DISPLAY=${DISPLAY} runuser -u user -- xrandr 2>/dev/null | grep '\*' | awk '{print $1}')
-        if [[ "$CURRENT" != "$TARGET" ]]; then
-            DISPLAY=${DISPLAY} runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "$TARGET" >/dev/null 2>&1 \
-                && echo "[desktop] Display resized to $TARGET"
-        fi
-        sleep 5
-    done
-) &
-PIDS+=($!)
 
 # --- All services started ---
 log "=========================================="
 log "Desktop stack ready"
-log "  Selkies (WebRTC): http://localhost:16100"
+if command -v selkies-gstreamer >/dev/null 2>&1; then
+    log "  Selkies (WebRTC): http://localhost:16100"
+    log "  TURN:             ${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT}"
+fi
 log "  VNC:              vnc://localhost:5900"
-log "  TURN:             ${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT}"
 log "  Resolution:       ${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
 log "=========================================="
 

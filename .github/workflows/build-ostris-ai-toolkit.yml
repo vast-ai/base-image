@@ -1,14 +1,29 @@
 # Build Ostris AI Toolkit image - works on main repo (scheduled + manual) and forks (manual)
 # Required repository secrets:
-# DOCKERHUB_USERNAME
-# DOCKERHUB_TOKEN
-# DOCKERHUB_NAMESPACE
-# Optional:
-# SLACK_WEBHOOK_URL
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
+# Optional: SLACK_WEBHOOK_URL
 #
 # Release detection: Polls DockerHub (ostris/aitoolkit) for new version tags.
 # Build source: Always builds from latest commit on ostris/ai-toolkit main branch
 # (DockerHub versions can't be mapped to specific GitHub commits).
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-base_image
+# merge job then uses crane to assemble the multi-arch index at the
+# PRODUCTION tag. No QEMU emulation.
+#
+# Currently amd64-only: ai-toolkit requires torchcodec at runtime (via
+# torchaudio.load() in dataloader_mixins.py) but torchcodec ships no
+# aarch64 Linux wheels at any version (only macOS arm64 and Linux
+# x86_64). The Dockerfile strips the upstream torchcodec pin so the
+# pytorch base's torchcodec stays authoritative on amd64; on arm64 there
+# is no torchcodec at all, which is why arm64 stays out of the matrix.
+# Re-enable arm64 once torchcodec publishes Linux aarch64 wheels; see
+# the build job's matrix comment for the re-enable trigger.
 
 name: Build Ostris AI Toolkit Image
 
@@ -26,18 +41,12 @@ on:
         description: "Push to namespace/<repo>"
         required: true
         default: "ostris-ai-toolkit"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "ostris-ai-toolkit"
-  DEFAULT_MULTI_ARCH: "false"
   # 12 hours
   RELEASE_AGE_THRESHOLD: 43200
   AI_TOOLKIT_GITHUB_REPO: "ostris/ai-toolkit"
@@ -55,12 +64,17 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
       - name: Check DockerHub for new release
@@ -84,7 +98,7 @@ jobs:
             COMMIT=$(git ls-remote "https://github.com/${{ env.AI_TOOLKIT_GITHUB_REPO }}.git" refs/heads/main | cut -f1 | cut -c1-7)
             if [[ -n "$COMMIT" ]]; then
               REF="$COMMIT"
-              echo "Resolved main → $REF"
+              echo "Resolved main -> $REF"
             else
               echo "::error::Could not resolve HEAD of main branch"
               exit 1
@@ -105,10 +119,10 @@ jobs:
             echo "::notice::Skipping - Required secrets not configured"
           elif [[ -n "$MANUAL_REF" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
+            echo "Manual build for ref: ${{ steps.resolve-ref.outputs.ref }}"
           elif [[ "$NEW_RELEASE" == "true" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ New DockerHub release detected, building ref: ${{ steps.resolve-ref.outputs.ref }}"
+            echo "New DockerHub release detected, building ref: ${{ steps.resolve-ref.outputs.ref }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - No new release detected on DockerHub"
@@ -117,8 +131,7 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
 
     permissions:
       contents: read
@@ -127,7 +140,14 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-04-15
+        # arm64 is intentionally absent: torchcodec is required at runtime
+        # (transitive via torchaudio.load() in toolkit/dataloader_mixins.py)
+        # but ships no aarch64 Linux wheels at any version. Re-add when
+        # torchcodec publishes manylinux_aarch64 wheels (and update
+        # merge-manifests `arches` below).
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
 
     steps:
       - name: Checkout
@@ -136,20 +156,7 @@ jobs:
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker Hub login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive image tag
-        id: meta
+      - name: Derive staging tag
         run: |
           PYTORCH_BASE="${{ matrix.base_image }}"
           TAG="${PYTORCH_BASE##*:}"
@@ -163,7 +170,6 @@ jobs:
           fi
 
           AI_TOOLKIT_REF="${{ needs.preflight.outputs.ai-toolkit-ref }}"
-
           BUILD_DATE=$(date -u +%Y-%m-%d)
 
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
@@ -172,42 +178,82 @@ jobs:
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
 
-          # Create a safe filename from the matrix value
-          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
 
-          echo "IMAGE_TAG=$IMAGE_TAG_BASE" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
-          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
 
-          echo "Derived image tag: $IMAGE_TAG_BASE"
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/ostris-ai-toolkit
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ matrix.base_image }}
+            AI_TOOLKIT_REF=${{ needs.preflight.outputs.ai-toolkit-ref }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-04-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          AI_TOOLKIT_REF="${{ needs.preflight.outputs.ai-toolkit-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${AI_TOOLKIT_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
           fi
 
-          platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
 
-          cd derivatives/pytorch/derivatives/ostris-ai-toolkit
-          docker buildx build \
-            --platform "$platforms" \
-            --build-arg PYTORCH_BASE=${{ matrix.base_image }} \
-            --build-arg AI_TOOLKIT_REF=${{ needs.preflight.outputs.ai-toolkit-ref }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
 
-      - name: Record built tag
+          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # amd64-only until torchcodec publishes aarch64 Linux wheels
+          # (see build matrix comment above). Add `arm64` back to this
+          # list when the matrix gains arm64.
+          arches: amd64
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -215,7 +261,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -242,11 +288,11 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      build-result: ${{ needs.merge-manifests.result }}
       image-name: "Ostris AI Toolkit"
       image-ref: ${{ needs.preflight.outputs.ai-toolkit-ref }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

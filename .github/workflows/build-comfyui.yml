@@ -2,10 +2,19 @@
 # Required repository secrets:
 # DOCKERHUB_USERNAME
 # DOCKERHUB_TOKEN
-# DOCKERHUB_NAMESPACE
+# DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+# DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
 # Optional:
 # SLACK_WEBHOOK_URL
 # Note: Build matrix will need periodic updates as new Pytorch images become available
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace (-amd64 / -arm64).
+# A per-base_image merge job then uses crane to assemble the multi-arch index
+# at the PRODUCTION tag, sourcing the per-arch manifests from staging.
+# Cross-repo blob mounts keep the merge registry-side (no host streaming).
+# No QEMU emulation.
 
 name: Build ComfyUI Image
 
@@ -13,7 +22,7 @@ on:
   schedule:
     # Run every 12 hours
     - cron: '0 0,12 * * *'
-  
+
   workflow_dispatch:
     inputs:
       COMFYUI_REF:
@@ -23,11 +32,6 @@ on:
         description: "Push to username/<repo>"
         required: true
         default: "comfy"
-      MULTI_ARCH:
-        description: 'multi-arch build'
-        required: false
-        default: false
-        type: boolean
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
@@ -35,7 +39,6 @@ on:
 env:
   DEFAULT_COMFYUI_REF: "master"
   DEFAULT_DOCKERHUB_REPO: "comfy"
-  DEFAULT_MULTI_ARCH: "false"
   # 12 hours
   RELEASE_AGE_THRESHOLD: 43200
 
@@ -52,12 +55,17 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
-            echo "✓ Required secrets configured"
+            echo "Required secrets configured"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping - secrets not configured"
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
       - name: Check release and resolve ref
@@ -76,7 +84,7 @@ jobs:
         run: |
           if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "✓ Building ref: ${{ steps.release-check.outputs.resolved-ref }}"
+            echo "Building ref: ${{ steps.release-check.outputs.resolved-ref }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
           fi
@@ -84,8 +92,7 @@ jobs:
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    runs-on: ${{ matrix.arch.runs_on }}
 
     permissions:
       contents: read
@@ -96,6 +103,9 @@ jobs:
         base_image:
           - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15
           - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-04-15
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
 
     steps:
       - name: Checkout
@@ -104,20 +114,7 @@ jobs:
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker Hub login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive CUDA & Python versions
-        id: meta
+      - name: Derive image tag
         run: |
           PYTORCH_BASE="${{ matrix.base_image }}"
           TAG="${PYTORCH_BASE##*:}"
@@ -137,42 +134,79 @@ jobs:
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || 'comfy' }}"
           IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
-          FULL_IMAGE="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
-          
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
-          # Create a safe filename from the matrix value
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/comfyui
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ matrix.base_image }}
+            COMFYUI_REF=${{ needs.preflight.outputs.comfyui-ref }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15
+          - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-04-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+          PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            IMAGE_TAG_BASE="${{ needs.preflight.outputs.comfyui-ref }}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || 'comfy' }}"
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
           MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
           echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
 
-          echo "Derived image tag: $IMAGE_TAG"
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MULTI_ARCH="${{ inputs.MULTI_ARCH }}"
-          else
-            MULTI_ARCH="${{ env.DEFAULT_MULTI_ARCH }}"
-          fi
-          
-          platforms="linux/amd64"
-          [[ "$MULTI_ARCH" == "true" ]] && platforms+=",linux/arm64"
-
-          cd derivatives/pytorch/derivatives/comfyui
-          docker buildx build \
-            --platform "$platforms" \
-            --build-arg PYTORCH_BASE=${{ matrix.base_image }} \
-            --build-arg COMFYUI_REF=${{ needs.preflight.outputs.comfyui-ref }} \
-            -t ${{ env.FULL_IMAGE }} \
-            . --push
-
-      - name: Record built tag
+      - name: Record merged manifest tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
 
-      - name: Upload built tag
+      - name: Upload manifest tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag-${{ env.MATRIX_ID }}
@@ -180,7 +214,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [preflight, build]
+    needs: [preflight, build, merge-manifests]
     if: always() && needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -204,15 +238,15 @@ jobs:
             echo "::warning::No tags found - build may have failed"
             TAGS="[]"
           fi
-          
+
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, collect-tags]
+    needs: [preflight, build, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      build-result: ${{ needs.merge-manifests.result }}
       image-name: "ComfyUI"
       image-ref: ${{ needs.preflight.outputs.comfyui-ref }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

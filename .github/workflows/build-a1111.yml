@@ -1,28 +1,33 @@
-# Stub on main so the workflow appears in GitHub's Actions UI dropdown,
-# letting it be triggered against the feature branch via `workflow_dispatch`.
-# The real implementation lives on the `arm64-readiness` branch and will
-# replace this file when that PR merges.
+# Build Automatic1111 image - works on main repo (scheduled + manual) and forks (manual)
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
+# Optional: SLACK_WEBHOOK_URL
 #
-# Default behavior of the real workflow: when triggered with no A1111_REF
-# input, it resolves HEAD of AUTOMATIC1111/stable-diffusion-webui's `dev`
-# branch via the GitHub API and uses that short SHA as the build ref.
-# Scheduled cron and unmodified manual dispatches both end up building
-# off dev.
+# Release detection: Resolves HEAD of AUTOMATIC1111/stable-diffusion-webui's
+# `dev` branch (the Dockerfile's default A1111_REF). Scheduled runs skip
+# when the latest commit is older than COMMIT_AGE_THRESHOLD.
 #
-# To run the real promote logic before the merge:
-#   gh workflow run build-a1111.yml --ref arm64-readiness
-#   ...or in the UI: pick "Run workflow", select the feature branch.
-# GitHub reads the workflow definition (and its inputs) from whatever
-# ref is selected at trigger time; this main-branch stub only exists to
-# register the trigger.
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-base_image
+# merge job then uses crane to assemble the multi-arch index at the
+# PRODUCTION tag. No QEMU emulation.
 
 name: Build A1111 Image
 
 on:
+  schedule:
+    # Run weekly on Monday at 00:00 UTC — A1111's dev branch sees frequent
+    # commits and we don't need every one of them.
+    - cron: '0 0 * * 1'
+
   workflow_dispatch:
     inputs:
       A1111_REF:
-        description: "Git ref (commit/branch/tag) - leave empty for HEAD of dev — only used when triggered from a feature branch with the real implementation"
+        description: "Git ref (commit/branch/tag) - leave empty for HEAD of dev"
         required: false
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
@@ -32,18 +37,252 @@ on:
         description: "Custom tag (Auto default)"
         required: false
 
+env:
+  DEFAULT_DOCKERHUB_REPO: "a1111"
+  A1111_GITHUB_REPO: "AUTOMATIC1111/stable-diffusion-webui"
+  A1111_BRANCH: "dev"
+  # 7 days
+  COMMIT_AGE_THRESHOLD: 604800
+
 jobs:
-  stub:
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      a1111-ref: ${{ steps.resolve-ref.outputs.ref }}
     steps:
-      - name: Explain stub
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
         run: |
-          echo "This is the main-branch stub of Build A1111 Image."
-          echo "It exists so the workflow appears in the Actions UI; the real"
-          echo "build logic is on the arm64-readiness branch."
-          echo ""
-          echo "Re-trigger this workflow with the feature branch selected:"
-          echo "  gh workflow run build-a1111.yml --ref arm64-readiness"
-          echo ""
-          echo "When arm64-readiness merges to main this stub gets replaced by"
-          echo "the real implementation."
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
+          fi
+
+      - name: Resolve A1111 git ref
+        id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MANUAL_REF="${{ inputs.A1111_REF }}"
+
+          if [[ -n "$MANUAL_REF" ]]; then
+            echo "Using manual ref: $MANUAL_REF"
+            echo "ref=$MANUAL_REF" >> $GITHUB_OUTPUT
+            echo "commit-age=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Resolving HEAD of ${{ env.A1111_BRANCH }} branch via GitHub API..."
+          RESPONSE=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.A1111_GITHUB_REPO }}/commits/${{ env.A1111_BRANCH }}")
+          COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
+          COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')
+
+          if [[ "$COMMIT_SHA" == "null" || -z "$COMMIT_SHA" ]]; then
+            echo "::error::Could not resolve HEAD of ${{ env.A1111_BRANCH }} branch"
+            exit 1
+          fi
+
+          COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+
+          echo "Resolved ${{ env.A1111_BRANCH }} -> $COMMIT_SHA (${AGE}s old)"
+          echo "ref=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit-age=$AGE" >> $GITHUB_OUTPUT
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          TRIGGER="${{ github.event_name }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
+          COMMIT_AGE="${{ steps.resolve-ref.outputs.commit-age }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ "$TRIGGER" == "workflow_dispatch" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Manual build for ref: $RESOLVED_REF"
+          elif [[ "$COMMIT_AGE" -le "${{ env.COMMIT_AGE_THRESHOLD }}" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Scheduled build for ref: $RESOLVED_REF (${COMMIT_AGE}s old <= ${{ env.COMMIT_AGE_THRESHOLD }}s threshold)"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping scheduled build - latest commit is ${COMMIT_AGE}s old (threshold ${{ env.COMMIT_AGE_THRESHOLD }}s)"
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ${{ matrix.arch.runs_on }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py310-2026-04-15
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          if [[ -z "$CUDA_VERSION" ]]; then
+            echo "::error::Failed to parse base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          A1111_REF="${{ needs.preflight.outputs.a1111-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${A1111_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/a1111
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ matrix.base_image }}
+            A1111_REF=${{ needs.preflight.outputs.a1111-ref }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py310-2026-04-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          A1111_REF="${{ needs.preflight.outputs.a1111-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${A1111_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
+          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload manifest tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build, merge-manifests]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, merge-manifests, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.merge-manifests.result }}
+      image-name: "A1111"
+      image-ref: ${{ needs.preflight.outputs.a1111-ref }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
