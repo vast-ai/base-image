@@ -7,6 +7,19 @@ LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="AIO Studio image suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
+# Start the instance test runner before provisioning, not after. The current
+# AIO_BASE (base-2026-04-01) was built from a pytorch base that still ships
+# the runner as 85-instance-test.sh. Rename it to 70- so the test runner's
+# HTTP results server is up before provisioning begins. Two-step (mv -n then
+# unconditional rm) so a future AIO_BASE rebuild that already ships 70- is
+# never clobbered. Becomes a no-op once the AIO_BASE is rebuilt against a
+# pytorch base that ships the rename. Mirrors the stopgap in derivatives/
+# pytorch/derivatives/comfyui/Dockerfile.
+RUN if [ -f /etc/vast_boot.d/85-instance-test.sh ]; then \
+        mv -n /etc/vast_boot.d/85-instance-test.sh /etc/vast_boot.d/70-instance-test.sh; \
+        rm -f /etc/vast_boot.d/85-instance-test.sh; \
+    fi
+
 # xformers, sageattention, and onnxruntime-gpu ship amd64-only artifacts
 # (xformers/sageattention CUDA wheels are manylinux_x86_64-only; onnxruntime-gpu
 # has no aarch64 wheels at any version). The RUN blocks below use
@@ -24,6 +37,11 @@ RUN \
     set -euo pipefail && \
     create_app_venv comfyui main && \
     . /venv/comfyui/bin/activate && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    # Combined with the strips below + the diff-based assertion at the end,
+    # this catches silent ABI clobbers — the torch-only check we used to
+    # do here let them slip through.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
     fi && \
@@ -38,12 +56,33 @@ RUN \
     git clone "${COMFYUI_REPO}" ComfyUI && \
     cd ComfyUI && \
     git checkout "${COMFYUI_REF}" && \
-    uv pip install --no-cache-dir -r requirements.txt && \
+    # Strip any base-provided torch ecosystem pins from upstream requirements
+    # so the pytorch base remains the single source of truth. ComfyUI does
+    # not currently pin these, but the strip is a defensive guard — upstream
+    # changes have introduced such pins in the past (see wan2gp /
+    # ostris-ai-toolkit cases) and the diff-based assertion at the end of
+    # this RUN catches any drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
+    # ComfyUI now ships two managers — the legacy ComfyUI-Manager custom
+    # node (cloned below) and a built-in manager activated by passing
+    # --enable-manager (optionally with --enable-manager-legacy-ui) to
+    # main.py. Legacy stays the default so existing templates keep
+    # working without changing COMFYUI_ARGS; we also pull in the new
+    # manager's deps when the COMFYUI_REF supports it (manager_requirements
+    # is only present on recent refs), so a user who DOES add --enable-manager
+    # doesn't need an image rebuild.
+    if [ -f manager_requirements ]; then \
+        sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' manager_requirements && \
+        uv pip install --no-cache-dir -r requirements.txt -r manager_requirements comfy-cli; \
+    else \
+        uv pip install --no-cache-dir -r requirements.txt; \
+    fi && \
     # Model symlink
     cd models && ln -s checkpoints ckpt && \
     # Install critical custom nodes
     cd /opt/workspace-internal/ComfyUI/custom_nodes && \
     git clone https://github.com/Comfy-Org/ComfyUI-Manager.git && \
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' ComfyUI-Manager/requirements.txt && \
     uv pip install --no-cache-dir -r ComfyUI-Manager/requirements.txt && \
     git clone https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint && \
     # Quick startup test in CPU mode
@@ -55,7 +94,11 @@ RUN \
             --port 11404 \
             --disable-auto-launch \
             --quick-test-for-ci && \
-    mkdir -p user/default/ComfyUI-Manager/components
+    mkdir -p user/default/ComfyUI-Manager/components && \
+    # Verify the torch ecosystem is unchanged. Catches silent ABI clobbers
+    # that the torch-only check used to miss.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 ENV COMFYUI_ARGS="--disable-auto-launch --enable-cors-header --port 18188"
 
@@ -66,8 +109,17 @@ RUN \
     set -euo pipefail && \
     create_app_venv forge main && \
     . /venv/forge/bin/activate && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
+    fi && \
+    # onnxruntime-gpu has no aarch64 wheels at any version. insightface
+    # uses it for face detection / face-swap extensions; on arm64 we skip
+    # both — the rest of the image still works, those extensions just
+    # won't be available.
+    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
+        uv pip install --no-cache-dir onnxruntime-gpu insightface; \
     fi && \
     cd /opt/workspace-internal/ && \
     git clone "${FORGE_REPO}" stable-diffusion-webui-forge && \
@@ -75,11 +127,15 @@ RUN \
     git checkout "${FORGE_REF}" && \
     # Patch neo's interactive version check
     sed -i 's/    launch_utils.verify_version()/#    launch_utils.verify_version()  # bypassed for Docker/' launch.py && \
+    # Strip base-provided torch ecosystem pins from whichever upstream
+    # requirements file we install from. Single source of truth = the
+    # pytorch base; the diff-based assertion at the end catches drift.
+    forge_req="$([[ -f requirements_versions.txt ]] && echo requirements_versions.txt || echo requirements.txt)" && \
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' "$forge_req" && \
     # Pin setuptools<78 for legacy CLIP compatibility
     echo 'setuptools<78' > /tmp/pip-constraint.txt && \
     export PIP_CONSTRAINT=/tmp/pip-constraint.txt && \
-    uv pip install --no-cache-dir \
-        -r $([[ -f requirements_versions.txt ]] && echo "requirements_versions.txt" || echo "requirements.txt") && \
+    uv pip install --no-cache-dir -r "$forge_req" && \
     # Quick startup test in CPU mode
     LD_PRELOAD=libtcmalloc_minimal.so.4 \
         python launch.py \
@@ -90,7 +146,10 @@ RUN \
             --do-not-download-clip \
             --no-half \
             --port 11404 \
-            --exit
+            --exit && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Shared models: Forge -> ComfyUI (relative symlinks survive workspace sync) ----------
 RUN \
@@ -116,12 +175,17 @@ RUN \
     set -euo pipefail && \
     create_app_venv voicebox torch-2.9.1 && \
     . /venv/voicebox/bin/activate && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/ && \
     git clone "${VOICEBOX_REPO}" voicebox && \
     cd voicebox && \
     git checkout "${VOICEBOX_REF}" && \
     cd backend && \
-    sed -i '/^torch>=/d' requirements.txt && \
+    # Strip base-provided torch ecosystem pins from upstream requirements;
+    # the pytorch base is the single source of truth. The diff-based
+    # assertion at the end catches drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     uv pip install --no-cache-dir --no-deps chatterbox-tts && \
     uv pip install --no-cache-dir --no-deps hume-tada && \
@@ -135,28 +199,50 @@ RUN \
     sed -i -z 's/,\n  ]/\n  ]/' package.json && \
     bun install --no-save && \
     cd web && bunx --bun vite build && \
-    cp -r dist ../frontend
+    cp -r dist ../frontend && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 ENV VOICEBOX_ARGS="--host 127.0.0.1 --port 17493"
 
-# ---------- Ostris AI Toolkit (base: torch-2.7.1) ----------
+# ---------- Ostris AI Toolkit (base: torch-2.9.1 — matches upstream DGX path) ----------
+# Invariant: the torch-2.9.1 base ships torchcodec 0.9.1 (per
+# torch-companions.json), an exact match for ai-toolkit's pinned
+# torchcodec==0.9.1 in requirements_base.txt. Do not move this off
+# torch-2.9.1 without simultaneously checking that the new base's
+# torchcodec matches the upstream pin — torchcodec's PyPI metadata
+# declares no torch requirement, so a version skew won't be caught
+# by dependency resolution.
 ARG AI_TOOLKIT_REPO=https://github.com/ostris/ai-toolkit
 ARG AI_TOOLKIT_REF=dcb7f46
 RUN \
     set -euo pipefail && \
-    create_app_venv ostris torch-2.7.1 && \
+    create_app_venv ostris torch-2.9.1 && \
     . /venv/ostris/bin/activate && \
     . /opt/nvm/nvm.sh && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal && \
     git clone "${AI_TOOLKIT_REPO}" && \
     cd $(basename ${AI_TOOLKIT_REPO}) && \
     git checkout "${AI_TOOLKIT_REF}" && \
+    # Fixes known issue with toolkit dcb7f46
     uv pip install --no-cache-dir timm==1.0.22 && \
+    # Defensive strip: with torch-2.9.1 base the torchcodec versions
+    # already match (0.9.1 == 0.9.1), so this is belt-and-suspenders
+    # against a future upstream pin change. torchao is NOT stripped
+    # here: it isn't in the pytorch base, so ai-toolkit's explicit pin
+    # is what installs it.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements_base.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     cd ui && \
     npm install && \
     npm run update_db && \
-    npm run build
+    npm run build && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Wan2GP (base: torch-2.7.1) ----------
 ARG WAN2GP_REPO=https://github.com/deepbeepmeep/Wan2GP
@@ -165,11 +251,23 @@ RUN \
     set -euo pipefail && \
     create_app_venv wan2gp torch-2.7.1 && \
     . /venv/wan2gp/bin/activate && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal/ && \
     git clone "${WAN2GP_REPO}" Wan2GP && \
     cd Wan2GP && \
     git checkout "${WAN2GP_REF}" && \
-    uv pip install --no-cache-dir -r requirements.txt
+    # Strip all base-provided torch ecosystem pins from upstream
+    # requirements. Wan2GP pins torchcodec==0.10.0 but never imports it
+    # (dead dep) — without this strip that pin silently clobbers the
+    # base. torchcodec's PyPI metadata declares no torch requirement so
+    # uv won't catch the skew via dependency resolution; the diff-based
+    # assertion at the end is what catches it now.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
+    uv pip install --no-cache-dir -r requirements.txt && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
 ARG UNSLOTH_VERSION=0.1.35-Beta
@@ -178,7 +276,10 @@ RUN \
     . /opt/nvm/nvm.sh && \
     create_app_venv unsloth main && \
     . /venv/unsloth/bin/activate && \
-    uv pip install --no-cache-dir unsloth && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
+    uv pip install --no-cache-dir --torch-backend=cu128 "$unsloth_spec" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
@@ -187,6 +288,13 @@ RUN \
     # Patch install_python_stack.py to use cu128 torch backend
     find /venv/unsloth/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
+    # Patch setup.sh to build llama.cpp with portable CPU dispatch instead of
+    # -march=native. Without this, the build host's AVX-512 leaks into
+    # libggml-cpu.so and SIGILLs on any runtime CPU lacking AVX-512 (e.g.
+    # Zen 2 EPYC). GGML_CPU_ALL_VARIANTS produces per-microarch backends
+    # selected at runtime via feature detection.
+    find /venv/unsloth/lib -name 'setup.sh' -path '*/studio/*' \
+        -exec sed -i 's|-DGGML_NATIVE=ON|-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON|' {} + && \
     # Build llama.cpp from source (Unsloth pins its own tested version)
     export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
     export SKIP_STUDIO_BASE=1 && \
@@ -194,7 +302,10 @@ RUN \
     # Copy llama.cpp binaries to a fixed path outside workspace sync
     cp -a /opt/workspace-internal/unsloth/llama.cpp/build/bin /opt/llama-cpp-gpu && \
     echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \
-    ldconfig
+    ldconfig && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Whisper WebUI (base: torch-2.7.1) ----------
 ARG WHISPER_REPO=https://github.com/jhj0517/Whisper-WebUI
@@ -203,15 +314,23 @@ RUN \
     set -euo pipefail && \
     create_app_venv whisper torch-2.7.1 && \
     . /venv/whisper/bin/activate && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal/ && \
     git clone "${WHISPER_REPO}" Whisper-WebUI && \
     cd Whisper-WebUI && \
     git checkout "${WHISPER_REF}" && \
-    # Strip torch pins — provided by the base venv
-    sed -i '/^torch[>=<]/d; /^torchaudio[>=<]/d; /^--extra-index-url.*pytorch/d' requirements.txt && \
+    # Strip base-provided torch ecosystem pins from upstream requirements and
+    # drop the --extra-index-url that points pip at the wrong torch wheel
+    # index. The pytorch base is the single source of truth; the diff-based
+    # assertion at the end catches drift.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])|^--extra-index-url.*pytorch/d' requirements.txt backend/requirements-backend.txt && \
     # Ensure setuptools<78 for legacy pkg_resources in build deps
     uv pip install --no-cache-dir 'setuptools<78' && \
-    uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt
+    uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt && \
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- ACE Step 1.5 (base: main/torch2.10) ----------
 ARG ACE_STEP_REPO=https://github.com/ace-step/ACE-Step-1.5
@@ -223,6 +342,8 @@ RUN \
     create_app_venv ace-step main && \
     . /venv/ace-step/bin/activate && \
     . /opt/nvm/nvm.sh && \
+    # Snapshot the base's full torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal/ && \
     git clone "${ACE_STEP_REPO}" ACE-Step-1.5 && \
     cd ACE-Step-1.5 && \
@@ -252,7 +373,12 @@ RUN \
     npm install && \
     cd server && \
     npm install && \
-    cp .env.example .env
+    cp .env.example .env && \
+    # Verify torch ecosystem unchanged. ace-step's pyproject.toml strip
+    # above prevents upstream pins from leaking through; this is the
+    # downstream sanity check that catches any other clobber path.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Google Chrome (amd64 only — no aarch64 .deb from Google) ----------
 RUN \
