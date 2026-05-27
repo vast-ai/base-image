@@ -270,7 +270,11 @@ RUN \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
-ARG UNSLOTH_VERSION=0.1.35-Beta
+# Default empty: install whatever PyPI's current `unsloth` resolves to.
+# CI passes UNSLOTH_VERSION as a PyPI release version when pinning is
+# needed. Don't put a tag-style default here ("0.1.35-Beta") — PyPI
+# normalizes that to 0.1.35b0 which doesn't exist as a release.
+ARG UNSLOTH_VERSION=
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
