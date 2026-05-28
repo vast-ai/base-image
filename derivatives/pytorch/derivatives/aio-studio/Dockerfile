@@ -41,7 +41,7 @@ RUN \
     # Combined with the strips below + the diff-based assertion at the end,
     # this catches silent ABI clobbers — the torch-only check we used to
     # do here let them slip through.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
     fi && \
@@ -97,7 +97,7 @@ RUN \
     mkdir -p user/default/ComfyUI-Manager/components && \
     # Verify the torch ecosystem is unchanged. Catches silent ABI clobbers
     # that the torch-only check used to miss.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 ENV COMFYUI_ARGS="--disable-auto-launch --enable-cors-header --port 18188"
@@ -110,7 +110,7 @@ RUN \
     create_app_venv forge main && \
     . /venv/forge/bin/activate && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
         uv pip install --no-cache-dir xformers sageattention==1.0.6 --torch-backend "${PYTORCH_BACKEND}"; \
     fi && \
@@ -148,7 +148,7 @@ RUN \
             --port 11404 \
             --exit && \
     # Verify torch ecosystem unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Shared models: Forge -> ComfyUI (relative symlinks survive workspace sync) ----------
@@ -176,7 +176,7 @@ RUN \
     create_app_venv voicebox torch-2.9.1 && \
     . /venv/voicebox/bin/activate && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/ && \
     git clone "${VOICEBOX_REPO}" voicebox && \
     cd voicebox && \
@@ -201,7 +201,7 @@ RUN \
     cd web && bunx --bun vite build && \
     cp -r dist ../frontend && \
     # Verify torch ecosystem unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 ENV VOICEBOX_ARGS="--host 127.0.0.1 --port 17493"
@@ -222,7 +222,7 @@ RUN \
     . /venv/ostris/bin/activate && \
     . /opt/nvm/nvm.sh && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal && \
     git clone "${AI_TOOLKIT_REPO}" && \
     cd $(basename ${AI_TOOLKIT_REPO}) && \
@@ -241,7 +241,7 @@ RUN \
     npm run update_db && \
     npm run build && \
     # Verify torch ecosystem unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Wan2GP (base: torch-2.7.1) ----------
@@ -252,7 +252,7 @@ RUN \
     create_app_venv wan2gp torch-2.7.1 && \
     . /venv/wan2gp/bin/activate && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal/ && \
     git clone "${WAN2GP_REPO}" Wan2GP && \
     cd Wan2GP && \
@@ -266,7 +266,7 @@ RUN \
     sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     # Verify torch ecosystem unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
@@ -281,7 +281,7 @@ RUN \
     create_app_venv unsloth main && \
     . /venv/unsloth/bin/activate && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
     uv pip install --no-cache-dir --torch-backend=cu128 "$unsloth_spec" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
@@ -308,7 +308,7 @@ RUN \
     echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig && \
     # Verify torch ecosystem unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Whisper WebUI (base: torch-2.7.1) ----------
@@ -319,7 +319,7 @@ RUN \
     create_app_venv whisper torch-2.7.1 && \
     . /venv/whisper/bin/activate && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal/ && \
     git clone "${WHISPER_REPO}" Whisper-WebUI && \
     cd Whisper-WebUI && \
@@ -333,7 +333,7 @@ RUN \
     uv pip install --no-cache-dir 'setuptools<78' && \
     uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt && \
     # Verify torch ecosystem unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- ACE Step 1.5 (base: main/torch2.10) ----------
@@ -347,7 +347,7 @@ RUN \
     . /venv/ace-step/bin/activate && \
     . /opt/nvm/nvm.sh && \
     # Snapshot the base's full torch ecosystem.
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_pre="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal/ && \
     git clone "${ACE_STEP_REPO}" ACE-Step-1.5 && \
     cd ACE-Step-1.5 && \
@@ -381,7 +381,7 @@ RUN \
     # Verify torch ecosystem unchanged. ace-step's pyproject.toml strip
     # above prevents upstream pins from leaking through; this is the
     # downstream sanity check that catches any other clobber path.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    torch_versions_post="$({ uv pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Google Chrome (amd64 only — no aarch64 .deb from Google) ----------
