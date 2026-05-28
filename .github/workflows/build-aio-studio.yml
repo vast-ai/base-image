@@ -49,6 +49,9 @@ on:
       ACE_STEP_REF:
         description: "ACE Step ref (empty = latest release)"
         required: false
+      UNSLOTH_VERSION:
+        description: "Unsloth PyPI version (empty = latest)"
+        required: false
 
 env:
   DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-04-15"
@@ -67,6 +70,7 @@ jobs:
       whisper-ref: ${{ steps.whisper.outputs.resolved-ref }}
       ace-step-ref: ${{ steps.ace-step.outputs.resolved-ref }}
       ace-step-ui-ref: ${{ steps.ace-step-ui.outputs.ref }}
+      unsloth-version: ${{ steps.unsloth.outputs.resolved-version }}
       image-tag: ${{ steps.tag.outputs.tag }}
       should-run: ${{ steps.decision.outputs.should-run }}
     steps:
@@ -170,6 +174,16 @@ jobs:
           REF=$(git ls-remote https://github.com/fspecii/ace-step-ui.git HEAD | cut -f1 | cut -c1-7)
           echo "ref=${REF}" >> $GITHUB_OUTPUT
 
+      # PyPI-published apps — resolve latest version
+      - name: Resolve Unsloth version
+        id: unsloth
+        uses: ./.github/actions/check-pypi-release
+        with:
+          package: unsloth
+          age-threshold-seconds: "999999999"
+          trigger: ${{ inputs.UNSLOTH_VERSION && 'manual' || github.event_name }}
+          manual-version: ${{ inputs.UNSLOTH_VERSION }}
+
       - name: Generate image tag
         id: tag
         shell: bash
@@ -202,6 +216,7 @@ jobs:
           echo "| Whisper WebUI | \`${{ steps.whisper.outputs.resolved-ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| ACE Step | \`${{ steps.ace-step.outputs.resolved-ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| ACE Step UI | \`${{ steps.ace-step-ui.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unsloth | \`${{ steps.unsloth.outputs.resolved-version }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Image Tag** | **${{ steps.tag.outputs.tag }}** |" >> $GITHUB_STEP_SUMMARY
 
   # ── Build app image ──
@@ -245,6 +260,7 @@ jobs:
             --build-arg WHISPER_REF=${{ needs.resolve-refs.outputs.whisper-ref }} \
             --build-arg ACE_STEP_REF=${{ needs.resolve-refs.outputs.ace-step-ref }} \
             --build-arg ACE_STEP_UI_REF=${{ needs.resolve-refs.outputs.ace-step-ui-ref }} \
+            --build-arg UNSLOTH_VERSION=${{ needs.resolve-refs.outputs.unsloth-version }} \
             --build-context comfyui=../comfyui \
             -t "${NAMESPACE}/${REPO}:${TAG}" \
             -t "${NAMESPACE}/${REPO}:latest" \
