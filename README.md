@@ -210,12 +210,19 @@ Most agents find these on their own. If not, just tell yours to *"read AGENTS.md
 
 ### Call the capability API (remote / programmatic agents)
 
-Agents that drive the instance over the network can read the same manifest from the Instance Portal's REST API. Use the public address that port `1111` maps to (shown on the instance card, i.e. `VAST_TCP_PORT_1111`) and an auth token (see [Authentication](#authentication)):
+Agents that drive the instance over the network can read the same manifest from the Instance Portal's REST API, at the public address that port `1111` maps to (shown on the instance card, i.e. `VAST_TCP_PORT_1111`).
+
+Remote calls require an auth token, and you need one whose value you know — the default `OPEN_BUTTON_TOKEN` is generated inside the instance and **cannot be read from outside without SSH**. Either:
+
+- **Set your own at launch** (recommended for automation): pass `WEB_PASSWORD` (or `OPEN_BUTTON_TOKEN`) as a template environment variable and use that value; or
+- **Read the generated one over SSH**: `echo $OPEN_BUTTON_TOKEN` (it is exported to `/etc/environment`).
 
 ```bash
-TOKEN=$OPEN_BUTTON_TOKEN     # or your WEB_PASSWORD
+TOKEN=<the token you set at launch, or read via SSH>
 curl -H "Authorization: Bearer $TOKEN" https://<public-ip>:<mapped-1111-port>/capabilities
 ```
+
+An agent running *on* the instance needs no token at all — requests to `localhost:11111` bypass the auth edge — so the shell method above is the simplest.
 
 Useful routes:
 
