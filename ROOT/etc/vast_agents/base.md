@@ -33,25 +33,28 @@ System `python3` and `node`/`npm` (via nvm) are also on PATH after login.
 
 ## 3. Storage — what persists
 
-The whole container filesystem (overlayfs) persists across a normal instance
-stop/start — installed packages, the home dir, and venvs all survive a restart.
-It is lost only if the instance is **destroyed**.
+A **stop/start always preserves everything** — the entire container filesystem
+(installed packages, home dir, venvs, and `${WORKSPACE}`) comes back intact.
+
+The container filesystem is wiped only by a **recycle** (the container is rebuilt
+from the image) or a **destroy** (the instance is removed). The one thing that
+survives those is a **volume**.
 
 A **volume** is optional separate storage, usually mounted at `${WORKSPACE}`
-(default `/workspace`). It lives on the physical host, survives instance
-destruction, and can be mounted by several instances on that machine at once — so
-it's the place for data you want to keep beyond a single instance or share
-between them. Not every instance has one; check whether `${WORKSPACE}` is a
-distinct mount (and treat it as shared — other instances may be writing to it):
+(default `/workspace`). It lives on the physical host, **persists through recycle
+and destroy**, and can be mounted by several instances on that machine at once —
+so it's the only place to keep data you can't afford to lose. Not every instance
+has one; check whether `${WORKSPACE}` is a distinct mount (and treat it as shared
+— other instances may be writing to it):
 
 ```
 vast-capabilities metrics | jq '.hardware.volume'   # present only when a volume is mounted
 ```
 
-Put models, datasets, and code you care about under `${WORKSPACE}`; `HF_HOME`
-defaults to `${WORKSPACE}/.hf_home`. Launching with `--sync-home` /
-`--sync-environment` copies home dirs / venvs onto the volume so they too persist
-beyond the instance.
+Put models, datasets, and code you can't lose on the volume; `HF_HOME` defaults to
+`${WORKSPACE}/.hf_home`. With no volume, data still survives stop/start but is lost
+on recycle/destroy. `--sync-home` / `--sync-environment` at launch copy home dirs
+/ venvs onto the volume so they survive recycle/destroy too.
 
 ## 4. Services: how they are wired
 
