@@ -65,6 +65,61 @@ def _workspace_is_volume() -> bool:
         return False
 
 
+def _ldconfig_libs() -> set:
+    """Shared-library sonames visible to the dynamic linker (ldconfig cache +
+    LD_LIBRARY_PATH) — used to detect which NVIDIA driver libs are present."""
+    names: set = set()
+    try:
+        out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            tok = line.strip().split(" ", 1)[0]
+            if ".so" in tok:
+                names.add(tok)
+    except Exception:
+        pass
+    for d in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
+        if d and os.path.isdir(d):
+            try:
+                names.update(os.listdir(d))
+            except OSError:
+                pass
+    return names
+
+
+def _has_nvidia_vulkan_icd() -> bool:
+    for d in ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d", "/opt/nvidia-drivers/lib64"):
+        try:
+            if any("nvidia" in f.lower() and f.endswith(".json") for f in os.listdir(d)):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _gpu_render_caps() -> Optional[dict]:
+    """Whether the NVIDIA graphics/render userspace libs are present.
+
+    Some Vast hosts install only the *compute* driver, so CUDA works but the
+    OpenGL/OptiX/EGL/Vulkan libs are missing (undetectable before renting).
+    Returns None when no NVIDIA driver is present (nothing to report).
+    """
+    if not os.path.exists("/proc/driver/nvidia/version"):
+        return None
+    libs = _ldconfig_libs()
+    caps: dict = {
+        "gl": "libGLX_nvidia.so.0" in libs,
+        "optix": "libnvoptix.so.1" in libs,
+        "vulkan": _has_nvidia_vulkan_icd(),
+    }
+    if not all((caps["gl"], caps["optix"], caps["vulkan"])):
+        caps["note"] = (
+            "Some graphics/render libs are missing — common on Vast hosts that "
+            "install only the compute driver (CUDA compute still works)."
+        )
+        caps["fix"] = "run 'install-display-drivers' to download+extract the matching driver libs"
+    return caps
+
+
 _PORT_RE = re.compile(r"^VAST_(TCP|UDP)_PORT_(\d+)$")
 
 
@@ -399,6 +454,9 @@ def assemble(
 
     # --- hardware ---
     hardware: dict = {"gpu": {"summary": gpu if gpu is not None else "unknown"}}
+    render = _gpu_render_caps()
+    if render is not None:
+        hardware["gpu"]["render"] = render
     if "metrics" in include and metrics:
         if "gpu" in metrics:
             hardware["gpu"].update(metrics["gpu"])

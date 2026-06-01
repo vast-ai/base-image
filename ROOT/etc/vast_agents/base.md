@@ -198,7 +198,27 @@ ls /var/log/portal/                                 # per-service logs
 tail -f /var/log/portal/<service>.log
 ```
 
-## 12. Manage the instance itself
+## 12. GPU graphics / rendering (GL, OptiX, Vulkan)
+
+CUDA *compute* almost always works, but some Vast hosts install only the compute
+driver — so OpenGL/GLX/EGL, OptiX, and Vulkan userspace libs can be missing, and
+you can't tell before renting. Symptoms: `libGL.so.1: cannot open shared object
+file`, `libEGL.so.1: ...`, "OptiX not available", or `glxinfo`/`vulkaninfo`
+failing while `nvidia-smi` and CUDA tensors work fine.
+
+Check before assuming graphics work:
+```
+vast-capabilities | jq '.hardware.gpu.render'   # {gl, optix, vulkan} booleans (+ fix hint if missing)
+```
+
+If any are `false`, restore them (downloads + extracts the matching host-driver
+libs into /opt/nvidia-drivers; needs root + internet, ~300 MB once):
+```
+install-display-drivers
+```
+Then restart whatever needs them. (The desktop image runs this automatically at boot.)
+
+## 13. Manage the instance itself
 
 The `vastai` CLI can manage *this* instance from within, authenticated by the
 Vast-set `CONTAINER_API_KEY` (the CLI is not pre-authenticated — pass it
@@ -211,7 +231,7 @@ vastai stop instance $CONTAINER_ID --api-key $CONTAINER_API_KEY   # halts GPU ch
 still billed**. `destroy` deletes the instance entirely. Use both deliberately.
 See `vastai --help` for the full command set.
 
-## 13. Further reference (in-container docs)
+## 14. Further reference (in-container docs)
 
 - Provisioning manifest schema: `/opt/instance-tools/lib/provisioner/README.md`
 - Adding supervisor services (wrapper-script conventions): `/opt/supervisor-scripts/README.md`

@@ -139,6 +139,18 @@ def test_workspace_is_volume_reported(monkeypatch):
     assert manifest._workspace_is_volume() is False
 
 
+def test_ldconfig_libs_is_set():
+    assert isinstance(manifest._ldconfig_libs(), set)
+
+
+def test_gpu_render_caps_none_without_nvidia():
+    # No NVIDIA driver present (typical dev/CI) -> render caps not reported.
+    if os.path.exists("/proc/driver/nvidia/version"):
+        import pytest
+        pytest.skip("NVIDIA driver present; render-caps detection would run")
+    assert manifest._gpu_render_caps() is None
+
+
 def test_assemble_null_direct_url_without_public_ip(monkeypatch):
     monkeypatch.delenv("PUBLIC_IPADDR", raising=False)
     monkeypatch.setenv("VAST_TCP_PORT_8000", "40080")
