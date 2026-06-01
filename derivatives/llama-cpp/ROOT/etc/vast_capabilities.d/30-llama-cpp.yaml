@@ -7,3 +7,8 @@ openai_endpoints:
 tools:
   - name: llama-server
     description: llama.cpp OpenAI-compatible server
+
+image:
+  name: llama.cpp
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/llama-cpp
+  preinstalled: llama.cpp server (OpenAI-compatible)

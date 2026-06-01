@@ -155,6 +155,37 @@ def test_image_identity_merge_and_default(tmp_path):
     assert m2["image"]["repo"] == "https://github.com/vast-ai/base-image"
 
 
+def test_listening_ports_is_set():
+    assert isinstance(manifest._listening_ports(), set)
+
+
+def test_open_ports_in_use_annotation(monkeypatch):
+    for k in list(os.environ):
+        if k.startswith(("VAST_TCP_PORT_", "VAST_UDP_PORT_")):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("VAST_TCP_PORT_8000", "40080")    # taken by a service
+    monkeypatch.setenv("VAST_TCP_PORT_10100", "41100")   # spare
+    monkeypatch.setattr(manifest, "_listening_ports", lambda: set())
+    svc = [{"name": "vLLM API", "hostname": "localhost",
+            "external_port": 8000, "internal_port": 18000, "open_path": "/"}]
+    m = manifest.assemble(services=svc,
+                          fragments={"tools": [], "python_environments": [], "openai_endpoints": []})
+    ports = {p["container_port"]: p for p in m["instance"]["open_ports"]}
+    assert ports[8000]["in_use"] is True and ports[8000]["service"] == "vLLM API"
+    assert ports[10100]["in_use"] is False and "service" not in ports[10100]
+
+
+def test_credentials_presence(monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    monkeypatch.setenv("CIVITAI_TOKEN", "x")
+    c = manifest._credentials()
+    assert c["huggingface"] is False and c["civitai"] is True and "note" in c
+    m = manifest.assemble(services=[],
+                          fragments={"tools": [], "python_environments": [], "openai_endpoints": []})
+    assert "credentials" in m
+
+
 def test_ldconfig_libs_is_set():
     assert isinstance(manifest._ldconfig_libs(), set)
 

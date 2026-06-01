@@ -190,6 +190,44 @@ def _open_ports() -> list[dict]:
     return out
 
 
+def _listening_ports() -> set:
+    """TCP ports currently in LISTEN state (from /proc/net/tcp[6]).
+
+    Used to tell an agent which open external ports are already occupied vs free
+    to map its own app onto.
+    """
+    ports: set = set()
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                next(f, None)  # header
+                for line in f:
+                    parts = line.split()
+                    if len(parts) < 4 or parts[3] != "0A":  # 0A = LISTEN
+                        continue
+                    try:
+                        ports.add(int(parts[1].rsplit(":", 1)[1], 16))
+                    except (ValueError, IndexError):
+                        pass
+        except OSError:
+            pass
+    return ports
+
+
+def _credentials() -> dict:
+    """Which credentials are configured — presence only, values never exposed."""
+    def present(*names) -> bool:
+        return any(os.environ.get(n) for n in names)
+    rclone = os.path.isfile(os.path.expanduser("~/.config/rclone/rclone.conf")) \
+        or bool(os.environ.get("RCLONE_CONFIG"))
+    return {
+        "huggingface": present("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"),  # gated model pulls
+        "civitai": present("CIVITAI_TOKEN"),
+        "rclone_configured": rclone,
+        "note": "presence only; token values are not exposed",
+    }
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -530,10 +568,23 @@ def assemble(
     image = dict(fragments.get("image") or {})
     image.setdefault("repo", "https://github.com/vast-ai/base-image")
 
+    # Annotate open ports: occupied by a configured service, or actively
+    # listening, => in_use; otherwise free for an agent to map its own app onto.
+    listening = _listening_ports()
+    svc_by_ext = {s["external_port"]: s["name"] for s in svc_out if s.get("external_port") is not None}
+    open_ports = _open_ports()
+    for p in open_ports:
+        cp = p["container_port"]
+        svc_name = svc_by_ext.get(cp)
+        p["in_use"] = (cp in listening) or (svc_name is not None)
+        if svc_name:
+            p["service"] = svc_name
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
         "image": image,
+        "credentials": _credentials(),
         "instance": {
             "container_id": os.environ.get("CONTAINER_ID", ""),
             "containerlabel": os.environ.get("VAST_CONTAINERLABEL", ""),
@@ -544,8 +595,10 @@ def assemble(
             "workspace_is_volume": _workspace_is_volume(),
             "scheme": scheme,
             "public_ip": public_ip,
-            # Fixed at instance creation; an agent can use these but cannot add more.
-            "open_ports": _open_ports(),
+            # Fixed at instance creation; an agent can use these but cannot add
+            # more. `in_use` flags which are occupied; pick a free one to expose
+            # your own app.
+            "open_ports": open_ports,
         },
         "hardware": hardware,
         "python_environments": py_envs,

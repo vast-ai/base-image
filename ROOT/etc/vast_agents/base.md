@@ -19,8 +19,10 @@ vast-capabilities metrics,packages # also include live CPU/GPU/RAM + package ver
 
 Lists the image identity (`.image` — name + source repo/README, so you can check
 what's preinstalled), installed tools, python environments, hardware, open
-external ports, every service (with reachable URL and state), OpenAI `/v1`
-endpoints, provisioning, and the auth model. Equivalents: `/etc/vast_capabilities.json` (static snapshot),
+external ports (with `in_use` flags), every service (with reachable URL and
+state), OpenAI `/v1` endpoints, configured credentials (`.credentials` —
+presence of HF/Civitai tokens, rclone config; values never shown), provisioning,
+and the auth model. Equivalents: `/etc/vast_capabilities.json` (static snapshot),
 `curl -s http://localhost:11111/capabilities`, `…/openapi.json` (full REST API).
 
 ## 2. Python
@@ -125,16 +127,20 @@ curl -s http://localhost:11111/get-existing-named-tunnel/<internal_port>
 ## 6. Available external ports (fixed at creation)
 
 External ports are allocated when the instance is created — **you cannot add more
-at runtime**. See what you have:
+at runtime**. See what you have, and which are free:
 
 ```
-vast-capabilities | jq '.instance.open_ports'   # proto, container_port, public_port
-env | grep -E 'VAST_(TCP|UDP)_PORT_'             # the raw mappings
+vast-capabilities | jq '.instance.open_ports'              # all open ports
+vast-capabilities | jq '.instance.open_ports[]|select(.in_use==false)'   # free ones
 ```
+
+Each entry has `container_port`, `public_port`, and `in_use` (plus the occupying
+`service` when taken). To expose your own app, pick one where `in_use` is `false`.
 
 ## 7. Expose your own app, or add a managed service
 
-To expose an app **externally** it must use one of the already-open ports above.
+To expose an app **externally** it must use one of the already-open ports above
+that is **free** (`in_use: false`) — don't reuse a port a service already holds.
 Caddy gives a service an authed external vhost only when its `external_port`
 differs from its `internal_port` and `VAST_TCP_PORT_<external_port>` exists.
 

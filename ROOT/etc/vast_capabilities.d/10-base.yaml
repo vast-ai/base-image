@@ -1,6 +1,8 @@
 # Base-image capability fragment.
-# Derivatives drop their own 30-<name>.yaml here (merged at request time).
-# Lists are concatenated; python_environments are merged by name.
+# Derivatives drop their own NN-<name>.yaml here (merged at request time).
+# Lists are concatenated; python_environments merge by name; the `image` block
+# merges per-key in sorted-filename order. Numbering = depth so the most specific
+# wins: base 10-, direct derivatives 30-, derivatives-of-derivatives 50-.
 
 # Image identity. The base sets only universally-true fields (the open-source
 # repo + a README pointer); each derivative's fragment overrides name/readme/

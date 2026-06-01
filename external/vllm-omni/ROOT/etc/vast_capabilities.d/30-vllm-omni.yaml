@@ -7,3 +7,8 @@ openai_endpoints:
 tools:
   - name: vllm
     description: vLLM-Omni OpenAI-compatible multimodal inference server
+
+image:
+  name: vLLM-Omni
+  readme: https://github.com/vast-ai/base-image/tree/main/external/vllm-omni
+  preinstalled: vLLM-Omni (multimodal OpenAI-compatible server)

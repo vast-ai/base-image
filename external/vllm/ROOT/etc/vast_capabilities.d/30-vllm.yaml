@@ -7,3 +7,8 @@ openai_endpoints:
 tools:
   - name: vllm
     description: vLLM OpenAI-compatible inference server
+
+image:
+  name: vLLM
+  readme: https://github.com/vast-ai/base-image/tree/main/external/vllm
+  preinstalled: PyTorch + vLLM (OpenAI-compatible server)

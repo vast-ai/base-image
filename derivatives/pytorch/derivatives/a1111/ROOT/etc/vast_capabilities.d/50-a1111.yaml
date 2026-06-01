@@ -1,0 +1,5 @@
+# Stable Diffusion WebUI (AUTOMATIC1111) derivative — image identity (overrides the base image block).
+image:
+  name: Stable Diffusion WebUI (AUTOMATIC1111)
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/a1111
+  preinstalled: PyTorch + AUTOMATIC1111

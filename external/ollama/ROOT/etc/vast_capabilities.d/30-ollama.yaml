@@ -7,3 +7,8 @@ openai_endpoints:
 tools:
   - name: ollama
     description: Ollama model server (OpenAI-compatible at /v1)
+
+image:
+  name: Ollama
+  readme: https://github.com/vast-ai/base-image/tree/main/external/ollama
+  preinstalled: Ollama model server (OpenAI-compatible at /v1)

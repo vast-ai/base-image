@@ -7,3 +7,8 @@ openai_endpoints:
 tools:
   - name: sglang
     description: SGLang OpenAI-compatible inference server
+
+image:
+  name: SGLang
+  readme: https://github.com/vast-ai/base-image/tree/main/external/sglang
+  preinstalled: SGLang (OpenAI-compatible server)

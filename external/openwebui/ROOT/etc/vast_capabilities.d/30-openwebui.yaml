@@ -8,3 +8,8 @@ openai_endpoints:
 tools:
   - name: ollama
     description: Ollama model server bundled with Open WebUI (OpenAI-compatible at /v1)
+
+image:
+  name: Open WebUI
+  readme: https://github.com/vast-ai/base-image/tree/main/external/openwebui
+  preinstalled: Open WebUI + bundled Ollama
