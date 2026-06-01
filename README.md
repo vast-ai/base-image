@@ -195,6 +195,37 @@ https://four-random-words.trycloudflare.com
 
 For persistent custom domains, set `CF_TUNNEL_TOKEN` to your Cloudflare tunnel token. Note: Each running instance requires a separate tunnel token.
 
+## AI Agents
+
+Every instance is self-describing, so an AI agent can discover what it offers and how to operate it with no prior knowledge. There are two ways to connect your agent.
+
+### Give your agent a shell (simplest)
+
+Run your coding agent on the instance — SSH in (use the **Connect** button on the instance card for the command) or open a terminal in Jupyter — or point any shell-capable agent at it. It lands in `${WORKSPACE}` (interactive shells) or the home directory (one-shot SSH), where it finds:
+
+- **`AGENTS.md` / `CLAUDE.md`** — an operations guide written for agents (Python environments, services and ports, the auth model, storage/persistence, provisioning, and managing the instance itself). The canonical copy is `/etc/vast_agents/base.md`.
+- **`vast-capabilities`** — a command that prints a live, machine-readable JSON manifest of the instance.
+
+Most agents find these on their own. If not, just tell yours to *"read AGENTS.md and run vast-capabilities"*.
+
+### Call the capability API (remote / programmatic agents)
+
+Agents that drive the instance over the network can read the same manifest from the Instance Portal's REST API. Use the public address that port `1111` maps to (shown on the instance card, i.e. `VAST_TCP_PORT_1111`) and an auth token (see [Authentication](#authentication)):
+
+```bash
+TOKEN=$OPEN_BUTTON_TOKEN     # or your WEB_PASSWORD
+curl -H "Authorization: Bearer $TOKEN" https://<public-ip>:<mapped-1111-port>/capabilities
+```
+
+Useful routes:
+
+| Route | Returns |
+|-------|---------|
+| `GET /capabilities` | Full manifest (tools, environments, hardware, services, provisioning, auth). Add `?include=metrics,packages` for live metrics and package versions. |
+| `GET /capabilities/services` | Running/known services with their externally reachable URLs and state |
+| `GET /capabilities/endpoints` | OpenAI-compatible `/v1` endpoints (when an inference server is running) |
+| `GET /openapi.json` | The full portal REST surface |
+
 ## Startup Configuration
 
 ### Entrypoint Arguments
