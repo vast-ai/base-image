@@ -1717,6 +1717,11 @@ async def post_capabilities_provision(req: ProvisionRequest):
 
     Accepts a manifest URL, inline YAML, or simple pip/git/download lists.
     Returns immediately; follow progress in /var/log/portal/provisioning.log.
+
+    SECURITY: this installs/runs caller-supplied code (pip/git/post_commands), so
+    it is an install+exec surface. It is gated by the Caddy token edge for remote
+    callers and, like the other /supervisor/* control routes, is unauthenticated
+    only on localhost inside the (single-tenant) container.
     """
     log_file = "/var/log/portal/provisioning.log"
     cmd: list[str] = ["/opt/instance-tools/bin/provisioner"]

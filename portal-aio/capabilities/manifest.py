@@ -243,6 +243,15 @@ def _normalize(s: str) -> str:
     return "".join(c for c in (s or "").lower() if c.isalnum())
 
 
+def _launch_has_jupyter() -> bool:
+    """True when /.launch selects Jupyter (Vast manages it, not supervisor)."""
+    try:
+        with open("/.launch") as f:
+            return "jupyter" in f.read().lower()
+    except Exception:
+        return False
+
+
 def _match_process(service: dict, processes: list[dict]) -> Optional[dict]:
     """Match a service to a supervisor process by name / search term.
 
@@ -335,6 +344,10 @@ def assemble(
         proc = _match_process(svc, processes)
         entry["supervisor_process"] = proc.get("name") if proc else None
         entry["state"] = proc.get("state") if proc else "unknown"
+        # Jupyter under /.launch is run by the Vast platform, not supervisor, so
+        # it has no matching process — report that rather than a misleading "unknown".
+        if entry["state"] == "unknown" and "jupyter" in _normalize(svc.get("name")) and _launch_has_jupyter():
+            entry["state"] = "vast-managed"
 
         hint = ep_hints.get(svc.get("name"))
         if hint:
