@@ -45,6 +45,9 @@ tools:
   - name: provisioner
     path: /opt/instance-tools/bin/provisioner
     description: Declarative dependency/service installer (YAML manifests)
+  - name: install-display-drivers
+    path: /opt/instance-tools/bin/install-display-drivers
+    description: Restore GPU graphics/render libs (GL/OptiX/Vulkan) if the host lacks them
   - name: vast-capabilities
     path: /opt/instance-tools/bin/vast-capabilities
     description: Print this instance's live capability manifest
