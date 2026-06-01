@@ -1690,9 +1690,11 @@ async def get_capabilities_well_known(include: Optional[str] = None) -> JSONResp
     response_model=List[ServiceInfo],
     summary="Running/known services with reachable URLs",
 )
-async def get_capabilities_services() -> JSONResponse:
+async def get_capabilities_services():
     manifest = await _build_capabilities(set())
-    return JSONResponse(manifest.get("services", []))
+    # Return the plain list so FastAPI validates/serialises via response_model
+    # and the OpenAPI schema matches actual output.
+    return manifest.get("services", [])
 
 
 @app.get(
@@ -1700,9 +1702,9 @@ async def get_capabilities_services() -> JSONResponse:
     response_model=List[OpenAIEndpoint],
     summary="OpenAI /v1 endpoints exposed by running services",
 )
-async def get_capabilities_endpoints() -> JSONResponse:
+async def get_capabilities_endpoints():
     manifest = await _build_capabilities(set())
-    return JSONResponse(manifest.get("endpoints_openai", []))
+    return manifest.get("endpoints_openai", [])
 
 
 @app.post(
@@ -1710,7 +1712,7 @@ async def get_capabilities_endpoints() -> JSONResponse:
     response_model=ProvisionResponse,
     summary="Install more dependencies via the provisioner",
 )
-async def post_capabilities_provision(req: ProvisionRequest) -> JSONResponse:
+async def post_capabilities_provision(req: ProvisionRequest):
     """Launch the declarative provisioner in the background.
 
     Accepts a manifest URL, inline YAML, or simple pip/git/download lists.
@@ -1751,21 +1753,32 @@ async def post_capabilities_provision(req: ProvisionRequest) -> JSONResponse:
 
     try:
         # Detached so it outlives this request (same pattern as the restart route).
-        subprocess.Popen(
-            cmd,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if cleanup_path:
+            # The provisioner reads the temp manifest asynchronously, so we can't
+            # delete it here; have the detached shell remove it once done.
+            import shlex
+            shell_cmd = (
+                f"{shlex.quote(cmd[0])} {shlex.quote(cmd[1])}; "
+                f"rm -f {shlex.quote(cleanup_path)}"
+            )
+            subprocess.Popen(
+                shell_cmd, shell=True, start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                cmd, start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
     except Exception as e:
         if cleanup_path and os.path.isfile(cleanup_path):
             os.unlink(cleanup_path)
         logger.error(f"Failed to launch provisioner: {e}")
         raise HTTPException(status_code=500, detail="Failed to launch provisioner")
 
-    return JSONResponse({
+    return {
         "status": "started",
         "detail": "Provisioner launched in the background",
         "log_file": log_file,
-    })
+    }
 

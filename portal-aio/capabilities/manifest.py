@@ -363,9 +363,11 @@ def assemble(
         detected = _detect_env_kind(path)
         if detected:
             env_out["kind"] = detected
+        # Keep packages_of_interest a stable list; put probed versions in a
+        # separate package_versions map so the manifest shape doesn't change.
         poi = env.get("packages_of_interest") or []
         if "packages" in include and poi and path:
-            env_out["packages_of_interest"] = _probe_packages(path, poi)
+            env_out["package_versions"] = _probe_packages(path, poi)
         py_envs.append(env_out)
 
     # --- hardware ---

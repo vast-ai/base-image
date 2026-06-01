@@ -28,10 +28,12 @@ fi
 if [[ -f "$AGENTS_BASE" && -d "$WORKSPACE" ]]; then
     for name in AGENTS.md CLAUDE.md; do
         target="${WORKSPACE}/${name}"
-        if [[ -L "$target" || ! -e "$target" ]]; then
+        # Create only when absent/dangling, or refresh a link that is already
+        # ours — never replace a user's real file or a symlink they own.
+        if [[ ! -e "$target" ]] || [[ "$(readlink "$target" 2>/dev/null)" == "$AGENTS_BASE" ]]; then
             ln -sfn "$AGENTS_BASE" "$target" && echo "Linked ${target} -> ${AGENTS_BASE}"
         else
-            echo "Leaving user-provided ${target} untouched"
+            echo "Leaving existing ${target} untouched"
         fi
     done
 fi
