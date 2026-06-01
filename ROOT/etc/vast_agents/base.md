@@ -199,11 +199,32 @@ ls /var/log/portal/                                 # per-service logs
 tail -f /var/log/portal/<service>.log
 ```
 
-## 12. GPU graphics / rendering (GL, OptiX, Vulkan)
+## 12. GPU: CUDA toolkit, drivers, and rendering
 
-CUDA *compute* almost always works, but some Vast hosts install only the compute
-driver — so OpenGL/GLX/EGL, OptiX, and Vulkan userspace libs can be missing, and
-you can't tell before renting. Symptoms: `libGL.so.1: cannot open shared object
+### CUDA toolkit & driver matching
+
+The NVIDIA driver comes from the host (libcuda is injected), so CUDA *compute*
+works even on the "stock" image — but stock images ship NO CUDA toolkit/runtime/
+dev libs (no `nvcc`, no `cudart`, no cuDNN). Check what you have:
+```
+vast-capabilities | jq '.hardware.gpu.cuda'   # driver_version, driver_max_cuda, toolkit_installed
+```
+Two hard rules when installing CUDA libraries (the nvidia/cuda apt repo is
+configured, so this is easy to get wrong):
+1. **Never install/upgrade the NVIDIA driver from apt** — the `cuda` metapackage
+   pulls `cuda-drivers`, and `nvidia-driver-*`/`libcuda*` packages replace the
+   host driver. It must match the host kernel module; replacing it breaks CUDA.
+2. **Install only a CUDA toolkit ≤ `driver_max_cuda`** (shown above / by
+   `nvidia-smi`). Use `cuda-toolkit-<X-Y>` (toolkit only), not `cuda`.
+
+Easiest path: prefer framework wheels that bundle their own CUDA runtime
+(`uv pip install torch` pulls a matching one) — then you need no system CUDA at
+all. Use the system toolkit only when you need `nvcc`/dev headers.
+
+### Rendering (GL, OptiX, Vulkan)
+
+Separately, some hosts install only the compute driver — so OpenGL/GLX/EGL,
+OptiX, and Vulkan userspace libs can be missing, and you can't tell before renting. Symptoms: `libGL.so.1: cannot open shared object
 file`, `libEGL.so.1: ...`, "OptiX not available", or `glxinfo`/`vulkaninfo`
 failing while `nvidia-smi` and CUDA tensors work fine.
 

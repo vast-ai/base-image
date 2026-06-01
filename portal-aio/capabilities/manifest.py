@@ -19,6 +19,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from typing import Iterable, Optional
@@ -118,6 +119,50 @@ def _gpu_render_caps() -> Optional[dict]:
         )
         caps["fix"] = "run 'install-display-drivers' to download+extract the matching driver libs"
     return caps
+
+
+def _driver_version() -> Optional[str]:
+    try:
+        with open("/proc/driver/nvidia/version") as f:
+            for tok in f.readline().split():
+                if re.match(r"^\d+\.\d+(\.\d+)?$", tok):
+                    return tok
+    except Exception:
+        pass
+    return None
+
+
+def _cuda_info() -> Optional[dict]:
+    """CUDA context for an agent: host driver version, the max CUDA toolkit that
+    driver supports, and whether a CUDA toolkit/runtime is installed locally.
+
+    Returns None without an NVIDIA driver. Critical for the 'stock' image, which
+    ships no CUDA toolkit and relies on the host-injected driver — installing the
+    wrong CUDA/driver packages from the (configured) nvidia apt repo breaks CUDA.
+    """
+    if not os.path.exists("/proc/driver/nvidia/version"):
+        return None
+    libs = _ldconfig_libs()
+    toolkit = bool(shutil.which("nvcc")) or any(l.startswith("libcudart.so") for l in libs)
+    info: dict = {
+        "driver_version": _driver_version(),
+        "toolkit_installed": toolkit,
+    }
+    try:  # max CUDA the host driver supports (best-effort)
+        out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"CUDA Version:\s*([0-9.]+)", out)
+        if m:
+            info["driver_max_cuda"] = m.group(1)
+    except Exception:
+        pass
+    info["note"] = (
+        "CUDA compute works via the host-injected driver. When installing CUDA "
+        "libs: NEVER install the NVIDIA driver from apt (it must match the host — "
+        "avoid the 'cuda' metapackage and nvidia-driver-*/libcuda* packages); "
+        "install only a toolkit <= driver_max_cuda (e.g. cuda-toolkit-X-Y), or "
+        "prefer framework wheels that bundle their own CUDA runtime. See AGENTS.md."
+    )
+    return info
 
 
 _PORT_RE = re.compile(r"^VAST_(TCP|UDP)_PORT_(\d+)$")
@@ -463,6 +508,9 @@ def assemble(
     render = _gpu_render_caps()
     if render is not None:
         hardware["gpu"]["render"] = render
+    cuda = _cuda_info()
+    if cuda is not None:
+        hardware["gpu"]["cuda"] = cuda
     if "metrics" in include and metrics:
         if "gpu" in metrics:
             hardware["gpu"].update(metrics["gpu"])

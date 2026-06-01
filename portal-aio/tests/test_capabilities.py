@@ -167,6 +167,13 @@ def test_gpu_render_caps_none_without_nvidia():
     assert manifest._gpu_render_caps() is None
 
 
+def test_cuda_info_none_without_nvidia():
+    if os.path.exists("/proc/driver/nvidia/version"):
+        import pytest
+        pytest.skip("NVIDIA driver present; CUDA detection would run")
+    assert manifest._cuda_info() is None
+
+
 def test_assemble_null_direct_url_without_public_ip(monkeypatch):
     monkeypatch.delenv("PUBLIC_IPADDR", raising=False)
     monkeypatch.setenv("VAST_TCP_PORT_8000", "40080")
