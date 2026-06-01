@@ -130,6 +130,15 @@ def test_assemble_service_and_openai(net_env):
     assert m["endpoints_openai"][0]["base_url"] == "http://203.0.113.7:40080/v1"
 
 
+def test_workspace_is_volume_reported(monkeypatch):
+    # An ordinary directory (same filesystem as /) is not a volume.
+    monkeypatch.setenv("WORKSPACE", "/tmp")
+    m = manifest.assemble(services=[],
+                          fragments={"tools": [], "python_environments": [], "openai_endpoints": []})
+    assert m["instance"]["workspace_is_volume"] is False
+    assert manifest._workspace_is_volume() is False
+
+
 def test_assemble_null_direct_url_without_public_ip(monkeypatch):
     monkeypatch.delenv("PUBLIC_IPADDR", raising=False)
     monkeypatch.setenv("VAST_TCP_PORT_8000", "40080")

@@ -52,6 +52,19 @@ def _scheme() -> str:
     return "https" if os.environ.get("ENABLE_HTTPS", "false").lower() == "true" else "http"
 
 
+def _workspace_is_volume() -> bool:
+    """True only when ${WORKSPACE} is a distinct mount (a host volume).
+
+    Otherwise ${WORKSPACE} is ordinary container storage — it survives a
+    stop/start but NOT a recycle/destroy. Agents must not assume it persists.
+    """
+    ws = os.environ.get("WORKSPACE", "/workspace")
+    try:
+        return os.path.isdir(ws) and os.stat("/").st_dev != os.stat(ws).st_dev
+    except OSError:
+        return False
+
+
 _PORT_RE = re.compile(r"^VAST_(TCP|UDP)_PORT_(\d+)$")
 
 
@@ -409,6 +422,10 @@ def assemble(
             "container_id": os.environ.get("CONTAINER_ID", ""),
             "containerlabel": os.environ.get("VAST_CONTAINERLABEL", ""),
             "workspace": os.environ.get("WORKSPACE", "/workspace"),
+            # True only if ${WORKSPACE} is a real host volume (persists through
+            # recycle/destroy). False = ordinary container storage, lost on
+            # recycle/destroy — do not assume ${WORKSPACE} is durable.
+            "workspace_is_volume": _workspace_is_volume(),
             "scheme": scheme,
             "public_ip": public_ip,
             # Fixed at instance creation; an agent can use these but cannot add more.

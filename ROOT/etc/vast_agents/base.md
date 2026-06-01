@@ -33,28 +33,23 @@ System `python3` and `node`/`npm` (via nvm) are also on PATH after login.
 
 ## 3. Storage — what persists
 
-A **stop/start always preserves everything** — the entire container filesystem
-(installed packages, home dir, venvs, and `${WORKSPACE}`) comes back intact.
+- **stop/start** preserves **everything** — the whole container filesystem comes back intact.
+- **recycle** (container rebuilt from the image) or **destroy** (instance removed) **wipes the container filesystem**. The only thing that survives is a mounted host **volume**.
 
-The container filesystem is wiped only by a **recycle** (the container is rebuilt
-from the image) or a **destroy** (the instance is removed). The one thing that
-survives those is a **volume**.
-
-A **volume** is optional separate storage, usually mounted at `${WORKSPACE}`
-(default `/workspace`). It lives on the physical host, **persists through recycle
-and destroy**, and can be mounted by several instances on that machine at once —
-so it's the only place to keep data you can't afford to lose. Not every instance
-has one; check whether `${WORKSPACE}` is a distinct mount (and treat it as shared
-— other instances may be writing to it):
+**`${WORKSPACE}` (default `/workspace`) is NOT automatically persistent.** It is
+merely *where a volume is mounted if this instance has one* — and many instances
+have no volume, in which case `/workspace` is ordinary container storage, lost on
+recycle/destroy like everything else. Never assume it survives; check:
 
 ```
-vast-capabilities metrics | jq '.hardware.volume'   # present only when a volume is mounted
+vast-capabilities | jq '.instance.workspace_is_volume'   # true only if backed by a host volume
 ```
 
-Put models, datasets, and code you can't lose on the volume; `HF_HOME` defaults to
-`${WORKSPACE}/.hf_home`. With no volume, data still survives stop/start but is lost
-on recycle/destroy. `--sync-home` / `--sync-environment` at launch copy home dirs
-/ venvs onto the volume so they survive recycle/destroy too.
+- **`true`** → `${WORKSPACE}` is a host volume: it persists through recycle and destroy, and may be **shared** with other instances on the same machine (expect concurrent writers). Keep irreplaceable data here.
+- **`false`** → **nothing on this instance survives recycle/destroy.** Sync anything you can't lose off-box (rclone, syncthing, Hugging Face Hub, git).
+
+`HF_HOME` defaults to `${WORKSPACE}/.hf_home`. `--sync-home` / `--sync-environment`
+at launch help only when a volume is present.
 
 ## 4. Services: how they are wired
 
