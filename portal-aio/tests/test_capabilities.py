@@ -73,12 +73,13 @@ def test_open_ports(monkeypatch):
     monkeypatch.setenv("VAST_TCP_PORT_8000", "40080")
     monkeypatch.setenv("VAST_TCP_PORT_1111", "9956")
     monkeypatch.setenv("VAST_UDP_PORT_5000", "55000")
-    monkeypatch.setenv("VAST_TCP_PORT_BAD", "x")  # non-numeric port -> ignored
+    monkeypatch.setenv("VAST_TCP_PORT_9999", "notaport")  # non-numeric value -> ignored
     ports = manifest._open_ports()
     assert {"proto": "tcp", "container_port": 1111, "public_port": "9956"} in ports
     assert {"proto": "tcp", "container_port": 8000, "public_port": "40080"} in ports
     assert {"proto": "udp", "container_port": 5000, "public_port": "55000"} in ports
-    assert all(isinstance(p["container_port"], int) for p in ports)  # BAD excluded
+    assert all(p["public_port"].isdigit() for p in ports)            # non-numeric value excluded
+    assert all(p["container_port"] != 9999 for p in ports)
     assert ports == sorted(ports, key=lambda e: (e["proto"], e["container_port"]))
 
 

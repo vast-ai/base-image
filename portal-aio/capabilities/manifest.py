@@ -65,7 +65,8 @@ def _open_ports() -> list[dict]:
     out = []
     for key, val in os.environ.items():
         m = _PORT_RE.match(key)
-        if not m or not val:
+        # Ignore unset or non-numeric mapped ports (would yield invalid URLs).
+        if not m or not val.isdigit():
             continue
         out.append({
             "proto": m.group(1).lower(),

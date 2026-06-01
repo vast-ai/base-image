@@ -1759,15 +1759,20 @@ async def post_capabilities_provision(req: ProvisionRequest):
     try:
         # Detached so it outlives this request (same pattern as the restart route).
         if cleanup_path:
-            # The provisioner reads the temp manifest asynchronously, so we can't
-            # delete it here; have the detached shell remove it once done.
-            import shlex
-            shell_cmd = (
-                f"{shlex.quote(cmd[0])} {shlex.quote(cmd[1])}; "
-                f"rm -f {shlex.quote(cleanup_path)}"
+            # The provisioner reads the temp manifest asynchronously, so it can't
+            # be deleted inline. Launch a small detached Python wrapper (no shell)
+            # that runs the provisioner and removes the temp file when it exits.
+            wrapper = (
+                "import os, subprocess, sys\n"
+                "subprocess.run(sys.argv[1:3])\n"
+                "try:\n"
+                "    os.unlink(sys.argv[3])\n"
+                "except OSError:\n"
+                "    pass\n"
             )
             subprocess.Popen(
-                shell_cmd, shell=True, start_new_session=True,
+                [sys.executable, "-c", wrapper, cmd[0], cmd[1], cleanup_path],
+                start_new_session=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         else:

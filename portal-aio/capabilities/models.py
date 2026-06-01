@@ -46,7 +46,10 @@ class ServiceInfo(BaseModel):
         None, description="Externally reachable URL via PUBLIC_IPADDR + mapped_port"
     )
     supervisor_process: Optional[str] = None
-    state: Optional[str] = Field(None, description="RUNNING / STOPPED / unknown")
+    state: Optional[str] = Field(
+        None,
+        description="RUNNING / STOPPED / unknown / vast-managed (Jupyter under /.launch)",
+    )
     openai_v1_base: Optional[str] = None
     capabilities: Optional[List[str]] = None
 
