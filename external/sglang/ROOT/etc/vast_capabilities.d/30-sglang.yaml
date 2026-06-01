@@ -1,0 +1,9 @@
+# SGLang capability fragment — maps the "SGLang API" service to its OpenAI base.
+openai_endpoints:
+  - service: "SGLang API"
+    path: /v1
+    capabilities: [chat, completions, embeddings, models]
+    models_path: /v1/models
+tools:
+  - name: sglang
+    description: SGLang OpenAI-compatible inference server

@@ -17,6 +17,8 @@ if ! grep -q "### Entrypoint setup ###" /root/.bashrc > /dev/null 2>&1; then
     if [[ "${activate_python_environment}" == "true" ]]; then
         echo '[[ ${CONDA_SHLVL:-0} = 0 && -f /venv/${ACTIVE_VENV:-main}/bin/activate ]] && . /venv/${ACTIVE_VENV:-main}/bin/activate' | tee -a $target_bashrc
     fi
+    # Point AI agents (and humans) at the self-describing capability surface. Cyan >>>
+    echo 'echo -e "\e[36m>>>\e[0m AI agents: run \e[1mvast-capabilities\e[0m (or read ./AGENTS.md) for a machine-readable description of this instance."' | tee -a $target_bashrc
     # Warn CLI users if the container provisioning is not yet complete. Red >>>
     echo '[[ -f /.provisioning ]] && echo -e "\e[91m>>>\e[0m Instance provisioning is not yet complete.\n\e[91m>>>\e[0m Required software may not be ready.\n\e[91m>>>\e[0m See /var/log/portal/provisioning.log or the Instance Portal web app for progress updates\n\n"' | tee -a $target_bashrc
     echo "### End entrypoint setup ###" | tee -a $target_bashrc

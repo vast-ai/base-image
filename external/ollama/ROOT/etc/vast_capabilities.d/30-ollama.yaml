@@ -1,0 +1,9 @@
+# Ollama capability fragment — maps the "Ollama API" service to its OpenAI base.
+openai_endpoints:
+  - service: "Ollama API"
+    path: /v1
+    capabilities: [chat, completions, embeddings, models]
+    models_path: /v1/models
+tools:
+  - name: ollama
+    description: Ollama model server (OpenAI-compatible at /v1)

@@ -1,0 +1,463 @@
+"""Assemble the capability manifest from declarative fragments + live state.
+
+Data tiers (see the design plan):
+
+* **Static fragments** — ``/etc/vast_capabilities.d/*.yaml`` baked into the image
+  by the base and each derivative (``COPY ./ROOT /``). They declare tools, python
+  environments, and the OpenAI-endpoint hints for the services a derivative runs.
+* **Boot-resolved** — env-derived values that are stable for the session
+  (instance identity, scheme, auth model, workspace).
+* **Lazy / live** — services (from ``/etc/portal.yaml`` or ``PORTAL_CONFIG``),
+  supervisor process states, GPU/metrics, provisioning status. The live portal
+  endpoint injects ``processes`` and ``metrics`` it has already collected; the
+  static snapshot omits them.
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import subprocess
+from datetime import datetime, timezone
+from typing import Iterable, Optional
+
+import yaml
+
+SCHEMA_VERSION = 1
+
+FRAGMENTS_DIR = "/etc/vast_capabilities.d"
+PORTAL_YAML = "/etc/portal.yaml"
+
+# Env var conventions the provisioner understands, surfaced so an agent knows
+# how to ask for more dependencies without reading our source.
+PROVISIONING_ENV_CONVENTIONS = [
+    "PROVISIONING_MANIFEST",
+    "PROVISIONING_SCRIPT",
+    "PROVISIONING_APT",
+    "PROVISIONING_PIP",
+    "PROVISIONING_CONDA",
+    "PROVISIONING_GIT_REPOS",
+    "PROVISIONING_DOWNLOADS",
+    "PROVISIONING_POST_COMMANDS",
+]
+
+
+# --------------------------------------------------------------------------- #
+# Sources                                                                     #
+# --------------------------------------------------------------------------- #
+
+def _scheme() -> str:
+    return "https" if os.environ.get("ENABLE_HTTPS", "false").lower() == "true" else "http"
+
+
+_PORT_RE = re.compile(r"^VAST_(TCP|UDP)_PORT_(\d+)$")
+
+
+def _open_ports() -> list[dict]:
+    """Externally reachable ports, from the VAST_TCP/UDP_PORT_* env vars.
+
+    These are fixed when the instance is created and cannot be added at runtime,
+    so this is the definitive list of what an agent has to work with. Each entry
+    maps an in-container port to the public host port that reaches it.
+    """
+    out = []
+    for key, val in os.environ.items():
+        m = _PORT_RE.match(key)
+        if not m or not val:
+            continue
+        out.append({
+            "proto": m.group(1).lower(),
+            "container_port": int(m.group(2)),
+            "public_port": val,
+        })
+    out.sort(key=lambda e: (e["proto"], e["container_port"]))
+    return out
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_portal_config(raw: str) -> list[dict]:
+    """Parse a ``PORTAL_CONFIG`` string into service dicts.
+
+    Mirrors ``caddy_config_manager`` so the static snapshot (which only has the
+    env var, not the generated ``/etc/portal.yaml``) sees the same services.
+    Format per entry: ``hostname:external_port:internal_port:open_path:name``.
+    """
+    services: list[dict] = []
+    for entry in (raw or "").split("|"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            hostname, ext_port, int_port, path, name = entry.split(":", 4)
+            services.append({
+                "name": name,
+                "hostname": hostname,
+                "external_port": int(ext_port),
+                "internal_port": int(int_port),
+                "open_path": path,
+            })
+        except ValueError:
+            # Malformed entry — skip rather than fail the whole manifest.
+            continue
+    return services
+
+
+def _read_portal_yaml() -> Optional[list[dict]]:
+    """Read services from the generated ``/etc/portal.yaml`` (non-blocking)."""
+    if not os.path.isfile(PORTAL_YAML):
+        return None
+    try:
+        with open(PORTAL_YAML) as f:
+            data = yaml.safe_load(f) or {}
+        apps = data.get("applications", {}) or {}
+        out = []
+        for name, app in apps.items():
+            out.append({
+                "name": app.get("name", name),
+                "hostname": app.get("hostname", "localhost"),
+                "external_port": app.get("external_port"),
+                "internal_port": app.get("internal_port"),
+                "open_path": app.get("open_path", "/"),
+            })
+        return out
+    except Exception:
+        return None
+
+
+def _services_source() -> list[dict]:
+    """Prefer the generated portal.yaml; fall back to the PORTAL_CONFIG env."""
+    svc = _read_portal_yaml()
+    if svc is not None:
+        return svc
+    return parse_portal_config(os.environ.get("PORTAL_CONFIG", ""))
+
+
+def load_fragments(fragments_dir: str = FRAGMENTS_DIR) -> dict:
+    """Merge every ``*.yaml`` fragment (sorted) into one declaration block.
+
+    Lists are concatenated; ``python_environments`` are merged by name so a
+    derivative can add ``packages_of_interest`` to an env the base defined.
+    """
+    merged: dict = {
+        "tools": [],
+        "python_environments": [],
+        "openai_endpoints": [],
+    }
+    envs_by_name: dict[str, dict] = {}
+
+    for path in sorted(glob.glob(os.path.join(fragments_dir, "*.yaml"))):
+        try:
+            with open(path) as f:
+                frag = yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        if not isinstance(frag, dict):
+            continue
+
+        for tool in frag.get("tools", []) or []:
+            merged["tools"].append(tool)
+        for ep in frag.get("openai_endpoints", []) or []:
+            merged["openai_endpoints"].append(ep)
+        for env in frag.get("python_environments", []) or []:
+            name = env.get("name") or env.get("path")
+            if not name:
+                continue
+            if name in envs_by_name:
+                existing = envs_by_name[name]
+                poi = list(dict.fromkeys(
+                    (existing.get("packages_of_interest") or [])
+                    + (env.get("packages_of_interest") or [])
+                ))
+                existing.update({k: v for k, v in env.items() if k != "packages_of_interest"})
+                if poi:
+                    existing["packages_of_interest"] = poi
+            else:
+                envs_by_name[name] = dict(env)
+
+    merged["python_environments"] = list(envs_by_name.values())
+    return merged
+
+
+def _detect_env_kind(path: str) -> Optional[str]:
+    """Detect a python environment's kind by inspecting it on disk.
+
+    `/venv/main` is a conda env in the base image but a plain uv-created venv in
+    converted external images (see tools/convert-non-vast-image.sh), so the
+    static fragment must not hardcode this — we resolve it at request time.
+    """
+    if not path:
+        return None
+    if os.path.isdir(os.path.join(path, "conda-meta")):
+        return "conda"
+    if os.path.isfile(os.path.join(path, "pyvenv.cfg")):
+        return "venv"
+    return None
+
+
+def _probe_packages(venv_path: str, names: Iterable[str]) -> dict:
+    """Return ``{name: version}`` for installed packages in ``venv_path``.
+
+    Runs the target venv's own python so we see *that* environment's packages
+    (the portal runs in a different venv). Best-effort, time-boxed; only called
+    when the caller opts in via ``include=['packages']``.
+    """
+    names = [n for n in names if n]
+    if not names:
+        return {}
+    py = os.path.join(venv_path, "bin", "python")
+    if not os.path.isfile(py):
+        return {}
+    script = (
+        "import json,sys\n"
+        "from importlib.metadata import version, PackageNotFoundError\n"
+        "out={}\n"
+        "for n in sys.argv[1:]:\n"
+        "    try: out[n]=version(n)\n"
+        "    except PackageNotFoundError: out[n]=None\n"
+        "    except Exception: out[n]=None\n"
+        "print(json.dumps(out))\n"
+    )
+    try:
+        res = subprocess.run(
+            [py, "-c", script, *names],
+            capture_output=True, text=True, timeout=20,
+        )
+        if res.returncode == 0:
+            return json.loads(res.stdout)
+    except Exception:
+        pass
+    return {}
+
+
+# --------------------------------------------------------------------------- #
+# Matching helpers                                                            #
+# --------------------------------------------------------------------------- #
+
+def _normalize(s: str) -> str:
+    """Lowercase and strip separators so 'instance_portal' matches 'Instance Portal'."""
+    return "".join(c for c in (s or "").lower() if c.isalnum())
+
+
+def _match_process(service: dict, processes: list[dict]) -> Optional[dict]:
+    """Match a service to a supervisor process by name / search term.
+
+    Uses the same substring convention as the provisioner's
+    ``portal_search_term`` and ``exit_portal.sh``: a process whose name appears
+    in (or contains) the service label, compared with separators normalised
+    (``instance_portal`` <-> ``Instance Portal``).
+    """
+    label = _normalize(service.get("name"))
+    if not label:
+        return None
+    for proc in processes:
+        pname = _normalize(proc.get("name"))
+        if not pname:
+            continue
+        if pname == label or pname in label or label in pname:
+            return proc
+    return None
+
+
+def _auth_descriptor() -> dict:
+    enabled = os.environ.get("ENABLE_AUTH", "true").lower() == "true"
+    excluded = [
+        p.strip() for p in os.environ.get("AUTH_EXCLUDE", "").split(",") if p.strip()
+    ]
+    label = os.environ.get("VAST_CONTAINERLABEL", "")
+    return {
+        "edge": "caddy",
+        "enabled": enabled,
+        # Token precedence: either is accepted by the Caddy edge.
+        "token_env": ["OPEN_BUTTON_TOKEN", "WEB_PASSWORD"],
+        "methods": ["bearer", "cookie", "query"],
+        "bearer_header": "Authorization: Bearer <token>",
+        "cookie_name": f"{label}_auth_token" if label else None,
+        "query_param": "token",
+        "excluded_ports": excluded,
+        "note": (
+            "localhost requests to the service's internal port bypass the edge "
+            "and need no token; external requests go through Caddy and require one."
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Assembly                                                                    #
+# --------------------------------------------------------------------------- #
+
+def assemble(
+    *,
+    services: list[dict],
+    fragments: Optional[dict] = None,
+    processes: Optional[list[dict]] = None,
+    metrics: Optional[dict] = None,
+    gpu: Optional[str] = None,
+    include: Iterable[str] = (),
+) -> dict:
+    """Compose the manifest. Pure: all live data is passed in.
+
+    ``include`` may contain ``"packages"`` (probe package versions) and
+    ``"metrics"`` (the caller-supplied ``metrics`` dict is attached).
+    """
+    include = set(include or ())
+    fragments = fragments if fragments is not None else load_fragments()
+    processes = processes or []
+
+    scheme = _scheme()
+    public_ip = os.environ.get("PUBLIC_IPADDR", "")
+
+    # --- services ---
+    ep_hints = {e.get("service"): e for e in fragments.get("openai_endpoints", []) if e.get("service")}
+    svc_out: list[dict] = []
+    openai_rollup: list[dict] = []
+    for svc in services:
+        ext = svc.get("external_port")
+        open_path = svc.get("open_path", "/")
+        mapped_port = os.environ.get(f"VAST_TCP_PORT_{ext}", "")
+        entry = {
+            "name": svc.get("name"),
+            "hostname": svc.get("hostname", "localhost"),
+            "internal_port": svc.get("internal_port"),
+            "external_port": ext,
+            "open_path": open_path,
+            "mapped_port": mapped_port,
+            "internal_url": f"http://localhost:{svc.get('internal_port')}",
+            "direct_url": (
+                f"{scheme}://{public_ip}:{mapped_port}{open_path}"
+                if public_ip and mapped_port else None
+            ),
+        }
+        proc = _match_process(svc, processes)
+        entry["supervisor_process"] = proc.get("name") if proc else None
+        entry["state"] = proc.get("state") if proc else "unknown"
+
+        hint = ep_hints.get(svc.get("name"))
+        if hint:
+            base_path = hint.get("path", "/v1").rstrip("/")
+            if entry["direct_url"]:
+                base = f"{scheme}://{public_ip}:{mapped_port}{base_path}"
+            else:
+                base = None
+            entry["openai_v1_base"] = base
+            entry["capabilities"] = hint.get("capabilities", [])
+            openai_rollup.append({
+                "service": svc.get("name"),
+                "base_url": base,
+                "internal_base_url": f"http://localhost:{svc.get('internal_port')}{base_path}",
+                "capabilities": hint.get("capabilities", []),
+                "models_path": hint.get("models_path"),
+                "auth": {"type": "bearer", "token_env": ["OPEN_BUTTON_TOKEN", "WEB_PASSWORD"]},
+            })
+        svc_out.append(entry)
+
+    # --- python environments (+ optional package probing) ---
+    py_envs = []
+    for env in fragments.get("python_environments", []):
+        env_out = dict(env)
+        path = env.get("path")
+        detected = _detect_env_kind(path)
+        if detected:
+            env_out["kind"] = detected
+        poi = env.get("packages_of_interest") or []
+        if "packages" in include and poi and path:
+            env_out["packages_of_interest"] = _probe_packages(path, poi)
+        py_envs.append(env_out)
+
+    # --- hardware ---
+    hardware: dict = {"gpu": {"summary": gpu if gpu is not None else "unknown"}}
+    if "metrics" in include and metrics:
+        if "gpu" in metrics:
+            hardware["gpu"].update(metrics["gpu"])
+        for key in ("cpu", "ram", "disk", "volume"):
+            if key in metrics:
+                hardware[key] = metrics[key]
+
+    # --- provisioning ---
+    prov_status = "none"
+    if os.path.isfile("/.provisioning_complete"):
+        prov_status = "complete"
+    elif os.path.isfile("/.provisioning_failed"):
+        prov_status = "failed"
+    elif os.path.isfile("/.provisioning"):
+        prov_status = "in_progress"
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": _now_iso(),
+        "instance": {
+            "container_id": os.environ.get("CONTAINER_ID", ""),
+            "containerlabel": os.environ.get("VAST_CONTAINERLABEL", ""),
+            "workspace": os.environ.get("WORKSPACE", "/workspace"),
+            "scheme": scheme,
+            "public_ip": public_ip,
+            # Fixed at instance creation; an agent can use these but cannot add more.
+            "open_ports": _open_ports(),
+        },
+        "hardware": hardware,
+        "python_environments": py_envs,
+        "tools": fragments.get("tools", []),
+        "services": svc_out,
+        "endpoints_openai": openai_rollup,
+        "provisioning": {
+            "status": prov_status,
+            "how_to": (
+                "Boot-time: set PROVISIONING_MANIFEST=<url> or the PROVISIONING_* "
+                "env vars. Runtime: POST /capabilities/provision or run "
+                "`provisioner <manifest.yaml>`."
+            ),
+            "env_conventions": PROVISIONING_ENV_CONVENTIONS,
+            "log_file": "/var/log/portal/provisioning.log",
+        },
+        "auth": _auth_descriptor(),
+        "discovery": {
+            "capabilities_url": "/capabilities",
+            "well_known_url": "/.well-known/vast-capabilities",
+            "openapi_url": "/openapi.json",
+            "snapshot_file": "/etc/vast_capabilities.json",
+            "agents_guide": "/etc/vast_agents/",
+        },
+    }
+
+
+def assemble_live(
+    *,
+    processes: Optional[list[dict]] = None,
+    metrics: Optional[dict] = None,
+    gpu: Optional[str] = None,
+    include: Iterable[str] = (),
+) -> dict:
+    """Convenience for the portal: read services + fragments, attach live data."""
+    return assemble(
+        services=_services_source(),
+        fragments=load_fragments(),
+        processes=processes,
+        metrics=metrics,
+        gpu=gpu,
+        include=include,
+    )
+
+
+def assemble_static() -> dict:
+    """Static snapshot for the boot script / CLI — no supervisor or metrics.
+
+    Service ``state`` is reported as ``unknown``; fetch ``/capabilities`` for
+    live state. Safe to call without the portal app running.
+    """
+    return assemble(
+        services=_services_source(),
+        fragments=load_fragments(),
+        processes=None,
+        metrics=None,
+        gpu=None,
+        include=(),
+    )
+
+
+if __name__ == "__main__":
+    # `python -m capabilities.manifest` prints the static snapshot.
+    print(json.dumps(assemble_static(), indent=2))

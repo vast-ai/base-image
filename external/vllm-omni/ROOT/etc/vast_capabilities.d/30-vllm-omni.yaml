@@ -1,0 +1,9 @@
+# vLLM-Omni capability fragment — maps the "vLLM-Omni API" service to its OpenAI base.
+openai_endpoints:
+  - service: "vLLM-Omni API"
+    path: /v1
+    capabilities: [chat, completions, models]
+    models_path: /v1/models
+tools:
+  - name: vllm
+    description: vLLM-Omni OpenAI-compatible multimodal inference server
