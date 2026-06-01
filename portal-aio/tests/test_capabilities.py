@@ -139,6 +139,22 @@ def test_workspace_is_volume_reported(monkeypatch):
     assert manifest._workspace_is_volume() is False
 
 
+def test_image_identity_merge_and_default(tmp_path):
+    # Base sets repo/readme; a derivative fragment overrides name/readme (per-key).
+    (tmp_path / "10-base.yaml").write_text(
+        "image:\n  repo: https://github.com/vast-ai/base-image\n  readme: REPO_README\n")
+    (tmp_path / "30-x.yaml").write_text(
+        "image:\n  name: PyTorch\n  readme: PYTORCH_README\n")
+    frags = manifest.load_fragments(str(tmp_path))
+    assert frags["image"] == {"repo": "https://github.com/vast-ai/base-image",
+                              "name": "PyTorch", "readme": "PYTORCH_README"}
+    m = manifest.assemble(services=[], fragments=frags)
+    assert m["image"]["name"] == "PyTorch"
+    # repo always present even with no fragments
+    m2 = manifest.assemble(services=[], fragments={"tools": [], "python_environments": [], "openai_endpoints": []})
+    assert m2["image"]["repo"] == "https://github.com/vast-ai/base-image"
+
+
 def test_ldconfig_libs_is_set():
     assert isinstance(manifest._ldconfig_libs(), set)
 

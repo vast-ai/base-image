@@ -17,9 +17,10 @@ vast-capabilities                  # full live manifest as JSON
 vast-capabilities metrics,packages # also include live CPU/GPU/RAM + package versions
 ```
 
-Lists installed tools, python environments, hardware, open external ports, every
-service (with reachable URL and state), OpenAI `/v1` endpoints, provisioning, and
-the auth model. Equivalents: `/etc/vast_capabilities.json` (static snapshot),
+Lists the image identity (`.image` — name + source repo/README, so you can check
+what's preinstalled), installed tools, python environments, hardware, open
+external ports, every service (with reachable URL and state), OpenAI `/v1`
+endpoints, provisioning, and the auth model. Equivalents: `/etc/vast_capabilities.json` (static snapshot),
 `curl -s http://localhost:11111/capabilities`, `…/openapi.json` (full REST API).
 
 ## 2. Python

@@ -216,6 +216,7 @@ def load_fragments(fragments_dir: str = FRAGMENTS_DIR) -> dict:
         "tools": [],
         "python_environments": [],
         "openai_endpoints": [],
+        "image": {},
     }
     envs_by_name: dict[str, dict] = {}
 
@@ -228,6 +229,11 @@ def load_fragments(fragments_dir: str = FRAGMENTS_DIR) -> dict:
         if not isinstance(frag, dict):
             continue
 
+        # Image identity: base sets universally-true fields (repo, README pointer);
+        # a derivative's fragment overrides individual keys to add its specifics.
+        img = frag.get("image")
+        if isinstance(img, dict):
+            merged["image"].update(img)
         for tool in frag.get("tools", []) or []:
             merged["tools"].append(tool)
         for ep in frag.get("openai_endpoints", []) or []:
@@ -473,9 +479,13 @@ def assemble(
     elif os.path.isfile("/.provisioning"):
         prov_status = "in_progress"
 
+    image = dict(fragments.get("image") or {})
+    image.setdefault("repo", "https://github.com/vast-ai/base-image")
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
+        "image": image,
         "instance": {
             "container_id": os.environ.get("CONTAINER_ID", ""),
             "containerlabel": os.environ.get("VAST_CONTAINERLABEL", ""),

@@ -2,6 +2,16 @@
 # Derivatives drop their own 30-<name>.yaml here (merged at request time).
 # Lists are concatenated; python_environments are merged by name.
 
+# Image identity. The base sets only universally-true fields (the open-source
+# repo + a README pointer); each derivative's fragment overrides name/readme/
+# preinstalled with its own specifics. Read the README to see what's preinstalled.
+image:
+  repo: https://github.com/vast-ai/base-image
+  readme: https://github.com/vast-ai/base-image#readme
+  note: >-
+    Open-source Vast image. Read this image's README at the source above, and
+    every /etc/vast_agents/*.md, to see exactly what it adds and preinstalls.
+
 tools:
   # Transfer & version control
   - name: git
