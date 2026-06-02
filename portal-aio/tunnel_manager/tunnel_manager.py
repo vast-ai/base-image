@@ -68,6 +68,21 @@ def hydrate_applications(applications):
         applications[app_name]["target_url"] = f'{scheme}://{app["hostname"]}:{app["external_port"]}'
     return applications
 
+def get_scheme_for_external_port(port: int) -> str:
+    """Scheme actually served on a given external port.
+
+    Derived from the hydrated portal config so it stays consistent with the
+    tunnel target_urls (and with hydrate_applications' launch-mode handling):
+    a straight-through :8080 entry is direct TLS only when nothing else proxies
+    :8080 (launch-mode Jupyter); in supervisor mode Caddy owns the listener and
+    the scheme follows ENABLE_HTTPS. Falls back to get_scheme() for ports that
+    aren't in the portal config.
+    """
+    for app in load_config().values():
+        if app["external_port"] == port:
+            return urlparse(app["target_url"]).scheme
+    return get_scheme()
+
 # Function to fetch the public IP address
 def get_public_ip():
     # We should have this from the first request after clicking the Open button - Use the less reliable $PUBLIC_IPADDR otherwise
@@ -99,10 +114,10 @@ def get_port_mapping(port: int):
     # Fetch the public IP
     public_ip = get_public_ip()
 
-    if os.environ.get("ENABLE_HTTPS", "false").lower() == "true" or port == 8080:
-        scheme = "https://"
-    else:
-        scheme = "http://"
+    # Match the scheme Caddy/the service actually serves on this external port
+    # rather than hard-coding https for :8080 (which is only correct in
+    # launch mode, not when Caddy serves :8080 over http in supervisor mode).
+    scheme = get_scheme_for_external_port(port)
 
     # Fetch the environment variable dynamically
     env_var_name = f"VAST_TCP_PORT_{port}"
@@ -112,7 +127,7 @@ def get_port_mapping(port: int):
         raise HTTPException(status_code=404, detail=f"Environment variable {env_var_name} not found")
 
     # Return the {PUBLIC_IP}:{PORT_VALUE}
-    return {"result": f"{scheme}{public_ip}:{port_value}"}
+    return {"result": f"{scheme}://{public_ip}:{port_value}"}
 
 class QuickTunnel:
     def __init__(self, target_url: str):
