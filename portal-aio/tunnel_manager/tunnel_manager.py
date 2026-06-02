@@ -479,10 +479,11 @@ async def _create_default_tunnels():
         # app proxied from :18080 plus a :8080->:8080 entry that exists purely
         # as a frontend alias (the terminal). Caddy collapses these into a
         # single :8080 listener, so a second tunnel for the same external port
-        # is redundant — and because the alias entry carries a hard-coded https
-        # scheme (see hydrate_applications) it would point at a listener that
-        # isn't there. Prefer the proxied entry (internal_port != external_port)
-        # so the tunnel's scheme matches what Caddy actually serves.
+        # is redundant. hydrate_applications already gives both entries the same
+        # scheme (so they share a target_url), but gating on the external port
+        # guarantees a single tunnel regardless of any future scheme divergence.
+        # Prefer the proxied entry (internal_port != external_port) so the
+        # surviving tunnel's scheme matches what Caddy actually serves.
         selected = {}  # external_port -> app_name
         for app_name, app_config in config.items():
             ext = app_config['external_port']
