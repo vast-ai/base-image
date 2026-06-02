@@ -123,35 +123,40 @@ def generate_caddyfile(config):
     # Build token matchers - always use CEL expressions for safety.
     # Simple query/header_regexp matchers break with regex-special chars in passwords (e.g. * + .)
     if web_password == open_button_token:
-        token_auth_matcher = f'''(token_auth_matcher) {{
-        @token_auth {{
-            expression `{{http.request.uri.query.token}} == "{cel_web_password}"`
-        }}
-    }}'''
-        cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
-        @has_valid_auth_cookie {{
-            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_web_password}")`
-        }}
-    }}'''
-        bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
-        @has_valid_bearer_token {{
-            expression `{{http.request.header.Authorization}} == "Bearer {cel_web_password}"`
-        }}
-    }}'''
+        token_cel = f'{{http.request.uri.query.token}} == "{cel_web_password}"'
+        cookie_cel = f'{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_web_password}")'
+        bearer_cel = f'{{http.request.header.Authorization}} == "Bearer {cel_web_password}"'
     else:
-        token_auth_matcher = f'''(token_auth_matcher) {{
+        token_cel = f'{{http.request.uri.query.token}} == "{cel_web_password}" || {{http.request.uri.query.token}} == "{cel_open_button_token}"'
+        cookie_cel = f'{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_web_password}") || {{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_open_button_token}")'
+        bearer_cel = f'{{http.request.header.Authorization}} == "Bearer {cel_web_password}" || {{http.request.header.Authorization}} == "Bearer {cel_open_button_token}"'
+
+    # A valid ?token= request is treated as an interactive browser navigation
+    # when it asks for HTML (sent on both http and https) or carries a top-level
+    # fetch marker (secure-context only). The Open Button probe is axios
+    # (Accept: application/json, text/plain, */* — no text/html, no Sec-Fetch),
+    # so it never matches here and falls through to the cookie-less token route,
+    # which serves content directly instead of relying on a redirect + cookie.
+    browser_nav_cel = '{http.request.header.Accept}.contains("text/html") || {http.request.header.Sec-Fetch-Dest} == "document"'
+
+    token_auth_matcher = f'''(token_auth_matcher) {{
         @token_auth {{
-            expression `{{http.request.uri.query.token}} == "{cel_web_password}" || {{http.request.uri.query.token}} == "{cel_open_button_token}"`
+            expression `{token_cel}`
         }}
     }}'''
-        cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
+    token_auth_browser_matcher = f'''(token_auth_browser_matcher) {{
+        @token_auth_browser {{
+            expression `({token_cel}) && ({browser_nav_cel})`
+        }}
+    }}'''
+    cookie_matcher = f'''(has_valid_auth_cookie_matcher) {{
         @has_valid_auth_cookie {{
-            expression `{{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_web_password}") || {{http.request.header.Cookie}}.contains("{caddy_identifier}_auth_token={cel_open_button_token}")`
+            expression `{cookie_cel}`
         }}
     }}'''
-        bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
+    bearer_matcher = f'''(has_valid_bearer_token_matcher) {{
         @has_valid_bearer_token {{
-            expression `{{http.request.header.Authorization}} == "Bearer {cel_web_password}" || {{http.request.header.Authorization}} == "Bearer {cel_open_button_token}"`
+            expression `{bearer_cel}`
         }}
     }}'''
 
@@ -195,6 +200,8 @@ def generate_caddyfile(config):
     }}
 
     {token_auth_matcher}
+
+    {token_auth_browser_matcher}
 
     {cookie_matcher}
 
@@ -332,14 +339,24 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
         }}
     }}
 
+    import token_auth_browser_matcher
     import token_auth_matcher
     import has_valid_auth_cookie_matcher
     import has_valid_bearer_token_matcher
 
-    route @token_auth {{
+    route @token_auth_browser {{
         header Set-Cookie "{caddy_identifier}_auth_token={safe_open_button_token}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
         uri query -token
         redir * {{uri}} 302
+    }}
+
+    route @token_auth {{
+        header Set-Cookie "{caddy_identifier}_auth_token={safe_open_button_token}; Path=/; Max-Age=604800; HttpOnly; SameSite=lax"
+        uri query -token
+        handle {{
+            {cors_block}
+            {proxy_block}
+        }}
     }}
 
     route @has_valid_auth_cookie {{
