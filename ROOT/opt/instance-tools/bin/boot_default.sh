@@ -53,6 +53,10 @@ main() {
                 export JUPYTER_OVERRIDE=true
                 shift
                 ;;
+            --no-force-jupyter)
+                export FORCE_JUPYTER=false
+                shift
+                ;;
             *)
                 echo "Warning: Unknown flag: $1" >&2
                 shift

@@ -212,6 +212,7 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 | `--sync-environment` | Sync Python/Conda environments to workspace volume for persistence |
 | `--sync-home` | Sync home directories to workspace |
 | `--jupyter-override` | Force Jupyter to start even in non-Jupyter launch modes |
+| `--no-force-jupyter` | Don't re-add Jupyter to the portal config in entrypoint mode (no `/.launch`) |
 
 **Example** (in Docker run command or template):
 ```bash

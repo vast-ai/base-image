@@ -39,13 +39,49 @@ def load_config():
     return {}
 
 def hydrate_applications(applications):
+    # External ports that Caddy actually proxies — an entry whose internal port
+    # differs from its external port. For these, Caddy owns the listener and its
+    # scheme follows ENABLE_HTTPS.
+    proxied_external_ports = {
+        app["external_port"]
+        for app in applications.values()
+        if app["external_port"] != app["internal_port"]
+    }
     for app_name, app in applications.items():
-        if app["external_port"] == app["internal_port"] and app["internal_port"] == 8080:
+        # A straight-through :8080 entry (external == internal == 8080) is served
+        # over TLS directly by Vast launch-mode Jupyter — BUT only when nothing
+        # else is proxying :8080. In supervisor mode :8080 is the proxied Jupyter
+        # entry (8080->18080) plus a :8080->:8080 frontend alias for the terminal;
+        # there Caddy owns the listener, so the alias must follow ENABLE_HTTPS too,
+        # otherwise its target_url would point https at an http listener (and
+        # split into a second, broken tunnel). Detecting the proxy entry lets us
+        # tell the two modes apart from the config shape alone, which also covers
+        # the --jupyter-override case (proxied :8080 even though /.launch exists).
+        if (
+            app["external_port"] == app["internal_port"]
+            and app["internal_port"] == 8080
+            and 8080 not in proxied_external_ports
+        ):
             scheme = "https"
         else:
             scheme = get_scheme()
         applications[app_name]["target_url"] = f'{scheme}://{app["hostname"]}:{app["external_port"]}'
     return applications
+
+def get_scheme_for_external_port(port: int) -> str:
+    """Scheme actually served on a given external port.
+
+    Derived from the hydrated portal config so it stays consistent with the
+    tunnel target_urls (and with hydrate_applications' launch-mode handling):
+    a straight-through :8080 entry is direct TLS only when nothing else proxies
+    :8080 (launch-mode Jupyter); in supervisor mode Caddy owns the listener and
+    the scheme follows ENABLE_HTTPS. Falls back to get_scheme() for ports that
+    aren't in the portal config.
+    """
+    for app in load_config().values():
+        if app["external_port"] == port:
+            return urlparse(app["target_url"]).scheme
+    return get_scheme()
 
 # Function to fetch the public IP address
 def get_public_ip():
@@ -78,10 +114,10 @@ def get_port_mapping(port: int):
     # Fetch the public IP
     public_ip = get_public_ip()
 
-    if os.environ.get("ENABLE_HTTPS", "false").lower() == "true" or port == 8080:
-        scheme = "https://"
-    else:
-        scheme = "http://"
+    # Match the scheme Caddy/the service actually serves on this external port
+    # rather than hard-coding https for :8080 (which is only correct in
+    # launch mode, not when Caddy serves :8080 over http in supervisor mode).
+    scheme = get_scheme_for_external_port(port)
 
     # Fetch the environment variable dynamically
     env_var_name = f"VAST_TCP_PORT_{port}"
@@ -91,7 +127,7 @@ def get_port_mapping(port: int):
         raise HTTPException(status_code=404, detail=f"Environment variable {env_var_name} not found")
 
     # Return the {PUBLIC_IP}:{PORT_VALUE}
-    return {"result": f"{scheme}{public_ip}:{port_value}"}
+    return {"result": f"{scheme}://{public_ip}:{port_value}"}
 
 class QuickTunnel:
     def __init__(self, target_url: str):
@@ -452,11 +488,30 @@ async def _create_default_tunnels():
     """
     try:
         config = load_config()
-        unique_targets = {}
+
+        # Only one tunnel per external port. Several portal entries can share
+        # an external port: supervisor-managed Jupyter exposes :8080 for the
+        # app proxied from :18080 plus a :8080->:8080 entry that exists purely
+        # as a frontend alias (the terminal). Caddy collapses these into a
+        # single :8080 listener, so a second tunnel for the same external port
+        # is redundant. hydrate_applications already gives both entries the same
+        # scheme (so they share a target_url), but gating on the external port
+        # guarantees a single tunnel regardless of any future scheme divergence.
+        # Prefer the proxied entry (internal_port != external_port) so the
+        # surviving tunnel's scheme matches what Caddy actually serves.
+        selected = {}  # external_port -> app_name
         for app_name, app_config in config.items():
-            target_url = app_config['target_url']
-            if target_url not in unique_targets:
-                unique_targets[target_url] = app_name
+            ext = app_config['external_port']
+            prev = selected.get(ext)
+            if prev is None or (
+                config[prev]['internal_port'] == ext
+                and app_config['internal_port'] != ext
+            ):
+                selected[ext] = app_name
+
+        unique_targets = {}  # target_url -> app_name
+        for app_name in selected.values():
+            unique_targets[config[app_name]['target_url']] = app_name
 
         # Create tunnels sequentially with a small delay between each
         # to avoid hitting Cloudflare's rate limiter on quick tunnel
