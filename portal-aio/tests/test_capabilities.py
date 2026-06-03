@@ -216,6 +216,33 @@ def test_parse_cuda_version_from_path():
     assert manifest._parse_cuda_version_from_path("") is None
 
 
+def test_cuda_components_precise(tmp_path, monkeypatch):
+    # Simulate the mini base: nvcc + headers + a subset of libs, NOT cuBLAS/cuDNN.
+    home = tmp_path / "cuda"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "nvcc").write_text("")
+    (home / "include").mkdir()
+    (home / "include" / "cuda_runtime.h").write_text("")
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    monkeypatch.setenv("PATH", str(home / "bin") + ":" + os.environ.get("PATH", ""))
+    libs = {"libcudart.so.12", "libnvrtc.so.12", "libcufft.so.11",
+            "libnppc.so.12", "libnvjpeg.so.12", "libnccl.so.2"}
+    c = manifest._cuda_components(libs)
+    assert c["nvcc"] is True and c["dev_headers"] is True
+    assert c["cudart"] is True and c["nvrtc"] is True and c["cufft"] is True
+    assert c["npp"] is True and c["nvjpeg"] is True and c["nccl"] is True
+    assert c["cublas"] is False and c["cudnn"] is False      # the key correction
+    assert c["cusparse"] is False and c["cusolver"] is False and c["curand"] is False
+
+
+def test_cuda_components_stock_empty(monkeypatch):
+    monkeypatch.setenv("CUDA_HOME", "/nonexistent-cuda")
+    monkeypatch.setattr(manifest.shutil, "which", lambda _: None)
+    c = manifest._cuda_components(set())
+    assert c["nvcc"] is False and c["dev_headers"] is False
+    assert all(v is False for v in c.values())
+
+
 def test_cuda_forward_compat_present(tmp_path, monkeypatch):
     # Simulate the cuda-compat layout: <home>/compat/libcuda.so.<ver>
     home = tmp_path / "cuda"

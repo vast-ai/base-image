@@ -148,7 +148,7 @@ def _min_cuda_for_compute_cap(caps: list[str]) -> Optional[str]:
 
 
 def _parse_cuda_version_from_path(path: str) -> Optional[str]:
-    """Extract a CUDA toolkit version from a path like '/usr/local/cuda-12.9'."""
+    """Extract a CUDA version from a path like '/usr/local/cuda-12.9'."""
     m = re.search(r"cuda-(\d+(?:\.\d+)?)", path or "")
     return m.group(1) if m else None
 
@@ -157,30 +157,69 @@ def _cuda_home() -> str:
     return os.environ.get("CUDA_HOME") or "/usr/local/cuda"
 
 
-def _cuda_toolkit() -> Optional[dict]:
-    """Locally-installed CUDA toolkit (version + path + nvcc), if any.
+# CUDA components an agent commonly needs, mapped to the soname prefix that proves
+# the lib is on the loader path. nvcc (a binary) + dev headers are probed directly.
+# Detected precisely because images vary wildly: the 'mini'/runtime base ships only
+# a curated subset (nvcc + cudart + nvrtc + cuFFT/NPP/nvJPEG/NCCL, but NOT cuBLAS/
+# cuDNN/cuSPARSE/cuSOLVER/cuRAND); a full nvidia/cuda-devel-derived image ships all;
+# the bare 'stock' image ships none. Never assume one exists because another does.
+_CUDA_LIB_COMPONENTS = {
+    "cudart": "libcudart.so",
+    "nvrtc": "libnvrtc.so",
+    "cublas": "libcublas.so",
+    "cudnn": "libcudnn.so",
+    "cufft": "libcufft.so",
+    "cusparse": "libcusparse.so",
+    "cusolver": "libcusolver.so",
+    "curand": "libcurand.so",
+    "nccl": "libnccl.so",
+    "npp": "libnppc.so",
+    "nvjpeg": "libnvjpeg.so",
+}
 
-    The 'mini'/runtime base ships a full toolkit (nvcc, nvrtc, cufft, ...) under
-    /usr/local/cuda; the bare 'stock' image ships none. Lets an agent know it can
-    compile CUDA code without installing anything (and which CUDA version that is).
+
+def _cuda_components(libs: set) -> dict:
+    """Precise inventory of which CUDA components are actually present.
+
+    `libs` is the set of sonames on the loader path (from _ldconfig_libs()). An
+    agent must not assume a library exists just because nvcc does, so each piece
+    is reported individually; `dev_headers` indicates the cudart headers needed to
+    compile. Reflects whatever the image actually carries (stock/mini/full).
     """
     home = _cuda_home()
     nvcc = shutil.which("nvcc") or (
         os.path.join(home, "bin", "nvcc")
         if os.path.exists(os.path.join(home, "bin", "nvcc")) else None
     )
-    real = os.path.realpath(home) if os.path.isdir(home) else None
-    if not nvcc and not real:
-        return None
-    info: dict = {}
-    if real:
-        info["path"] = home
-        ver = _parse_cuda_version_from_path(real)
+    comps = {
+        "nvcc": bool(nvcc),
+        "dev_headers": os.path.exists(os.path.join(home, "include", "cuda_runtime.h")),
+    }
+    for name, prefix in _CUDA_LIB_COMPONENTS.items():
+        comps[name] = any(l.startswith(prefix) for l in libs)
+    return comps
+
+
+def _cuda_installed_version() -> Optional[str]:
+    """Version of the locally-installed CUDA components (e.g. '12.9'), if any.
+
+    From the /usr/local/cuda -> cuda-X.Y symlink (version.json is often absent on
+    the partial mini install), falling back to nvcc.
+    """
+    home = _cuda_home()
+    if os.path.isdir(home):
+        ver = _parse_cuda_version_from_path(os.path.realpath(home))
         if ver:
-            info["version"] = ver
-    if nvcc:
-        info["nvcc"] = nvcc
-    return info or None
+            return ver
+    if shutil.which("nvcc"):
+        try:
+            out = subprocess.run(["nvcc", "--version"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"release (\d+\.\d+)", out)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+    return None
 
 
 def _cuda_forward_compat() -> Optional[dict]:
@@ -229,29 +268,29 @@ def _cuda_forward_compat() -> Optional[dict]:
 
 
 def _cuda_info() -> Optional[dict]:
-    """CUDA context for an agent: host driver version, the max CUDA toolkit that
-    driver supports, whether a CUDA toolkit/runtime is installed locally (and which
-    version), and any forward-compatibility libs.
+    """CUDA context for an agent: host driver version, the max CUDA the driver
+    supports, the GPU compute capability, a precise inventory of which CUDA
+    components are actually installed, and any forward-compatibility libs.
 
-    Returns None without an NVIDIA driver. Critical for the 'stock' image, which
-    ships no CUDA toolkit and relies on the host-injected driver — installing the
-    wrong CUDA/driver packages from the (configured) nvidia apt repo breaks CUDA.
-    The 'mini'/runtime base, by contrast, preinstalls a toolkit + compat libs.
+    Returns None without an NVIDIA driver. Critical because images vary: the
+    'stock' image ships no CUDA at all (relies on the host-injected driver), the
+    'mini'/runtime base ships a curated *subset* (nvcc + cudart but not cuBLAS/
+    cuDNN), and full nvidia/cuda-devel-derived images ship everything. Installing
+    the wrong CUDA/driver packages from the (configured) nvidia apt repo breaks CUDA.
     """
     if not os.path.exists("/proc/driver/nvidia/version"):
         return None
     libs = _ldconfig_libs()
-    toolkit = bool(shutil.which("nvcc")) or any(l.startswith("libcudart.so") for l in libs)
+    components = _cuda_components(libs)
     info: dict = {
         "driver_version": _driver_version(),
-        "toolkit_installed": toolkit,
+        "components": components,
     }
-    tk = _cuda_toolkit()
-    if tk:
-        if tk.get("version"):
-            info["toolkit_version"] = tk["version"]
-        if tk.get("path"):
-            info["toolkit_path"] = tk["path"]
+    version = _cuda_installed_version()
+    if version:
+        info["installed_version"] = version
+    if os.path.isdir(_cuda_home()):
+        info["cuda_home"] = _cuda_home()
     compat = _cuda_forward_compat()
     if compat:
         info["forward_compat"] = compat
@@ -277,20 +316,24 @@ def _cuda_info() -> Optional[dict]:
                 info["min_cuda_for_wheels"] = min_cuda
     except Exception:
         pass
+    present = [k for k, v in components.items() if v]
     info["note"] = (
         "CUDA compute works via the host-injected driver. "
-        + ("A CUDA toolkit is already installed (see toolkit_version/toolkit_path; "
-           "nvcc is on PATH) — no need to install one to compile. "
-           if info.get("toolkit_version") else
-           "No CUDA toolkit is installed here. ")
+        + ((f"A PARTIAL CUDA {version or ''} install is present (components: "
+            + ", ".join(present) + "); this is NOT a full toolkit, so check the "
+            "`components` map before assuming a library exists — missing ones "
+            "(e.g. cuBLAS/cuDNN) must be added from the configured nvidia apt repo "
+            "(cuda-<lib>-X-Y / libcudnn*) or come bundled with framework wheels. ")
+           if any(components.values()) else
+           "No CUDA components are installed; the nvidia apt repo is configured if "
+           "you need nvcc/libs. ")
         + "When installing CUDA libs: NEVER install the NVIDIA driver from apt (it "
         "must match the host — avoid the 'cuda' metapackage and nvidia-driver-*/"
-        "libcuda* packages); install only a toolkit <= driver_max_cuda (e.g. "
-        "cuda-toolkit-X-Y). Prefer framework wheels that bundle their own CUDA "
-        "runtime, but match the wheel's CUDA build to this GPU: compute_capability "
-        ">= 10.0 (Blackwell) needs CUDA >= 12.8 wheels — an older build (e.g. torch "
-        "cu124) installs cleanly but fails at runtime with 'no kernel image is "
-        "available'. See AGENTS.md."
+        "libcuda* packages); install only components <= driver_max_cuda. Prefer "
+        "framework wheels that bundle their own CUDA runtime, but match the wheel's "
+        "CUDA build to this GPU: compute_capability >= 10.0 (Blackwell) needs CUDA "
+        ">= 12.8 wheels — an older build (e.g. torch cu124) installs cleanly but "
+        "fails at runtime with 'no kernel image is available'. See AGENTS.md."
     )
     return info
 

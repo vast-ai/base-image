@@ -210,20 +210,24 @@ tail -f /var/log/portal/<service>.log
 ### CUDA toolkit & driver matching
 
 The NVIDIA driver comes from the host (libcuda is injected), so CUDA *compute*
-works on every image. What differs is the **toolkit**: the bare "stock" image
-ships NO CUDA toolkit/runtime/dev libs (no `nvcc`, no `cudart`, no cuDNN), while
-the "mini"/cuda runtime base **preinstalls a toolkit** (nvcc, nvrtc, cuFFT, NPP,
-NCCL) under `/usr/local/cuda` plus forward-compat libs. Check what you actually
-have before installing anything:
+works on every image. What differs is **which CUDA libraries are installed**, and
+it varies a lot: the bare "stock" image ships none; the "mini"/cuda runtime base
+ships only a **curated subset** (nvcc, cudart + dev headers, nvrtc, cuFFT, NPP,
+nvJPEG, NCCL — but **not** cuBLAS, cuDNN, cuSPARSE, cuSOLVER, cuRAND); a full
+`nvidia/cuda`-derived image ships everything. Don't assume — read the precise
+inventory:
 ```
 vast-capabilities | jq '.hardware.gpu.cuda'
-# driver_version, driver_max_cuda, compute_capability, toolkit_installed,
-# toolkit_version + toolkit_path (if a toolkit is preinstalled),
-# forward_compat (if the cuda-compat libs are present)
+# driver_version, driver_max_cuda, compute_capability, installed_version,
+# cuda_home, forward_compat, and components{} — a per-library true/false map
+vast-capabilities | jq '.hardware.gpu.cuda.components'   # exactly what's present
 ```
-If `toolkit_version` is set, `nvcc` is already on PATH (`CUDA_HOME` points at it)
-— you can compile CUDA code without installing a toolkit. `forward_compat` means
-a bundled newer `libcuda` is available for the rare case where a CUDA app needs a
+`components` tells you precisely what you have: e.g. `nvcc`/`dev_headers` true
+means you can compile, but if `cublas`/`cudnn` are false you must install them
+(from the configured nvidia apt repo — `cuda-<lib>-X-Y`, `libcudnn*` — at a
+version `<= driver_max_cuda`) or rely on a framework wheel that bundles its own.
+Never assume a library is present because `nvcc` is. `forward_compat` means a
+bundled newer `libcuda` is available for the rare case where a CUDA app needs a
 driver newer than the host's (`LD_LIBRARY_PATH=<forward_compat.path>`); ignore it
 when the host driver is already new enough (`forward_compat.newer_than_host:
 false`).
