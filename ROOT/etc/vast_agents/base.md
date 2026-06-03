@@ -210,11 +210,23 @@ tail -f /var/log/portal/<service>.log
 ### CUDA toolkit & driver matching
 
 The NVIDIA driver comes from the host (libcuda is injected), so CUDA *compute*
-works even on the "stock" image — but stock images ship NO CUDA toolkit/runtime/
-dev libs (no `nvcc`, no `cudart`, no cuDNN). Check what you have:
+works on every image. What differs is the **toolkit**: the bare "stock" image
+ships NO CUDA toolkit/runtime/dev libs (no `nvcc`, no `cudart`, no cuDNN), while
+the "mini"/cuda runtime base **preinstalls a toolkit** (nvcc, nvrtc, cuFFT, NPP,
+NCCL) under `/usr/local/cuda` plus forward-compat libs. Check what you actually
+have before installing anything:
 ```
-vast-capabilities | jq '.hardware.gpu.cuda'   # driver_version, driver_max_cuda, toolkit_installed
+vast-capabilities | jq '.hardware.gpu.cuda'
+# driver_version, driver_max_cuda, compute_capability, toolkit_installed,
+# toolkit_version + toolkit_path (if a toolkit is preinstalled),
+# forward_compat (if the cuda-compat libs are present)
 ```
+If `toolkit_version` is set, `nvcc` is already on PATH (`CUDA_HOME` points at it)
+— you can compile CUDA code without installing a toolkit. `forward_compat` means
+a bundled newer `libcuda` is available for the rare case where a CUDA app needs a
+driver newer than the host's (`LD_LIBRARY_PATH=<forward_compat.path>`); ignore it
+when the host driver is already new enough (`forward_compat.newer_than_host:
+false`).
 Two hard rules when installing CUDA libraries (the nvidia/cuda apt repo is
 configured, so this is easy to get wrong):
 1. **Never install/upgrade the NVIDIA driver from apt** — the `cuda` metapackage

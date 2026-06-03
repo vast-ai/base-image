@@ -147,13 +147,96 @@ def _min_cuda_for_compute_cap(caps: list[str]) -> Optional[str]:
     return None
 
 
+def _parse_cuda_version_from_path(path: str) -> Optional[str]:
+    """Extract a CUDA toolkit version from a path like '/usr/local/cuda-12.9'."""
+    m = re.search(r"cuda-(\d+(?:\.\d+)?)", path or "")
+    return m.group(1) if m else None
+
+
+def _cuda_home() -> str:
+    return os.environ.get("CUDA_HOME") or "/usr/local/cuda"
+
+
+def _cuda_toolkit() -> Optional[dict]:
+    """Locally-installed CUDA toolkit (version + path + nvcc), if any.
+
+    The 'mini'/runtime base ships a full toolkit (nvcc, nvrtc, cufft, ...) under
+    /usr/local/cuda; the bare 'stock' image ships none. Lets an agent know it can
+    compile CUDA code without installing anything (and which CUDA version that is).
+    """
+    home = _cuda_home()
+    nvcc = shutil.which("nvcc") or (
+        os.path.join(home, "bin", "nvcc")
+        if os.path.exists(os.path.join(home, "bin", "nvcc")) else None
+    )
+    real = os.path.realpath(home) if os.path.isdir(home) else None
+    if not nvcc and not real:
+        return None
+    info: dict = {}
+    if real:
+        info["path"] = home
+        ver = _parse_cuda_version_from_path(real)
+        if ver:
+            info["version"] = ver
+    if nvcc:
+        info["nvcc"] = nvcc
+    return info or None
+
+
+def _cuda_forward_compat() -> Optional[dict]:
+    """CUDA forward-compatibility driver libs (the cuda-compat-* package), if present.
+
+    These ship a *newer* userspace libcuda than the host kernel driver, so a CUDA
+    toolkit newer than the host driver natively supports can still run — by putting
+    the compat dir first on LD_LIBRARY_PATH. They are inactive otherwise (the
+    host-injected driver is used), so this is a latent capability worth advertising.
+    """
+    compat = os.path.join(_cuda_home(), "compat")
+    if not os.path.isdir(compat):
+        return None
+    ver = None
+    try:
+        for name in sorted(os.listdir(compat)):
+            m = re.match(r"libcuda\.so\.(\d+\.\d+\.\d+)$", name)
+            if m:
+                ver = m.group(1)
+                break
+    except OSError:
+        return None
+    if not ver:
+        return None
+    active = compat in os.environ.get("LD_LIBRARY_PATH", "").split(":")
+    host = _driver_version()
+    newer = None
+    try:
+        if host:
+            newer = tuple(int(x) for x in ver.split(".")) > tuple(int(x) for x in host.split("."))
+    except ValueError:
+        pass
+    return {
+        "path": compat,
+        "driver_version": ver,
+        "active": active,
+        "newer_than_host": newer,
+        "note": (
+            "Bundled CUDA forward-compatibility libcuda, inactive unless on "
+            f"LD_LIBRARY_PATH. Use it only when a CUDA toolkit/app needs a newer "
+            f"driver than the host provides AND this compat libcuda is newer than "
+            f"the host driver (newer_than_host): LD_LIBRARY_PATH={compat} <cmd>. "
+            "Don't use it when the host driver is already new enough."
+        ),
+    }
+
+
 def _cuda_info() -> Optional[dict]:
     """CUDA context for an agent: host driver version, the max CUDA toolkit that
-    driver supports, and whether a CUDA toolkit/runtime is installed locally.
+    driver supports, whether a CUDA toolkit/runtime is installed locally (and which
+    version), and any forward-compatibility libs.
 
     Returns None without an NVIDIA driver. Critical for the 'stock' image, which
     ships no CUDA toolkit and relies on the host-injected driver — installing the
     wrong CUDA/driver packages from the (configured) nvidia apt repo breaks CUDA.
+    The 'mini'/runtime base, by contrast, preinstalls a toolkit + compat libs.
     """
     if not os.path.exists("/proc/driver/nvidia/version"):
         return None
@@ -163,6 +246,15 @@ def _cuda_info() -> Optional[dict]:
         "driver_version": _driver_version(),
         "toolkit_installed": toolkit,
     }
+    tk = _cuda_toolkit()
+    if tk:
+        if tk.get("version"):
+            info["toolkit_version"] = tk["version"]
+        if tk.get("path"):
+            info["toolkit_path"] = tk["path"]
+    compat = _cuda_forward_compat()
+    if compat:
+        info["forward_compat"] = compat
     try:  # max CUDA the host driver supports (best-effort)
         out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5).stdout
         m = re.search(r"CUDA Version:\s*([0-9.]+)", out)
@@ -186,14 +278,19 @@ def _cuda_info() -> Optional[dict]:
     except Exception:
         pass
     info["note"] = (
-        "CUDA compute works via the host-injected driver. When installing CUDA "
-        "libs: NEVER install the NVIDIA driver from apt (it must match the host — "
-        "avoid the 'cuda' metapackage and nvidia-driver-*/libcuda* packages); "
-        "install only a toolkit <= driver_max_cuda (e.g. cuda-toolkit-X-Y). Prefer "
-        "framework wheels that bundle their own CUDA runtime, but match the wheel's "
-        "CUDA build to this GPU: compute_capability >= 10.0 (Blackwell) needs CUDA "
-        ">= 12.8 wheels — an older build (e.g. torch cu124) installs cleanly but "
-        "fails at runtime with 'no kernel image is available'. See AGENTS.md."
+        "CUDA compute works via the host-injected driver. "
+        + ("A CUDA toolkit is already installed (see toolkit_version/toolkit_path; "
+           "nvcc is on PATH) — no need to install one to compile. "
+           if info.get("toolkit_version") else
+           "No CUDA toolkit is installed here. ")
+        + "When installing CUDA libs: NEVER install the NVIDIA driver from apt (it "
+        "must match the host — avoid the 'cuda' metapackage and nvidia-driver-*/"
+        "libcuda* packages); install only a toolkit <= driver_max_cuda (e.g. "
+        "cuda-toolkit-X-Y). Prefer framework wheels that bundle their own CUDA "
+        "runtime, but match the wheel's CUDA build to this GPU: compute_capability "
+        ">= 10.0 (Blackwell) needs CUDA >= 12.8 wheels — an older build (e.g. torch "
+        "cu124) installs cleanly but fails at runtime with 'no kernel image is "
+        "available'. See AGENTS.md."
     )
     return info
 

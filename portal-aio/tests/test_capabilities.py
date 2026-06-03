@@ -209,6 +209,34 @@ def test_min_cuda_for_compute_cap():
     assert manifest._min_cuda_for_compute_cap(["weird"]) is None
 
 
+def test_parse_cuda_version_from_path():
+    assert manifest._parse_cuda_version_from_path("/usr/local/cuda-12.9") == "12.9"
+    assert manifest._parse_cuda_version_from_path("/usr/local/cuda-13") == "13"
+    assert manifest._parse_cuda_version_from_path("/usr/local/cuda") is None
+    assert manifest._parse_cuda_version_from_path("") is None
+
+
+def test_cuda_forward_compat_present(tmp_path, monkeypatch):
+    # Simulate the cuda-compat layout: <home>/compat/libcuda.so.<ver>
+    home = tmp_path / "cuda"
+    (home / "compat").mkdir(parents=True)
+    (home / "compat" / "libcuda.so.575.57.08").write_text("")
+    (home / "compat" / "libcuda.so.1").symlink_to("libcuda.so.575.57.08")
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    monkeypatch.setenv("LD_LIBRARY_PATH", "")
+    monkeypatch.setattr(manifest, "_driver_version", lambda: "580.95.05")
+    fc = manifest._cuda_forward_compat()
+    assert fc["driver_version"] == "575.57.08"
+    assert fc["active"] is False
+    assert fc["newer_than_host"] is False           # 575 < 580 host
+    assert fc["path"].endswith("/compat")
+
+
+def test_cuda_forward_compat_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_HOME", str(tmp_path / "nope"))
+    assert manifest._cuda_forward_compat() is None
+
+
 def test_cuda_info_none_without_nvidia():
     if os.path.exists("/proc/driver/nvidia/version"):
         import pytest
