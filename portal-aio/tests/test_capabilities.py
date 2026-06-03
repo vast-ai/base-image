@@ -198,6 +198,17 @@ def test_gpu_render_caps_none_without_nvidia():
     assert manifest._gpu_render_caps() is None
 
 
+def test_min_cuda_for_compute_cap():
+    # Blackwell and newer (>= 10.0) need CUDA 12.8 wheels; older cards are fine.
+    assert manifest._min_cuda_for_compute_cap(["12.0"]) == "12.8"   # RTX 50-series
+    assert manifest._min_cuda_for_compute_cap(["10.0"]) == "12.8"   # B200
+    assert manifest._min_cuda_for_compute_cap(["9.0"]) is None      # Hopper
+    assert manifest._min_cuda_for_compute_cap(["8.6", "9.0"]) is None
+    assert manifest._min_cuda_for_compute_cap(["8.0", "12.0"]) == "12.8"  # mixed -> max wins
+    assert manifest._min_cuda_for_compute_cap([]) is None
+    assert manifest._min_cuda_for_compute_cap(["weird"]) is None
+
+
 def test_cuda_info_none_without_nvidia():
     if os.path.exists("/proc/driver/nvidia/version"):
         import pytest

@@ -132,6 +132,21 @@ def _driver_version() -> Optional[str]:
     return None
 
 
+def _min_cuda_for_compute_cap(caps: list[str]) -> Optional[str]:
+    """Minimum CUDA toolkit/wheel version a GPU of this compute capability needs.
+
+    Blackwell (sm_10.0 / sm_12.0) and newer require CUDA >= 12.8 — older framework
+    builds (e.g. torch cu124) lack kernels for the architecture and fail at runtime.
+    Returns None when current/older wheels are fine (or caps unparseable).
+    """
+    try:
+        if caps and max(float(c) for c in caps) >= 10.0:
+            return "12.8"
+    except ValueError:
+        pass
+    return None
+
+
 def _cuda_info() -> Optional[dict]:
     """CUDA context for an agent: host driver version, the max CUDA toolkit that
     driver supports, and whether a CUDA toolkit/runtime is installed locally.
@@ -155,12 +170,30 @@ def _cuda_info() -> Optional[dict]:
             info["driver_max_cuda"] = m.group(1)
     except Exception:
         pass
+    try:  # GPU compute capability (e.g. "10.0"/"12.0" = Blackwell) — best-effort
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        caps = sorted({c.strip() for c in out.splitlines() if c.strip()})
+        if caps:
+            info["compute_capability"] = caps[0] if len(caps) == 1 else caps
+            # Blackwell (sm_10.0/sm_12.0) and newer need CUDA >= 12.8 framework builds;
+            # older cuXX wheels (e.g. torch cu124) lack kernels and fail at runtime.
+            min_cuda = _min_cuda_for_compute_cap(caps)
+            if min_cuda:
+                info["min_cuda_for_wheels"] = min_cuda
+    except Exception:
+        pass
     info["note"] = (
         "CUDA compute works via the host-injected driver. When installing CUDA "
         "libs: NEVER install the NVIDIA driver from apt (it must match the host — "
         "avoid the 'cuda' metapackage and nvidia-driver-*/libcuda* packages); "
-        "install only a toolkit <= driver_max_cuda (e.g. cuda-toolkit-X-Y), or "
-        "prefer framework wheels that bundle their own CUDA runtime. See AGENTS.md."
+        "install only a toolkit <= driver_max_cuda (e.g. cuda-toolkit-X-Y). Prefer "
+        "framework wheels that bundle their own CUDA runtime, but match the wheel's "
+        "CUDA build to this GPU: compute_capability >= 10.0 (Blackwell) needs CUDA "
+        ">= 12.8 wheels — an older build (e.g. torch cu124) installs cleanly but "
+        "fails at runtime with 'no kernel image is available'. See AGENTS.md."
     )
     return info
 

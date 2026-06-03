@@ -225,7 +225,38 @@ configured, so this is easy to get wrong):
 
 Easiest path: prefer framework wheels that bundle their own CUDA runtime
 (`uv pip install torch` pulls a matching one) — then you need no system CUDA at
-all. Use the system toolkit only when you need `nvcc`/dev headers.
+all. Use the system toolkit only when you need `nvcc`/dev headers. But the
+bundled runtime must also be **new enough for this GPU** — see the gotchas below.
+
+### Common GPU gotchas
+
+These bite regardless of cloud provider; check the GPU before you install.
+
+- **New GPUs need new CUDA — pin the wheel to the architecture, not just the
+  driver.** Blackwell (RTX 50-series, B200; compute capability `10.0`/`12.0`) and
+  newer need **CUDA ≥ 12.8** framework builds. An older build such as `torch`
+  `cu124` *installs cleanly* but has no kernels for the new architecture and dies
+  at first GPU op with `CUDA error: no kernel image is available for execution on
+  the device`. Don't pin an old `cuXX` index out of habit. Check first:
+  ```
+  vast-capabilities | jq '.hardware.gpu.cuda'   # compute_capability, min_cuda_for_wheels, driver_max_cuda
+  ```
+  If `min_cuda_for_wheels` is set (e.g. `"12.8"`), install a matching or newer
+  build — e.g. `uv pip install torch --index-url https://download.pytorch.org/whl/cu128`
+  (or just the default index, which tracks current CUDA). The plain
+  `pip install torch` default is usually current; an explicit old `--index-url` is
+  the usual cause of this failure.
+- **Toolkit must be ≤ the driver's max CUDA** (the inverse trap). The host driver
+  caps the CUDA toolkit version you can install — see `driver_max_cuda` above and
+  rule 2 in the section above.
+- **A new GPU on an old driver.** Occasionally `driver_max_cuda` is *below* the
+  GPU's needs; if even current wheels fail, the host driver is too old for the
+  card — nothing you install in-container fixes that. Pick a different machine.
+- **`nvidia-smi` works but CUDA tensors fail** is almost always one of the above
+  (architecture/CUDA mismatch), **not** a broken GPU. `libGL`/OptiX/Vulkan errors
+  are a *different* problem — see Rendering below.
+- **Don't reinstall the driver to "fix" CUDA.** The driver is host-injected; see
+  rule 1 above. Replacing it breaks compute for every workload on the box.
 
 ### Rendering (GL, OptiX, Vulkan)
 
