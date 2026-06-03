@@ -32,7 +32,15 @@ source /venv/main/bin/activate    # default Python env at /venv/main (or /venv/$
 uv pip install <pkg>              # fast installs; conda/mamba also available
 ```
 
-System `python3` and `node`/`npm` (via nvm) are also on PATH after login.
+**Node.js / npm** are installed via **nvm** at `/opt/nvm`, but only land on `PATH`
+in an *interactive login shell* (`.bashrc` sources nvm). A non-interactive command
+— e.g. `ssh host 'node ...'`, a script, or a supervisor service — will **not** find
+`node` unless you load nvm first:
+```
+. /opt/nvm/nvm.sh && node --version      # puts node/npm/npx on PATH in any shell
+```
+Or call the binary directly: `/opt/nvm/versions/node/$(ls /opt/nvm/versions/node | tail -1)/bin/node`.
+System `python3` is always on `PATH`.
 
 ## 3. Storage — what persists
 
@@ -224,13 +232,37 @@ vast-capabilities | jq '.hardware.gpu.cuda.components'   # exactly what's presen
 ```
 `components` tells you precisely what you have: e.g. `nvcc`/`dev_headers` true
 means you can compile, but if `cublas`/`cudnn` are false you must install them
-(from the configured nvidia apt repo — `cuda-<lib>-X-Y`, `libcudnn*` — at a
-version `<= driver_max_cuda`) or rely on a framework wheel that bundles its own.
-Never assume a library is present because `nvcc` is. `forward_compat` means a
-bundled newer `libcuda` is available for the rare case where a CUDA app needs a
-driver newer than the host's (`LD_LIBRARY_PATH=<forward_compat.path>`); ignore it
-when the host driver is already new enough (`forward_compat.newer_than_host:
-false`).
+(from the configured nvidia apt repo — `cuda-<lib>-X-Y`, `libcudnn*`) or rely on a
+framework wheel that bundles its own. Never assume a library is present because
+`nvcc` is.
+
+#### CUDA driver/toolkit compatibility (read this before "fixing" a mismatch)
+
+Two distinct NVIDIA mechanisms — agents routinely conflate them:
+
+- **Minor-version compatibility** ([docs](https://docs.nvidia.com/deploy/cuda-compatibility/)):
+  a CUDA toolkit/wheel does **not** need to match the driver's exact version. Any
+  CUDA **12.x** build runs on any driver that advertises CUDA **12.0+**; any 13.x
+  build on a 13.0+ driver. So if `driver_max_cuda` is `13.0`, every CUDA 12.x and
+  13.x wheel just works. **Do not "upgrade the driver to match CUDA"** — the driver
+  is host-injected and must not be touched, and you almost never need to.
+- **Forward compatibility** ([docs](https://docs.nvidia.com/deploy/cuda-compatibility/)):
+  the separate `cuda-compat` libs, which let a **newer CUDA major** version run on
+  an **older** driver, on **datacenter (Volta+) GPUs only**. These images
+  **auto-enable** it at boot (`/etc/vast_boot.d/05-configure-cuda.sh` registers the
+  compat dir with `ldconfig`) **only when actually needed** — i.e. an installed
+  toolkit's major exceeds the host driver's max and the GPU supports it; otherwise
+  it's left off. Check the live state, don't toggle it by hand:
+  ```
+  vast-capabilities | jq '.hardware.gpu.cuda.forward_compat'
+  # {available, enabled, compat_driver_version, host_driver_version, ...}
+  ```
+  `enabled: false` with a host driver newer than `compat_driver_version` (as on most
+  current boxes) is correct and expected. Opt out entirely with
+  `DISABLE_FORWARD_COMPAT=true` at launch.
+
+The one thing that genuinely constrains your wheel choice is the **GPU architecture**
+(`compute_capability`), covered next — not the driver version.
 Two hard rules when installing CUDA libraries (the nvidia/cuda apt repo is
 configured, so this is easy to get wrong):
 1. **Never install/upgrade the NVIDIA driver from apt** — the `cuda` metapackage

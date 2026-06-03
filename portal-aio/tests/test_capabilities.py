@@ -243,8 +243,10 @@ def test_cuda_components_stock_empty(monkeypatch):
     assert all(v is False for v in c.values())
 
 
-def test_cuda_forward_compat_present(tmp_path, monkeypatch):
-    # Simulate the cuda-compat layout: <home>/compat/libcuda.so.<ver>
+def test_cuda_forward_compat_present_but_disabled(tmp_path, monkeypatch):
+    # Compat libs present but the boot script did NOT enable them (no ldconfig
+    # conf, empty LD_LIBRARY_PATH) -> available True, enabled False (the common
+    # case: host driver already new enough).
     home = tmp_path / "cuda"
     (home / "compat").mkdir(parents=True)
     (home / "compat" / "libcuda.so.575.57.08").write_text("")
@@ -252,11 +254,28 @@ def test_cuda_forward_compat_present(tmp_path, monkeypatch):
     monkeypatch.setenv("CUDA_HOME", str(home))
     monkeypatch.setenv("LD_LIBRARY_PATH", "")
     monkeypatch.setattr(manifest, "_driver_version", lambda: "580.95.05")
+    monkeypatch.setattr(manifest, "_COMPAT_LDCONF", str(tmp_path / "no-such.conf"))
     fc = manifest._cuda_forward_compat()
-    assert fc["driver_version"] == "575.57.08"
-    assert fc["active"] is False
-    assert fc["newer_than_host"] is False           # 575 < 580 host
+    assert fc["available"] is True
+    assert fc["enabled"] is False
+    assert fc["compat_driver_version"] == "575.57.08"
+    assert fc["host_driver_version"] == "580.95.05"
     assert fc["path"].endswith("/compat")
+
+
+def test_cuda_forward_compat_enabled_via_ldconfig(tmp_path, monkeypatch):
+    # Boot script wrote the compat dir into ldconfig -> enabled True.
+    home = tmp_path / "cuda"
+    (home / "compat").mkdir(parents=True)
+    (home / "compat" / "libcuda.so.560.35.03").write_text("")
+    conf = tmp_path / "0-compat-cuda.conf"
+    conf.write_text(str(home / "compat") + "\n")
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    monkeypatch.setenv("LD_LIBRARY_PATH", "")
+    monkeypatch.setattr(manifest, "_driver_version", lambda: "535.10.01")
+    monkeypatch.setattr(manifest, "_COMPAT_LDCONF", str(conf))
+    fc = manifest._cuda_forward_compat()
+    assert fc["enabled"] is True
 
 
 def test_cuda_forward_compat_absent(tmp_path, monkeypatch):

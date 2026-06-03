@@ -222,13 +222,20 @@ def _cuda_installed_version() -> Optional[str]:
     return None
 
 
+# The boot script (05-configure-cuda.sh) enables forward compat by registering the
+# compat dir with the dynamic linker here (NOT via LD_LIBRARY_PATH).
+_COMPAT_LDCONF = "/etc/ld.so.conf.d/0-compat-cuda.conf"
+
+
 def _cuda_forward_compat() -> Optional[dict]:
     """CUDA forward-compatibility driver libs (the cuda-compat-* package), if present.
 
-    These ship a *newer* userspace libcuda than the host kernel driver, so a CUDA
-    toolkit newer than the host driver natively supports can still run — by putting
-    the compat dir first on LD_LIBRARY_PATH. They are inactive otherwise (the
-    host-injected driver is used), so this is a latent capability worth advertising.
+    These ship a userspace libcuda that lets a NEWER CUDA *major* version run on an
+    OLDER host driver — and only on datacenter (Volta+) GPUs. This image AUTO-MANAGES
+    them at boot: 05-configure-cuda.sh enables them (by writing the compat dir into
+    ldconfig) only when an installed toolkit's CUDA major exceeds what the host driver
+    supports AND cuInit succeeds; otherwise it leaves them off and the system relies on
+    CUDA minor-version compatibility. So this is normally not something an agent touches.
     """
     compat = os.path.join(_cuda_home(), "compat")
     if not os.path.isdir(compat):
@@ -244,25 +251,30 @@ def _cuda_forward_compat() -> Optional[dict]:
         return None
     if not ver:
         return None
-    active = compat in os.environ.get("LD_LIBRARY_PATH", "").split(":")
-    host = _driver_version()
-    newer = None
+    # Enabled = boot script registered it with ldconfig, or a manual LD_LIBRARY_PATH.
+    enabled = False
     try:
-        if host:
-            newer = tuple(int(x) for x in ver.split(".")) > tuple(int(x) for x in host.split("."))
-    except ValueError:
+        if os.path.exists(_COMPAT_LDCONF) and "compat" in open(_COMPAT_LDCONF).read():
+            enabled = True
+    except OSError:
         pass
+    if compat in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
+        enabled = True
     return {
+        "available": True,
+        "enabled": enabled,
         "path": compat,
-        "driver_version": ver,
-        "active": active,
-        "newer_than_host": newer,
+        "compat_driver_version": ver,
+        "host_driver_version": _driver_version(),
         "note": (
-            "Bundled CUDA forward-compatibility libcuda, inactive unless on "
-            f"LD_LIBRARY_PATH. Use it only when a CUDA toolkit/app needs a newer "
-            f"driver than the host provides AND this compat libcuda is newer than "
-            f"the host driver (newer_than_host): LD_LIBRARY_PATH={compat} <cmd>. "
-            "Don't use it when the host driver is already new enough."
+            "CUDA forward-compatibility libs. They let a NEWER CUDA MAJOR version run "
+            "on an OLDER host driver, on datacenter (Volta+) GPUs only. This image "
+            "auto-enables them at boot (via ldconfig) when needed and leaves them off "
+            "otherwise — `enabled` is the current state. You normally never toggle "
+            "this by hand; do NOT force them on when the host driver is new enough "
+            "(set DISABLE_FORWARD_COMPAT=true at launch to opt out). For same-major "
+            "mismatches (e.g. CUDA 12.x app on a 12.y driver) no compat libs are "
+            "needed at all — see minor-version compatibility in the cuda note."
         ),
     }
 
@@ -327,13 +339,20 @@ def _cuda_info() -> Optional[dict]:
            if any(components.values()) else
            "No CUDA components are installed; the nvidia apt repo is configured if "
            "you need nvcc/libs. ")
+        + "COMPATIBILITY (agents get this wrong): the toolkit/wheel does NOT need to "
+        "match the driver's exact CUDA version. CUDA minor-version compatibility means "
+        "any CUDA 12.x build runs on any driver that supports CUDA 12.0+ (and 13.x on "
+        "a 13.0+ driver) — so a 12.x wheel is fine here as long as driver_max_cuda is "
+        ">= 12.0; do NOT 'upgrade the driver to match CUDA'. Forward compatibility "
+        "(running a newer CUDA MAJOR on an older driver) is the separate cuda-compat "
+        "mechanism, auto-managed at boot (see forward_compat). What DOES bind is the "
+        "GPU architecture: compute_capability >= 10.0 (Blackwell) needs CUDA >= 12.8 "
+        "wheels — an older build (e.g. torch cu124) installs cleanly but fails at "
+        "runtime with 'no kernel image is available'. "
         + "When installing CUDA libs: NEVER install the NVIDIA driver from apt (it "
         "must match the host — avoid the 'cuda' metapackage and nvidia-driver-*/"
-        "libcuda* packages); install only components <= driver_max_cuda. Prefer "
-        "framework wheels that bundle their own CUDA runtime, but match the wheel's "
-        "CUDA build to this GPU: compute_capability >= 10.0 (Blackwell) needs CUDA "
-        ">= 12.8 wheels — an older build (e.g. torch cu124) installs cleanly but "
-        "fails at runtime with 'no kernel image is available'. See AGENTS.md."
+        "libcuda* packages); install only components <= driver_max_cuda, and prefer "
+        "framework wheels that bundle their own CUDA runtime. See AGENTS.md."
     )
     return info
 

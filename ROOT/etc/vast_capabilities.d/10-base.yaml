@@ -35,7 +35,10 @@ tools:
     path: /opt/miniforge3/bin/conda
     description: Conda/mamba package & environment manager
   - name: node
-    description: Node.js + npm (via nvm at /opt/nvm; on PATH after login)
+    description: >-
+      Node.js + npm/npx via nvm at /opt/nvm. On PATH only in interactive login
+      shells; for non-interactive use (ssh one-shot, scripts, services) run
+      `. /opt/nvm/nvm.sh` first to put node/npm/npx on PATH.
   - name: build-essential
     description: C/C++ build toolchain (gcc, g++, make; cmake and ninja also present)
   # ML & data
