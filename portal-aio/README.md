@@ -142,10 +142,10 @@ applications:
 
 ### PORTAL_CONFIG Format
 
-Pipe-separated application definitions: `hostname:internal_port:external_port:open_path:Label`
+Pipe-separated application definitions: `hostname:external_port:internal_port:open_path:Label`
 
 ```
-localhost:18080:8080:/:Jupyter|localhost:18000:8000:/docs:vLLM API
+localhost:8080:18080:/:Jupyter|localhost:8000:18000:/docs:vLLM API
 ```
 
 ### Environment Variables

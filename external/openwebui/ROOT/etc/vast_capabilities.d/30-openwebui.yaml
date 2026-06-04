@@ -1,0 +1,15 @@
+# Open WebUI capability fragment. The image bundles an Ollama server
+# (service "Ollama API"), which is OpenAI-compatible at /v1.
+openai_endpoints:
+  - service: "Ollama API"
+    path: /v1
+    capabilities: [chat, completions, embeddings, models]
+    models_path: /v1/models
+tools:
+  - name: ollama
+    description: Ollama model server bundled with Open WebUI (OpenAI-compatible at /v1)
+
+image:
+  name: Open WebUI
+  readme: https://github.com/vast-ai/base-image/tree/main/external/openwebui
+  preinstalled: Open WebUI + bundled Ollama

@@ -1,0 +1,84 @@
+# Base-image capability fragment.
+# Derivatives drop their own NN-<name>.yaml here (merged at request time).
+# Lists are concatenated; python_environments merge by name; the `image` block
+# merges per-key in sorted-filename order. Numbering = depth so the most specific
+# wins: base 10-, direct derivatives 30-, derivatives-of-derivatives 50-.
+
+# Image identity. The base sets only universally-true fields (the open-source
+# repo + a README pointer); each derivative's fragment overrides name/readme/
+# preinstalled with its own specifics. Read the README to see what's preinstalled.
+image:
+  repo: https://github.com/vast-ai/base-image
+  readme: https://github.com/vast-ai/base-image#readme
+  note: >-
+    Open-source Vast image. Read this image's README at the source above, and
+    every /etc/vast_agents/*.md, to see exactly what it adds and preinstalls.
+
+tools:
+  # Transfer & version control
+  - name: git
+    description: Version control (git-lfs installed for large files)
+  - name: curl
+    description: HTTP client
+  - name: wget
+    description: HTTP downloader
+  - name: rclone
+    description: Cloud storage sync
+  - name: rsync
+    description: File sync
+  - name: magic-wormhole
+    description: Secure host-to-host file transfer
+  # Package managers & runtimes
+  - name: uv
+    description: Fast Python package manager (uv pip install ...)
+  - name: conda
+    path: /opt/miniforge3/bin/conda
+    description: Conda/mamba package & environment manager
+  - name: node
+    description: >-
+      Node.js + npm/npx via nvm at /opt/nvm. On PATH only in interactive login
+      shells; for non-interactive use (ssh one-shot, scripts, services) run
+      `. /opt/nvm/nvm.sh` first to put node/npm/npx on PATH.
+  - name: build-essential
+    description: C/C++ build toolchain (gcc, g++, make; cmake and ninja also present)
+  # ML & data
+  - name: jupyter
+    description: Jupyter notebook/lab server
+  - name: tensorboard
+    description: Training-run visualization
+  - name: huggingface-hub
+    description: Hugging Face model/dataset CLI (hf / huggingface-cli, in /venv/main)
+  - name: ffmpeg
+    description: Media transcoding
+  - name: jq
+    description: JSON processor
+  # Instance management
+  - name: supervisorctl
+    description: Start/stop/restart managed services
+  - name: vastai
+    description: Vast.ai CLI
+  - name: provisioner
+    path: /opt/instance-tools/bin/provisioner
+    description: Declarative dependency/service installer (YAML manifests)
+  - name: install-display-drivers
+    path: /opt/instance-tools/bin/install-display-drivers
+    description: Restore GPU graphics/render libs (GL/OptiX/Vulkan) if the host lacks them
+  - name: vast-capabilities
+    path: /opt/instance-tools/bin/vast-capabilities
+    description: Print this instance's live capability manifest
+
+python_environments:
+  # `kind` is detected at runtime (conda in the base image, a plain uv venv in
+  # converted external images) — do not hardcode it here.
+  - name: main
+    path: /venv/main
+    activate: "source /venv/main/bin/activate"
+    description: Default application environment
+    packages_of_interest:
+      - jupyterlab
+      - tensorboard
+      - huggingface-hub
+  - name: uv
+    kind: uv
+    path: /.uv
+    description: Fast pip-compatible package manager (uv)

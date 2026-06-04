@@ -1,0 +1,14 @@
+# vLLM capability fragment — maps the "vLLM API" service to its OpenAI base.
+openai_endpoints:
+  - service: "vLLM API"
+    path: /v1
+    capabilities: [chat, completions, embeddings, models]
+    models_path: /v1/models
+tools:
+  - name: vllm
+    description: vLLM OpenAI-compatible inference server
+
+image:
+  name: vLLM
+  readme: https://github.com/vast-ai/base-image/tree/main/external/vllm
+  preinstalled: PyTorch + vLLM (OpenAI-compatible server)

@@ -1,0 +1,5 @@
+# AI Toolkit (ostris) derivative — image identity (overrides the base image block).
+image:
+  name: AI Toolkit (ostris)
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/ostris-ai-toolkit
+  preinstalled: PyTorch + ostris AI Toolkit

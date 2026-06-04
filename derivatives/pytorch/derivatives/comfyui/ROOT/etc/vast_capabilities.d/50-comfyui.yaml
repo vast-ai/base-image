@@ -1,0 +1,5 @@
+# ComfyUI derivative — image identity (overrides the base image block).
+image:
+  name: ComfyUI
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/comfyui
+  preinstalled: PyTorch + ComfyUI

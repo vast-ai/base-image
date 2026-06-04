@@ -1,0 +1,23 @@
+#!/bin/bash
+# Print this instance's capability manifest as JSON.
+#
+# Usage: vast-capabilities [include]
+#   include: optional comma-separated extras, e.g. "metrics,packages"
+#
+# Prefers the live portal endpoint; falls back to a freshly-assembled static
+# snapshot if the portal app is not running.
+
+INCLUDE="${1:-}"
+URL="http://localhost:11111/capabilities"
+[[ -n "$INCLUDE" ]] && URL="${URL}?include=${INCLUDE}"
+
+if curl -fsS "$URL" 2>/dev/null; then
+    echo
+    exit 0
+fi
+
+# Fallback: assemble the static snapshot directly (no portal app required).
+cd /opt/portal-aio 2>/dev/null && exec /opt/portal-aio/venv/bin/python -c \
+    'import json; from capabilities import assemble_static; print(json.dumps(assemble_static(), indent=2))'
+echo "ERROR: could not reach the portal and no fallback available" >&2
+exit 1

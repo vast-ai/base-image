@@ -1,0 +1,5 @@
+# PyTorch derivative — image identity (overrides the base image block).
+image:
+  name: PyTorch
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch
+  preinstalled: PyTorch + CUDA in /venv/main

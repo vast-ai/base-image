@@ -1,0 +1,5 @@
+# Wan2GP derivative — image identity (overrides the base image block).
+image:
+  name: Wan2GP
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/wan2gp
+  preinstalled: PyTorch + Wan2GP (video generation)

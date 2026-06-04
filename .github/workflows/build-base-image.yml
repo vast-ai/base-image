@@ -74,10 +74,11 @@ jobs:
             "cuda-12.4-22|nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04|cuda-12.4.1-cudnn-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
             "cuda-12.6-24|nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04|cuda-12.6.3-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
             "cuda-12.8-24|nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04|cuda-12.8.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-12.9-24|nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04|cuda-12.9.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.0.2-24|nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04|cuda-13.0.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.1.1-24|nvidia/cuda:13.1.1-cudnn-devel-ubuntu24.04|cuda-13.1.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.2.0-24|nvidia/cuda:13.2.0-cudnn-devel-ubuntu24.04|cuda-13.2.0-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-12.9-24|nvidia/cuda:12.9.2-cudnn-devel-ubuntu24.04|cuda-12.9.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.0-24|nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04|cuda-13.0.3-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.1-24|nvidia/cuda:13.1.2-cudnn-devel-ubuntu24.04|cuda-13.1.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.2-24|nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04|cuda-13.2.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.3-24|nvidia/cuda:13.3.0-cudnn-devel-ubuntu24.04|cuda-13.3.0-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
           )
 
           BUILD_MATRIX="[]"
@@ -102,14 +103,21 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              # Native runner per arch — no QEMU. arm64 builds on arm hardware.
+              if [[ "$arch" == "linux/arm64" ]]; then
+                runs_on="ubuntu-24.04-arm"
+              else
+                runs_on="ubuntu-latest"
+              fi
               BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
                 --arg key "$key" \
                 --arg base_image "$base_image" \
                 --arg tag_template "$tag_template" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg default_python "$default_python" \
-                '. + [{"config_key": $key, "base_image": $base_image, "tag_template": $tag_template, "arch": $arch, "arch_suffix": $arch_suffix, "default_python": $default_python}]')
+                '. + [{"config_key": $key, "base_image": $base_image, "tag_template": $tag_template, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "default_python": $default_python}]')
             done
           done
 
@@ -136,13 +144,20 @@ jobs:
 
             for arch in "linux/amd64" "linux/arm64"; do
               arch_suffix="${arch#linux/}"
+              # Native runner per arch — no QEMU. arm64 builds on arm hardware.
+              if [[ "$arch" == "linux/arm64" ]]; then
+                runs_on="ubuntu-24.04-arm"
+              else
+                runs_on="ubuntu-latest"
+              fi
               MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
                 --arg key "$key" \
                 --arg mini_tag "$mini_tag" \
                 --arg cuda_versions "$cuda_versions" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
-                '. + [{"config_key": $key, "mini_tag": $mini_tag, "cuda_versions": $cuda_versions, "arch": $arch, "arch_suffix": $arch_suffix}]')
+                --arg runs_on "$runs_on" \
+                '. + [{"config_key": $key, "mini_tag": $mini_tag, "cuda_versions": $cuda_versions, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on}]')
             done
           done
 
@@ -176,7 +191,7 @@ jobs:
   build:
     needs: generate-matrix
     if: ${{ !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -189,9 +204,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -258,8 +270,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.merge-matrix) }}
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -284,20 +296,24 @@ jobs:
             AMD64_TAG="${FINAL_TAG}-amd64"
             ARM64_TAG="${FINAL_TAG}-arm64"
 
-            EXTRA_TAGS=""
-            if [[ "$py_version" == "$DEFAULT_PYTHON" ]]; then
-              ALIAS_TAG="${NAMESPACE}/base-image:${TAG_TEMPLATE}-${BUILD_DATE}"
-              EXTRA_TAGS="-t ${ALIAS_TAG}"
-              echo "$ALIAS_TAG" >> built-tags/tags.txt
-            fi
-
             echo "=== Merging manifest: ${FINAL_TAG} ==="
-            docker buildx imagetools create \
-              -t "${FINAL_TAG}" \
-              ${EXTRA_TAGS} \
-              "${AMD64_TAG}" "${ARM64_TAG}"
+            # --docker-empty-base forces a fresh scratch index so re-runs are
+            # idempotent (no duplicate platform entries accumulating on the tag).
+            crane index append \
+              --docker-empty-base \
+              --tag "${FINAL_TAG}" \
+              --manifest "${AMD64_TAG}" \
+              --manifest "${ARM64_TAG}"
 
             echo "$FINAL_TAG" >> built-tags/tags.txt
+
+            if [[ "$py_version" == "$DEFAULT_PYTHON" ]]; then
+              ALIAS_TAG="${NAMESPACE}/base-image:${TAG_TEMPLATE}-${BUILD_DATE}"
+              echo "=== Aliasing ${FINAL_TAG} -> ${ALIAS_TAG} ==="
+              # crane copy cross-mounts blobs registry-side (no host streaming).
+              crane copy "${FINAL_TAG}" "${ALIAS_TAG}"
+              echo "$ALIAS_TAG" >> built-tags/tags.txt
+            fi
           done
 
       - name: Upload manifest tags
@@ -310,7 +326,7 @@ jobs:
   build-mini:
     needs: [generate-matrix, merge-manifests]
     if: ${{ !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -322,9 +338,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -381,8 +394,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-merge-matrix) }}
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -407,9 +420,11 @@ jobs:
             ARM64_TAG="${FINAL_TAG}-arm64"
 
             echo "=== Merging mini manifest: ${FINAL_TAG} ==="
-            docker buildx imagetools create \
-              -t "${FINAL_TAG}" \
-              "${AMD64_TAG}" "${ARM64_TAG}"
+            crane index append \
+              --docker-empty-base \
+              --tag "${FINAL_TAG}" \
+              --manifest "${AMD64_TAG}" \
+              --manifest "${ARM64_TAG}"
 
             echo "$FINAL_TAG" >> built-tags/tags.txt
           done

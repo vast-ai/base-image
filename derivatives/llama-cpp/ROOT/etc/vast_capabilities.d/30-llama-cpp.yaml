@@ -1,0 +1,14 @@
+# llama.cpp capability fragment — maps the server to its OpenAI base.
+openai_endpoints:
+  - service: "Llama.cpp UI"
+    path: /v1
+    capabilities: [chat, completions, embeddings, models]
+    models_path: /v1/models
+tools:
+  - name: llama-server
+    description: llama.cpp OpenAI-compatible server
+
+image:
+  name: llama.cpp
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/llama-cpp
+  preinstalled: llama.cpp server (OpenAI-compatible)

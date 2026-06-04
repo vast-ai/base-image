@@ -25,6 +25,18 @@ import xmlrpc.client
 import http.client
 import GPUtil
 import psutil
+import sys
+
+# Make the sibling `capabilities` package importable (portal runs with cwd
+# /opt/portal-aio/portal, so its parent dir must be on sys.path).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from capabilities import assemble_live
+from capabilities.models import (
+    OpenAIEndpoint,
+    ProvisionRequest,
+    ProvisionResponse,
+    ServiceInfo,
+)
 
 # ANSI color maps
 # Tuned for the dark log viewer background (--logs-bg ~#0b0f19).
@@ -119,7 +131,19 @@ async def lifespan(app):
         except asyncio.CancelledError:
             pass
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    title="Vast Instance Portal",
+    version="1.0.0",
+    description=(
+        "Management and capability-discovery API for a Vast.ai instance. "
+        "GET /capabilities returns a machine-readable manifest of installed tools, "
+        "python environments, hardware, running services (with their externally "
+        "reachable URLs and OpenAI /v1 endpoints), provisioning, and the auth model. "
+        "All routes sit behind the Caddy auth edge for remote callers; localhost "
+        "callers inside the container need no token."
+    ),
+)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -781,32 +805,36 @@ def _is_launch_managed() -> bool:
     """Check if /.launch exists (Vast manages jupyter directly)."""
     return os.path.isfile("/.launch")
 
+async def _collect_supervisor() -> list:
+    """Collect supervisor process info. Shared by the route and the manifest."""
+    proxy = _get_supervisor_proxy()
+    all_info = await asyncio.to_thread(proxy.supervisor.getAllProcessInfo)
+    launch_managed = _is_launch_managed()
+    result = []
+    for proc in all_info:
+        # Hide jupyter when /.launch is present (Vast manages it directly)
+        if launch_managed and proc["name"] == "jupyter":
+            continue
+        # Hide processes that skipped startup (not in portal.yaml)
+        skip_marker = f"/tmp/supervisor-skip/{proc['name']}"
+        if os.path.isfile(skip_marker):
+            continue
+        result.append({
+            "name": proc["name"],
+            "group": proc["group"],
+            "state": proc["statename"],
+            "description": proc.get("description", ""),
+            "pid": proc.get("pid", 0),
+            "start": proc.get("start", 0),
+            "now": proc.get("now", 0),
+            "unstoppable": proc["name"] in UNSTOPPABLE_PROCESSES,
+        })
+    return result
+
 @app.get("/supervisor/processes")
 async def get_supervisor_processes():
     try:
-        proxy = _get_supervisor_proxy()
-        all_info = await asyncio.to_thread(proxy.supervisor.getAllProcessInfo)
-        launch_managed = _is_launch_managed()
-        result = []
-        for proc in all_info:
-            # Hide jupyter when /.launch is present (Vast manages it directly)
-            if launch_managed and proc["name"] == "jupyter":
-                continue
-            # Hide processes that skipped startup (not in portal.yaml)
-            skip_marker = f"/tmp/supervisor-skip/{proc['name']}"
-            if os.path.isfile(skip_marker):
-                continue
-            result.append({
-                "name": proc["name"],
-                "group": proc["group"],
-                "state": proc["statename"],
-                "description": proc.get("description", ""),
-                "pid": proc.get("pid", 0),
-                "start": proc.get("start", 0),
-                "now": proc.get("now", 0),
-                "unstoppable": proc["name"] in UNSTOPPABLE_PROCESSES,
-            })
-        return result
+        return await _collect_supervisor()
     except Exception as e:
         logger.error(f"Failed to get supervisor processes: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
@@ -1507,8 +1535,8 @@ async def download_logs(filename: str = None) -> StreamingResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating zip file: {str(e)}")
 
-@app.get("/system-metrics")
-async def get_system_metrics() -> JSONResponse:
+async def _collect_metrics() -> dict:
+    """Collect system metrics. Shared by the route and the manifest."""
     # Try to get container memory metrics first
     container_memory = get_container_memory_stats()
     
@@ -1618,5 +1646,161 @@ async def get_system_metrics() -> JSONResponse:
         if errors:
             metrics['gpu']['errors'] = errors
 
-    return JSONResponse(content=metrics)
+    return metrics
+
+
+@app.get("/system-metrics")
+async def get_system_metrics() -> JSONResponse:
+    return JSONResponse(content=await _collect_metrics())
+
+
+# --------------------------------------------------------------------------- #
+# Capability discovery — agent-facing manifest, OpenAI-endpoint rollup, and   #
+# runtime provisioning. The assembly logic lives in the `capabilities`        #
+# package; these routes just collect live data and hand it over.              #
+# --------------------------------------------------------------------------- #
+
+async def _build_capabilities(include: set[str]) -> dict:
+    # Supervisor states + GPU summary are cheap; metrics are opt-in.
+    try:
+        processes = await _collect_supervisor()
+    except Exception as e:
+        logger.warning(f"capabilities: supervisor unavailable: {e}")
+        processes = []
+    metrics = await _collect_metrics() if "metrics" in include else None
+    return assemble_live(
+        processes=processes,
+        metrics=metrics,
+        gpu=get_gpu_info(),
+        include=include,
+    )
+
+
+def _parse_include(include: Optional[str]) -> set[str]:
+    if not include:
+        return set()
+    return {p.strip() for p in include.split(",") if p.strip()}
+
+
+@app.get("/capabilities", summary="Machine-readable capability manifest")
+async def get_capabilities(include: Optional[str] = None) -> JSONResponse:
+    """Full instance manifest for AI agents.
+
+    Pass `?include=metrics,packages` to add live CPU/GPU/RAM metrics and probed
+    package versions (both omitted by default to keep the response fast).
+    """
+    return JSONResponse(await _build_capabilities(_parse_include(include)))
+
+
+@app.get("/.well-known/vast-capabilities", include_in_schema=False)
+async def get_capabilities_well_known(include: Optional[str] = None) -> JSONResponse:
+    return JSONResponse(await _build_capabilities(_parse_include(include)))
+
+
+@app.get(
+    "/capabilities/services",
+    response_model=List[ServiceInfo],
+    summary="Running/known services with reachable URLs",
+)
+async def get_capabilities_services():
+    manifest = await _build_capabilities(set())
+    # Return the plain list so FastAPI validates/serialises via response_model
+    # and the OpenAPI schema matches actual output.
+    return manifest.get("services", [])
+
+
+@app.get(
+    "/capabilities/endpoints",
+    response_model=List[OpenAIEndpoint],
+    summary="OpenAI /v1 endpoints exposed by running services",
+)
+async def get_capabilities_endpoints():
+    manifest = await _build_capabilities(set())
+    return manifest.get("endpoints_openai", [])
+
+
+@app.post(
+    "/capabilities/provision",
+    response_model=ProvisionResponse,
+    summary="Install more dependencies via the provisioner",
+)
+async def post_capabilities_provision(req: ProvisionRequest):
+    """Launch the declarative provisioner in the background.
+
+    Accepts a manifest URL, inline YAML, or simple pip/git/download lists.
+    Returns immediately; follow progress in /var/log/portal/provisioning.log.
+
+    SECURITY: this installs/runs caller-supplied code (pip/git/post_commands), so
+    it is an install+exec surface. It is gated by the Caddy token edge for remote
+    callers and, like the other /supervisor/* control routes, is unauthenticated
+    only on localhost inside the (single-tenant) container.
+    """
+    log_file = "/var/log/portal/provisioning.log"
+    cmd: list[str] = ["/opt/instance-tools/bin/provisioner"]
+    cleanup_path: Optional[str] = None
+
+    if req.manifest_url:
+        cmd.append(req.manifest_url)
+    elif req.inline_yaml:
+        # Materialise inline YAML to a temp file the provisioner can read.
+        import tempfile
+        fd, cleanup_path = tempfile.mkstemp(suffix=".yaml", prefix="provision-")
+        with os.fdopen(fd, "w") as f:
+            f.write(req.inline_yaml)
+        cmd.append(cleanup_path)
+    else:
+        # Build a minimal manifest from the simple lists.
+        manifest: dict = {"version": 1}
+        if req.pip:
+            manifest["pip_packages"] = [{"packages": req.pip}]
+        if req.git_repos:
+            manifest["git_repos"] = [{"url": u} for u in req.git_repos]
+        if req.downloads:
+            manifest["downloads"] = [{"url": u} for u in req.downloads]
+        if len(manifest) == 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide one of: manifest_url, inline_yaml, pip, git_repos, downloads",
+            )
+        import tempfile
+        fd, cleanup_path = tempfile.mkstemp(suffix=".yaml", prefix="provision-")
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(manifest, f)
+        cmd.append(cleanup_path)
+
+    try:
+        # Detached so it outlives this request (same pattern as the restart route).
+        if cleanup_path:
+            # The provisioner reads the temp manifest asynchronously, so it can't
+            # be deleted inline. Launch a small detached Python wrapper (no shell)
+            # that runs the provisioner and removes the temp file when it exits.
+            wrapper = (
+                "import os, subprocess, sys\n"
+                "subprocess.run(sys.argv[1:3])\n"
+                "try:\n"
+                "    os.unlink(sys.argv[3])\n"
+                "except OSError:\n"
+                "    pass\n"
+            )
+            subprocess.Popen(
+                [sys.executable, "-c", wrapper, cmd[0], cmd[1], cleanup_path],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                cmd, start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except Exception as e:
+        if cleanup_path and os.path.isfile(cleanup_path):
+            os.unlink(cleanup_path)
+        logger.error(f"Failed to launch provisioner: {e}")
+        raise HTTPException(status_code=500, detail="Failed to launch provisioner")
+
+    return {
+        "status": "started",
+        "detail": "Provisioner launched in the background",
+        "log_file": log_file,
+    }
 

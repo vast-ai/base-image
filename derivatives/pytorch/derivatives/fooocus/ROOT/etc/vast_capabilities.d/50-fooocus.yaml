@@ -1,0 +1,5 @@
+# Fooocus derivative — image identity (overrides the base image block).
+image:
+  name: Fooocus
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/fooocus
+  preinstalled: PyTorch + Fooocus
