@@ -155,31 +155,63 @@ vast-capabilities | jq '.instance.open_ports[]|select(.in_use==false)'   # free 
 Each entry has `container_port`, `public_port`, and `in_use` (plus the occupying
 `service` when taken). To expose your own app, pick one where `in_use` is `false`.
 
-## 7. Expose your own app, or add a managed service
+## 7. Expose your own app (run it as a managed service)
 
-To expose an app **externally** it must use one of the already-open ports above
-that is **free** (`in_use: false`) — don't reuse a port a service already holds.
-Caddy gives a service an authed external vhost only when its `external_port`
-differs from its `internal_port` and `VAST_TCP_PORT_<external_port>` exists.
+**Run your app as a supervisor service — don't just launch it loose.** A bare
+`python app.py &` dies when your shell exits, won't restart on crash, and its logs
+never reach the portal/Vast. The instance's own services follow one pattern; yours
+should too. It's two files plus a Caddy entry.
 
-A) Put a new app behind the proxy (bind it to `127.0.0.1` on an internal port,
-then map an open port to it and reload Caddy):
+**Step 1 — wrapper script** `/opt/supervisor-scripts/<name>.sh`. Source the shared
+utils (env + logging + the portal skip-guard) and run your app **in the
+foreground** on a `127.0.0.1` internal port:
+```bash
+#!/bin/bash
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/environment.sh"                 # exports /etc/environment + ${WORKSPACE}/.env
+. "${utils}/exit_portal.sh" "My App"        # self-skips if "My App" isn't in /etc/portal.yaml
+
+source /venv/main/bin/activate              # if it needs the python env
+cd "${WORKSPACE}"
+pty my-app --host 127.0.0.1 --port 17070 2>&1   # foreground; pty flushes output to logs
 ```
-# app listening on 127.0.0.1:17070; 7070 is an open port (VAST_TCP_PORT_7070 set)
-python -c "import yaml,sys; d=yaml.safe_load(open('/etc/portal.yaml')) or {'applications':{}}; \
+Make it executable (`chmod +x`).
+
+**Step 2 — supervisor config** `/etc/supervisor/conf.d/<name>.conf`. Model it on an
+existing one (`/etc/supervisor/conf.d/tensorboard.conf`); the essentials:
+```ini
+[program:myapp]
+environment=PROC_NAME="%(program_name)s"
+command=/opt/supervisor-scripts/myapp.sh
+autostart=true
+autorestart=unexpected
+stdout_logfile=/dev/stdout          # required so logs reach the portal/Vast
+redirect_stderr=true
+stdout_logfile_maxbytes=0
+```
+Then load it: `supervisorctl reread && supervisorctl update` (later:
+`supervisorctl restart myapp`, logs at `/var/log/portal/myapp.log`).
+
+**Step 3 — expose it externally via Caddy.** Pick a **free** open port
+(`in_use: false`, §6 — don't reuse one a service holds) and add an entry to
+`/etc/portal.yaml`; the label must match the `exit_portal.sh` term above. Caddy
+only grants an authed external vhost when `external_port` ≠ `internal_port` and
+`VAST_TCP_PORT_<external_port>` exists:
+```
+# app on 127.0.0.1:17070; 7070 is a free open port (VAST_TCP_PORT_7070 set)
+python -c "import yaml; d=yaml.safe_load(open('/etc/portal.yaml')) or {'applications':{}}; \
 d['applications']['My App']={'hostname':'localhost','external_port':7070,'internal_port':17070,'open_path':'/','name':'My App'}; \
 yaml.safe_dump(d, open('/etc/portal.yaml','w'), sort_keys=False)"
 supervisorctl restart caddy
-# now reachable at $PUBLIC_IPADDR:$VAST_TCP_PORT_7070 (http unless ENABLE_HTTPS=true) with the token
+# now reachable at $PUBLIC_IPADDR:$VAST_TCP_PORT_7070 (http unless ENABLE_HTTPS=true) with the token (§5)
 ```
-This persists for the life of the instance; to survive a full reboot, also set
-`PORTAL_CONFIG` at instance creation (or bake it via provisioning).
+This lasts the life of the instance. To survive a **recycle/reboot** too, bake both
+files in via provisioning (§10) and set `PORTAL_CONFIG` at instance creation.
 
-B) Run a long-lived managed service: add `/etc/supervisor/conf.d/<name>.conf`
-and `/opt/supervisor-scripts/<name>.sh` (source `utils/logging.sh` and
-`utils/environment.sh`, activate the venv), then `supervisorctl reread &&
-supervisorctl update`. Log to `/dev/stdout` (`redirect_stderr=true`) or output
-won't reach the portal/Vast logs. Expose it via step A if it serves web traffic.
+(For a genuine throwaway test only, you can skip the service and run the app loose
+on the internal port, then do Step 3 — but it won't restart or survive, so don't
+leave anything real that way.)
 
 ## 8. Persistent environment variables
 
