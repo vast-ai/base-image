@@ -230,9 +230,23 @@ supervisorctl restart caddy
 This lasts the life of the instance. To survive a **recycle/reboot** too, bake both
 files in via provisioning (§10) and set `PORTAL_CONFIG` at instance creation.
 
+**No free port — or you just need to reach it yourself?** Don't burn a port or a
+public tunnel. **SSH local forwarding** reaches any `127.0.0.1`-bound internal port
+privately, with no open port, no token, and full SSH encryption/auth — the most
+secure option for single-user access. From the user's own machine:
+```
+# forward local :8080 -> the app on 127.0.0.1:17070 inside the container
+ssh -p $VAST_TCP_PORT_22 -L 8080:127.0.0.1:17070 root@$PUBLIC_IPADDR
+# then browse http://localhost:8080 locally
+```
+(Use the instance's real SSH host/port — `$VAST_TCP_PORT_22` on `$PUBLIC_IPADDR`.)
+Because it lands on `localhost` inside the container it bypasses Caddy entirely, so
+no token is needed and nothing is exposed publicly. Cloudflare quick tunnels (§5)
+are the alternative when the user *can't* SSH (e.g. sharing a link).
+
 (For a genuine throwaway test only, you can skip the service and run the app loose
-on the internal port, then do Step 3 — but it won't restart or survive, so don't
-leave anything real that way.)
+on the internal port — but it won't restart or survive, so don't leave anything
+real that way.)
 
 ## 8. Persistent environment variables
 
