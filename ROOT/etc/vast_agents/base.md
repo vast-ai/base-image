@@ -155,6 +155,20 @@ vast-capabilities | jq '.instance.open_ports[]|select(.in_use==false)'   # free 
 Each entry has `container_port`, `public_port`, and `in_use` (plus the occupying
 `service` when taken). To expose your own app, pick one where `in_use` is `false`.
 
+**Two kinds of port — bind to the right number:**
+- **Normal** (`container_port` ≤ 65535): the engine NATs a *different* external
+  number to it. Your app binds inside the container to `container_port`; the public
+  side is `public_port` (= `VAST_TCP_PORT_<container_port>`). These can go behind
+  the Caddy auth edge (§7).
+- **Self-mapped** (`container_port` > 65535, requested as a port `> 70000`): the
+  engine allocates a random valid external port and forwards it **1:1 to the same
+  number inside the container** — so the bind port *equals* the public port, letting
+  the app advertise its own external address. The manifest marks these
+  `self_mapped: true` and gives the `bind_port` to use (= `public_port`). **Bind your
+  app to `bind_port`, not to the >65535 `container_port`** (that number is just the
+  request token and can't be bound). These are a **direct TCP forward — not behind
+  Caddy/token auth**, so add your own auth if the app needs protecting.
+
 ## 7. Expose your own app (run it as a managed service)
 
 **Run your app as a supervisor service — don't just launch it loose.** A bare
@@ -193,10 +207,17 @@ stdout_logfile_maxbytes=0
 Then load it: `supervisorctl reread && supervisorctl update` (later:
 `supervisorctl restart myapp`, logs at `/var/log/portal/myapp.log`).
 
-**Step 3 — expose it externally via Caddy.** Pick a **free** open port
-(`in_use: false`, §6 — don't reuse one a service holds) and add an entry to
-`/etc/portal.yaml`; the label must match the `exit_portal.sh` term above. Caddy
-only grants an authed external vhost when `external_port` ≠ `internal_port` and
+**Step 3 — expose it externally.** Pick a **free** open port (`in_use: false`, §6 —
+don't reuse one a service holds).
+
+*If the only free port is `self_mapped` (§6):* there's no Caddy path — bind your app
+directly to its `bind_port` (the script's `--port`), and it's reachable at
+`$PUBLIC_IPADDR:<bind_port>` with **no token auth** (so enforce your own). Skip the
+portal.yaml step below.
+
+*Otherwise (a normal free port), put it behind the Caddy auth edge:* add an entry to
+`/etc/portal.yaml`; the label must match the `exit_portal.sh` term above. Caddy only
+grants an authed external vhost when `external_port` ≠ `internal_port` and
 `VAST_TCP_PORT_<external_port>` exists:
 ```
 # app on 127.0.0.1:17070; 7070 is a free open port (VAST_TCP_PORT_7070 set)

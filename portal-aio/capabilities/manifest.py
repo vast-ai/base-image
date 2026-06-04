@@ -364,6 +364,14 @@ def _cuda_info() -> Optional[dict]:
 _PORT_RE = re.compile(r"^VAST_(TCP|UDP)_PORT_(\d+)$")
 
 
+# A configured container port above the max bindable port (request convention:
+# > 70000) is "self-mapped": the Vast engine picks a random valid external port and
+# forwards it 1:1 to the SAME number inside the container, so the app's bind port
+# equals its public port (it can thus advertise its own external port). Normal ports
+# (<= 65535) NAT a different external number to the configured container port.
+_SELF_MAP_MAX = 65535
+
+
 def _open_ports() -> list[dict]:
     """Externally reachable ports, from the VAST_TCP/UDP_PORT_* env vars.
 
@@ -377,11 +385,23 @@ def _open_ports() -> list[dict]:
         # Ignore unset or non-numeric mapped ports (would yield invalid URLs).
         if not m or not val.isdigit():
             continue
-        out.append({
+        cp = int(m.group(2))
+        entry = {
             "proto": m.group(1).lower(),
-            "container_port": int(m.group(2)),
+            "container_port": cp,
             "public_port": val,
-        })
+        }
+        if cp > _SELF_MAP_MAX:
+            # Self-mapped: bind INSIDE the container to public_port, not container_port.
+            entry["self_mapped"] = True
+            entry["bind_port"] = int(val)
+            entry["note"] = (
+                f"Self-mapped port: bind your app inside the container to {val} — that "
+                "is also its public port (so the app knows its own external port). "
+                "Direct TCP forward, NOT behind the Caddy auth edge; add your own auth "
+                "if it needs protecting."
+            )
+        out.append(entry)
     out.sort(key=lambda e: (e["proto"], e["container_port"]))
     return out
 
@@ -771,8 +791,11 @@ def assemble(
     open_ports = _open_ports()
     for p in open_ports:
         cp = p["container_port"]
+        # Self-mapped ports are served by the app binding to public_port, not the
+        # (unbindable) container_port — check the right one for occupancy.
+        bind = p.get("bind_port", cp)
         svc_name = svc_by_ext.get(cp)
-        p["in_use"] = (cp in listening) or (svc_name is not None)
+        p["in_use"] = (bind in listening) or (svc_name is not None)
         if svc_name:
             p["service"] = svc_name
 

@@ -159,6 +159,33 @@ def test_listening_ports_is_set():
     assert isinstance(manifest._listening_ports(), set)
 
 
+def test_open_ports_self_mapped(monkeypatch):
+    for k in list(os.environ):
+        if k.startswith(("VAST_TCP_PORT_", "VAST_UDP_PORT_")):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("VAST_TCP_PORT_8080", "11725")   # normal: NAT to a different number
+    monkeypatch.setenv("VAST_TCP_PORT_72299", "13058")  # >70000: self-mapped 1:1
+    ports = {p["container_port"]: p for p in manifest._open_ports()}
+    assert "self_mapped" not in ports[8080] and "bind_port" not in ports[8080]
+    sm = ports[72299]
+    assert sm["self_mapped"] is True
+    assert sm["bind_port"] == 13058 and sm["public_port"] == "13058"
+    assert "13058" in sm["note"]
+
+
+def test_open_ports_self_mapped_in_use_checks_bind_port(monkeypatch):
+    for k in list(os.environ):
+        if k.startswith(("VAST_TCP_PORT_", "VAST_UDP_PORT_")):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("VAST_TCP_PORT_72299", "13058")
+    # App listens on the bind_port (13058), NOT the container_port (72299).
+    monkeypatch.setattr(manifest, "_listening_ports", lambda: {13058})
+    m = manifest.assemble(services=[],
+                          fragments={"tools": [], "python_environments": [], "openai_endpoints": []})
+    p = {x["container_port"]: x for x in m["instance"]["open_ports"]}[72299]
+    assert p["in_use"] is True            # detected via bind_port, not container_port
+
+
 def test_open_ports_in_use_annotation(monkeypatch):
     for k in list(os.environ):
         if k.startswith(("VAST_TCP_PORT_", "VAST_UDP_PORT_")):
