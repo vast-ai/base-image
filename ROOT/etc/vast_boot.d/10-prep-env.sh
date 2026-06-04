@@ -13,6 +13,14 @@ if [[ -z "${VAST_TCP_PORT_8080}" ]] || { [[ -f /.launch ]] && ! grep -qi jupyter
     PORTAL_CONFIG=$(echo "$PORTAL_CONFIG" | tr '|' '\n' | grep -vi jupyter | tr '\n' '|' | sed 's/|$//')
 fi
 
+# In entrypoint mode (no /.launch) the Vast controller strips Jupyter from
+# PORTAL_CONFIG. Jupyter is a core service of our images and was never meant to
+# be removed, so re-add it unless explicitly disabled (--no-force-jupyter) or
+# there is no port 8080 to serve it on.
+if [[ "${FORCE_JUPYTER,,}" != "false" ]] && [[ ! -f /.launch ]] && [[ -n "${VAST_TCP_PORT_8080}" ]] && ! grep -qi jupyter <<< "$PORTAL_CONFIG"; then
+    PORTAL_CONFIG="${PORTAL_CONFIG:+${PORTAL_CONFIG}|}localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+fi
+
 # Ensure correct port mappings for Jupyter when running in Jupyter launch mode
 if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
     PORTAL_CONFIG="$(echo "$PORTAL_CONFIG" | sed 's#localhost:8080:18080#localhost:8080:8080#g')"

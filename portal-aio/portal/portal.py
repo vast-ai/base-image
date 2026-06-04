@@ -169,11 +169,23 @@ def load_config() -> dict:
         return hydrate_applications(config_applications)
 
 def hydrate_applications(applications: dict) -> dict:
+    # External ports that Caddy actually proxies (internal port differs from
+    # external). For these Caddy owns the listener and its scheme follows
+    # ENABLE_HTTPS. Must stay in sync with the tunnel manager's hydration so
+    # target_url values match for tunnel lookups.
+    proxied_external_ports = {
+        app["external_port"]
+        for app in applications.values()
+        if app["external_port"] != app["internal_port"]
+    }
     for app_name, app in applications.items():
         hostname = app["hostname"]
         external_port = app["external_port"]
         internal_port = app["internal_port"]
-        if external_port == internal_port and internal_port == 8080:
+        # A straight-through :8080 entry is direct TLS (launch-mode Jupyter)
+        # only when nothing else proxies :8080; in supervisor mode Caddy owns
+        # the :8080 listener and the scheme follows ENABLE_HTTPS.
+        if external_port == internal_port and internal_port == 8080 and 8080 not in proxied_external_ports:
             scheme = "https"
         else:
             scheme = get_scheme()

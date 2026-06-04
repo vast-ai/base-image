@@ -42,7 +42,7 @@ We build multiple variants to support different hardware and Python requirements
 | Type | Base Image | Ubuntu | Notes |
 |------|-----------|--------|-------|
 | **Stock** | `ubuntu:22.04`, `ubuntu:24.04` | 22.04, 24.04 | No CUDA/ROCm libraries, but NVIDIA drivers are still loaded at runtime |
-| **NVIDIA CUDA** | `nvidia/cuda:*-cudnn-devel-ubuntu*` | 22.04, 24.04 | Full CUDA toolkit + cuDNN (11.8, 12.1, 12.4, 12.6, 12.8, 12.9, 13.0.1, 13.0.2) |
+| **NVIDIA CUDA** | `nvidia/cuda:*-cudnn-devel-ubuntu*` | 22.04, 24.04 | Full CUDA toolkit + cuDNN (11.8, 12.1, 12.4, 12.6, 12.8, 12.9, 13.0, 13.1, 13.2, 13.3 — latest patch per minor) |
 | **AMD ROCm** | `rocm/dev-ubuntu-*:6.2.4-complete` | 22.04, 24.04 | Complete ROCm 6.2.4 development environment |
 
 **Note:** Stock images can still access NVIDIA GPUs—they simply don't include the heavier CUDA development libraries. Use these when you want a lighter image and will install specific CUDA components yourself.
@@ -250,6 +250,7 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 | `--sync-environment` | Sync Python/Conda environments to workspace volume for persistence |
 | `--sync-home` | Sync home directories to workspace |
 | `--jupyter-override` | Force Jupyter to start even in non-Jupyter launch modes |
+| `--no-force-jupyter` | Don't re-add Jupyter to the portal config in entrypoint mode (no `/.launch`) |
 
 **Example** (in Docker run command or template):
 ```bash
