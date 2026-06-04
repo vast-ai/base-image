@@ -54,10 +54,11 @@ jobs:
             "cuda-12.4-22|cuda-12.4.1-cudnn-devel-ubuntu22.04|3.10"
             "cuda-12.6-24|cuda-12.6.3-cudnn-devel-ubuntu24.04|3.12"
             "cuda-12.8-24|cuda-12.8.1-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-12.9-24|cuda-12.9.1-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.0.2-24|cuda-13.0.2-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.1.1-24|cuda-13.1.1-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.2.0-24|cuda-13.2.0-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-12.9-24|cuda-12.9.2-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.0-24|cuda-13.0.3-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.1-24|cuda-13.1.2-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.2-24|cuda-13.2.1-cudnn-devel-ubuntu24.04|3.12"
+            "cuda-13.3-24|cuda-13.3.0-cudnn-devel-ubuntu24.04|3.12"
           )
 
           CONFIGS_JSON="[]"
@@ -123,8 +124,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -157,7 +158,7 @@ jobs:
             for py_version in "${PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -171,7 +172,7 @@ jobs:
             for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
               SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -199,7 +200,7 @@ jobs:
             at_cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
             [[ -z "$at_cuda_ver" ]] && continue
             AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${at_cuda_ver}-auto"
-            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
               AUTO_TARGET_PRE[$at_cuda_ver]="${NAMESPACE_PROD}/base-image@${digest}"
               echo "Captured existing auto tag: cuda-${at_cuda_ver}-auto @ ${digest}"
             else
@@ -224,21 +225,18 @@ jobs:
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
               DATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
 
-              EXTRA_TAGS=""
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
+              # crane copy cross-mounts blobs registry-side (no host streaming).
+              crane copy "${SOURCE}" "${DATED_TAG}"
+              echo "$DATED_TAG" >> built-tags/tags.txt
+
               if [[ "$py_version" == "$default_python" ]]; then
                 # Default python alias (no -pyXXX, but keeps date)
                 DATED_ALIAS="${NAMESPACE_PROD}/base-image:${tag_template}-${STAGING_DATE}"
-                EXTRA_TAGS="--tag ${DATED_ALIAS}"
+                echo "Aliasing: ${SOURCE} -> ${DATED_ALIAS}"
+                crane copy "${SOURCE}" "${DATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
               fi
-
-              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
-              docker buildx imagetools create \
-                --tag "${DATED_TAG}" \
-                ${EXTRA_TAGS} \
-                "${SOURCE}"
-
-              echo "$DATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -258,9 +256,7 @@ jobs:
               DATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
 
               echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
-              docker buildx imagetools create \
-                --tag "${DATED_TAG}" \
-                "${SOURCE}"
+              crane copy "${SOURCE}" "${DATED_TAG}"
 
               echo "$DATED_TAG" >> built-tags/tags.txt
             done
@@ -304,7 +300,7 @@ jobs:
           declare -A FINAL_DIGEST
           for cuda_ver in "${!AUTO_TARGET_FINAL[@]}"; do
             ref="${AUTO_TARGET_FINAL[$cuda_ver]}"
-            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if d=$(crane digest "$ref" 2>/dev/null); then
               FINAL_DIGEST[$cuda_ver]="$d"
             else
               echo "WARN: could not resolve digest for ${ref}; cuda-${cuda_ver}-auto will be skipped in the dance"
@@ -352,15 +348,15 @@ jobs:
               # correctness does not depend on the dance being
               # possible — only the tag-order optimisation is lost.
               echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; falling back to direct update (tag order will not advance)"
-              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+              crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
               echo "$AUTO_TAG_REF" >> built-tags/tags.txt
               continue
             fi
 
             echo "  Phase A: ${AUTO_TAG_REF} -> anchor ${anchor_ref}"
-            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${anchor_ref}"
+            crane copy "${anchor_ref}" "${AUTO_TAG_REF}"
             echo "  Phase B: ${AUTO_TAG_REF} -> ${TARGET_REF}"
-            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+            crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
             echo "$AUTO_TAG_REF" >> built-tags/tags.txt
           done
 
@@ -408,8 +404,8 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -445,7 +441,7 @@ jobs:
             for py_version in "${PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -459,7 +455,7 @@ jobs:
             for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
               SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -523,7 +519,7 @@ jobs:
             at_cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
             [[ -z "$at_cuda_ver" ]] && continue
             AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${at_cuda_ver}-auto"
-            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
               AUTO_TARGET_PRE[$at_cuda_ver]="${NAMESPACE_PROD}/base-image@${digest}"
             fi
           done
@@ -555,7 +551,7 @@ jobs:
             [[ -z "$cuda_ver" ]] && continue
             dp_tag="${default_python//.}"
             staging_ref="${NAMESPACE_STAGING}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
-            if d=$(docker buildx imagetools inspect "$staging_ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if d=$(crane digest "$staging_ref" 2>/dev/null); then
               FINAL_DIGEST[$cuda_ver]="$d"
             else
               echo "WARN: could not resolve staging source ${staging_ref}"
