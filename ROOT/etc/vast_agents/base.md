@@ -10,6 +10,16 @@ Long-running processes are managed by **supervisor**; web apps are fronted by a
 > this specific image adds. The files are cumulative — later files add to, and
 > never repeat, this one.
 
+**Environment & privileges.** This is an **unprivileged Docker container**, not a
+VM. You are `root` (or a user with passwordless `sudo`, provided only for programs
+that refuse to run as root) — but this is *not* full root: you **cannot** load
+kernel modules, run another container engine (no Docker-in-Docker), use kernel
+profilers (`perf`, eBPF), mount block devices, or change sysctls/cgroups. The host
+kernel is shared and read-only to you. Prefer working *within* these limits — e.g.
+manage long-running services with **supervisor** (§4/§7) instead of Docker, and use
+userspace profilers. If a task genuinely needs kernel-level access, Vast also
+offers **VM instances**; that's the exception, not the default.
+
 ## 1. Orient yourself
 
 ```
