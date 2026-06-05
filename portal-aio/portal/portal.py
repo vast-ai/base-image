@@ -7,6 +7,7 @@ from typing import Optional, List
 from collections import deque
 import yaml
 import json
+import math
 import httpx
 import asyncio
 import aiofiles
@@ -1535,6 +1536,28 @@ async def download_logs(filename: str = None) -> StreamingResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating zip file: {str(e)}")
 
+def _is_finite_num(value) -> bool:
+    """True only for real, finite numbers (excludes bool, NaN and +/-Inf)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _json_safe(obj):
+    """Recursively replace non-finite floats (NaN/Inf) with None.
+
+    Backstop so a single unreadable nvidia-smi field can never 500 the metrics
+    endpoint: Starlette's JSONResponse encodes with allow_nan=False and raises
+    on NaN/Inf. GPUtil produces NaN for any field it fails to parse, not just
+    memory, so sanitize the whole structure rather than individual fields.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 async def _collect_metrics() -> dict:
     """Collect system metrics. Shared by the route and the manifest."""
     # Try to get container memory metrics first
@@ -1586,34 +1609,47 @@ async def _collect_metrics() -> dict:
         
     # Calculate metrics if any GPUs are found
     if all_gpus:
-        # Calculate average load across all GPUs
-        avg_load = sum(gpu.load for gpu in all_gpus) / len(all_gpus)
-        
+        # GPUtil casts any nvidia-smi field it cannot parse to float('nan').
+        # The GB10 (DGX Spark) has no dedicated framebuffer, so it reports
+        # memory.total and memory.used as "[N/A]" (a MIG-enabled parent device
+        # does too); those arrive here as NaN. Filter out non-finite values:
+        # they would otherwise propagate into the response and crash Starlette's
+        # JSONResponse (which encodes with allow_nan=False).
+        loads = [g.load for g in all_gpus if _is_finite_num(g.load)]
+        avg_load = sum(loads) / len(loads) if loads else 0.0
+
         # Sum total and used memory across all GPUs
         # Handle potential unit differences between NVIDIA and ROCm
-        total_memory = 0
-        used_memory = 0
-        
+        total_memory = 0.0
+        used_memory = 0.0
+        memory_available = False
+
         for gpu in all_gpus:
             # For ROCm GPUs, memoryTotal might be in bytes, while NVIDIA is in MB
             if hasattr(gpu, 'memoryTotal_mb'):
                 # Use the MB values directly if available
-                total_memory += gpu.memoryTotal_mb
-                used_memory += gpu.memoryUsed_mb
+                gpu_total, gpu_used = gpu.memoryTotal_mb, gpu.memoryUsed_mb
             else:
                 # Assume standard GPUtil format which is already in MB
-                total_memory += gpu.memoryTotal
-                used_memory += gpu.memoryUsed
-        
+                gpu_total, gpu_used = gpu.memoryTotal, gpu.memoryUsed
+            # Only count GPUs that actually report memory; preserves valid data
+            # in mixed fleets where some GPUs report and others don't.
+            if _is_finite_num(gpu_total) and _is_finite_num(gpu_used):
+                total_memory += gpu_total
+                used_memory += gpu_used
+                memory_available = True
+
         # Calculate overall memory usage percentage
         memory_percent = (used_memory / total_memory * 100) if total_memory > 0 else 0
-        
+
         metrics['gpu'] = {
             'count': len(all_gpus),
             'avg_load_percent': float(avg_load * 100),  # Convert to percentage
-            'memory_used': float(used_memory),
-            'memory_total': float(total_memory),
-            'memory_percent': float(memory_percent),
+            # None (not 0) when memory is unreported, so the UI can tell the
+            # difference between "0 MB used" and "not available".
+            'memory_used': float(used_memory) if memory_available else None,
+            'memory_total': float(total_memory) if memory_available else None,
+            'memory_percent': float(memory_percent) if memory_available else None,
             'memory_unit': 'MB'  # Add unit for clarity
         }
         
@@ -1646,7 +1682,7 @@ async def _collect_metrics() -> dict:
         if errors:
             metrics['gpu']['errors'] = errors
 
-    return metrics
+    return _json_safe(metrics)
 
 
 @app.get("/system-metrics")
