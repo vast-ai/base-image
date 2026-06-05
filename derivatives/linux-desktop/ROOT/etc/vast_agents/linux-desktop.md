@@ -15,7 +15,10 @@ endpoint; it's an interactive GUI to drive visually or automate.
   expected, not a fault.
 
 Either way `x11vnc` also serves the raw display on `:5900` for a native VNC client
-(reach it by SSH-forwarding 5900, base.md §7).
+(reach it by SSH-forwarding 5900, base.md §7). The VNC password is **`VNC_PASSWORD`**
+if set at launch, otherwise **`OPEN_BUTTON_TOKEN`** (the instance token). The
+in-browser Guacamole path applies this for you; you only need it for a direct
+client on `:5900`.
 
 **Drive it programmatically.** The session is `DISPLAY=:20`, owned by the
 unprivileged user **`user`**. Launch GUI apps onto it and automate windows/input
