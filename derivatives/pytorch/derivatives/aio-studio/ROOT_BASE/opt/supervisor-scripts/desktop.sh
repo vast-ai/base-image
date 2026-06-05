@@ -62,6 +62,29 @@ wait_file() {
     log "$label ready"
 }
 
+# Apply WIDTHxHEIGHT to the Xvfb screen (run as 'user' on the desktop DISPLAY).
+# Prefer Selkies' resize helper when present; otherwise fall back to a direct
+# xrandr resize. Selkies ships amd64-only release artifacts, so on arches that
+# lack it (e.g. aarch64/sbsa) this keeps the desktop from staying at Xvfb's
+# full 8192x4096 startup framebuffer.
+resize_display() {
+    local target="$1"
+    if [[ -x /usr/local/bin/selkies-gstreamer-resize ]]; then
+        DISPLAY="${DISPLAY}" runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "${target}" >/dev/null 2>&1
+        return
+    fi
+    DISPLAY="${DISPLAY}" runuser -u user -- bash -c '
+        target="$1"; w="${target%x*}"; h="${target#*x}"; mode="${w}x${h}"
+        output="$(xrandr --query | awk "/ connected/ {print \$1; exit}")"
+        output="${output:-screen}"
+        if ! xrandr --query | grep -qw "$mode"; then
+            line="$(cvt "$w" "$h" 60 | sed -n "s/^Modeline //p" | cut -d" " -f2-)"
+            xrandr --newmode "$mode" $line && xrandr --addmode "$output" "$mode"
+        fi
+        xrandr --output "$output" --mode "$mode"
+    ' _ "${target}" >/dev/null 2>&1
+}
+
 # --- Cleanup ---
 cleanup_desktop() {
     log "Shutting down desktop stack..."
@@ -229,25 +252,27 @@ if command -v selkies-gstreamer >/dev/null 2>&1; then
         --turn_protocol="${TURN_PROTOCOL}" \
         --turn_username="${TURN_USERNAME}" \
         --turn_password="${TURN_PASSWORD}"
-
-    # --- Persistent display resize ---
-    # Selkies resets the display resolution when its pipeline (re)initializes.
-    # This background loop monitors and re-applies the target resolution.
-    (
-        TARGET="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
-        while true; do
-            CURRENT=$(DISPLAY=${DISPLAY} runuser -u user -- xrandr 2>/dev/null | grep '\*' | awk '{print $1}')
-            if [[ "$CURRENT" != "$TARGET" ]]; then
-                DISPLAY=${DISPLAY} runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "$TARGET" >/dev/null 2>&1 \
-                    && echo "[desktop] Display resized to $TARGET"
-            fi
-            sleep 5
-        done
-    ) &
-    PIDS+=($!)
 else
     log "Selkies not installed (arch=$(uname -m)); skipping Selkies + TURN. VNC remains available."
 fi
+
+# --- Persistent display resize ---
+# Xvfb starts at its full 8192x4096 framebuffer, so the target resolution must
+# be applied after start. Selkies (when present) also resets the resolution
+# when its pipeline (re)initializes, so this background loop monitors and
+# re-applies. Runs on all arches; resize_display falls back to xrandr where
+# Selkies' own resize helper is unavailable.
+(
+    TARGET="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
+    while true; do
+        CURRENT=$(DISPLAY=${DISPLAY} runuser -u user -- xrandr 2>/dev/null | grep '\*' | awk '{print $1}')
+        if [[ "$CURRENT" != "$TARGET" ]]; then
+            resize_display "$TARGET" && echo "[desktop] Display resized to $TARGET"
+        fi
+        sleep 5
+    done
+) &
+PIDS+=($!)
 
 # --- All services started ---
 log "=========================================="
