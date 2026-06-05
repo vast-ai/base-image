@@ -102,6 +102,14 @@ jobs:
             "2.11.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.11.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.11.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            # 2.12.0 — ships cu126 / cu130 / cu132 (no cu128). cu130 base moves
+            # to 13.0.3 (the 13.0.2 base is no longer built at the new date);
+            # cu132 is the new backend paired with the 13.2.1 base. Both 13.x
+            # builds carry Blackwell kernels; cu126 is the non-Blackwell lane.
+            # All three publish multi-arch cp310-cp314 wheels.
+            "2.12.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.12.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.12.0|cu132|13.2.1-cudnn-devel|cu132|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           # Multi-torch configs: a primary mini pytorch image with
@@ -130,6 +138,11 @@ jobs:
             # 2.11.0 — cu128 multi-arch, cu130 multi-arch
             "2.11.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.11.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            # 2.12.0 — no cu128, so the CUDA-12 mini rides cu126 on the 12.9-mini
+            # base (minor-version compat); the CUDA-13 mini keeps cu130 on the
+            # 13.2-mini base (minor compat within 13.x). Both multi-arch.
+            "2.12.0|cu126-mini|cuda-12.9-mini|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.12.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           BUILD_MATRIX="[]"

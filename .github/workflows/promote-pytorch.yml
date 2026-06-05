@@ -72,6 +72,11 @@ jobs:
             "2.11.0|cu126|12.6.3|310 311 312"
             "2.11.0|cu128|12.8.1|310 311 312 313 314"
             "2.11.0|cu130|13.0.2|310 311 312 313 314"
+            # 2.12.0 — cu126 / cu130 / cu132 (no cu128); cu130 base -> 13.0.3,
+            # cu132 new on 13.2.1. Must mirror build-pytorch.yml.
+            "2.12.0|cu126|12.6.3|310 311 312 313 314"
+            "2.12.0|cu130|13.0.3|310 311 312 313 314"
+            "2.12.0|cu132|13.2.1|310 311 312 313 314"
           )
 
           # Mini format: torch_ver|key|torch_backend|cuda_minor|python_versions
@@ -85,6 +90,9 @@ jobs:
             "2.10.0|cu130-mini|cu130|13.2|310 311 312 313 314"
             "2.11.0|cu128-mini|cu128|12.9|310 311 312 313 314"
             "2.11.0|cu130-mini|cu130|13.2|310 311 312 313 314"
+            # 2.12.0 — CUDA-12 mini rides cu126 (no cu128); CUDA-13 mini keeps cu130.
+            "2.12.0|cu126-mini|cu126|12.9|310 311 312 313 314"
+            "2.12.0|cu130-mini|cu130|13.2|310 311 312 313 314"
           )
 
           CONFIGS_JSON="[]"
@@ -221,6 +229,14 @@ jobs:
           DEFAULT_PYTHON="312"
           mkdir -p built-tags
 
+          # Each auto tag points to the LATEST torch version carrying that
+          # backend (resolved from ALL_CONFIGS, full configs only — minis are
+          # never auto-tag targets). NOTE on torch 2.12: it ships no cu128, so
+          # the cu128 entries below deliberately stay pinned to 2.11 cu128
+          # (which still has Blackwell kernels). Do NOT remap them to cu126 to
+          # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
+          # card on a 12.8/12.9 host would get an unusable image. cu132 is the
+          # new 13.2 Blackwell lane.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -228,6 +244,7 @@ jobs:
             "cuda-12.8.1-auto|cu128"
             "cuda-12.9.1-auto|cu128"
             "cuda-13.0.2-auto|cu130"
+            "cuda-13.2.1-auto|cu132"
           )
 
           # Pre-flight: every staging source we plan to promote must
@@ -590,6 +607,14 @@ jobs:
           echo "Staging date: $STAGING_DATE"
           echo ""
 
+          # Each auto tag points to the LATEST torch version carrying that
+          # backend (resolved from ALL_CONFIGS, full configs only — minis are
+          # never auto-tag targets). NOTE on torch 2.12: it ships no cu128, so
+          # the cu128 entries below deliberately stay pinned to 2.11 cu128
+          # (which still has Blackwell kernels). Do NOT remap them to cu126 to
+          # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
+          # card on a 12.8/12.9 host would get an unusable image. cu132 is the
+          # new 13.2 Blackwell lane.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -597,6 +622,7 @@ jobs:
             "cuda-12.8.1-auto|cu128"
             "cuda-12.9.1-auto|cu128"
             "cuda-13.0.2-auto|cu130"
+            "cuda-13.2.1-auto|cu132"
           )
 
           # Pre-flight: mirror the real promote so missing images
