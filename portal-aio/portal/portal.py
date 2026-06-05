@@ -1610,10 +1610,11 @@ async def _collect_metrics() -> dict:
     # Calculate metrics if any GPUs are found
     if all_gpus:
         # GPUtil casts any nvidia-smi field it cannot parse to float('nan').
-        # Unified-memory GPUs (e.g. the GB10/GH200) report memory.total and
-        # memory.used as "[N/A]", so those arrive here as NaN. Filter out
-        # non-finite values: they would otherwise propagate into the response
-        # and crash Starlette's JSONResponse (which encodes with allow_nan=False).
+        # The GB10 (DGX Spark) has no dedicated framebuffer, so it reports
+        # memory.total and memory.used as "[N/A]" (a MIG-enabled parent device
+        # does too); those arrive here as NaN. Filter out non-finite values:
+        # they would otherwise propagate into the response and crash Starlette's
+        # JSONResponse (which encodes with allow_nan=False).
         loads = [g.load for g in all_gpus if _is_finite_num(g.load)]
         avg_load = sum(loads) / len(loads) if loads else 0.0
 
