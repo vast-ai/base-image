@@ -3,3 +3,14 @@ image:
   name: PyTorch
   readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch
   preinstalled: PyTorch + CUDA in /venv/main
+
+# Surface the torch-stack versions under `vast-capabilities packages`. Merged by
+# name with the base /venv/main env, so these append to its packages_of_interest.
+# (torchaudio is probed where present; torch 2.12+ ships without it.)
+python_environments:
+  - name: main
+    packages_of_interest:
+      - torch
+      - torchvision
+      - torchaudio
+      - torchcodec
