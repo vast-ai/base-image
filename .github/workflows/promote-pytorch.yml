@@ -234,9 +234,14 @@ jobs:
           # the cu128 entries below deliberately stay pinned to 2.11 cu128
           # (which still has Blackwell kernels). Do NOT remap them to cu126 to
           # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
-          # card on a 12.8/12.9 host would get an unusable image. (cu132 isn't
-          # built yet — uv has no --torch-backend value for it — so there's no
-          # cuda-13.2.x-auto entry; cu130 covers CUDA 13 hosts for now.)
+          # card on a 12.8/12.9 host would get an unusable image.
+          #
+          # cu132 isn't built yet (uv has no --torch-backend value for it), so
+          # there is no native 13.1/13.2 image. The cuda-13.1.2-auto and
+          # cuda-13.2.1-auto entries alias those hosts onto cu130 — it runs on
+          # any CUDA 13.x driver via minor-version compatibility. Without them
+          # the platform falls back to the 13.2 mini for 13.1/13.2 hosts, which
+          # we don't want. When cu132 ships, point cuda-13.2.1-auto at cu132.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -244,6 +249,8 @@ jobs:
             "cuda-12.8.1-auto|cu128"
             "cuda-12.9.2-auto|cu128"
             "cuda-13.0.3-auto|cu130"
+            "cuda-13.1.2-auto|cu130"
+            "cuda-13.2.1-auto|cu130"
           )
 
           # Pre-flight: every staging source we plan to promote must
@@ -602,9 +609,14 @@ jobs:
           # the cu128 entries below deliberately stay pinned to 2.11 cu128
           # (which still has Blackwell kernels). Do NOT remap them to cu126 to
           # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
-          # card on a 12.8/12.9 host would get an unusable image. (cu132 isn't
-          # built yet — uv has no --torch-backend value for it — so there's no
-          # cuda-13.2.x-auto entry; cu130 covers CUDA 13 hosts for now.)
+          # card on a 12.8/12.9 host would get an unusable image.
+          #
+          # cu132 isn't built yet (uv has no --torch-backend value for it), so
+          # there is no native 13.1/13.2 image. The cuda-13.1.2-auto and
+          # cuda-13.2.1-auto entries alias those hosts onto cu130 — it runs on
+          # any CUDA 13.x driver via minor-version compatibility. Without them
+          # the platform falls back to the 13.2 mini for 13.1/13.2 hosts, which
+          # we don't want. When cu132 ships, point cuda-13.2.1-auto at cu132.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -612,6 +624,8 @@ jobs:
             "cuda-12.8.1-auto|cu128"
             "cuda-12.9.2-auto|cu128"
             "cuda-13.0.3-auto|cu130"
+            "cuda-13.1.2-auto|cu130"
+            "cuda-13.2.1-auto|cu130"
           )
 
           # Pre-flight: mirror the real promote so missing images

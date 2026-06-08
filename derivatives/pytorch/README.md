@@ -17,6 +17,8 @@ We provide auto-selecting tags that always point to the most recent PyTorch rele
 | `cuda-12.8.1-auto` | Latest PyTorch for CUDA 12.8.1 |
 | `cuda-12.9.2-auto` | Latest PyTorch for CUDA 12.9.2 |
 | `cuda-13.0.3-auto` | Latest PyTorch for CUDA 13.0.3 |
+| `cuda-13.1.2-auto` | Latest PyTorch for CUDA 13.1.2 (cu130 build) |
+| `cuda-13.2.1-auto` | Latest PyTorch for CUDA 13.2.1 (cu130 build) |
 
 For CUDA 12.4 and newer, images support both AMD64 and ARM64 (Grace) architectures.
 
