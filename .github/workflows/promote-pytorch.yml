@@ -204,8 +204,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -258,7 +258,7 @@ jobs:
             python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
             for py_tag in ${python_versions}; do
               SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -275,7 +275,7 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -291,7 +291,7 @@ jobs:
               python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -316,7 +316,7 @@ jobs:
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
             AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
               AUTO_TARGET_PRE[$auto_tag]="${NAMESPACE_PROD}/pytorch@${digest}"
               echo "Captured existing auto tag: ${auto_tag} @ ${digest}"
             else
@@ -345,20 +345,16 @@ jobs:
               SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
               DATED_TAG="${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
 
-              EXTRA_TAGS=""
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
+              crane copy "${SOURCE}" "${DATED_TAG}"
+              echo "$DATED_TAG" >> built-tags/tags.txt
+
               if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
                 DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-24.04-${STAGING_DATE}"
-                EXTRA_TAGS="--tag ${DATED_ALIAS}"
+                echo "Aliasing:  ${SOURCE} -> ${DATED_ALIAS}"
+                crane copy "${SOURCE}" "${DATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
               fi
-
-              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
-              docker buildx imagetools create \
-                --tag "${DATED_TAG}" \
-                ${EXTRA_TAGS} \
-                "${SOURCE}"
-
-              echo "$DATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -386,9 +382,7 @@ jobs:
                 DATED_TAG="${NAMESPACE_PROD}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
 
                 echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
-                docker buildx imagetools create \
-                  --tag "${DATED_TAG}" \
-                  "${SOURCE}"
+                crane copy "${SOURCE}" "${DATED_TAG}"
 
                 echo "$DATED_TAG" >> built-tags/tags.txt
               done
@@ -415,21 +409,17 @@ jobs:
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
                 DATED_TAG="${NAMESPACE_PROD}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
 
-                EXTRA_TAGS=""
+                echo "Promoting multi: ${SOURCE} -> ${DATED_TAG}"
+                crane copy "${SOURCE}" "${DATED_TAG}"
+                echo "$DATED_TAG" >> built-tags/tags.txt
+
                 if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
                   DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${key}-${STAGING_DATE}"
-                  EXTRA_TAGS="--tag ${DATED_ALIAS}"
                   DEFAULT_DATED="$DATED_TAG"
+                  echo "Aliasing multi: ${SOURCE} -> ${DATED_ALIAS}"
+                  crane copy "${SOURCE}" "${DATED_ALIAS}"
                   echo "$DATED_ALIAS" >> built-tags/tags.txt
                 fi
-
-                echo "Promoting multi: ${SOURCE} -> ${DATED_TAG}"
-                docker buildx imagetools create \
-                  --tag "${DATED_TAG}" \
-                  ${EXTRA_TAGS} \
-                  "${SOURCE}"
-
-                echo "$DATED_TAG" >> built-tags/tags.txt
               done
 
               # Repoint the no-date latest alias at the default-python
@@ -438,7 +428,7 @@ jobs:
               if [[ -n "$DEFAULT_DATED" ]]; then
                 LATEST_ALIAS="${NAMESPACE_PROD}/pytorch:${key}"
                 echo "Updating latest alias: ${LATEST_ALIAS} -> ${DEFAULT_DATED}"
-                docker buildx imagetools create --tag "${LATEST_ALIAS}" "${DEFAULT_DATED}"
+                crane copy "${DEFAULT_DATED}" "${LATEST_ALIAS}"
                 echo "$LATEST_ALIAS" >> built-tags/tags.txt
               fi
             done
@@ -485,7 +475,7 @@ jobs:
           declare -A FINAL_DIGEST
           for auto_tag in "${!AUTO_TARGET_FINAL[@]}"; do
             ref="${AUTO_TARGET_FINAL[$auto_tag]}"
-            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if d=$(crane digest "$ref" 2>/dev/null); then
               FINAL_DIGEST[$auto_tag]="$d"
             else
               echo "WARN: could not resolve digest for ${ref}; ${auto_tag} will be skipped"
@@ -524,15 +514,15 @@ jobs:
               # correctness does not depend on the dance being
               # possible — only the tag-order optimisation is lost.
               echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; falling back to direct update (tag order will not advance)"
-              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+              crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
               echo "$AUTO_TAG_REF" >> built-tags/tags.txt
               continue
             fi
 
             echo "  Phase A: ${AUTO_TAG_REF} -> anchor ${anchor_ref}"
-            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${anchor_ref}"
+            crane copy "${anchor_ref}" "${AUTO_TAG_REF}"
             echo "  Phase B: ${AUTO_TAG_REF} -> ${TARGET_REF}"
-            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+            crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
             echo "$AUTO_TAG_REF" >> built-tags/tags.txt
           done
 
@@ -580,8 +570,8 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -636,7 +626,7 @@ jobs:
             python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
             for py_tag in ${python_versions}; do
               SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -653,7 +643,7 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -669,7 +659,7 @@ jobs:
               python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -764,7 +754,7 @@ jobs:
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
             AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
               AUTO_TARGET_PRE[$auto_tag]="${NAMESPACE_PROD}/pytorch@${digest}"
             fi
           done
@@ -802,7 +792,7 @@ jobs:
               '[.[] | select(.key == $k and .torch_version == $v)] | length')
             if [[ "$in_scope" -gt 0 ]]; then
               staging_ref="${NAMESPACE_STAGING}/pytorch:${bi_ver}-cuda-${bi_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
-              if d=$(docker buildx imagetools inspect "$staging_ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              if d=$(crane digest "$staging_ref" 2>/dev/null); then
                 FINAL_DIGEST[$auto_tag]="$d"
               else
                 echo "WARN: could not resolve staging source ${staging_ref}"
