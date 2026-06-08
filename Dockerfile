@@ -281,7 +281,10 @@ RUN \
     set -euo pipefail && \
     cd /opt && \
     git clone https://github.com/vast-ai/vast-cli && \
-    wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer && \
+    wget --tries=5 --retry-connrefused --waitretry=5 --timeout=30 \
+        --retry-on-http-error=403,429,500,502,503,504 \
+        -O /usr/local/share/ca-certificates/jvastai.crt \
+        https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
     pip install --no-cache-dir --ignore-installed \
         jupyter \
