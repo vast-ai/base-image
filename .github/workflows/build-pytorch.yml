@@ -102,13 +102,14 @@ jobs:
             "2.11.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.11.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.11.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.12.0 — ships cu126 / cu130 / cu132 (no cu128). cu132 is the new
-            # backend paired with the 13.2.1 base; both 13.x builds carry
-            # Blackwell kernels, cu126 is the non-Blackwell lane. All three
-            # publish multi-arch cp310-cp314 wheels.
+            # 2.12.0 — cu126 (non-Blackwell) + cu130 (Blackwell, on the 13.0.3
+            # base), both multi-arch cp310-cp314. cu132 is deferred: torch 2.12
+            # publishes cu132 wheels, but uv's --torch-backend has no cu132 value
+            # yet (tops out at cu130), so the build can't select it. Re-add
+            # cu132 on the 13.2.1 base once uv gains it, or switch the install to
+            # an explicit --index-url https://download.pytorch.org/whl/cu132.
             "2.12.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.12.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu132|13.2.1-cudnn-devel|cu132|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           # Multi-torch configs: a primary mini pytorch image with

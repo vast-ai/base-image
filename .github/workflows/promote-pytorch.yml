@@ -72,11 +72,10 @@ jobs:
             "2.11.0|cu126|12.6.3|310 311 312"
             "2.11.0|cu128|12.8.1|310 311 312 313 314"
             "2.11.0|cu130|13.0.3|310 311 312 313 314"
-            # 2.12.0 — cu126 / cu130 / cu132 (no cu128); cu132 new on 13.2.1.
-            # Must mirror build-pytorch.yml.
+            # 2.12.0 — cu126 / cu130 (cu132 deferred; uv has no --torch-backend
+            # value for it yet). Must mirror build-pytorch.yml.
             "2.12.0|cu126|12.6.3|310 311 312 313 314"
             "2.12.0|cu130|13.0.3|310 311 312 313 314"
-            "2.12.0|cu132|13.2.1|310 311 312 313 314"
           )
 
           # Mini format: torch_ver|key|torch_backend|cuda_minor|python_versions
@@ -235,8 +234,9 @@ jobs:
           # the cu128 entries below deliberately stay pinned to 2.11 cu128
           # (which still has Blackwell kernels). Do NOT remap them to cu126 to
           # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
-          # card on a 12.8/12.9 host would get an unusable image. cu132 is the
-          # new 13.2 Blackwell lane.
+          # card on a 12.8/12.9 host would get an unusable image. (cu132 isn't
+          # built yet — uv has no --torch-backend value for it — so there's no
+          # cuda-13.2.x-auto entry; cu130 covers CUDA 13 hosts for now.)
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -244,7 +244,6 @@ jobs:
             "cuda-12.8.1-auto|cu128"
             "cuda-12.9.2-auto|cu128"
             "cuda-13.0.3-auto|cu130"
-            "cuda-13.2.1-auto|cu132"
           )
 
           # Pre-flight: every staging source we plan to promote must
@@ -603,8 +602,9 @@ jobs:
           # the cu128 entries below deliberately stay pinned to 2.11 cu128
           # (which still has Blackwell kernels). Do NOT remap them to cu126 to
           # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
-          # card on a 12.8/12.9 host would get an unusable image. cu132 is the
-          # new 13.2 Blackwell lane.
+          # card on a 12.8/12.9 host would get an unusable image. (cu132 isn't
+          # built yet — uv has no --torch-backend value for it — so there's no
+          # cuda-13.2.x-auto entry; cu130 covers CUDA 13 hosts for now.)
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -612,7 +612,6 @@ jobs:
             "cuda-12.8.1-auto|cu128"
             "cuda-12.9.2-auto|cu128"
             "cuda-13.0.3-auto|cu130"
-            "cuda-13.2.1-auto|cu132"
           )
 
           # Pre-flight: mirror the real promote so missing images
