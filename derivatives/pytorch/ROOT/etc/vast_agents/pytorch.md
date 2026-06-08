@@ -7,9 +7,12 @@ GPU/CUDA, provisioning) applies unchanged.
 **`torch`** and its companions (**torchvision**, **torchcodec**, and **torchaudio**
 on builds from before torchaudio's upstream wind-down) are preinstalled in the
 default venv **`/venv/main`** — already active in login shells, otherwise
-`source /venv/main/bin/activate` (base.md §2). They are built against the CUDA
-runtime bundled in the wheels; the torch version and CUDA backend (cu126 / cu130 /
-cu132) are encoded in the image tag.
+`source /venv/main/bin/activate` (base.md §2). PyTorch wheels bundle their own CUDA
+runtime, so `torch.version.cuda` reflects the **wheel's** backend (cu126 / cu130 /
+cu132), which need not match the base image's system CUDA. On the slim **mini**
+images the two deliberately differ — the wheel rides a minor version below the base
+(minor-version compatibility, e.g. a cu130 build on a CUDA 13.2 base). Both the
+torch version and the backend are encoded in the image tag.
 
 Don't assume a version — confirm what's actually here:
 ```
