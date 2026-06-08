@@ -39,7 +39,7 @@ test_venv() {
     # venv) from installed-but-broken (a real regression — fail), so a bad build
     # can't hide behind the optional path. find_spec checks presence without
     # importing; only a present module that then fails to import is a failure.
-    local ta_status
+    local ta_status ta_rc
     ta_status=$("$py" -c '
 import importlib.util
 if importlib.util.find_spec("torchaudio") is None:
@@ -51,13 +51,24 @@ else:
     except Exception as e:
         print("BROKEN " + type(e).__name__ + ": " + (str(e).splitlines() or [""])[0])
 ' 2>/dev/null)
+    ta_rc=$?
+    # A non-zero exit means the probe itself died (e.g. a segfault importing
+    # torchaudio) — not a clean ImportError we could catch — so there's no
+    # verdict on stdout. Fail loudly rather than falling through to skip.
+    if [[ $ta_rc -ne 0 ]]; then
+        fail_later "${venv_name}-import" "torchaudio probe crashed (exit ${ta_rc}; likely a segfault importing torchaudio)"
+        return
+    fi
     case "$ta_status" in
         "OK "*) ;;
         "BROKEN "*)
             fail_later "${venv_name}-import" "torchaudio installed but import failed: ${ta_status#BROKEN }"
             return ;;
-        *)  # MISSING or no output — genuinely absent; optional, skip this venv
+        MISSING)  # genuinely absent — optional, skip this venv
             echo "  ${label} torchaudio not installed — skipping (optional; absent from torch >= 2.12)"
+            return ;;
+        *)  # exit 0 but no recognized verdict — unexpected; be loud, don't skip
+            fail_later "${venv_name}-import" "unexpected torchaudio probe output: ${ta_status:-<empty>}"
             return ;;
     esac
     local ta_version="${ta_status#OK }"
