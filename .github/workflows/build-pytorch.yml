@@ -173,6 +173,8 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              # Build each arch natively (no QEMU): arm64 on an arm runner.
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
                 --arg key "$key" \
@@ -181,8 +183,9 @@ jobs:
                 --arg torch_backend "$torch_backend" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "cuda_ver": $cuda_ver, "torch_backend": $torch_backend, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "cuda_ver": $cuda_ver, "torch_backend": $torch_backend, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -235,6 +238,7 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
                 --arg key "$key" \
@@ -243,8 +247,9 @@ jobs:
                 --arg cuda_minor "$cuda_minor" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -278,6 +283,7 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               MULTI_BUILD_MATRIX=$(echo "$MULTI_BUILD_MATRIX" | jq -c \
                 --arg key "$key" \
                 --arg primary_torch "$primary_torch" \
@@ -285,8 +291,9 @@ jobs:
                 --arg cuda_minor "$cuda_minor" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -337,7 +344,7 @@ jobs:
   build:
     needs: generate-matrix
     if: ${{ !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -350,9 +357,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -487,7 +491,7 @@ jobs:
   build-mini:
     needs: [generate-matrix]
     if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -499,9 +503,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -615,7 +616,7 @@ jobs:
   build-multi:
     needs: [generate-matrix, merge-mini-manifests]
     if: ${{ needs.generate-matrix.outputs.has-multi == 'true' && !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -627,9 +628,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
