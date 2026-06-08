@@ -144,7 +144,13 @@ ln -s /opt/portal-aio/tunnel_manager/cloudflared /opt/instance-tools/bin/cloudfl
 
 cd /opt
 git clone https://github.com/vast-ai/vast-cli
-wget -O /usr/local/share/ca-certificates/jvastai.crt https://console.vast.ai/static/jvastai_root.cer
+# console.vast.ai occasionally returns a transient 403 (edge/WAF blip) for
+# this static cert; without retries a single bad response aborts the whole
+# build under `set -euo pipefail`. Retry a few times before giving up.
+wget --tries=5 --retry-connrefused --waitretry=5 --timeout=30 \
+    --retry-on-http-error=403,429,500,502,503,504 \
+    -O /usr/local/share/ca-certificates/jvastai.crt \
+    https://console.vast.ai/static/jvastai_root.cer
 update-ca-certificates
 
 # Protect the system python directory when Vast bootstrapping adds jupyter.
