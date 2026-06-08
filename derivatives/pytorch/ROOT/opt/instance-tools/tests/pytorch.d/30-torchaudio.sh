@@ -34,10 +34,13 @@ test_venv() {
     echo ""
     echo "  ${label} ── venv: ${venv_dir}"
 
-    # torchaudio must be importable — it's a required companion
+    # torchaudio is an OPTIONAL companion: upstream sunset it at 2.11, so torch
+    # >= 2.12 venvs ship without it. Treat its absence as a skip for this venv,
+    # not a failure; only count venvs that actually have it as tested.
     local ta_version
     ta_version=$("$py" -c "import torchaudio; print(torchaudio.__version__)" 2>/dev/null) \
-        || { fail_later "${venv_name}-import" "torchaudio not importable in ${venv_dir}"; return; }
+        || { echo "  ${label} torchaudio not installed — skipping (optional; absent from torch >= 2.12)"; return; }
+    TESTED_VENVS=$((TESTED_VENVS + 1))
 
     local cuda_available
     cuda_available=$("$py" -c "import torch; print(torch.cuda.is_available())" 2>/dev/null)
@@ -130,9 +133,13 @@ print(f'  ${label} MelSpectrogram on CPU: ok (shape {tuple(spec.shape)})')
     fi
 }
 
+TESTED_VENVS=0
 for venv_dir in "${TORCH_VENVS[@]}"; do
     test_venv "$venv_dir"
 done
 
+# No torch venv had torchaudio (e.g. a pure torch >= 2.12 image) — skip, don't fail.
+[[ ${TESTED_VENVS} -gt 0 ]] || test_skip "torchaudio not installed in any torch venv (expected for torch >= 2.12)"
+
 report_failures
-test_pass "torchaudio verified across ${#TORCH_VENVS[@]} venv(s)"
+test_pass "torchaudio verified across ${TESTED_VENVS} venv(s)"
