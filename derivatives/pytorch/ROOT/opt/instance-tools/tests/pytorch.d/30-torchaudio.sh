@@ -35,11 +35,32 @@ test_venv() {
     echo "  ${label} ── venv: ${venv_dir}"
 
     # torchaudio is an OPTIONAL companion: upstream sunset it at 2.11, so torch
-    # >= 2.12 venvs ship without it. Treat its absence as a skip for this venv,
-    # not a failure; only count venvs that actually have it as tested.
-    local ta_version
-    ta_version=$("$py" -c "import torchaudio; print(torchaudio.__version__)" 2>/dev/null) \
-        || { echo "  ${label} torchaudio not installed — skipping (optional; absent from torch >= 2.12)"; return; }
+    # >= 2.12 venvs ship without it. Distinguish genuinely-absent (skip this
+    # venv) from installed-but-broken (a real regression — fail), so a bad build
+    # can't hide behind the optional path. find_spec checks presence without
+    # importing; only a present module that then fails to import is a failure.
+    local ta_status
+    ta_status=$("$py" -c '
+import importlib.util
+if importlib.util.find_spec("torchaudio") is None:
+    print("MISSING")
+else:
+    try:
+        import torchaudio
+        print("OK " + torchaudio.__version__)
+    except Exception as e:
+        print("BROKEN " + type(e).__name__ + ": " + (str(e).splitlines() or [""])[0])
+' 2>/dev/null)
+    case "$ta_status" in
+        "OK "*) ;;
+        "BROKEN "*)
+            fail_later "${venv_name}-import" "torchaudio installed but import failed: ${ta_status#BROKEN }"
+            return ;;
+        *)  # MISSING or no output — genuinely absent; optional, skip this venv
+            echo "  ${label} torchaudio not installed — skipping (optional; absent from torch >= 2.12)"
+            return ;;
+    esac
+    local ta_version="${ta_status#OK }"
     TESTED_VENVS=$((TESTED_VENVS + 1))
 
     local cuda_available
@@ -138,8 +159,11 @@ for venv_dir in "${TORCH_VENVS[@]}"; do
     test_venv "$venv_dir"
 done
 
+# Surface real failures (e.g. an installed-but-broken torchaudio) FIRST — must
+# come before the skip check so an all-broken run fails instead of looking skipped.
+report_failures
+
 # No torch venv had torchaudio (e.g. a pure torch >= 2.12 image) — skip, don't fail.
 [[ ${TESTED_VENVS} -gt 0 ]] || test_skip "torchaudio not installed in any torch venv (expected for torch >= 2.12)"
 
-report_failures
 test_pass "torchaudio verified across ${TESTED_VENVS} venv(s)"
