@@ -89,24 +89,23 @@ jobs:
             # 2.8.0
             "2.8.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.8.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64|310 311 312 313"
-            "2.8.0|cu129|12.9.1-cudnn-devel|cu129|linux/amd64|310 311 312 313"
+            "2.8.0|cu129|12.9.2-cudnn-devel|cu129|linux/amd64|310 311 312 313"
             # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
             "2.9.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.9.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.1|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.9.1|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
             # 2.10.0
             "2.10.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.10.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.10.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
             # 2.11.0
             "2.11.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.11.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.12.0 — ships cu126 / cu130 / cu132 (no cu128). cu130 base moves
-            # to 13.0.3 (the 13.0.2 base is no longer built at the new date);
-            # cu132 is the new backend paired with the 13.2.1 base. Both 13.x
-            # builds carry Blackwell kernels; cu126 is the non-Blackwell lane.
-            # All three publish multi-arch cp310-cp314 wheels.
+            "2.11.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            # 2.12.0 — ships cu126 / cu130 / cu132 (no cu128). cu132 is the new
+            # backend paired with the 13.2.1 base; both 13.x builds carry
+            # Blackwell kernels, cu126 is the non-Blackwell lane. All three
+            # publish multi-arch cp310-cp314 wheels.
             "2.12.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.12.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.12.0|cu132|13.2.1-cudnn-devel|cu132|linux/amd64,linux/arm64|310 311 312 313 314"
