@@ -89,19 +89,27 @@ jobs:
             # 2.8.0
             "2.8.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.8.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64|310 311 312 313"
-            "2.8.0|cu129|12.9.1-cudnn-devel|cu129|linux/amd64|310 311 312 313"
+            "2.8.0|cu129|12.9.2-cudnn-devel|cu129|linux/amd64|310 311 312 313"
             # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
             "2.9.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.9.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.1|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.9.1|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
             # 2.10.0
             "2.10.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.10.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.10.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
             # 2.11.0
             "2.11.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
             "2.11.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu130|13.0.2-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.11.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            # 2.12.0 — cu126 (non-Blackwell) + cu130 (Blackwell, on the 13.0.3
+            # base), both multi-arch cp310-cp314. cu132 is deferred: torch 2.12
+            # publishes cu132 wheels, but uv's --torch-backend has no cu132 value
+            # yet (tops out at cu130), so the build can't select it. Re-add
+            # cu132 on the 13.2.1 base once uv gains it, or switch the install to
+            # an explicit --index-url https://download.pytorch.org/whl/cu132.
+            "2.12.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.12.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           # Multi-torch configs: a primary mini pytorch image with
@@ -130,6 +138,11 @@ jobs:
             # 2.11.0 — cu128 multi-arch, cu130 multi-arch
             "2.11.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
             "2.11.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
+            # 2.12.0 — no cu128, so the CUDA-12 mini rides cu126 on the 12.9-mini
+            # base (minor-version compat); the CUDA-13 mini keeps cu130 on the
+            # 13.2-mini base (minor compat within 13.x). Both multi-arch.
+            "2.12.0|cu126-mini|cuda-12.9-mini|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
+            "2.12.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
           )
 
           BUILD_MATRIX="[]"
@@ -160,6 +173,8 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              # Build each arch natively (no QEMU): arm64 on an arm runner.
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
                 --arg key "$key" \
@@ -168,8 +183,9 @@ jobs:
                 --arg torch_backend "$torch_backend" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "cuda_ver": $cuda_ver, "torch_backend": $torch_backend, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "cuda_ver": $cuda_ver, "torch_backend": $torch_backend, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -222,6 +238,7 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
                 --arg key "$key" \
@@ -230,8 +247,9 @@ jobs:
                 --arg cuda_minor "$cuda_minor" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "mini_base_tag": $mini_base_tag, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -265,6 +283,7 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               MULTI_BUILD_MATRIX=$(echo "$MULTI_BUILD_MATRIX" | jq -c \
                 --arg key "$key" \
                 --arg primary_torch "$primary_torch" \
@@ -272,8 +291,9 @@ jobs:
                 --arg cuda_minor "$cuda_minor" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -324,7 +344,7 @@ jobs:
   build:
     needs: generate-matrix
     if: ${{ !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -337,9 +357,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -474,7 +491,7 @@ jobs:
   build-mini:
     needs: [generate-matrix]
     if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -486,9 +503,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -602,7 +616,7 @@ jobs:
   build-multi:
     needs: [generate-matrix, merge-mini-manifests]
     if: ${{ needs.generate-matrix.outputs.has-multi == 'true' && !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -614,9 +628,6 @@ jobs:
 
       - name: Maximize build space
         uses: ./.github/actions/maximize-build-space
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

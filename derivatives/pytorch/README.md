@@ -15,28 +15,29 @@ We provide auto-selecting tags that always point to the most recent PyTorch rele
 | `cuda-12.4.1-auto` | Latest PyTorch for CUDA 12.4.1 |
 | `cuda-12.6.3-auto` | Latest PyTorch for CUDA 12.6.3 |
 | `cuda-12.8.1-auto` | Latest PyTorch for CUDA 12.8.1 |
-| `cuda-12.9.1-auto` | Latest PyTorch for CUDA 12.9.1 |
-| `cuda-13.0.2-auto` | Latest PyTorch for CUDA 13.0.2 |
+| `cuda-12.9.2-auto` | Latest PyTorch for CUDA 12.9.2 |
+| `cuda-13.0.3-auto` | Latest PyTorch for CUDA 13.0.3 |
+| `cuda-13.1.2-auto` | Latest PyTorch for CUDA 13.1.2 (cu130 build) |
+| `cuda-13.2.1-auto` | Latest PyTorch for CUDA 13.2.1 (cu130 build) |
 
 For CUDA 12.4 and newer, images support both AMD64 and ARM64 (Grace) architectures.
 
 Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/pytorch/tags).
 
-## Minor Version Compatibility (MVC) Images
+## Mini Images
 
-Starting with PyTorch 2.9.0, we provide Minor Version Compatibility (MVC) images for broader CUDA driver support. These images:
+Alongside the full `cuda-<patch>` images we publish **mini** variants for broad CUDA-driver coverage in a smaller image. They are built on the slim **mini** CUDA base images (currently `cuda-12.9-mini` for the CUDA 12 line and `cuda-13.2-mini` for the CUDA 13 line), which carry only a curated CUDA runtime subset. PyTorch wheels bundle their own cuBLAS/cuDNN, so nothing is lost for torch workloads while the image stays small.
 
-- Are built on the CUDA 12.1.1 base image
-- Include PyTorch compiled against CUDA 12.6
-- Work with CUDA drivers from 12.1 through 12.6 using NVIDIA's [minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/index.html#minor-version-compatibility) feature
+The build rides NVIDIA's [minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/index.html#minor-version-compatibility): the wheel's CUDA backend sits a minor below the base's CUDA (e.g. a `cu130` build on the `cuda-13.2` base, or `cu126` on `cuda-12.9`), so one image runs across the range of CUDA drivers within that major.
 
-MVC images include `mvc` in the tag (e.g., `2.9.1-cuda-12.1.1-mvc-cu126-py312-22.04`).
+Mini images carry `-mini-` in the tag:
 
-**When to use MVC images:** These images are automatically selected as the default for machines with CUDA drivers >=12.1 and <12.6. They provide compatibility for systems that cannot run the latest CUDA toolkit.
+```
+<torch>-<backend>-cuda-<minor>-mini-py<NN>-<date>
+# e.g. 2.12.0-cu130-cuda-13.2-mini-py312-2026-06-05
+```
 
-**Important:** For best performance and full compatibility, use machines with newer CUDA drivers (12.6+) when possible. MVC images provide broad compatibility, but machines with native CUDA 12.6+ drivers will have optimal performance. Most features work as expected on MVC images, but some advanced CUDA features may require a matching driver version.
-
-**Alternative:** If you prefer, you can use an older PyTorch version that was built for your specific CUDA driver version instead of using MVC images.
+**When to use:** when you want broad driver compatibility and a smaller image. For the full CUDA library set and an exact driver match, use the corresponding full `cuda-<patch>` image (or a `cuda-<patch>-auto` tag) instead.
 
 ## Extending This Image
 

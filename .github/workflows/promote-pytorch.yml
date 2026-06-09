@@ -1,5 +1,5 @@
 # Promote staging PyTorch images to production by retagging (no rebuild)
-# Promotes all torch versions (2.6.0 through 2.11.0) in one run
+# Promotes all torch versions (2.6.0 through 2.12.0) in one run
 # All promotions run sequentially in a single job to ensure ordering
 # Required repository secrets:
 # DOCKERHUB_USERNAME
@@ -59,19 +59,23 @@ jobs:
             # 2.8.0
             "2.8.0|cu126|12.6.3|310 311 312"
             "2.8.0|cu128|12.8.1|310 311 312 313"
-            "2.8.0|cu129|12.9.1|310 311 312 313"
+            "2.8.0|cu129|12.9.2|310 311 312 313"
             # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
             "2.9.1|cu126|12.6.3|310 311 312"
             "2.9.1|cu128|12.8.1|310 311 312 313 314"
-            "2.9.1|cu130|13.0.2|310 311 312 313 314"
+            "2.9.1|cu130|13.0.3|310 311 312 313 314"
             # 2.10.0
             "2.10.0|cu126|12.6.3|310 311 312"
             "2.10.0|cu128|12.8.1|310 311 312 313 314"
-            "2.10.0|cu130|13.0.2|310 311 312 313 314"
+            "2.10.0|cu130|13.0.3|310 311 312 313 314"
             # 2.11.0
             "2.11.0|cu126|12.6.3|310 311 312"
             "2.11.0|cu128|12.8.1|310 311 312 313 314"
-            "2.11.0|cu130|13.0.2|310 311 312 313 314"
+            "2.11.0|cu130|13.0.3|310 311 312 313 314"
+            # 2.12.0 — cu126 / cu130 (cu132 deferred; uv has no --torch-backend
+            # value for it yet). Must mirror build-pytorch.yml.
+            "2.12.0|cu126|12.6.3|310 311 312 313 314"
+            "2.12.0|cu130|13.0.3|310 311 312 313 314"
           )
 
           # Mini format: torch_ver|key|torch_backend|cuda_minor|python_versions
@@ -85,6 +89,9 @@ jobs:
             "2.10.0|cu130-mini|cu130|13.2|310 311 312 313 314"
             "2.11.0|cu128-mini|cu128|12.9|310 311 312 313 314"
             "2.11.0|cu130-mini|cu130|13.2|310 311 312 313 314"
+            # 2.12.0 — CUDA-12 mini rides cu126 (no cu128); CUDA-13 mini keeps cu130.
+            "2.12.0|cu126-mini|cu126|12.9|310 311 312 313 314"
+            "2.12.0|cu130-mini|cu130|13.2|310 311 312 313 314"
           )
 
           CONFIGS_JSON="[]"
@@ -196,8 +203,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -221,13 +228,29 @@ jobs:
           DEFAULT_PYTHON="312"
           mkdir -p built-tags
 
+          # Each auto tag points to the LATEST torch version carrying that
+          # backend (resolved from ALL_CONFIGS, full configs only — minis are
+          # never auto-tag targets). NOTE on torch 2.12: it ships no cu128, so
+          # the cu128 entries below deliberately stay pinned to 2.11 cu128
+          # (which still has Blackwell kernels). Do NOT remap them to cu126 to
+          # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
+          # card on a 12.8/12.9 host would get an unusable image.
+          #
+          # cu132 isn't built yet (uv has no --torch-backend value for it), so
+          # there is no native 13.1/13.2 image. The cuda-13.1.2-auto and
+          # cuda-13.2.1-auto entries alias those hosts onto cu130 — it runs on
+          # any CUDA 13.x driver via minor-version compatibility. Without them
+          # the platform falls back to the 13.2 mini for 13.1/13.2 hosts, which
+          # we don't want. When cu132 ships, point cuda-13.2.1-auto at cu132.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
             "cuda-12.6.3-auto|cu126"
             "cuda-12.8.1-auto|cu128"
-            "cuda-12.9.1-auto|cu128"
-            "cuda-13.0.2-auto|cu130"
+            "cuda-12.9.2-auto|cu128"
+            "cuda-13.0.3-auto|cu130"
+            "cuda-13.1.2-auto|cu130"
+            "cuda-13.2.1-auto|cu130"
           )
 
           # Pre-flight: every staging source we plan to promote must
@@ -241,7 +264,7 @@ jobs:
             python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
             for py_tag in ${python_versions}; do
               SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -258,7 +281,7 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -274,7 +297,7 @@ jobs:
               python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -299,7 +322,7 @@ jobs:
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
             AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
               AUTO_TARGET_PRE[$auto_tag]="${NAMESPACE_PROD}/pytorch@${digest}"
               echo "Captured existing auto tag: ${auto_tag} @ ${digest}"
             else
@@ -328,20 +351,16 @@ jobs:
               SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
               DATED_TAG="${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
 
-              EXTRA_TAGS=""
+              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
+              crane copy "${SOURCE}" "${DATED_TAG}"
+              echo "$DATED_TAG" >> built-tags/tags.txt
+
               if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
                 DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${torch_ver}-cuda-${cuda_short}-24.04-${STAGING_DATE}"
-                EXTRA_TAGS="--tag ${DATED_ALIAS}"
+                echo "Aliasing:  ${SOURCE} -> ${DATED_ALIAS}"
+                crane copy "${SOURCE}" "${DATED_ALIAS}"
                 echo "$DATED_ALIAS" >> built-tags/tags.txt
               fi
-
-              echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
-              docker buildx imagetools create \
-                --tag "${DATED_TAG}" \
-                ${EXTRA_TAGS} \
-                "${SOURCE}"
-
-              echo "$DATED_TAG" >> built-tags/tags.txt
             done
           done
 
@@ -369,9 +388,7 @@ jobs:
                 DATED_TAG="${NAMESPACE_PROD}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
 
                 echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
-                docker buildx imagetools create \
-                  --tag "${DATED_TAG}" \
-                  "${SOURCE}"
+                crane copy "${SOURCE}" "${DATED_TAG}"
 
                 echo "$DATED_TAG" >> built-tags/tags.txt
               done
@@ -398,21 +415,17 @@ jobs:
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
                 DATED_TAG="${NAMESPACE_PROD}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
 
-                EXTRA_TAGS=""
+                echo "Promoting multi: ${SOURCE} -> ${DATED_TAG}"
+                crane copy "${SOURCE}" "${DATED_TAG}"
+                echo "$DATED_TAG" >> built-tags/tags.txt
+
                 if [[ "$py_tag" == "$DEFAULT_PYTHON" ]]; then
                   DATED_ALIAS="${NAMESPACE_PROD}/pytorch:${key}-${STAGING_DATE}"
-                  EXTRA_TAGS="--tag ${DATED_ALIAS}"
                   DEFAULT_DATED="$DATED_TAG"
+                  echo "Aliasing multi: ${SOURCE} -> ${DATED_ALIAS}"
+                  crane copy "${SOURCE}" "${DATED_ALIAS}"
                   echo "$DATED_ALIAS" >> built-tags/tags.txt
                 fi
-
-                echo "Promoting multi: ${SOURCE} -> ${DATED_TAG}"
-                docker buildx imagetools create \
-                  --tag "${DATED_TAG}" \
-                  ${EXTRA_TAGS} \
-                  "${SOURCE}"
-
-                echo "$DATED_TAG" >> built-tags/tags.txt
               done
 
               # Repoint the no-date latest alias at the default-python
@@ -421,26 +434,30 @@ jobs:
               if [[ -n "$DEFAULT_DATED" ]]; then
                 LATEST_ALIAS="${NAMESPACE_PROD}/pytorch:${key}"
                 echo "Updating latest alias: ${LATEST_ALIAS} -> ${DEFAULT_DATED}"
-                docker buildx imagetools create --tag "${LATEST_ALIAS}" "${DEFAULT_DATED}"
+                crane copy "${DEFAULT_DATED}" "${LATEST_ALIAS}"
                 echo "$LATEST_ALIAS" >> built-tags/tags.txt
               fi
             done
           fi
 
-          # Auto convenience tags MUST be the most recently pushed tags.
-          # Each auto-tag points to the LATEST torch version that supports
-          # the corresponding backend (determined from the unfiltered
-          # ALL_CONFIGS). Promotions partial by filter must still re-push
-          # every auto tag so ordering stays correct.
-          #
-          # Two-phase dance: Phase A points each auto tag at a per-tag
-          # anchor whose digest differs from the auto tag's current and
-          # intended content; Phase B points it back at its real target.
-          # Both phases carry real manifest changes so every auto tag
-          # receives two fresh pushes, advancing the registry tag order.
+          # Auto convenience tags MUST be the most recently pushed tag for their
+          # CUDA version (the Vast backend resolves a host to the newest matching
+          # cuda-X.X.X tag). Auto tags are pushed last, after every dated tag, so:
+          #   - changed/new target -> a single copy is a fresh push: correct AND
+          #     newest. No hop, no transient wrong content.
+          #   - unchanged target -> a plain copy is a no-op (won't advance tag
+          #     order), so bump with a two-phase hop whose anchor is the py310
+          #     sibling of the SAME target (same CUDA + torch version, only the
+          #     python differs, so the digest differs and the push is real). A
+          #     consumer reading the tag mid-hop, or if the run dies between the
+          #     phases, sees py310 of the right image -- never a wrong-CUDA one.
 
           echo ""
           echo "=== Auto-tag dance ==="
+
+          # py310 is always built and differs from DEFAULT_PYTHON (312); it is the
+          # safe same-image anchor used for the unchanged-target bump below.
+          ANCHOR_PYTHON="310"
 
           # Build the final-target map per auto tag. For backends whose
           # latest torch IS being promoted this run, target = new dated
@@ -463,59 +480,47 @@ jobs:
             fi
           done
 
-          # Resolve each final target to its digest so we can pick
-          # anchors whose content actually differs.
-          declare -A FINAL_DIGEST
-          for auto_tag in "${!AUTO_TARGET_FINAL[@]}"; do
-            ref="${AUTO_TARGET_FINAL[$auto_tag]}"
-            if d=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
-              FINAL_DIGEST[$auto_tag]="$d"
-            else
-              echo "WARN: could not resolve digest for ${ref}; ${auto_tag} will be skipped"
-            fi
-          done
-
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
             TARGET_REF="${AUTO_TARGET_FINAL[$auto_tag]:-}"
             [[ -z "$TARGET_REF" ]] && continue
-            target_digest="${FINAL_DIGEST[$auto_tag]:-}"
-            [[ -z "$target_digest" ]] && continue
+            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
 
+            target_digest=$(crane digest "$TARGET_REF" 2>/dev/null) \
+              || { echo "WARN: cannot resolve ${TARGET_REF}; skipping ${auto_tag}"; continue; }
             current_ref="${AUTO_TARGET_PRE[$auto_tag]:-}"
             current_digest=""
             [[ -n "$current_ref" ]] && current_digest="${current_ref##*@}"
 
-            # Pick an anchor from another AUTO_TAG_MAP entry whose
-            # final-target digest differs from both current and final.
-            anchor_ref=""
-            for other in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r other_tag _ <<< "$other"
-              [[ "$other_tag" == "$auto_tag" ]] && continue
-              cand_digest="${FINAL_DIGEST[$other_tag]:-}"
-              [[ -z "$cand_digest" ]] && continue
-              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
-                anchor_ref="${AUTO_TARGET_FINAL[$other_tag]}"
-                break
-              fi
-            done
-
-            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            if [[ -z "$anchor_ref" ]]; then
-              # No distinct anchor (e.g. fresh namespace, only one
-              # auto tag resolvable). Fall back to a direct update so
-              # correctness does not depend on the dance being
-              # possible — only the tag-order optimisation is lost.
-              echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; falling back to direct update (tag order will not advance)"
-              docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+            # Changed or new target: a single copy is itself a fresh push, so it
+            # lands correct AND newest (auto tags are pushed last). No anchor hop.
+            if [[ "$current_digest" != "$target_digest" ]]; then
+              echo "  Update:  ${AUTO_TAG_REF} -> ${TARGET_REF}"
+              crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
               echo "$AUTO_TAG_REF" >> built-tags/tags.txt
               continue
             fi
 
-            echo "  Phase A: ${AUTO_TAG_REF} -> anchor ${anchor_ref}"
-            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${anchor_ref}"
+            # Unchanged target: a plain copy is a no-op, so bump via the py310
+            # sibling of the same target (safe: same CUDA + torch version).
+            anchor_ref=""
+            if [[ "$TARGET_REF" == *"-py${DEFAULT_PYTHON}-24.04-"* ]]; then
+              cand="${TARGET_REF/-py${DEFAULT_PYTHON}-/-py${ANCHOR_PYTHON}-}"
+              crane digest "$cand" >/dev/null 2>&1 && anchor_ref="$cand"
+            fi
+            if [[ -z "$anchor_ref" ]]; then
+              # Out-of-scope target (a digest ref, no sibling to derive): it is
+              # not threatened by a partial promote of other backends, so leave
+              # it where it is rather than risk an unsafe anchor.
+              echo "  Unchanged, no sibling anchor: ${AUTO_TAG_REF} left as-is"
+              echo "$AUTO_TAG_REF" >> built-tags/tags.txt
+              continue
+            fi
+
+            echo "  Phase A: ${AUTO_TAG_REF} -> ${anchor_ref}"
+            crane copy "${anchor_ref}" "${AUTO_TAG_REF}"
             echo "  Phase B: ${AUTO_TAG_REF} -> ${TARGET_REF}"
-            docker buildx imagetools create --tag "${AUTO_TAG_REF}" "${TARGET_REF}"
+            crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
             echo "$AUTO_TAG_REF" >> built-tags/tags.txt
           done
 
@@ -563,8 +568,8 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -590,13 +595,29 @@ jobs:
           echo "Staging date: $STAGING_DATE"
           echo ""
 
+          # Each auto tag points to the LATEST torch version carrying that
+          # backend (resolved from ALL_CONFIGS, full configs only — minis are
+          # never auto-tag targets). NOTE on torch 2.12: it ships no cu128, so
+          # the cu128 entries below deliberately stay pinned to 2.11 cu128
+          # (which still has Blackwell kernels). Do NOT remap them to cu126 to
+          # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
+          # card on a 12.8/12.9 host would get an unusable image.
+          #
+          # cu132 isn't built yet (uv has no --torch-backend value for it), so
+          # there is no native 13.1/13.2 image. The cuda-13.1.2-auto and
+          # cuda-13.2.1-auto entries alias those hosts onto cu130 — it runs on
+          # any CUDA 13.x driver via minor-version compatibility. Without them
+          # the platform falls back to the 13.2 mini for 13.1/13.2 hosts, which
+          # we don't want. When cu132 ships, point cuda-13.2.1-auto at cu132.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
             "cuda-12.6.3-auto|cu126"
             "cuda-12.8.1-auto|cu128"
-            "cuda-12.9.1-auto|cu128"
-            "cuda-13.0.2-auto|cu130"
+            "cuda-12.9.2-auto|cu128"
+            "cuda-13.0.3-auto|cu130"
+            "cuda-13.1.2-auto|cu130"
+            "cuda-13.2.1-auto|cu130"
           )
 
           # Pre-flight: mirror the real promote so missing images
@@ -610,7 +631,7 @@ jobs:
             python_versions=$(echo "$CONFIGS" | jq -r ".[$i].python_versions")
             for py_tag in ${python_versions}; do
               SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-cuda-${cuda_short}-py${py_tag}-24.04-${STAGING_DATE}"
-              if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+              if crane digest "$SOURCE" >/dev/null 2>&1; then
                 echo "  ok: $SOURCE"
               else
                 echo "  MISSING: $SOURCE"
@@ -627,7 +648,7 @@ jobs:
               python_versions=$(echo "$MINI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${torch_ver}-${torch_backend}-cuda-${cuda_minor}-mini-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -643,7 +664,7 @@ jobs:
               python_versions=$(echo "$MULTI_CONFIGS" | jq -r ".[$i].python_versions")
               for py_tag in ${python_versions}; do
                 SOURCE="${NAMESPACE_STAGING}/pytorch:${key}-py${py_tag}-${STAGING_DATE}"
-                if docker buildx imagetools inspect "$SOURCE" --format '{{.Manifest.Digest}}' >/dev/null 2>&1; then
+                if crane digest "$SOURCE" >/dev/null 2>&1; then
                   echo "  ok: $SOURCE"
                 else
                   echo "  MISSING: $SOURCE"
@@ -733,12 +754,15 @@ jobs:
           echo " backend, determined from the unfiltered ALL_CONFIGS.)"
           echo ""
 
+          # Same safe anchor python the real promote uses (see promote job).
+          ANCHOR_PYTHON="310"
+
           # Capture current digests of every existing auto tag.
           declare -A AUTO_TARGET_PRE
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
             AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            if digest=$(docker buildx imagetools inspect "$AUTO_TAG_REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
               AUTO_TARGET_PRE[$auto_tag]="${NAMESPACE_PROD}/pytorch@${digest}"
             fi
           done
@@ -776,7 +800,7 @@ jobs:
               '[.[] | select(.key == $k and .torch_version == $v)] | length')
             if [[ "$in_scope" -gt 0 ]]; then
               staging_ref="${NAMESPACE_STAGING}/pytorch:${bi_ver}-cuda-${bi_cuda}-py${DEFAULT_PYTHON}-24.04-${STAGING_DATE}"
-              if d=$(docker buildx imagetools inspect "$staging_ref" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+              if d=$(crane digest "$staging_ref" 2>/dev/null); then
                 FINAL_DIGEST[$auto_tag]="$d"
               else
                 echo "WARN: could not resolve staging source ${staging_ref}"
@@ -814,30 +838,27 @@ jobs:
             echo "  Final digest:   ${target_digest:-<unresolved>}"
 
             if [[ -z "$target_digest" ]]; then
-              echo "  Phase A/B:     SKIP (final target digest not resolvable)"
+              echo "  Plan:           SKIP (final target digest not resolvable)"
               echo ""
               continue
             fi
 
-            anchor_ref=""
-            anchor_digest=""
-            for other in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r other_tag _ <<< "$other"
-              [[ "$other_tag" == "$auto_tag" ]] && continue
-              cand_digest="${FINAL_DIGEST[$other_tag]:-}"
-              [[ -z "$cand_digest" ]] && continue
-              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
-                anchor_ref="${AUTO_TARGET_FINAL[$other_tag]}"
-                anchor_digest="$cand_digest"
-                break
-              fi
-            done
+            # Changed or new target -> single copy (fresh push, correct + newest).
+            if [[ "$current_digest" != "$target_digest" ]]; then
+              echo "  Plan:           UPDATE -> ${TARGET_REF} (single copy)"
+              echo ""
+              continue
+            fi
 
+            # Unchanged target -> two-phase bump anchored at the py310 sibling
+            # of the same target (same CUDA + torch version, never wrong-CUDA).
+            anchor_ref=""
+            [[ "$TARGET_REF" == *"-py${DEFAULT_PYTHON}-24.04-"* ]] \
+              && anchor_ref="${TARGET_REF/-py${DEFAULT_PYTHON}-/-py${ANCHOR_PYTHON}-}"
             if [[ -z "$anchor_ref" ]]; then
-              echo "  Phase A/B:     SKIP (no distinct anchor available)"
+              echo "  Plan:           UNCHANGED, no sibling anchor -> left as-is"
             else
-              echo "  Phase A anchor: ${anchor_ref}"
-              echo "  Phase A digest: ${anchor_digest}"
+              echo "  Plan:           UNCHANGED -> bump via py310 sibling"
               echo "  Phase A:        ${AUTO_TAG_REF} -> ${anchor_ref}"
               echo "  Phase B:        ${AUTO_TAG_REF} -> ${TARGET_REF}"
             fi
