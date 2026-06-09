@@ -440,20 +440,24 @@ jobs:
             done
           fi
 
-          # Auto convenience tags MUST be the most recently pushed tags.
-          # Each auto-tag points to the LATEST torch version that supports
-          # the corresponding backend (determined from the unfiltered
-          # ALL_CONFIGS). Promotions partial by filter must still re-push
-          # every auto tag so ordering stays correct.
-          #
-          # Two-phase dance: Phase A points each auto tag at a per-tag
-          # anchor whose digest differs from the auto tag's current and
-          # intended content; Phase B points it back at its real target.
-          # Both phases carry real manifest changes so every auto tag
-          # receives two fresh pushes, advancing the registry tag order.
+          # Auto convenience tags MUST be the most recently pushed tag for their
+          # CUDA version (the Vast backend resolves a host to the newest matching
+          # cuda-X.X.X tag). Auto tags are pushed last, after every dated tag, so:
+          #   - changed/new target -> a single copy is a fresh push: correct AND
+          #     newest. No hop, no transient wrong content.
+          #   - unchanged target -> a plain copy is a no-op (won't advance tag
+          #     order), so bump with a two-phase hop whose anchor is the py310
+          #     sibling of the SAME target (same CUDA + torch version, only the
+          #     python differs, so the digest differs and the push is real). A
+          #     consumer reading the tag mid-hop, or if the run dies between the
+          #     phases, sees py310 of the right image -- never a wrong-CUDA one.
 
           echo ""
           echo "=== Auto-tag dance ==="
+
+          # py310 is always built and differs from DEFAULT_PYTHON (312); it is the
+          # safe same-image anchor used for the unchanged-target bump below.
+          ANCHOR_PYTHON="310"
 
           # Build the final-target map per auto tag. For backends whose
           # latest torch IS being promoted this run, target = new dated
@@ -476,56 +480,44 @@ jobs:
             fi
           done
 
-          # Resolve each final target to its digest so we can pick
-          # anchors whose content actually differs.
-          declare -A FINAL_DIGEST
-          for auto_tag in "${!AUTO_TARGET_FINAL[@]}"; do
-            ref="${AUTO_TARGET_FINAL[$auto_tag]}"
-            if d=$(crane digest "$ref" 2>/dev/null); then
-              FINAL_DIGEST[$auto_tag]="$d"
-            else
-              echo "WARN: could not resolve digest for ${ref}; ${auto_tag} will be skipped"
-            fi
-          done
-
           for entry in "${AUTO_TAG_MAP[@]}"; do
             IFS='|' read -r auto_tag backend <<< "$entry"
             TARGET_REF="${AUTO_TARGET_FINAL[$auto_tag]:-}"
             [[ -z "$TARGET_REF" ]] && continue
-            target_digest="${FINAL_DIGEST[$auto_tag]:-}"
-            [[ -z "$target_digest" ]] && continue
+            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
 
+            target_digest=$(crane digest "$TARGET_REF" 2>/dev/null) \
+              || { echo "WARN: cannot resolve ${TARGET_REF}; skipping ${auto_tag}"; continue; }
             current_ref="${AUTO_TARGET_PRE[$auto_tag]:-}"
             current_digest=""
             [[ -n "$current_ref" ]] && current_digest="${current_ref##*@}"
 
-            # Pick an anchor from another AUTO_TAG_MAP entry whose
-            # final-target digest differs from both current and final.
-            anchor_ref=""
-            for other in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r other_tag _ <<< "$other"
-              [[ "$other_tag" == "$auto_tag" ]] && continue
-              cand_digest="${FINAL_DIGEST[$other_tag]:-}"
-              [[ -z "$cand_digest" ]] && continue
-              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
-                anchor_ref="${AUTO_TARGET_FINAL[$other_tag]}"
-                break
-              fi
-            done
-
-            AUTO_TAG_REF="${NAMESPACE_PROD}/pytorch:${auto_tag}"
-            if [[ -z "$anchor_ref" ]]; then
-              # No distinct anchor (e.g. fresh namespace, only one
-              # auto tag resolvable). Fall back to a direct update so
-              # correctness does not depend on the dance being
-              # possible — only the tag-order optimisation is lost.
-              echo "WARN: no distinct anchor for ${AUTO_TAG_REF}; falling back to direct update (tag order will not advance)"
+            # Changed or new target: a single copy is itself a fresh push, so it
+            # lands correct AND newest (auto tags are pushed last). No anchor hop.
+            if [[ "$current_digest" != "$target_digest" ]]; then
+              echo "  Update:  ${AUTO_TAG_REF} -> ${TARGET_REF}"
               crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
               echo "$AUTO_TAG_REF" >> built-tags/tags.txt
               continue
             fi
 
-            echo "  Phase A: ${AUTO_TAG_REF} -> anchor ${anchor_ref}"
+            # Unchanged target: a plain copy is a no-op, so bump via the py310
+            # sibling of the same target (safe: same CUDA + torch version).
+            anchor_ref=""
+            if [[ "$TARGET_REF" == *"-py${DEFAULT_PYTHON}-24.04-"* ]]; then
+              cand="${TARGET_REF/-py${DEFAULT_PYTHON}-/-py${ANCHOR_PYTHON}-}"
+              crane digest "$cand" >/dev/null 2>&1 && anchor_ref="$cand"
+            fi
+            if [[ -z "$anchor_ref" ]]; then
+              # Out-of-scope target (a digest ref, no sibling to derive): it is
+              # not threatened by a partial promote of other backends, so leave
+              # it where it is rather than risk an unsafe anchor.
+              echo "  Unchanged, no sibling anchor: ${AUTO_TAG_REF} left as-is"
+              echo "$AUTO_TAG_REF" >> built-tags/tags.txt
+              continue
+            fi
+
+            echo "  Phase A: ${AUTO_TAG_REF} -> ${anchor_ref}"
             crane copy "${anchor_ref}" "${AUTO_TAG_REF}"
             echo "  Phase B: ${AUTO_TAG_REF} -> ${TARGET_REF}"
             crane copy "${TARGET_REF}" "${AUTO_TAG_REF}"
@@ -762,6 +754,9 @@ jobs:
           echo " backend, determined from the unfiltered ALL_CONFIGS.)"
           echo ""
 
+          # Same safe anchor python the real promote uses (see promote job).
+          ANCHOR_PYTHON="310"
+
           # Capture current digests of every existing auto tag.
           declare -A AUTO_TARGET_PRE
           for entry in "${AUTO_TAG_MAP[@]}"; do
@@ -843,30 +838,27 @@ jobs:
             echo "  Final digest:   ${target_digest:-<unresolved>}"
 
             if [[ -z "$target_digest" ]]; then
-              echo "  Phase A/B:     SKIP (final target digest not resolvable)"
+              echo "  Plan:           SKIP (final target digest not resolvable)"
               echo ""
               continue
             fi
 
-            anchor_ref=""
-            anchor_digest=""
-            for other in "${AUTO_TAG_MAP[@]}"; do
-              IFS='|' read -r other_tag _ <<< "$other"
-              [[ "$other_tag" == "$auto_tag" ]] && continue
-              cand_digest="${FINAL_DIGEST[$other_tag]:-}"
-              [[ -z "$cand_digest" ]] && continue
-              if [[ "$cand_digest" != "$current_digest" && "$cand_digest" != "$target_digest" ]]; then
-                anchor_ref="${AUTO_TARGET_FINAL[$other_tag]}"
-                anchor_digest="$cand_digest"
-                break
-              fi
-            done
+            # Changed or new target -> single copy (fresh push, correct + newest).
+            if [[ "$current_digest" != "$target_digest" ]]; then
+              echo "  Plan:           UPDATE -> ${TARGET_REF} (single copy)"
+              echo ""
+              continue
+            fi
 
+            # Unchanged target -> two-phase bump anchored at the py310 sibling
+            # of the same target (same CUDA + torch version, never wrong-CUDA).
+            anchor_ref=""
+            [[ "$TARGET_REF" == *"-py${DEFAULT_PYTHON}-24.04-"* ]] \
+              && anchor_ref="${TARGET_REF/-py${DEFAULT_PYTHON}-/-py${ANCHOR_PYTHON}-}"
             if [[ -z "$anchor_ref" ]]; then
-              echo "  Phase A/B:     SKIP (no distinct anchor available)"
+              echo "  Plan:           UNCHANGED, no sibling anchor -> left as-is"
             else
-              echo "  Phase A anchor: ${anchor_ref}"
-              echo "  Phase A digest: ${anchor_digest}"
+              echo "  Plan:           UNCHANGED -> bump via py310 sibling"
               echo "  Phase A:        ${AUTO_TAG_REF} -> ${anchor_ref}"
               echo "  Phase B:        ${AUTO_TAG_REF} -> ${TARGET_REF}"
             fi
