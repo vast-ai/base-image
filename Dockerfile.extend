@@ -20,8 +20,5 @@ COPY ./ROOT /
 # Update the portal if present
 COPY portal-aio /opt/portal-aio
 
-# Add sox for torchaudio/torchcodec support
-RUN apt-get update && apt-get install -y --no-install-recommends sox && rm -rf /var/lib/apt/lists/*
-
 # Refresh environment hash to reflect any changes
 RUN env-hash > /.env_hash

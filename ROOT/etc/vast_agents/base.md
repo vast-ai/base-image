@@ -160,14 +160,18 @@ Each entry has `container_port`, `public_port`, and `in_use` (plus the occupying
   number to it. Your app binds inside the container to `container_port`; the public
   side is `public_port` (= `VAST_TCP_PORT_<container_port>`). These can go behind
   the Caddy auth edge (§7).
-- **Self-mapped** (`container_port` > 65535, requested as a port `> 70000`): the
-  engine allocates a random valid external port and forwards it **1:1 to the same
-  number inside the container** — so the bind port *equals* the public port, letting
-  the app advertise its own external address. The manifest marks these
-  `self_mapped: true` and gives the `bind_port` to use (= `public_port`). **Bind your
-  app to `bind_port`, not to the >65535 `container_port`** (that number is just the
-  request token and can't be bound). These are a **direct TCP forward — not behind
-  Caddy/token auth**, so add your own auth if the app needs protecting.
+- **Self-mapped** (`container_port` > 65535 — a port requested `> 70000`, like
+  syncthing's default `72299`): usable, but the > 65535 number is only a *request
+  token*, not bindable. The engine forwards a random port **1:1**, so it is the **same
+  number inside and out** — read it from **`$VAST_TCP_PORT_<container_port>`** (or
+  `$VAST_UDP_PORT_<container_port>` for UDP), bind your app to that, and it's reachable
+  at `$PUBLIC_IPADDR:$VAST_TCP_PORT_<container_port>` (the manifest also gives it as
+  `bind_port`). **Direct forward — no Caddy, no token auth** (add your own), but serves
+  **any protocol, HTTP included**. Example: syncthing binds `tcp://0.0.0.0:${VAST_TCP_PORT_72299}`.
+
+**Choosing:** token-authed HTTP → a **Normal** port behind Caddy (§7). Raw TCP/UDP, an
+app that advertises its own address, self-authed HTTP, or no free normal port →
+**self-mapped**. Need both? Request some of each at creation.
 
 ## 7. Expose your own app (run it as a managed service)
 
@@ -175,6 +179,14 @@ Each entry has `container_port`, `public_port`, and `in_use` (plus the occupying
 `python app.py &` dies when your shell exits, won't restart on crash, and its logs
 never reach the portal/Vast. The instance's own services follow one pattern; yours
 should too. It's two files plus a Caddy entry.
+
+**Wiring a well-known app (ComfyUI, etc.)?** Don't reverse-engineer it — the base-image
+repo (https://github.com/vast-ai/base-image) ships derivative images that already run
+these behind the portal: PyTorch apps under `derivatives/pytorch/derivatives/<app>`,
+others under `derivatives/<app>`, non-base apps under `external/<app>`. Each is a working
+template for the supervisor script + `portal.yaml` entry — copy its pattern. Ready-made
+**provisioning manifests** (§10) live in `provisioning/` (generic) and per app, e.g.
+`derivatives/pytorch/derivatives/comfyui/provisioning/`.
 
 **Step 1 — wrapper script** `/opt/supervisor-scripts/<name>.sh`. Source the shared
 utils (env + logging + the portal skip-guard) and run your app **in the
@@ -210,10 +222,10 @@ Then load it: `supervisorctl reread && supervisorctl update` (later:
 **Step 3 — expose it externally.** Pick a **free** open port (`in_use: false`, §6 —
 don't reuse one a service holds).
 
-*If the only free port is `self_mapped` (§6):* there's no Caddy path — bind your app
-directly to its `bind_port` (the script's `--port`), and it's reachable at
-`$PUBLIC_IPADDR:<bind_port>` with **no token auth** (so enforce your own). Skip the
-portal.yaml step below.
+*If the only free port is `self_mapped` (§6):* no Caddy path — bind your app to its
+`bind_port` (= `$VAST_TCP_PORT_<container_port>`, the script's `--port`); it's reachable
+at `$PUBLIC_IPADDR:$VAST_TCP_PORT_<container_port>` with **no token auth** (enforce your
+own). Skip the portal.yaml step below.
 
 *Otherwise (a normal free port), put it behind the Caddy auth edge:* add an entry to
 `/etc/portal.yaml`; the label must match the `exit_portal.sh` term above. Caddy only
@@ -402,5 +414,7 @@ See `vastai --help` for the full command set.
 - Adding supervisor services (wrapper-script conventions): `/opt/supervisor-scripts/README.md`
 - Portal architecture, tunnels, auth, full API: `/opt/portal-aio/README.md`
 - Live REST schema: `http://localhost:11111/openapi.json`
+- Reference images for running known apps (ComfyUI, etc.) behind the portal:
+  https://github.com/vast-ai/base-image (layout and use in §7)
 - Vast.ai platform docs: https://vast.ai/docs
 
