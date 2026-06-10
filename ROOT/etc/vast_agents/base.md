@@ -222,6 +222,11 @@ Then load it: `supervisorctl reread && supervisorctl update` (later:
 **Step 3 — expose it externally.** Pick a **free** open port (`in_use: false`, §6 —
 don't reuse one a service holds).
 
+**For anything internet-facing, default to the authed Caddy edge** (below): the user
+still reaches it with their token (§5), whereas an open port is reachable by *anyone*
+with the URL. A normal port bound directly with **no** `/etc/portal.yaml` entry works
+but is **unauthenticated** — only do that when open public access is explicitly wanted.
+
 *If the only free port is `self_mapped` (§6):* no Caddy path — bind your app to its
 `bind_port` (= `$VAST_TCP_PORT_<container_port>`, the script's `--port`); it's reachable
 at `$PUBLIC_IPADDR:$VAST_TCP_PORT_<container_port>` with **no token auth** (enforce your
