@@ -111,14 +111,17 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              # Native runner per arch — no QEMU. arm64 builds on arm hardware.
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
                 --arg key "$key" \
                 --arg cuda_short "$cuda_short" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "cuda_short": $cuda_short, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -144,6 +147,8 @@ jobs:
             IFS=',' read -ra ARCH_LIST <<< "$arches"
             for arch in "${ARCH_LIST[@]}"; do
               arch_suffix="${arch#linux/}"
+              # Native runner per arch — no QEMU. arm64 builds on arm hardware.
+              [[ "$arch_suffix" == "arm64" ]] && runs_on="ubuntu-24.04-arm" || runs_on="ubuntu-latest"
               MINI_BUILD_MATRIX=$(echo "$MINI_BUILD_MATRIX" | jq -c \
                 --arg torch_ver "$torch_ver" \
                 --arg key "$key" \
@@ -151,8 +156,9 @@ jobs:
                 --arg cuda_minor "$cuda_minor" \
                 --arg arch "$arch" \
                 --arg arch_suffix "$arch_suffix" \
+                --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"torch_version": $torch_ver, "config_key": $key, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "python_versions": $python_versions}]')
+                '. + [{"torch_version": $torch_ver, "config_key": $key, "torch_backend": $torch_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
             done
           done
 
@@ -190,7 +196,7 @@ jobs:
   extend:
     needs: generate-matrix
     if: ${{ !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -200,9 +206,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -329,7 +332,7 @@ jobs:
   extend-mini:
     needs: [generate-matrix]
     if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
@@ -338,9 +341,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
