@@ -11,8 +11,12 @@ fi
 export MODEL_NAME="${OLLAMA_MODEL:-$MODEL_NAME}"
 export OLLAMA_MODEL="$MODEL_NAME"
 
-# Bind to internal port (Caddy proxies external 11434 -> internal 21434)
-export OLLAMA_HOST=${OLLAMA_HOST:-0.0.0.0:21434}
+# Bind the internal port to loopback ONLY. External access is via the authenticated
+# Caddy edge, which proxies external 11434 -> internal 21434 over localhost.
+# Do NOT default to 0.0.0.0: the upstream ollama/ollama image sets `EXPOSE 11434`
+# (which a child image cannot remove), so a 0.0.0.0 bind leaves Ollama reachable
+# unauthenticated on any directly-forwarded port, bypassing Caddy token auth.
+export OLLAMA_HOST=${OLLAMA_HOST:-127.0.0.1:21434}
 export OLLAMA_PORT=${OLLAMA_HOST##*:}
 
 # Model UI connects to the Ollama API
