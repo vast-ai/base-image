@@ -13,9 +13,11 @@ export OLLAMA_MODEL="$MODEL_NAME"
 
 # Bind the internal port to loopback ONLY. External access is via the authenticated
 # Caddy edge, which proxies external 11434 -> internal 21434 over localhost.
-# Do NOT default to 0.0.0.0: the upstream ollama/ollama image sets `EXPOSE 11434`
-# (which a child image cannot remove), so a 0.0.0.0 bind leaves Ollama reachable
-# unauthenticated on any directly-forwarded port, bypassing Caddy token auth.
+# NOTE: the upstream image bakes `ENV OLLAMA_HOST=0.0.0.0:11434`, so this `:-` default
+# would never fire on its own — the Dockerfile resets ENV OLLAMA_HOST=127.0.0.1:21434
+# to override it (see the SECURITY note there). This line keeps loopback as the value of
+# record and as a fallback. Never let Ollama bind 0.0.0.0: combined with the upstream
+# `EXPOSE 11434` it leaves the API reachable unauthenticated, bypassing Caddy token auth.
 export OLLAMA_HOST=${OLLAMA_HOST:-127.0.0.1:21434}
 export OLLAMA_PORT=${OLLAMA_HOST##*:}
 
