@@ -15,24 +15,30 @@ curl -s http://localhost:11111/capabilities/endpoints   # base_url, capabilities
 Internally it listens on `127.0.0.1:18000`; `/v1` is the OpenAI base and `/docs` the
 Swagger UI. Call it exactly like the OpenAI API, with the instance token (base.md §5).
 
-**The model is chosen by `VLLM_MODEL`** (a Hugging Face repo id or a local path; alias
-`MODEL_NAME`). The service **refuses to start with no model set** — so if `vllm` is
-down, check that first (`/var/log/portal/vllm.log` will say *"Refusing to start …
-VLLM_MODEL not set"*). It is normally set at instance creation via the template's env.
+**The model is chosen by `VLLM_MODEL`** (a Hugging Face repo id or a local path). The
+service **refuses to start with no model set** — so if `vllm` is down, check that
+first (`/var/log/portal/vllm.log` will say *"Refusing to start … VLLM_MODEL not
+set"*). It is normally set at instance creation via the template's env, where setting
+either `VLLM_MODEL` or `MODEL_NAME` is enough: at boot the two are linked
+(`MODEL_NAME` ← `VLLM_MODEL`, then `VLLM_MODEL` ← `MODEL_NAME`) so they end up equal.
 
 To **change the model persistently**, set it where the instance sources env on every
-boot, then restart. `/etc/environment` survives stop/start; `${WORKSPACE}/.env`
+boot, then restart. **Set both `VLLM_MODEL` and `MODEL_NAME`** — that boot-time linking
+does *not* re-run on a `supervisorctl restart`, and the two are read by different
+services (`vllm` keys off `VLLM_MODEL`, **Model UI keys off `MODEL_NAME`** and won't
+start without it). `/etc/environment` survives stop/start; `${WORKSPACE}/.env`
 additionally survives recycle/destroy *if* a volume is mounted (base.md §3, §8):
 ```
-echo 'VLLM_MODEL="Qwen/Qwen3-8B"' >> /etc/environment   # or ${WORKSPACE}/.env on a volume
-supervisorctl restart vllm model-ui
+printf 'VLLM_MODEL="%s"\nMODEL_NAME="%s"\n' Qwen/Qwen3-8B Qwen/Qwen3-8B >> /etc/environment
+supervisorctl restart vllm model-ui     # use ${WORKSPACE}/.env instead, on a volume
 ```
 
 ### Tuning vLLM (env vars and serve args)
 
 vLLM-specific environment variables (all upstream `VLLM_*` vars also apply):
 
-- **`VLLM_MODEL`** — model to serve (alias `MODEL_NAME`).
+- **`VLLM_MODEL`** — model to serve. Linked to `MODEL_NAME` at boot (set either at
+  launch); for a runtime change set **both** (see above).
 - **`VLLM_ARGS`** — extra flags appended to `vllm serve`; use for simple values.
 - **`/etc/vllm-args.conf`** — a file whose contents are also appended to `vllm serve`.
   Put **awkward-to-quote flags here, especially JSON-valued ones** (`--hf-overrides`,
