@@ -33,14 +33,6 @@ RUN \
 
 ### Begin Ollama specific configuration ###
 
-# SECURITY: the upstream ollama/ollama image bakes `ENV OLLAMA_HOST=0.0.0.0:11434`.
-# Left in place, Ollama binds all interfaces on 11434 — colliding with the Caddy edge
-# and, via the upstream `EXPOSE 11434`, exposing the API unauthenticated. Override the
-# inherited value so Ollama binds loopback on the internal port; the Caddy edge proxies
-# the external 11434 vhost to it with token auth. A Vast template env var still overrides
-# this at runtime for anyone who deliberately wants a different bind.
-ENV OLLAMA_HOST=127.0.0.1:21434
-
 # Install Model UI (lightweight web interface) — chat only by default
 ENV MODEL_UI_CHAT_CAPS=all
 COPY --from=base_image_source tools/model-ui /opt/model-ui
