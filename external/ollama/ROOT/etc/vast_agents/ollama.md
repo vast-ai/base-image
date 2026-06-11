@@ -14,7 +14,7 @@ manifest rather than guessing the port (base.md §9):
 ```
 curl -s http://localhost:11111/capabilities/endpoints   # base_url (/v1), capabilities (chat/completions/embeddings/models), auth
 ```
-Internally it listens on `127.0.0.1:21434` (Caddy proxies external `11434` → `21434`).
+Internally it listens on loopback `127.0.0.1:11434` (Caddy proxies external `21434` → `11434`).
 Call `/v1` like the OpenAI API with the instance token (base.md §5); the client picks
 the model per request, so **any pulled model can be served** — there is no single
 "loaded" model as with vLLM.
@@ -47,12 +47,12 @@ needed.)
 
 ### Other env vars and companion service
 
-- **`OLLAMA_HOST`** — bind address, default **`127.0.0.1:21434`** (loopback only: the
-  only external path is the token-authed Caddy edge; keep the `21434` port so the Caddy
-  mapping works). **Do not bind `0.0.0.0`** unless you deliberately want a direct,
-  *unauthenticated* Ollama port — the upstream image's `EXPOSE 11434` means a `0.0.0.0`
-  bind is reachable by anyone, bypassing auth. **`OLLAMA_ARGS`** — extra flags for
-  `ollama serve`.
+- **`OLLAMA_HOST`** — bind address, default **`127.0.0.1:11434`** (loopback only: the
+  only external path is the token-authed Caddy edge, which fronts external `21434`).
+  **Do not bind `0.0.0.0`** unless you deliberately want a direct, *unauthenticated*
+  Ollama port — the upstream image's `EXPOSE 11434` means a `0.0.0.0` bind is reachable
+  by anyone, bypassing auth (the image rewrites the upstream `0.0.0.0:11434` default to
+  loopback for exactly this reason). **`OLLAMA_ARGS`** — extra flags for `ollama serve`.
 - **`OLLAMA_MODELS`** — model store, default `${WORKSPACE}/ollama/models`.
 - **`model-ui`** — a lightweight web frontend (portal label **"Model UI"**) for
   exercising a model from a browser; a convenience proxy in front of the Ollama
