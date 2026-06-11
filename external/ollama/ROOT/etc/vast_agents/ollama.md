@@ -47,8 +47,12 @@ needed.)
 
 ### Other env vars and companion service
 
-- **`OLLAMA_HOST`** — bind address, default `0.0.0.0:21434` (keep the `21434` port so
-  the Caddy mapping works). **`OLLAMA_ARGS`** — extra flags for `ollama serve`.
+- **`OLLAMA_HOST`** — bind address, default **`127.0.0.1:21434`** (loopback only: the
+  only external path is the token-authed Caddy edge; keep the `21434` port so the Caddy
+  mapping works). **Do not bind `0.0.0.0`** unless you deliberately want a direct,
+  *unauthenticated* Ollama port — the upstream image's `EXPOSE 11434` means a `0.0.0.0`
+  bind is reachable by anyone, bypassing auth. **`OLLAMA_ARGS`** — extra flags for
+  `ollama serve`.
 - **`OLLAMA_MODELS`** — model store, default `${WORKSPACE}/ollama/models`.
 - **`model-ui`** — a lightweight web frontend (portal label **"Model UI"**) for
   exercising a model from a browser; a convenience proxy in front of the Ollama
