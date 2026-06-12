@@ -129,7 +129,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-10
         arch:
           - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
           - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
@@ -189,7 +189,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-10
 
     steps:
       - name: Checkout

@@ -140,7 +140,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-04-15
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-06-10
         # arm64 is intentionally absent: torchcodec is required at runtime
         # (transitive via torchaudio.load() in toolkit/dataloader_mixins.py)
         # but ships no aarch64 Linux wheels at any version. Re-add when
@@ -205,7 +205,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-04-15
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-06-10
 
     steps:
       - name: Checkout
