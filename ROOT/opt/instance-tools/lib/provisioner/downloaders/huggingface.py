@@ -146,12 +146,17 @@ def _download_file(
         def _do_download() -> bool:
             tmp_dir = tempfile.mkdtemp()
             try:
+                # `--local-dir` is a direct download in current huggingface_hub
+                # (it does not populate the HF cache), and as of 1.18.0 combining
+                # it with `--cache-dir` is a hard error ("Cannot use both
+                # `--local-dir` and `--cache-dir` at the same time"). The temp
+                # `--local-dir` already isolates the download for the move below,
+                # so no separate `--cache-dir` is needed.
                 cmd = [
                     "hf", "download",
                     repo, file_path,
                     "--revision", revision,
                     "--local-dir", tmp_dir,
-                    "--cache-dir", os.path.join(tmp_dir, ".cache"),
                 ]
                 try:
                     run_cmd(cmd, label="hf", check=True)
