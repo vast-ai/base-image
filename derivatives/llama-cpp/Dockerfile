@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312-2026-06-10
+ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312-2026-06-12
 
 FROM ${BASE_IMAGE}
 ARG BASE_IMAGE
