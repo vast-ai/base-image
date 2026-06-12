@@ -108,8 +108,7 @@ download_hf_file() {
     
     if hf download "$repo" \
       "$file_path" \
-      --local-dir "$temp_dir" \
-      --cache-dir "$temp_dir/.cache" 2>&1; then
+      --local-dir "$temp_dir" 2>&1; then
       
       # Success - move file and clean up
       mkdir -p "$(dirname "$output_path")"

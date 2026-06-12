@@ -244,8 +244,7 @@ download_hf_file() {
             hf_command=$(command -v hf || command -v huggingface-cli)
             if "$hf_command" download "$repo" \
                 "$file_path" \
-                --local-dir "$temp_dir" \
-                --cache-dir "$temp_dir/.cache" 2>&1; then
+                --local-dir "$temp_dir" 2>&1; then
 
                 # Verify the file was actually downloaded
                 if [[ -f "$temp_dir/$file_path" ]]; then
