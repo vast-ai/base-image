@@ -57,6 +57,10 @@ main() {
                 export FORCE_JUPYTER=false
                 shift
                 ;;
+            --no-agent-banner)
+                export ENABLE_AGENT_BANNER=false
+                shift
+                ;;
             *)
                 echo "Warning: Unknown flag: $1" >&2
                 shift
