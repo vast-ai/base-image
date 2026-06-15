@@ -4,7 +4,7 @@
 #
 # Usage:
 #   docker buildx build -f Dockerfile.multi-torch \
-#     --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-04-15 \
+#     --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-06-15 \
 #     --build-arg PYTORCH_BACKEND=cu128 \
 #     -t my-multi-torch .
 
