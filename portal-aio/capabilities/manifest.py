@@ -574,9 +574,10 @@ def _agent_guides() -> dict:
         "dir": "/etc/vast_agents/",
         "files": files,
         "instruction": (
-            "Read the combined guide (or every file in 'files') before acting on "
-            "this instance. They are cumulative: the per-image guides document "
-            "services and APIs this image adds that you will otherwise miss."
+            "Read the combined guide at 'combined' before acting on this instance — "
+            "it already contains the full text of every file in 'files', concatenated, "
+            "so you do not need to open them separately. The per-image guides document "
+            "services and APIs this image adds that you would otherwise miss."
         ),
     }
 

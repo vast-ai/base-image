@@ -39,16 +39,18 @@ if [[ -f "$AGENTS_BASE" ]]; then
     mapfile -t guides < <( printf '%s\n' "$AGENTS_BASE"; ls "$AGENTS_DIR"/*.md 2>/dev/null | grep -vxF "$AGENTS_BASE" | sort )
     {
         printf '# Agent guide for this instance\n\n'
-        printf 'This instance ships %d guide(s) (full text below, also at %s/). They are\n' "${#guides[@]}" "$AGENTS_DIR"
-        printf 'cumulative — read ALL of them before acting on this instance:\n\n'
+        printf 'This single file IS the complete agent guide — the full text of all %d guide(s)\n' "${#guides[@]}"
+        printf 'is concatenated below (the same files also live individually under %s/, but you\n' "$AGENTS_DIR"
+        printf 'do not need to open them; everything is here). Read this whole file before acting\n'
+        printf 'on this instance. The sections are cumulative:\n\n'
         i=1
         for g in "${guides[@]}"; do
             label=$(grep -m1 -E '^#{1,6} ' "$g" 2>/dev/null | sed -E 's/^#{1,6} *//') || true
             printf '  %d. %s — %s\n' "$i" "$(basename "$g")" "${label:-$(basename "$g")}"
             i=$((i+1))
         done
-        printf '\nDo not stop at base.md: the per-image guide(s) above document services and\n'
-        printf 'APIs (endpoints, wrappers, helpers) you will otherwise miss — read them before\n'
+        printf '\nKeep reading past the base section: the per-image sections below document services\n'
+        printf 'and APIs (endpoints, wrappers, helpers) you would otherwise miss — read them before\n'
         printf 'calling an API, exposing a service, or setting up a model.\n\n'
         for g in "${guides[@]}"; do
             printf '=================== %s ===================\n\n' "$(basename "$g")"
