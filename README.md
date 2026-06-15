@@ -251,6 +251,7 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 | `--sync-home` | Sync home directories to workspace |
 | `--jupyter-override` | Force Jupyter to start even in non-Jupyter launch modes |
 | `--no-force-jupyter` | Don't re-add Jupyter to the portal config in entrypoint mode (no `/.launch`) |
+| `--no-agent-banner` | Suppress the AI-agent notice on the SSH banner (sets `ENABLE_AGENT_BANNER=false`) |
 
 **Example** (in Docker run command or template):
 ```bash
