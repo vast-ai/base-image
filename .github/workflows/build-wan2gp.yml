@@ -144,7 +144,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-12
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-15
         # arm64 is intentionally absent: Wan2GP requires onnxruntime-gpu
         # (pulled from the Azure ort-cuda-13-nightly index), which has no
         # aarch64 wheels — and PyPI's stable onnxruntime-gpu is also
@@ -212,7 +212,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-12
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-15
 
     steps:
       - name: Checkout
