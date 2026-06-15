@@ -104,6 +104,6 @@ if [[ -f "$BANNER" ]]; then
     # Refresh on every boot (drop any prior "AI agents:" line we added, then re-add) so
     # existing instances upgrade the wording. The control plane owns the rest of the file.
     sed -i '/^AI agents:/d' "$BANNER" 2>/dev/null || true
-    printf '%s\n' "AI agents: READ /etc/vast-agents-guide.md (also linked as ./AGENTS.md) before acting on or describing this instance — it is the operating guide. ('vast-capabilities' shows live state only, not the guide.)" >> "$BANNER" \
+    printf '%s\n' "AI agents: READ /etc/vast-agents-guide.md (also linked as ./AGENTS.md) before acting on or describing this instance: it is the operating guide. ('vast-capabilities' shows live state only, not the guide.)" >> "$BANNER" \
         && echo "Refreshed agent notice in ${BANNER}"
 fi
