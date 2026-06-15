@@ -97,7 +97,13 @@ fi
 # non-interactive agent can't miss. Append our pointer at boot (idempotent); we
 # can't bake it in because the control plane owns the file.
 BANNER=/etc/banner
-if [[ -f "$BANNER" ]] && ! grep -qF "vast-capabilities" "$BANNER"; then
-    printf '%s\n' "AI agents: run 'vast-capabilities' or read ./AGENTS.md to understand this instance." >> "$BANNER" \
-        && echo "Appended agent notice to ${BANNER}"
+if [[ -f "$BANNER" ]]; then
+    # Imperative, single directive — no "or" (which let agents treat the guide and
+    # vast-capabilities as interchangeable and skip the guide). Reading the guide is
+    # the instruction; vast-capabilities is called out as live state, not a substitute.
+    # Refresh on every boot (drop any prior "AI agents:" line we added, then re-add) so
+    # existing instances upgrade the wording. The control plane owns the rest of the file.
+    sed -i '/^AI agents:/d' "$BANNER" 2>/dev/null || true
+    printf '%s\n' "AI agents: READ /etc/vast-agents-guide.md (also linked as ./AGENTS.md) before acting on or describing this instance — it is the operating guide. ('vast-capabilities' shows live state only, not the guide.)" >> "$BANNER" \
+        && echo "Refreshed agent notice in ${BANNER}"
 fi

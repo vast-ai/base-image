@@ -11,13 +11,30 @@ INCLUDE="${1:-}"
 URL="http://localhost:11111/capabilities"
 [[ -n "$INCLUDE" ]] && URL="${URL}?include=${INCLUDE}"
 
+# A directive the agent can't miss even if it only skims the JSON. Printed to
+# stderr so stdout stays pure JSON for `| jq`. The JSON is LIVE STATE, not the
+# operating guide — point explicitly at the guide so this command isn't mistaken
+# for a substitute for reading it.
+emit_guide_pointer() {
+    {
+        echo
+        echo ">>> The output above is this instance's LIVE STATE, not the operating guide."
+        echo ">>> Before acting on — or answering questions about — this instance, READ"
+        echo ">>> /etc/vast-agents-guide.md (also linked as ./AGENTS.md)."
+    } >&2
+}
+
 if curl -fsS "$URL" 2>/dev/null; then
     echo
+    emit_guide_pointer
     exit 0
 fi
 
 # Fallback: assemble the static snapshot directly (no portal app required).
-cd /opt/portal-aio 2>/dev/null && exec /opt/portal-aio/venv/bin/python -c \
-    'import json; from capabilities import assemble_static; print(json.dumps(assemble_static(), indent=2))'
+if cd /opt/portal-aio 2>/dev/null && /opt/portal-aio/venv/bin/python -c \
+    'import json; from capabilities import assemble_static; print(json.dumps(assemble_static(), indent=2))'; then
+    emit_guide_pointer
+    exit 0
+fi
 echo "ERROR: could not reach the portal and no fallback available" >&2
 exit 1
