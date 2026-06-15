@@ -35,8 +35,19 @@ fi
 # then their full text. Prevents the failure where an agent reads a base-only
 # AGENTS.md and never discovers the per-image files (pytorch.md, comfyui.md, …).
 if [[ -f "$AGENTS_BASE" ]]; then
-    # base.md first, then the remaining guides in sorted order.
-    mapfile -t guides < <( printf '%s\n' "$AGENTS_BASE"; ls "$AGENTS_DIR"/*.md 2>/dev/null | grep -vxF "$AGENTS_BASE" | sort )
+    # Order as the actual build chain — base (foundation), then the framework
+    # layer (pytorch/tensorflow), then the app guides alphabetically — so each
+    # section's references only point at material already read above it.
+    guides=("$AGENTS_BASE")
+    for fw in pytorch tensorflow; do
+        [[ -f "$AGENTS_DIR/$fw.md" ]] && guides+=("$AGENTS_DIR/$fw.md")
+    done
+    while IFS= read -r g; do
+        case "$g" in
+            "$AGENTS_BASE"|"$AGENTS_DIR/pytorch.md"|"$AGENTS_DIR/tensorflow.md") ;;
+            *) guides+=("$g") ;;
+        esac
+    done < <(ls "$AGENTS_DIR"/*.md 2>/dev/null | sort)
     {
         printf '# Agent guide for this instance\n\n'
         printf 'This single file IS the complete agent guide — the full text of all %d guide(s)\n' "${#guides[@]}"
