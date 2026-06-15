@@ -47,7 +47,9 @@ if [[ -f "$AGENTS_BASE" ]]; then
             printf '  %d. %s — %s\n' "$i" "$(basename "$g")" "${label:-$(basename "$g")}"
             i=$((i+1))
         done
-        printf '\n'
+        printf '\nDo not stop at base.md: the per-image guide(s) above document services and\n'
+        printf 'APIs (endpoints, wrappers, helpers) you will otherwise miss — read them before\n'
+        printf 'calling an API, exposing a service, or setting up a model.\n\n'
         for g in "${guides[@]}"; do
             printf '=================== %s ===================\n\n' "$(basename "$g")"
             cat "$g"

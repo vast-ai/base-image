@@ -557,6 +557,30 @@ def load_fragments(fragments_dir: str = FRAGMENTS_DIR) -> dict:
     return merged
 
 
+def _agent_guides() -> dict:
+    """The agent-guide files baked into this image.
+
+    Surfaced in the manifest (not just a bare directory path) so an agent that
+    reads the JSON sees exactly which guides exist and is told to read them —
+    including the per-image files (pytorch.md, comfyui.md, …) it would otherwise
+    never discover. base.md is listed first; the rest follow sorted.
+    """
+    files = sorted(glob.glob("/etc/vast_agents/*.md"))
+    base = "/etc/vast_agents/base.md"
+    if base in files:
+        files = [base] + [f for f in files if f != base]
+    return {
+        "combined": "/etc/vast-agents-guide.md",
+        "dir": "/etc/vast_agents/",
+        "files": files,
+        "instruction": (
+            "Read the combined guide (or every file in 'files') before acting on "
+            "this instance. They are cumulative: the per-image guides document "
+            "services and APIs this image adds that you will otherwise miss."
+        ),
+    }
+
+
 def _detect_env_kind(path: str) -> Optional[str]:
     """Detect a python environment's kind by inspecting it on disk.
 
@@ -840,7 +864,7 @@ def assemble(
             "well_known_url": "/.well-known/vast-capabilities",
             "openapi_url": "/openapi.json",
             "snapshot_file": "/etc/vast_capabilities.json",
-            "agents_guide": "/etc/vast_agents/",
+            "agents_guide": _agent_guides(),
         },
     }
 
