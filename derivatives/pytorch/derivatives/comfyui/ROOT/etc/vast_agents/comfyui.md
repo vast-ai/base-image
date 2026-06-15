@@ -53,6 +53,12 @@ startup hook (`convert-workflows.sh`) auto-converts every saved GUI workflow int
 payload. So the loop is: build a workflow in the GUI → save it → it appears as a runnable
 payload under `/opt/comfyui-api-wrapper/payloads/` for `/generate/sync`.
 
+**Asked to set up a specific model? Don't build a graph from scratch — start from a tested
+template.** `https://github.com/Comfy-Org/workflow_templates` is the official library of
+ComfyUI workflow templates (the same set behind the app's built-in template browser),
+covering many common models and tasks. Grab the matching template, adjust the model/inputs,
+then run it through either API above.
+
 ### Models, custom nodes, provisioning
 
 Add models, custom nodes, and workflows declaratively with the **ComfyUI provisioner**
