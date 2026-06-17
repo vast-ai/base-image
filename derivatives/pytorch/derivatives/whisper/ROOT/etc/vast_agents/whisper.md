@@ -20,6 +20,13 @@ the same port) — read it before building a request, since options (model, lang
 transcribe-vs-translate, diarization) are passed there rather than via OpenAI-style fields.
 Launch flags are in **`WHISPER_API_ARGS`** (default `--host 0.0.0.0 --port 8000`).
 
+**Language gotcha (will save you a hang):** the `lang` field wants the full lowercase language
+**name** — `english`, not the ISO code `en`. A wrong value raises `KeyError` *inside a background
+task*, so the request doesn't fail cleanly: the job **silently hangs at `progress: 0.0` with the
+GPU idle** and never flips to `failed`. Omit `lang` (or use the auto-detect option) to let Whisper
+detect the language. If a job sits at 0.0 doing nothing, check the backend log — that's where the
+real error is.
+
 ### whisper-ui — interactive (service "whisper-ui")
 
 A **Gradio** UI, supervisor service **`whisper-ui`**, internal `127.0.0.1:7860` — drag in audio,
