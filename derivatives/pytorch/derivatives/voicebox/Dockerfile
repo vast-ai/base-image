@@ -27,16 +27,6 @@ RUN \
     git clone https://github.com/jamiepine/voicebox.git && \
     cd /opt/voicebox && \
     git checkout "${VOICEBOX_REF}" && \
-    # Upstream bug fix: the Whisper STT backend loads with a plain
-    # from_pretrained() + .to(device), which under transformers' accelerate
-    # lazy-load leaves weights on the `meta` device — /transcribe then fails with
-    # "Tensor on device meta is not on the expected device cuda:0!". Their TTS
-    # backend already forces eager load (low_cpu_mem_usage=False / device_map);
-    # mirror that for Whisper. Verify the edit applied so upstream drift fails the
-    # build loudly instead of silently shipping the bug.
-    { grep -q 'WhisperForConditionalGeneration.from_pretrained(model_name)' backend/backends/pytorch_backend.py || { echo "voicebox whisper meta-device patch: target line not found (upstream drift?)"; exit 1; }; } && \
-    sed -i 's/WhisperForConditionalGeneration.from_pretrained(model_name)/WhisperForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=False)/' backend/backends/pytorch_backend.py && \
-    { grep -q 'from_pretrained(model_name, low_cpu_mem_usage=False)' backend/backends/pytorch_backend.py || { echo "voicebox whisper meta-device patch: verification failed"; exit 1; }; } && \
     # Install Python dependencies — strip base-provided torch ecosystem pins
     # from upstream requirements so the pytorch base remains the single
     # source of truth. The diff-based assertion at the end of this RUN

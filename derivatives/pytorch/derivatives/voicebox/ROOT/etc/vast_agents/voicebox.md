@@ -51,7 +51,9 @@ POST /transcribe                  # speech-to-text
 **Cloning** is zero-shot from a short reference clip: register it as a profile, then synthesize with
 that profile. Engines: `qwen` / `qwen_custom_voice` / `luxtts` / `chatterbox` / `chatterbox_turbo` /
 `tada` / `kokoro` (choose via the `engine` arg); **engine model weights download on first use**, so
-the first call is slow — expected, not a hang. Persistent state — the DB, voice profiles, and
+the first call is slow — expected, not a hang. Transcription (`/transcribe`, `voicebox.transcribe`)
+likewise loads its Whisper model on first use; let that first call finish before firing more —
+hammering it concurrently during the load can surface a transient device error. Persistent state — the DB, voice profiles, and
 generated audio — lives under **`VOICEBOX_DATA_DIR`** (default `${WORKSPACE}/voicebox-data`). **The
 service waits for provisioning (`/.provisioning`) to finish before starting**, so during boot it may
 be intentionally down — check that flag before assuming a fault. (This image is built amd64-only.)
