@@ -65,6 +65,38 @@ RUN \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Vast patch: the Whisper STT backend has no lock around model load vs inference,
+# so concurrent /transcribe calls (or model-size switches) can run generate()
+# against a model another request is still mid-(re)load on — the load race behind
+# "Tensor on device meta is not on the expected device cuda:0!" under rapid calls.
+# Wrap transcribe() in a per-backend asyncio.Lock so load+inference are serialized.
+# Self-verifying (anchor count + ast.parse): the build fails loudly if upstream drifts.
+RUN /venv/main/bin/python <<'PYEOF'
+import pathlib, ast
+p = pathlib.Path("/opt/voicebox/backend/backends/pytorch_backend.py")
+src = p.read_text()
+anchor = "    async def transcribe(\n"
+assert src.count(anchor) == 1, "voicebox stt-lock: transcribe anchor not found exactly once (upstream drift)"
+if "import asyncio" not in src:
+    src = "import asyncio\n" + src
+wrapper = (
+    "    async def transcribe(self, *args, **kwargs):\n"
+    "        # Vast patch: serialize load + inference so concurrent transcribe calls\n"
+    "        # can't run generate() against a model another request is mid-(re)load\n"
+    "        # on (the load race behind 'Tensor on device meta' under rapid calls).\n"
+    "        if getattr(self, '_load_lock', None) is None:\n"
+    "            self._load_lock = asyncio.Lock()\n"
+    "        async with self._load_lock:\n"
+    "            return await self._transcribe_locked(*args, **kwargs)\n"
+    "\n"
+)
+src = src.replace(anchor, wrapper + "    async def _transcribe_locked(\n", 1)
+ast.parse(src)
+assert "async with self._load_lock" in src and "async def _transcribe_locked(" in src, "voicebox stt-lock: verification failed"
+p.write_text(src)
+print("voicebox stt-lock patch applied")
+PYEOF
+
 ENV VOICEBOX_ARGS="--host 127.0.0.1 --port 17493"
 
 # Defend against environment clashes when syncing to volume
