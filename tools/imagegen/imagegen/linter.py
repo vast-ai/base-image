@@ -67,7 +67,7 @@ def check_labels(img: Image) -> Iterable[Finding]:
 def check_env_hash(img: Image) -> Iterable[Finding]:
     """L002 — env-hash > /.env_hash is the FINAL RUN (not commented, not stale)."""
     runs = [i for i in parse(img.text) if i.cmd == "RUN"]
-    if not runs or "env-hash > /.env_hash" not in runs[-1].value:
+    if not runs or "env-hash > /.env_hash" not in runs[-1].exec:
         yield Finding("L002", ERROR, img.name, "Dockerfile", "`env-hash > /.env_hash` must be the final RUN instruction")
 
 

@@ -290,6 +290,34 @@ def test_parser_plain_heredoc_indented_terminator_not_early():
     assert [i.cmd for i in parse(text)] == ["FROM", "RUN", "COPY"]  # `echo real` stayed inside
 
 
+_GUARD_IN_DISCARDED_HEREDOC = """\
+ARG PYTORCH_BASE=vastai/pytorch:test
+FROM ${PYTORCH_BASE}
+LABEL org.opencontainers.image.source="https://github.com/vastai/"
+LABEL org.opencontainers.image.description="Test suitable for Vast.ai."
+LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
+COPY ./ROOT /
+RUN cat <<EOF >/dev/null
+[[ "$torch_versions_pre" = "$torch_versions_post" ]] || exit 1
+EOF
+RUN uv pip install foo
+RUN env-hash > /.env_hash
+"""
+
+
+def test_heredoc_data_guard_does_not_satisfy_L020(tmp_path):
+    """A torch guard hidden in a discarded `cat <<EOF >/dev/null` body is not executed,
+    so L020 must still fire (it isn't in the executed shell)."""
+    assert "L020" in errs(make(tmp_path, df=_GUARD_IN_DISCARDED_HEREDOC), tmp_path)
+
+
+def test_heredoc_data_env_hash_does_not_satisfy_L002(tmp_path):
+    df = VALID_DF.replace(
+        "RUN env-hash > /.env_hash\n",
+        "RUN echo done\nRUN cat <<EOF >/dev/null\nenv-hash > /.env_hash\nEOF\n")
+    assert "L002" in errs(make(tmp_path, df=df), tmp_path)
+
+
 def test_no_stale_exceptions():
     """Every EXCEPTION must still be triggered by its image (scoped to its msg)."""
     by_name = {i.name: i for i in discover(find_repo_root(Path(__file__).resolve().parent))}

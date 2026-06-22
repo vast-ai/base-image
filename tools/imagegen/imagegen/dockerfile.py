@@ -16,6 +16,7 @@ class Instruction:
     cmd: str   # upper-cased, e.g. RUN, FROM, LABEL, COPY
     value: str # remainder, continuations joined, full-line comments dropped
     line: int  # 1-based line where the instruction starts
+    exec: str = ""  # executed-shell text: excludes heredoc bodies used as command stdin
 
 
 def parse(text: str) -> list[Instruction]:
@@ -41,7 +42,9 @@ def parse(text: str) -> list[Instruction]:
             i += 1
         # consume heredoc bodies so their lines aren't parsed as instructions.
         # plain <<EOF terminates only at a column-0 EOF; <<-EOF allows leading tabs.
-        pending = [(m.group(3), bool(m.group(1))) for m in _HEREDOC.finditer(buf)]
+        cmd_line = buf  # the command portion, before any heredoc body
+        has_heredoc = bool(_HEREDOC.search(cmd_line))
+        pending = [(m.group(3), bool(m.group(1))) for m in _HEREDOC.finditer(cmd_line)]
         while i < n and pending:
             body = lines[i]
             i += 1
@@ -53,7 +56,19 @@ def parse(text: str) -> list[Instruction]:
         m = re.match(r"\s*(\w+)\s*(.*)", buf, re.S)
         if not m:
             continue
-        out.append(Instruction(m.group(1).upper(), m.group(2), start))
+        cmd, value = m.group(1).upper(), m.group(2)
+        # executed-shell text: a heredoc body is executed only when the heredoc IS the
+        # script (`RUN <<EOF`); if a command precedes it (`RUN cat <<EOF`) the body is
+        # that command's stdin (data) and must be excluded from regex checks.
+        exec_text = value
+        if has_heredoc:
+            rem = _HEREDOC.sub("", cmd_line)
+            rem = re.sub(r"^\s*\w+\s*", "", rem, count=1)   # drop the instruction keyword
+            rem = re.sub(r"[><|&;].*$", "", rem, flags=re.S)  # drop redirections/operators
+            if rem.strip():  # a real command precedes the heredoc -> body is data
+                cl = re.match(r"\s*\w+\s*(.*)", cmd_line, re.S)
+                exec_text = cl.group(1) if cl else cmd_line
+        out.append(Instruction(cmd, value, start, exec_text))
     return out
 
 
@@ -123,8 +138,9 @@ def parse_ref(ref: str) -> tuple[str | None, str, str | None]:
 
 
 def code_text(instrs: list[Instruction]) -> str:
-    """Comment-free reconstruction for substring/regex checks."""
-    return "\n".join(f"{i.cmd} {i.value}" for i in instrs)
+    """Comment-free, executed-shell reconstruction for substring/regex checks
+    (heredoc data bodies excluded — see Instruction.exec)."""
+    return "\n".join(f"{i.cmd} {i.exec}" for i in instrs)
 
 
 def ini_sections(text: str) -> dict[str, dict[str, str]]:
