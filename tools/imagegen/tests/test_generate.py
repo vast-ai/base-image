@@ -41,9 +41,10 @@ def test_filled_image_lints_clean(tmp_path):
     img_dir = repo / "derivatives/pytorch/derivatives/myapp"
     for p in list(img_dir.rglob("*")) + [repo / ".github/workflows/build-myapp.yml"]:
         if p.is_file():
-            t = p.read_text()
-            for mk, repl in (("CHANGEME", "1.0.0"), ("CHANGEPORT", "7861"), (">>> FILL", "done")):
-                t = t.replace(mk, repl)
+            # simulate a good-faith fill: REMOVE stub lines (incl. the `exit 1` stub),
+            # resolve CHANGE* tokens. No `>>> FILL` may survive.
+            kept = [ln for ln in p.read_text().splitlines(keepends=True) if ">>> FILL" not in ln]
+            t = "".join(kept).replace("CHANGEME", "1.0.0").replace("CHANGEPORT", "7861")
             p.write_text(t)
     img = next(i for i in discover(repo) if i.name == "myapp")
     errors = [(f.code, f.msg) for f in lint_image(img, repo) if f.severity == ERROR]
@@ -74,6 +75,27 @@ def test_fill_markers_present(tmp_path):
                       ("myext", "external")):
         df = (tmp_path / cls / name / "Dockerfile").read_text()
         assert ">>> FILL:" in df, f"{name} Dockerfile missing a FILL marker"
+
+
+def test_l040_flags_all_placeholder_files(tmp_path):
+    """Every generated file with a placeholder — incl. the agent doc, both READMEs,
+    and the launch-stub line — must be L040-flagged (no single-> / FIXME gaps)."""
+    _gen_repo(tmp_path)
+    img = next(i for i in discover(tmp_path) if i.name == "myext")
+    flagged = {f.path for f in lint_image(img, tmp_path) if f.code == "L040"}
+    assert any("vast_agents" in p for p in flagged), "agent doc not flagged"
+    assert "README.md" in flagged and "README.template.md" in flagged, "READMEs not flagged"
+    assert any("supervisor-scripts" in p for p in flagged), "launch stub not flagged"
+
+
+def test_no_single_marker_dialect_leaks(tmp_path):
+    """All placeholders use the `>>> FILL` dialect L040 knows — no bare `> FILL`/`FIXME:`."""
+    _gen_repo(tmp_path)
+    for p in (tmp_path / "external/myext").rglob("*"):
+        if p.is_file():
+            t = p.read_text()
+            assert "> FILL" not in t.replace(">>> FILL", ""), f"{p.name}: stray single-> FILL marker"
+            assert "FIXME" not in t, f"{p.name}: stray FIXME marker L040 won't catch"
 
 
 def test_supervisor_sources_exit_portal_with_label(tmp_path):

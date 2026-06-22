@@ -5,8 +5,11 @@ Emits Dockerfile + ROOT/ overlay + README + CI skeleton per class, with fenced
 fill-markers (`>>> FILL: ... <<<`, `CHANGEME`, `FIXME:`) for the judgment residue.
 A generated image passes the STRUCTURAL linter but L040 flags it as an incomplete
 skeleton until the markers are resolved (so "lint clean" never means "ready" by
-accident). Templating is stdlib @@TOKEN@@ substitution (no Jinja2) to keep deps
-minimal and avoid brace clashes with shell `${...}`.
+accident). All placeholders use a single marker dialect (`>>> FILL` / `CHANGEME` /
+`CHANGEPORT`) so L040 cannot have dialect gaps; residual stub lines carry the
+marker themselves so they can't be left behind silently. Templating is stdlib
+@@TOKEN@@ substitution (no Jinja2) to keep deps minimal and avoid brace clashes
+with shell `${...}`.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -17,7 +20,7 @@ _CLASS_DIR = {
     "pytorch-nested": "derivatives/pytorch/derivatives",
     "external": "external",
 }
-_CAP_NN = {"derivative": "30", "pytorch-nested": "50", "external": "50"}
+_CAP_NN = {"derivative": "30", "pytorch-nested": "50", "external": "30"}  # external grafts onto base
 
 _LABELS = '''LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="@@LABEL@@ suitable for Vast.ai."
@@ -70,6 +73,8 @@ ENV DATA_DIRECTORY=/workspace \\
     WORKSPACE=/workspace \\
     PATH=/opt/instance-tools/bin:$PATH
 
+# NOTE: the `base_image_source` stage is supplied at build time via
+# `--build-context base_image_source=<repo root>` (see .github/AGENTS.md).
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
@@ -103,7 +108,7 @@ if [[ "${SERVERLESS:-false}" != "true" ]]; then
     . "${utils}/exit_portal.sh" "@@LABEL@@"
 fi
 
-. /venv/main/bin/activate
+[[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
 
 # Wait for provisioning to complete before starting
 while [ -f "/.provisioning" ]; do
@@ -113,9 +118,8 @@ done
 
 cd "${WORKSPACE}/@@NAME@@" 2>/dev/null || cd "${WORKSPACE}"
 
-# >>> FILL: launch @@NAME@@ using `pty` like real images, e.g. `pty python main.py ...` <<<
-echo "FIXME: @@NAME@@ launch command not implemented" >&2
-exit 1
+# >>> FILL: launch @@NAME@@ using `pty` (e.g. `pty python main.py ...`) <<<
+exit 1  # >>> FILL: remove this line once the launch command above is in place <<<
 '''
 
 _CONF = '''[program:@@NAME@@]
@@ -137,8 +141,8 @@ image:
 
 _AGENT = '''# @@LABEL@@
 
-> FILL: how an AI agent should operate @@NAME@@ on this image — entrypoints,
-> ports, where models/data live, common tasks.
+>>> FILL: how an AI agent should operate @@NAME@@ on this image — entrypoints,
+ports, where models/data live, common tasks. <<<
 '''
 
 # README.md = developer docs; README.template.md = Vast.ai marketplace listing.
@@ -149,7 +153,7 @@ A Vast.ai image for @@NAME@@. Includes the Instance Portal, Supervisor process
 management, and other conveniences from the Vast.ai
 [base image](https://github.com/vast-ai/base-image).
 
-> FILL: how this image works, available tags, environment variables.
+>>> FILL: how this image works, available tags, environment variables. <<<
 '''
 
 _README_TEMPLATE = '''# @@LABEL@@
@@ -157,7 +161,7 @@ _README_TEMPLATE = '''# @@LABEL@@
 
 ## What is this template?
 
-> FILL: marketplace description of @@LABEL@@ for end users — what it does and why.
+>>> FILL: marketplace description of @@LABEL@@ for end users — what it does and why. <<<
 '''
 
 # external only: PORTAL_CONFIG ports are NOT internal+10000 by rule (invariants §3),
