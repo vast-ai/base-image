@@ -58,18 +58,31 @@ always diff against ground truth.)
 
 ## Step 4 — Fill only the fenced residue
 Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
-- **Dockerfile**: the install step (git clone at the pinned ref, strip torch pins for
-  pytorch-nested, `uv pip install`), and the real base tag for `CHANGEME`.
-- **supervisor script**: the real launch (use `pty`, like the sibling); remove the
-  `exit 1 # >>> FILL` stub line entirely.
-- **capability yaml / agent doc / READMEs**: real content (README.md = dev docs,
-  README.template.md = marketplace listing — keep them distinct).
-- **external**: the `05-<name>-env.sh` PORTAL_CONFIG ports (match the app's real bind
-  port — `+10000` is a common convention, NOT a rule).
+- **Dockerfile install (pytorch-nested)**: the install MUST stay **inside the existing
+  RUN, between the `torch_versions_pre` and `torch_versions_post` lines** — the marker is
+  already placed there; do **not** move it to a separate RUN. An install outside that
+  window makes the torch-drift guard a silent no-op that the linter CANNOT catch. Keep
+  the generated `[[ -n "${NAME_REF}" ]] || exit` ref-presence guard. Inside: git clone at
+  the pinned ref, strip torch pins, `uv pip install`.
+- **`CHANGEME` base tag**: set it to the tag the chosen **sibling currently pins** (an
+  existing tag — e.g. comfyui pins a dated `vastai/pytorch:...` tag). Never invent a tag;
+  a non-existent tag lints clean but fails `docker build` on the `FROM` pull. (Filling
+  this token is a normal in-fence fill, NOT an escape-hatch case.)
+- **supervisor script**: the real launch (use `pty`, like the sibling); ensure it binds
+  the `--port` you supplied; remove the `exit 1  # >>> FILL` stub line entirely.
+- **PORTAL_CONFIG / port wiring**: external → fill `05-<name>-env.sh` with the app's real
+  bind port. **pytorch-nested / derivative** → check the sibling: if it ships a
+  `ROOT/etc/vast_boot.d/05-<name>-env.sh`, add one wiring your port into PORTAL_CONFIG;
+  otherwise confirm how the sibling's port reaches the portal. The `--port` is not wired
+  automatically — you must place it.
+- **capability yaml / agent doc / READMEs**: real content (capability `readme:` = the
+  GitHub URL; README.md = dev docs; README.template.md = marketplace listing — distinct).
 
-**Escape hatch:** if a correct change is needed *outside* a fence (bump the base tag's
-real value, add a build stage, change the CI shape), **stop and surface it to the human**
-— do not silently edit beyond the markers.
+**Escape hatch:** if a correct change requires touching **structure the generator did not
+scaffold** — adding a build stage, changing the CI job shape, changing the class or the
+base-image repo, or any edit outside a `>>> FILL` / `CHANGE*` token — **stop and surface
+it to the human**. (Resolving the scaffolded tokens themselves is not an escape-hatch
+case.)
 
 ## Step 5 — Lint to zero
 ```bash

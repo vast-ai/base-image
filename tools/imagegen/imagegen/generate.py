@@ -53,9 +53,10 @@ COPY ./ROOT /
 
 ARG @@NAME_UPPER@@_REF
 RUN set -euo pipefail; \\
+    [[ -n "${@@NAME_UPPER@@_REF}" ]] || { echo "Must specify @@NAME_UPPER@@_REF"; exit 1; }; \\
     . /venv/main/bin/activate; \\
     torch_versions_pre=@@SNAP@@; \\
-    : '>>> FILL: install @@NAME@@ — git clone @@NAME_UPPER@@_REF, strip torch pins, uv pip install <<<'; \\
+    : '>>> FILL: install @@NAME@@ HERE, in THIS SAME RUN, between the two snapshots — git clone @@NAME_UPPER@@_REF, strip torch pins, uv pip install. Do NOT move this into a separate RUN: that makes the drift guard a no-op the linter cannot catch. <<<'; \\
     torch_versions_post=@@SNAP@@; \\
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem drift for @@NAME@@"; exit 1; }
 
@@ -69,8 +70,14 @@ FROM ${@@NAME_UPPER@@_BASE} AS @@NAME@@_build
 
 @@LABELS@@
 
+SHELL ["/bin/bash", "-c"]
+WORKDIR /
 ENV DATA_DIRECTORY=/workspace \\
     WORKSPACE=/workspace \\
+    DEBIAN_FRONTEND=noninteractive \\
+    PYTHONUNBUFFERED=1 \\
+    PIP_BREAK_SYSTEM_PACKAGES=1 \\
+    UV_LINK_MODE=copy \\
     PATH=/opt/instance-tools/bin:$PATH
 
 # NOTE: the `base_image_source` stage is supplied at build time via

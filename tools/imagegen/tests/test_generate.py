@@ -98,6 +98,26 @@ def test_no_single_marker_dialect_leaks(tmp_path):
             assert "FIXME" not in t, f"{p.name}: stray FIXME marker L040 won't catch"
 
 
+def test_pytorch_has_ref_guard_and_install_between_snapshots(tmp_path):
+    """The pytorch Dockerfile must guard the ref AND place the install marker between
+    the pre/post snapshots (so a faithful fill keeps the drift guard meaningful)."""
+    _gen_repo(tmp_path)
+    df = (tmp_path / "derivatives/pytorch/derivatives/myapp/Dockerfile").read_text()
+    assert re.search(r'\[\[ -n "\$\{MYAPP_REF\}" \]\] \|\|', df), "missing ref-presence guard"
+    pre = df.index("torch_versions_pre=")
+    post = df.index("torch_versions_post=")
+    fill = df.index(">>> FILL: install myapp")
+    assert pre < fill < post, "install marker must sit between the pre/post snapshots"
+
+
+def test_external_has_shell_and_env(tmp_path):
+    """External must declare bash SHELL (it uses bashisms) and the convert ENV block."""
+    _gen_repo(tmp_path)
+    df = (tmp_path / "external/myext/Dockerfile").read_text()
+    assert 'SHELL ["/bin/bash", "-c"]' in df
+    assert "UV_LINK_MODE=copy" in df and "PIP_BREAK_SYSTEM_PACKAGES=1" in df
+
+
 def test_supervisor_sources_exit_portal_with_label(tmp_path):
     """Correctness (not just lint): exit_portal.sh must be SOURCED WITH the label arg,
     and there must be no bogus `exit_portal "..."` function call (the round-4 fatal bug)."""
