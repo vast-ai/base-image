@@ -51,6 +51,11 @@ All verified clean across existing images.
 - **External build passes `--build-context base_image_source=.`** (all 5). This is
   what makes the otherwise-undeclared `base_image_source` stage resolve.
 
+> Note: "one `build-<name>.yml` per image" is **not** universal — 6 images
+> (fooocus, kohya_ss, oobabooga, swarmui, tensorflow, UnrealPixelStreaming) build
+> via shared/other workflows. The linter treats workflow presence as a WARN (L030),
+> not a gate.
+
 ## 2. Conditional invariants — GATE per-class, with exceptions encoded
 
 - **FROM matches class** — EXCEPT: `aio-studio` builds on a custom

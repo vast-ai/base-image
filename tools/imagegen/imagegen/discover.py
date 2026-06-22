@@ -38,6 +38,11 @@ def _mk(d: Path, cls: str) -> Image:
 
 def discover(repo: Path) -> list[Image]:
     images: list[Image] = []
+
+    # the base image itself (root of the FROM chain) — class "base", limited checks
+    if (repo / "Dockerfile").is_file():
+        images.append(_mk(repo, "base"))
+
     nested_parent = repo / "derivatives" / "pytorch" / "derivatives"
 
     for df in sorted((repo / "external").glob("*/Dockerfile")):

@@ -2,10 +2,13 @@
 
 Run: cd tools/imagegen && PYTHONPATH=. python -m pytest -q
 """
+import re
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from imagegen.discover import Image, discover, find_repo_root
-from imagegen.linter import lint_image, ERROR
+from imagegen.linter import lint_image, ERROR, EXCEPTIONS
 
 VALID_DF = """\
 ARG PYTORCH_BASE=vastai/pytorch:test
@@ -110,6 +113,84 @@ def test_regression_net_real_repo_is_clean():
     }
     offenders = {k: v for k, v in offenders.items() if v}
     assert not offenders, f"existing images violate gated invariants: {offenders}"
+
+
+# ---- mutation-against-real-files: prove the checks actually bite ----
+# (The regression net alone is vacuous — it would pass if every check were a
+#  no-op. These corrupt REAL images and assert the corresponding code fires.)
+
+def _real(name: str):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for img in discover(repo):
+        if img.name == name:
+            return repo, img
+    raise AssertionError(f"image {name!r} not found in repo")
+
+
+def test_mut_env_hash_neutralized():
+    repo, img = _real("comfyui")
+    mut = replace(img, text=img.text.replace("env-hash > /.env_hash", "true"))
+    assert "L002" in errs(mut, repo)
+
+
+def test_mut_label_removed():
+    repo, img = _real("comfyui")
+    mut = replace(img, text=re.sub(r"(?m)^LABEL maintainer=.*\n", "", img.text))
+    assert "L001" in errs(mut, repo)
+
+
+def test_mut_external_stage_order_reversed():
+    repo, img = _real("vllm")
+    a, b = "FROM ${VAST_BASE} AS vast_base_image", "FROM ${VLLM_BASE} AS vllm_build"
+    assert a in img.text and b in img.text
+    mut = replace(img, text=img.text.replace(a, "__A__").replace(b, a).replace("__A__", b))
+    assert "L004" in errs(mut, repo)
+
+
+def test_mut_torch_guard_weakened():
+    repo, img = _real("comfyui")
+    mut = replace(img, text=img.text.replace('[[ "$torch_versions_pre" = "$torch_versions_post" ]]', "true"))
+    assert "L020" in errs(mut, repo)
+
+
+def test_mut_auto_backend_injected():
+    repo, img = _real("comfyui")
+    mut = replace(img, text=img.text + "\nRUN uv pip install x --torch-backend auto\n")
+    assert "L021" in errs(mut, repo)
+
+
+def test_mut_auto_backend_comment_backdoor_does_not_hide():
+    """The old `'sed' in line` backdoor: `--torch-backend auto # sed` must still fire."""
+    repo, img = _real("comfyui")
+    mut = replace(img, text=img.text + "\nRUN uv pip install x --torch-backend auto # sed\n")
+    assert "L021" in errs(mut, repo)
+
+
+def test_mut_conf_command_basename_mismatch(tmp_path):
+    repo, img = _real("comfyui")
+    dst = tmp_path / "comfyui"
+    shutil.copytree(img.dir, dst)
+    conf = sorted((dst / "ROOT/etc/supervisor/conf.d").glob("*.conf"))[0]
+    text = conf.read_text()
+    text2 = re.sub(r"command=/opt/supervisor-scripts/\S+\.sh",
+                   "command=/opt/supervisor-scripts/wrong.sh", text, count=1)
+    assert text2 != text
+    conf.write_text(text2)
+    mut = replace(img, dir=dst, root=dst / "ROOT", dockerfile=dst / "Dockerfile",
+                  text=(dst / "Dockerfile").read_text())
+    assert "L010" in errs(mut, repo)
+
+
+def test_no_stale_exceptions():
+    """Every EXCEPTION must still be triggered by its image (scoped to its msg)."""
+    by_name = {i.name: i for i in discover(find_repo_root(Path(__file__).resolve().parent))}
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for (name, code), (reason, sub) in EXCEPTIONS.items():
+        img = by_name.get(name)
+        assert img, f"exception references missing image {name!r}"
+        raw = lint_image(img, repo, apply_exceptions=False)
+        assert any(f.code == code and sub in f.msg for f in raw), \
+            f"stale exception {name}/{code}: no longer triggers (suppressing nothing)"
 
 
 if __name__ == "__main__":
