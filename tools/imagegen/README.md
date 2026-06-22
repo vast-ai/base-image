@@ -8,6 +8,25 @@ verified rules: [docs/invariants.md](../../docs/invariants.md).
 no build/GPU/registry. The real `docker build` (+ smoke test) is the correctness
 check — green lint means "ready to build", never "correct" (ADR 0001 condition 1).
 
+## Scaffold a new image
+
+The generator emits the mechanical ~80% per class with fenced `>>> FILL: ... <<<`
+markers for the judgment residue (install steps, app launch, base tag). **You pick
+the class** — the generator never guesses it.
+
+```bash
+# from the repo root
+PYTHONPATH=tools/imagegen python3 -m imagegen.cli new \
+  --class pytorch-nested --name myapp --label "My App" --port 7860
+# external images also need --upstream <image:tag>
+```
+
+It scaffolds the Dockerfile, ROOT/ overlay (supervisor script + .conf + capability
++ agent doc), README, and a CI skeleton, then lints the result. Output passes the
+linter by construction (see `tests/test_generate.py` round-trip). Then: fill the
+FILL markers, replace the `CHANGEME` base tag, `lint`, and run the real
+`docker build` (the correctness gate).
+
 ## Run
 
 ```bash

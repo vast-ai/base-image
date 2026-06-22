@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .discover import discover, find_repo_root, Image
 from .linter import lint_image, ERROR, WARN, EXCEPTIONS
+from .generate import generate, CLASSES
 
 
 def _gather(args) -> tuple[Path, list[Image]]:
@@ -47,6 +48,26 @@ def cmd_lint(args) -> int:
     return 1 if total_err else 0
 
 
+def cmd_new(args) -> int:
+    repo = find_repo_root(Path(args.repo) if args.repo else Path.cwd())
+    try:
+        d = generate(repo, name=args.name, cls=args.cls, label=args.label,
+                     port=args.port, upstream=args.upstream)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"scaffolded {args.cls} image at {d.relative_to(repo)}")
+    img = next((i for i in discover(repo) if i.dir.resolve() == d.resolve()), None)
+    if img:
+        errors = [f for f in lint_image(img, repo) if f.severity == ERROR]
+        print("lint:", "CLEAN ✓" if not errors else f"{len(errors)} errors")
+        for f in errors:
+            print(f"  ✗ [{f.code}] {f.path}: {f.msg}")
+    print("\nNext: fill the `>>> FILL: ... <<<` markers, set the CHANGEME base tag,"
+          "\nthen run `imagegen lint " + args.name + "` and the real `docker build`.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="imagegen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -56,6 +77,16 @@ def main(argv=None) -> int:
     lint.add_argument("--repo", help="repo root (default: autodetect from cwd)")
     lint.add_argument("--warn", action="store_true", help="also show WARN findings")
     lint.set_defaults(func=cmd_lint)
+
+    new = sub.add_parser("new", help="scaffold a new image (human picks the class)")
+    new.add_argument("--class", dest="cls", required=True, choices=CLASSES)
+    new.add_argument("--name", required=True)
+    new.add_argument("--label", required=True)
+    new.add_argument("--port", type=int, required=True)
+    new.add_argument("--upstream", help="upstream image:tag (external only)")
+    new.add_argument("--repo", help="repo root (default: autodetect from cwd)")
+    new.set_defaults(func=cmd_new)
+
     args = ap.parse_args(argv)
     return args.func(args)
 
