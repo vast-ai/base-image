@@ -318,6 +318,22 @@ def test_heredoc_data_env_hash_does_not_satisfy_L002(tmp_path):
     assert "L002" in errs(make(tmp_path, df=df), tmp_path)
 
 
+def test_heredoc_fed_to_shell_is_executed_L021(tmp_path):
+    """`RUN bash <<EOF` executes its body, so a forbidden auto-backend there must fire L021."""
+    df = VALID_DF.replace(
+        "RUN env-hash > /.env_hash\n",
+        "RUN bash <<EOF\nuv pip install x --torch-backend auto\nEOF\nRUN env-hash > /.env_hash\n")
+    assert "L021" in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_heredoc_fed_to_dot_stdin_is_executed_L021(tmp_path):
+    """`. /dev/stdin <<EOF` also executes the body — the stealthier variant."""
+    df = VALID_DF.replace(
+        "RUN env-hash > /.env_hash\n",
+        "RUN . /dev/stdin <<EOF\nuv pip install x --torch-backend auto\nEOF\nRUN env-hash > /.env_hash\n")
+    assert "L021" in errs(make(tmp_path, df=df), tmp_path)
+
+
 def test_no_stale_exceptions():
     """Every EXCEPTION must still be triggered by its image (scoped to its msg)."""
     by_name = {i.name: i for i in discover(find_repo_root(Path(__file__).resolve().parent))}

@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 
 _HEREDOC = re.compile(r"<<(-?)\s*([\"']?)(\w+)\2")
+# commands that execute their stdin, so a heredoc fed to them IS executed shell
+_SHELL_INTERPRETERS = {"bash", "sh", "dash", "ash", "ksh", "zsh", ".", "source"}
 
 
 @dataclass
@@ -65,7 +67,10 @@ def parse(text: str) -> list[Instruction]:
             rem = _HEREDOC.sub("", cmd_line)
             rem = re.sub(r"^\s*\w+\s*", "", rem, count=1)   # drop the instruction keyword
             rem = re.sub(r"[><|&;].*$", "", rem, flags=re.S)  # drop redirections/operators
-            if rem.strip():  # a real command precedes the heredoc -> body is data
+            lead = rem.strip().split()[0].rsplit("/", 1)[-1] if rem.strip() else ""
+            # a command before the heredoc => body is its stdin (data), UNLESS that
+            # command is a shell interpreter that EXECUTES its stdin (bash/sh/. /source).
+            if rem.strip() and lead not in _SHELL_INTERPRETERS:
                 cl = re.match(r"\s*\w+\s*(.*)", cmd_line, re.S)
                 exec_text = cl.group(1) if cl else cmd_line
         out.append(Instruction(cmd, value, start, exec_text))
