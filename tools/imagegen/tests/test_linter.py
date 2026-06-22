@@ -7,6 +7,7 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 
+import imagegen.linter as L
 from imagegen.discover import Image, discover, find_repo_root
 from imagegen.dockerfile import parse
 from imagegen.linter import lint_image, ERROR, EXCEPTIONS
@@ -332,6 +333,22 @@ def test_heredoc_fed_to_dot_stdin_is_executed_L021(tmp_path):
         "RUN env-hash > /.env_hash\n",
         "RUN . /dev/stdin <<EOF\nuv pip install x --torch-backend auto\nEOF\nRUN env-hash > /.env_hash\n")
     assert "L021" in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_rules_catalog_matches_emitted_codes():
+    """ADR cond #2: the RULES catalog is authoritative — every code a check emits must
+    be cataloged, and the catalog must not list codes no check emits."""
+    src = Path(L.__file__).read_text()
+    emitted = set(re.findall(r'Finding\("(L\d+)"', src))
+    catalog = {code for code, _, _ in L.RULES}
+    assert emitted == catalog, f"drift: emitted-not-cataloged={emitted - catalog}, cataloged-not-emitted={catalog - emitted}"
+
+
+def test_lint_rules_doc_in_sync():
+    """ADR cond #2: docs/lint-rules.md is generated from the linter; fail on drift."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    doc = (repo / "docs" / "lint-rules.md").read_text()
+    assert doc == L.rules_markdown(), "docs/lint-rules.md is stale — run `imagegen rules > docs/lint-rules.md`"
 
 
 def test_no_stale_exceptions():

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .discover import discover, find_repo_root, Image
-from .linter import lint_image, ERROR, WARN, EXCEPTIONS
+from .linter import lint_image, ERROR, WARN, EXCEPTIONS, rules_markdown
 from .generate import generate, CLASSES
 
 
@@ -90,6 +90,9 @@ def main(argv=None) -> int:
     new.add_argument("--upstream", help="upstream image:tag (external only)")
     new.add_argument("--repo", help="repo root (default: autodetect from cwd)")
     new.set_defaults(func=cmd_new)
+
+    rules = sub.add_parser("rules", help="print the generated lint-rules reference (docs/lint-rules.md)")
+    rules.set_defaults(func=lambda a: (print(rules_markdown(), end=""), 0)[1])
 
     args = ap.parse_args(argv)
     return args.func(args)

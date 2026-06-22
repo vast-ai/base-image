@@ -123,6 +123,22 @@ confidence — a green check that ships broken infra past a disengaged reviewer)
    generate → fill only fenced residue (escape hatch per condition 5) → lint
    until clean → PR → existing build CI is the real gate.
 
+## Implementation status (2026-06-22)
+
+Built on `feature/CON-1585-image-linter`, each layer hardened by adversarial review:
+- **Linter** (`tools/imagegen`) — checks per §1–2; mutation-tested; clean baseline over 27 images.
+- **Generator** (`imagegen new`) — templates from real images; L040 gates unfilled skeletons.
+- **Skill** (`.claude/skills/new-image`) — orchestrates the flow with the contract above.
+- **Binding condition #1** — honoured: static lint is the fast gate; the README/skill
+  state the real `docker build` is the correctness gate.
+- **Binding condition #2** (docs⟷linter agreement) — DONE: `RULES` is the single source
+  of truth, `docs/lint-rules.md` is generated (`imagegen rules`), and tests fail on drift
+  between the catalog, the emitted codes, and the doc.
+- **Binding condition #3** (class-sanity) — DONE mechanically: `--upstream` must agree
+  with the class, and L004 enforces path⟷FROM class consistency at lint time; the skill
+  adds the human-facing "challenge the class" step.
+- **Port arithmetic** — dropped (see Revision); ports are FILL markers, not fabricated.
+
 ## What would reverse this
 
 - If the static linter cannot reach a clean baseline over existing images

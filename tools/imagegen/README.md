@@ -43,6 +43,18 @@ PYTHONPATH=tools/imagegen python3 -m imagegen.cli lint comfyui
 Once installed (`pip install -e tools/imagegen`) the `imagegen` console script works
 directly.
 
+## Rules reference (single source of truth)
+
+`RULES` in `imagegen/linter.py` is authoritative. `docs/lint-rules.md` is **generated**
+from it — regenerate after changing checks:
+
+```bash
+PYTHONPATH=tools/imagegen python3 -m imagegen.cli rules > docs/lint-rules.md
+```
+
+Tests fail if the catalog, the codes the checks actually emit, and the generated doc
+drift apart — so the docs can't silently disagree with the enforced rules.
+
 ## Tests
 
 ```bash

@@ -68,6 +68,16 @@ def test_external_requires_upstream(tmp_path):
     raise AssertionError("external without upstream should raise ValueError")
 
 
+def test_upstream_only_for_external(tmp_path):
+    """Class-sanity (ADR cond #3): --upstream on a non-external class is rejected."""
+    (tmp_path / "derivatives/pytorch/derivatives").mkdir(parents=True, exist_ok=True)
+    try:
+        generate(tmp_path, name="x", cls="pytorch-nested", label="X", port=8000, upstream="foo/bar:1")
+    except ValueError:
+        return
+    raise AssertionError("--upstream on non-external should raise ValueError")
+
+
 def test_fill_markers_present(tmp_path):
     """The judgment residue must be clearly fenced for the human/LLM to complete."""
     _gen_repo(tmp_path)

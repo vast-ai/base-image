@@ -207,8 +207,13 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
     """Write the file set for a new image; returns its directory. Human picks `cls`."""
     if cls not in CLASSES:
         raise ValueError(f"unknown class {cls!r}; expected one of {CLASSES}")
+    # class-sanity (ADR cond. #3): the --upstream signal must agree with the class.
+    # (Lint-time path<->FROM class consistency is enforced by L004.)
     if cls == "external" and not upstream:
         raise ValueError("external images require --upstream <image:tag>")
+    if cls != "external" and upstream:
+        raise ValueError(f"--upstream is only valid for external images, not {cls} "
+                         "(did you mean --class external?)")
 
     sub = dict(NAME=name, NAME_UPPER=name.upper().replace("-", "_"), LABEL=label,
                PORT=str(port), UPSTREAM=upstream or "",
