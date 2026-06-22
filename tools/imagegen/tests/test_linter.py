@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from imagegen.discover import Image, discover, find_repo_root
+from imagegen.dockerfile import parse
 from imagegen.linter import lint_image, ERROR, EXCEPTIONS
 
 VALID_DF = """\
@@ -248,6 +249,45 @@ def test_parser_comment_in_continuation(tmp_path):
     df = VALID_DF.replace("COPY ./ROOT /\n",
                           "RUN echo a \\\n# a comment\n    && echo b\nCOPY ./ROOT /\n")
     assert errs(make(tmp_path, df=df), tmp_path) == set()
+
+
+def test_mut_external_base_wrong_registry():
+    """A look-alike on a different registry (canonical substring IN the ref) must fail L004."""
+    repo, img = _real("vllm")
+    t = re.sub(r"ARG VAST_BASE=\S+", "ARG VAST_BASE=evilregistry.io/vastai/base-image:latest", img.text)
+    assert has(replace(img, text=t), repo, "L004", "must resolve to vastai/base-image")
+
+
+def test_mut_external_base_shell_default_form():
+    """`${VAST_BASE:-vastai/base-image}` with an evil ARG default must fail L004."""
+    repo, img = _real("vllm")
+    t = img.text.replace("FROM ${VAST_BASE} AS vast_base_image",
+                         "FROM ${VAST_BASE:-vastai/base-image} AS vast_base_image")
+    t = re.sub(r"ARG VAST_BASE=\S+", "ARG VAST_BASE=evil/img:latest", t)
+    assert has(replace(img, text=t), repo, "L004", "must resolve to vastai/base-image")
+
+
+def test_L020_accepts_negated_and_swapped(tmp_path):
+    """Valid guard variants (!= with &&, swapped operands) must NOT false-fail L020."""
+    for cmp in ('[[ "$torch_versions_pre" != "$torch_versions_post" ]] && exit 1',
+                '[[ "$torch_versions_post" = "$torch_versions_pre" ]] || exit 1'):
+        df = VALID_DF.replace(
+            '[ "$torch_versions_pre" = "$torch_versions_post" ] || exit 1', cmp)
+        assert "L020" not in errs(make(tmp_path, df=df), tmp_path), cmp
+
+
+def test_L001_equals_in_value_not_miscounted(tmp_path):
+    """A `word=` inside a quoted LABEL value must not inflate the pair count."""
+    df = VALID_DF.replace(
+        'LABEL org.opencontainers.image.description="Test suitable for Vast.ai."\n',
+        'LABEL org.opencontainers.image.description="Test sigma=0.7 res=512 suitable for Vast.ai."\n')
+    assert "L001" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_parser_plain_heredoc_indented_terminator_not_early():
+    """Plain <<EOF must NOT terminate on an indented EOF (Docker requires column 0)."""
+    text = "FROM x\nRUN cat <<EOF >/dev/null\n    EOF\necho real\nEOF\nCOPY ./ROOT /\n"
+    assert [i.cmd for i in parse(text)] == ["FROM", "RUN", "COPY"]  # `echo real` stayed inside
 
 
 def test_no_stale_exceptions():

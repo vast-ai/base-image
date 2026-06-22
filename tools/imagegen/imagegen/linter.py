@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .discover import Image
-from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve
+from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve, parse_ref
+
+_DOCKER_HUB = (None, "docker.io", "index.docker.io", "registry-1.docker.io")
 
 ERROR = "ERROR"
 WARN = "WARN"
@@ -44,12 +46,17 @@ REQUIRED_LABEL_KEYS = ["org.opencontainers.image.source", "org.opencontainers.im
 
 # ---- Dockerfile checks ------------------------------------------------------
 
+def _label_keys(value: str) -> list[str]:
+    # quote-aware: key="quoted value with = inside" | key=bareword
+    return [k for k, _ in re.findall(r'([\w.]+)=("(?:[^"\\]|\\.)*"|\S+)', value)]
+
+
 def check_labels(img: Image) -> Iterable[Finding]:
     """L001 — exactly 3 LABEL key=value pairs (any line layout) with the required keys."""
     labels = [i for i in parse(img.text) if i.cmd == "LABEL"]
     keys: list[str] = []
     for l in labels:
-        keys += re.findall(r"(?:^|\s)([\w.]+)=", l.value)
+        keys += _label_keys(l.value)
     if len(keys) != 3:
         yield Finding("L001", ERROR, img.name, "Dockerfile", f"expected exactly 3 LABEL key=value pairs, found {len(keys)}")
     for key in REQUIRED_LABEL_KEYS:
@@ -78,17 +85,21 @@ def check_from_class(img: Image) -> Iterable[Finding]:
     ct = code_text(instrs)
     defs = arg_defaults(instrs)
     sts = stages(instrs)
+
+    def is_base(ref: str, repo: str) -> bool:
+        reg, r, _ = parse_ref(resolve(ref, defs))
+        return reg in _DOCKER_HUB and r == repo  # structural: registry + repo path, not substring
+
     if img.cls == "derivative":
-        ok = any("vastai/base-image" in resolve(ref, defs) for ref, _ in sts)
+        ok = any(is_base(ref, "vastai/base-image") for ref, _ in sts)
         if not ok:
             # base injected via build-arg (pytorch hub): ARG VAST_BASE w/ no default
-            inj = (defs.get("VAST_BASE", "x") is None
-                   and any(re.fullmatch(r"\$\{?VAST_BASE\}?", ref.strip()) for ref, _ in sts))
-            ok = inj
+            ok = (defs.get("VAST_BASE", "x") is None
+                  and any(re.fullmatch(r"\$\{?VAST_BASE\}?", ref.strip()) for ref, _ in sts))
         if not ok:
             yield Finding("L004", ERROR, img.name, "Dockerfile", "derivative must derive from vastai/base-image")
     elif img.cls == "pytorch-nested":
-        if not any("vastai/pytorch" in resolve(ref, defs) for ref, _ in sts):
+        if not any(is_base(ref, "vastai/pytorch") for ref, _ in sts):
             yield Finding("L004", ERROR, img.name, "Dockerfile", "pytorch-nested must derive from vastai/pytorch")
     elif img.cls == "external":
         vast = [ref for ref, alias in sts if alias == "vast_base_image"]
@@ -97,7 +108,7 @@ def check_from_class(img: Image) -> Iterable[Finding]:
         else:
             if sts[0][1] != "vast_base_image":
                 yield Finding("L004", ERROR, img.name, "Dockerfile", "external stage order: vast_base_image must be the FIRST FROM")
-            if "vastai/base-image" not in resolve(vast[0], defs):
+            if not is_base(vast[0], "vastai/base-image"):
                 yield Finding("L004", ERROR, img.name, "Dockerfile", "external vast_base_image stage must resolve to vastai/base-image")
         if "convert-non-vast-image.sh" not in ct:
             yield Finding("L004", ERROR, img.name, "Dockerfile", "external must graft via convert-non-vast-image.sh")
@@ -109,9 +120,11 @@ def check_torch_guard(img: Image) -> Iterable[Finding]:
     if img.cls != "pytorch-nested":
         return
     ct = code_text(parse(img.text))
-    # [[ "$pre" = "$post" ]] || { ... exit ... }   OR   [ "$pre" = "$post" ] || exit 1
+    # a [[ ... ]] test mentioning BOTH pre and post (either order, = or !=) wired to an
+    # exit via || or && on the same statement. A stray exit elsewhere does not satisfy it.
     wired = re.search(
-        r'\[\[?\s*"\$torch_versions_pre"\s*=\s*"\$torch_versions_post"\s*\]\]?\s*\|\|\s*\{?[^}\n]*\bexit\b',
+        r"\[\[?.*?\$torch_versions_(?:pre|post).*?\$torch_versions_(?:pre|post).*?\]\]?"
+        r"\s*(?:\|\||&&)\s*\{?[^}\n]*\bexit\b",
         ct,
     )
     if not wired:

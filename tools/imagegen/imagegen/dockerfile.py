@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_HEREDOC = re.compile(r"<<-?\s*([\"']?)(\w+)\1")
+_HEREDOC = re.compile(r"<<(-?)\s*([\"']?)(\w+)\2")
 
 
 @dataclass
@@ -39,14 +39,17 @@ def parse(text: str) -> list[Instruction]:
                 break
             buf += "\n" + lines[i]
             i += 1
-        # consume heredoc bodies so their lines aren't parsed as instructions
-        pending = [m.group(2) for m in _HEREDOC.finditer(buf)]
+        # consume heredoc bodies so their lines aren't parsed as instructions.
+        # plain <<EOF terminates only at a column-0 EOF; <<-EOF allows leading tabs.
+        pending = [(m.group(3), bool(m.group(1))) for m in _HEREDOC.finditer(buf)]
         while i < n and pending:
             body = lines[i]
             i += 1
             buf += "\n" + body
-            if body.strip() in pending:
-                pending.remove(body.strip())
+            for idx, (term, dashed) in enumerate(pending):
+                if (body.strip() == term) if dashed else (body.rstrip() == term):
+                    pending.pop(idx)
+                    break
         m = re.match(r"\s*(\w+)\s*(.*)", buf, re.S)
         if not m:
             continue
@@ -82,13 +85,41 @@ def arg_defaults(instrs: list[Instruction]) -> dict[str, str | None]:
     return d
 
 
+def _expand(content: str, defaults: dict[str, str | None]) -> str:
+    # handle ${VAR}, ${VAR:-def}, ${VAR-def}, ${VAR:=def}. The ARG value wins when
+    # set (the inline `:-` default is dead once the build-arg/ARG is set).
+    m = re.match(r"(\w+):?[-=](.*)$", content, re.S)
+    if m:
+        val = defaults.get(m.group(1))
+        return val if val else m.group(2)
+    val = defaults.get(content)
+    return val if val else "${" + content + "}"
+
+
 def resolve(ref: str, defaults: dict[str, str | None]) -> str:
-    """Substitute ${VAR}/$VAR in a FROM ref with known ARG defaults."""
+    """Substitute ${VAR}/${VAR:-def}/$VAR in a FROM ref with known ARG defaults."""
     def sub(m: re.Match) -> str:
-        name = m.group(1) or m.group(2)
+        if m.group(1) is not None:
+            return _expand(m.group(1), defaults)
+        name = m.group(2)
         val = defaults.get(name)
         return val if val else m.group(0)
-    return re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, ref)
+    return re.sub(r"\$\{([^}]*)\}|\$(\w+)", sub, ref)
+
+
+def parse_ref(ref: str) -> tuple[str | None, str, str | None]:
+    """Split an image ref into (registry, repo, tag). registry=None means Docker Hub."""
+    ref = ref.strip().split("@", 1)[0]
+    parts = ref.split("/")
+    registry: str | None = None
+    if len(parts) > 1 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
+        registry, parts = parts[0], parts[1:]
+    last = parts[-1]
+    tag: str | None = None
+    if ":" in last:
+        name, tag = last.rsplit(":", 1)
+        parts = parts[:-1] + [name]
+    return registry, "/".join(parts), tag
 
 
 def code_text(instrs: list[Instruction]) -> str:
