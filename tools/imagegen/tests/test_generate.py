@@ -3,6 +3,7 @@
 This closes the loop — the trustworthy oracle (the linter, with its mutation
 tests) validates the generator. Run via pytest or the stdlib fallback below.
 """
+import re
 from pathlib import Path
 
 from imagegen.generate import generate, CLASSES
@@ -19,13 +20,34 @@ def _gen_repo(repo: Path):
              upstream="someupstream/img:1.0")
 
 
-def test_generated_images_lint_clean(tmp_path):
+def test_generated_images_structurally_valid_but_flagged_skeleton(tmp_path):
+    """Generated output passes every STRUCTURAL check, and L040 flags it as an
+    incomplete skeleton — so it is never mistaken for a complete image."""
     _gen_repo(tmp_path)
     imgs = {i.name: i for i in discover(tmp_path)}
     assert set(imgs) == {"mytool", "myapp", "myext"}
     for name, img in imgs.items():
-        errors = [(f.code, f.msg) for f in lint_image(img, tmp_path) if f.severity == ERROR]
-        assert not errors, f"{img.cls}/{name} should lint clean, got: {errors}"
+        errors = [f for f in lint_image(img, tmp_path) if f.severity == ERROR]
+        structural = [(f.code, f.msg) for f in errors if f.code != "L040"]
+        assert not structural, f"{img.cls}/{name} structural errors: {structural}"
+        assert any(f.code == "L040" for f in errors), f"{name}: skeleton not flagged by L040"
+
+
+def test_filled_image_lints_clean(tmp_path):
+    """Once the markers are resolved, the image lints fully clean (no L040)."""
+    _gen_repo(tmp_path)
+    repo = tmp_path
+    # resolve every skeleton marker across the pytorch-nested image's files
+    img_dir = repo / "derivatives/pytorch/derivatives/myapp"
+    for p in list(img_dir.rglob("*")) + [repo / ".github/workflows/build-myapp.yml"]:
+        if p.is_file():
+            t = p.read_text()
+            for mk, repl in (("CHANGEME", "1.0.0"), ("CHANGEPORT", "7861"), (">>> FILL", "done")):
+                t = t.replace(mk, repl)
+            p.write_text(t)
+    img = next(i for i in discover(repo) if i.name == "myapp")
+    errors = [(f.code, f.msg) for f in lint_image(img, repo) if f.severity == ERROR]
+    assert not errors, f"filled image should lint clean, got: {errors}"
 
 
 def test_generated_classes_are_correct(tmp_path):
@@ -52,6 +74,37 @@ def test_fill_markers_present(tmp_path):
                       ("myext", "external")):
         df = (tmp_path / cls / name / "Dockerfile").read_text()
         assert ">>> FILL:" in df, f"{name} Dockerfile missing a FILL marker"
+
+
+def test_supervisor_sources_exit_portal_with_label(tmp_path):
+    """Correctness (not just lint): exit_portal.sh must be SOURCED WITH the label arg,
+    and there must be no bogus `exit_portal "..."` function call (the round-4 fatal bug)."""
+    _gen_repo(tmp_path)
+    sh = (tmp_path / "derivatives/pytorch/derivatives/myapp/ROOT/opt/supervisor-scripts/myapp.sh").read_text()
+    assert '. "${utils}/exit_portal.sh" "My App"' in sh
+    assert not re.search(r'^\s*exit_portal\s+"', sh, re.M), "bogus exit_portal function call present"
+
+
+def test_readmes_are_distinct(tmp_path):
+    _gen_repo(tmp_path)
+    d = tmp_path / "external/myext"
+    assert (d / "README.md").read_text() != (d / "README.template.md").read_text()
+    assert "Create an Instance" in (d / "README.template.md").read_text()
+
+
+def test_capability_yaml_has_image_mapping(tmp_path):
+    _gen_repo(tmp_path)
+    cap = (tmp_path / "derivatives/pytorch/derivatives/myapp/ROOT/etc/vast_capabilities.d/50-myapp.yaml").read_text()
+    assert re.search(r"^image:\s*$", cap, re.M) and "name:" in cap
+
+
+def test_no_baked_false_conventions(tmp_path):
+    """Generator must not hardcode +10000 ports or a uniform cron (invariants §3)."""
+    _gen_repo(tmp_path)
+    env = (tmp_path / "external/myext/ROOT/etc/vast_boot.d/05-myext-env.sh").read_text()
+    assert "17862" not in env  # no baked internal+10000
+    wf = (tmp_path / ".github/workflows/build-myapp.yml").read_text()
+    assert "0 0,12 * * *" not in wf  # no baked uniform cron
 
 
 if __name__ == "__main__":

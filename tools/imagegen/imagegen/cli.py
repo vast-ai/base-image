@@ -60,11 +60,15 @@ def cmd_new(args) -> int:
     img = next((i for i in discover(repo) if i.dir.resolve() == d.resolve()), None)
     if img:
         errors = [f for f in lint_image(img, repo) if f.severity == ERROR]
-        print("lint:", "CLEAN ✓" if not errors else f"{len(errors)} errors")
-        for f in errors:
+        struct = [f for f in errors if f.code != "L040"]
+        skel = [f for f in errors if f.code == "L040"]
+        print("structure:", "valid ✓" if not struct else f"{len(struct)} ERRORS:")
+        for f in struct:
             print(f"  ✗ [{f.code}] {f.path}: {f.msg}")
-    print("\nNext: fill the `>>> FILL: ... <<<` markers, set the CHANGEME base tag,"
-          "\nthen run `imagegen lint " + args.name + "` and the real `docker build`.")
+        print(f"skeleton:  {len(skel)} file(s) with FILL/CHANGEME markers to complete"
+              " — NOT buildable yet")
+    print("\nNext: fill the `>>> FILL: ... <<<` markers and CHANGEME tags, then"
+          f"\n`imagegen lint {args.name}` (must be 0 errors) and run the real `docker build`.")
     return 0
 
 

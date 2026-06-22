@@ -1,10 +1,12 @@
 """Deterministic generator for the mechanical ~80% of a new image.
 
+Templates are modelled on the REAL repo images (comfyui, vllm), not invented.
 Emits Dockerfile + ROOT/ overlay + README + CI skeleton per class, with fenced
-fill-markers (`>>> FILL: ... <<<`) for the judgment residue a human/LLM completes.
-Output is designed to pass the linter by construction (see test_generate round-trip).
-Templating is stdlib @@TOKEN@@ substitution (no Jinja2) to keep deps minimal and
-avoid brace clashes with shell `${...}`.
+fill-markers (`>>> FILL: ... <<<`, `CHANGEME`, `FIXME:`) for the judgment residue.
+A generated image passes the STRUCTURAL linter but L040 flags it as an incomplete
+skeleton until the markers are resolved (so "lint clean" never means "ready" by
+accident). Templating is stdlib @@TOKEN@@ substitution (no Jinja2) to keep deps
+minimal and avoid brace clashes with shell `${...}`.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -21,7 +23,7 @@ _LABELS = '''LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="@@LABEL@@ suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"'''
 
-_TORCH_SNAP = (
+_SNAP = (
     '''"$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)"'''
 )
 
@@ -60,7 +62,7 @@ RUN env-hash > /.env_hash
 _DF_EXTERNAL = '''ARG VAST_BASE=vastai/base-image:CHANGEME
 ARG @@NAME_UPPER@@_BASE=@@UPSTREAM@@
 FROM ${VAST_BASE} AS vast_base_image
-FROM ${@@NAME_UPPER@@_BASE}
+FROM ${@@NAME_UPPER@@_BASE} AS @@NAME@@_build
 
 @@LABELS@@
 
@@ -70,6 +72,7 @@ ENV DATA_DIRECTORY=/workspace \\
 
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
+COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 RUN set -euo pipefail; \\
     chmod +x /tmp/convert-non-vast-image.sh; \\
@@ -86,22 +89,33 @@ ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
 '''
 
+# Modelled on the real comfyui.sh: utils sourced in order; exit_portal.sh is SOURCED
+# WITH the label as $1, inside a SERVERLESS guard (it is NOT a function).
 _SUPERVISOR_SH = '''#!/bin/bash
-# Port hint: PORTAL_CONFIG entry "localhost:@@PORT@@:@@EXTPORT@@:/:@@LABEL@@"
-# (+10000 external offset is the common convention, not a hard rule.)
-utils="/opt/supervisor-scripts/utils"
+
+utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
-. "${utils}/exit_portal.sh"
 
-exit_portal "@@LABEL@@"
+# Serverless: skip the portal-config gate when running serverless
+if [[ "${SERVERLESS:-false}" != "true" ]]; then
+    . "${utils}/exit_portal.sh" "@@LABEL@@"
+fi
+
 . /venv/main/bin/activate
-while [ -f "/.provisioning" ]; do sleep 5; done
+
+# Wait for provisioning to complete before starting
+while [ -f "/.provisioning" ]; do
+    echo "$PROC_NAME startup paused until provisioning completes (/.provisioning present)"
+    sleep 5
+done
+
 cd "${WORKSPACE}/@@NAME@@" 2>/dev/null || cd "${WORKSPACE}"
 
-# >>> FILL: launch command for @@NAME@@ <<<
-exec true
+# >>> FILL: launch @@NAME@@ using `pty` like real images, e.g. `pty python main.py ...` <<<
+echo "FIXME: @@NAME@@ launch command not implemented" >&2
+exit 1
 '''
 
 _CONF = '''[program:@@NAME@@]
@@ -113,10 +127,12 @@ stdout_logfile=/dev/stdout
 redirect_stderr=true
 '''
 
-_CAP = '''# Capability manifest fragment for @@NAME@@
-name: @@NAME@@
-readme: README.md
-# >>> FILL: preinstalled, python_environments, etc. <<<
+# Modelled on real 50-comfyui.yaml: top-level `image:` mapping overriding the base block.
+_CAP = '''# @@LABEL@@ — image identity (overrides the base image block).
+image:
+  name: @@LABEL@@
+  readme: ">>> FILL: GitHub URL to this image's directory <<<"
+  preinstalled: ">>> FILL: e.g. PyTorch + @@LABEL@@ <<<"
 '''
 
 _AGENT = '''# @@LABEL@@
@@ -125,28 +141,42 @@ _AGENT = '''# @@LABEL@@
 > ports, where models/data live, common tasks.
 '''
 
-_README = '''# @@LABEL@@
+# README.md = developer docs; README.template.md = Vast.ai marketplace listing.
+# These are DISTINCT artifacts (see real vllm/README.md vs README.template.md).
+_README_DEV = '''# @@LABEL@@ Image
 
-Vast.ai image for @@NAME@@.
+A Vast.ai image for @@NAME@@. Includes the Instance Portal, Supervisor process
+management, and other conveniences from the Vast.ai
+[base image](https://github.com/vast-ai/base-image).
 
-> FILL: description, usage, ports, provisioning notes.
+> FILL: how this image works, available tags, environment variables.
 '''
 
+_README_TEMPLATE = '''# @@LABEL@@
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=@@NAME@@)**
+
+## What is this template?
+
+> FILL: marketplace description of @@LABEL@@ for end users — what it does and why.
+'''
+
+# external only: PORTAL_CONFIG ports are NOT internal+10000 by rule (invariants §3),
+# and must match the app's real bind port (§4) — so they are FILL markers, not baked.
 _BOOT_ENV = '''#!/bin/bash
 if [[ -z $PORTAL_CONFIG ]]; then
-  export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:@@PORT@@:@@EXTPORT@@:/:@@LABEL@@"
+  # >>> FILL: real internal:external ports + path for @@LABEL@@ (ports must match the app's bind port) <<<
+  export PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:CHANGEPORT:CHANGEPORT:/:@@LABEL@@"
 fi
 '''
 
-_WORKFLOW = '''# >>> FILL: CI workflow skeleton for @@NAME@@ — complete per .github/AGENTS.md.
-# Real shape is the 5-job pipeline (preflight -> build -> merge-manifests ->
-# collect-tags -> notify); job-shape is NOT linted, so review against a sibling
-# build-*.yml before relying on this. <<<
+# CI job-shape is NOT linted and is complex (5-job pipeline); schedules are staggered,
+# NOT uniform (invariants §3) — so no cron is baked in.
+_WORKFLOW = '''# >>> FILL: CI workflow for @@NAME@@ — complete per .github/AGENTS.md. Real shape is the
+# 5-job pipeline (preflight -> build -> merge-manifests -> collect-tags -> notify);
+# review against a sibling build-*.yml. Set a STAGGERED schedule, not a uniform cron. <<<
 name: Build @@NAME@@
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0,12 * * *"
 jobs:
   preflight:
     runs-on: ubuntu-latest
@@ -170,9 +200,8 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
         raise ValueError("external images require --upstream <image:tag>")
 
     sub = dict(NAME=name, NAME_UPPER=name.upper().replace("-", "_"), LABEL=label,
-               PORT=str(port), EXTPORT=str(port + 10000), UPSTREAM=upstream or "",
-               LABELS=_render(_LABELS, LABEL=label), SNAP=_TORCH_SNAP)
-
+               PORT=str(port), UPSTREAM=upstream or "",
+               LABELS=_render(_LABELS, LABEL=label), SNAP=_SNAP)
     df_tmpl = {"derivative": _DF_DERIVATIVE, "pytorch-nested": _DF_PYTORCH,
                "external": _DF_EXTERNAL}[cls]
 
@@ -185,8 +214,8 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
 
     files = {
         d / "Dockerfile": _render(df_tmpl, **sub),
-        d / "README.md": _render(_README, **sub),
-        d / "README.template.md": _render(_README, **sub),
+        d / "README.md": _render(_README_DEV, **sub),
+        d / "README.template.md": _render(_README_TEMPLATE, **sub),
         root / "opt/supervisor-scripts" / f"{name}.sh": _render(_SUPERVISOR_SH, **sub),
         root / "etc/supervisor/conf.d" / f"{name}.conf": _render(_CONF, **sub),
         root / "etc/vast_capabilities.d" / f"{_CAP_NN[cls]}-{name}.yaml": _render(_CAP, **sub),

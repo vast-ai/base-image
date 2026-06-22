@@ -208,6 +208,36 @@ def check_workflow(img: Image, repo: Path) -> Iterable[Finding]:
         yield Finding("L030", WARN, img.name, ".github/workflows", f"no build-{img.name}.yml (may build via a shared workflow)")
 
 
+_SKELETON_MARKERS = ("CHANGEME", "CHANGEPORT", ">>> FILL")
+
+
+def check_skeleton(img: Image, repo: Path) -> Iterable[Finding]:
+    """L040 — unfilled generator markers must not pass as 'clean'. So a scaffold can
+    never be mistaken for a complete, buildable image. Scoped to the image's own files."""
+    if img.cls == "base":
+        return
+    files = [img.dockerfile, img.dir / "README.md", img.dir / "README.template.md"]
+    if img.root:
+        files += [p for p in img.root.rglob("*") if p.is_file()]
+    wf = repo / ".github" / "workflows" / f"build-{img.name}.yml"
+    if wf.exists():
+        files.append(wf)
+    for p in files:
+        if not p.is_file():
+            continue
+        try:
+            t = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if any(mk in t for mk in _SKELETON_MARKERS):
+            try:
+                rel = str(p.relative_to(img.dir))
+            except ValueError:
+                rel = str(p.name)
+            yield Finding("L040", ERROR, img.name, rel,
+                          "unfilled skeleton marker (CHANGEME / >>> FILL) — complete before build")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
@@ -225,6 +255,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     for chk in IMAGE_CHECKS:
         out.extend(chk(img))
     out.extend(check_workflow(img, repo))
+    out.extend(check_skeleton(img, repo))
     if apply_exceptions:
         out = [f for f in out if not _suppressed(img.name, f)]
     return out
