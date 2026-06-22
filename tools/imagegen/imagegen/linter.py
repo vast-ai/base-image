@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .discover import Image
-from .dockerfile import parse, stages, code_text, ini_sections
+from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve
 
 ERROR = "ERROR"
 WARN = "WARN"
@@ -45,13 +45,15 @@ REQUIRED_LABEL_KEYS = ["org.opencontainers.image.source", "org.opencontainers.im
 # ---- Dockerfile checks ------------------------------------------------------
 
 def check_labels(img: Image) -> Iterable[Finding]:
-    """L001 — exactly 3 LABEL instructions with the required keys."""
+    """L001 — exactly 3 LABEL key=value pairs (any line layout) with the required keys."""
     labels = [i for i in parse(img.text) if i.cmd == "LABEL"]
-    if len(labels) != 3:
-        yield Finding("L001", ERROR, img.name, "Dockerfile", f"expected exactly 3 LABEL instructions, found {len(labels)}")
-    blob = " ".join(l.value for l in labels)
+    keys: list[str] = []
+    for l in labels:
+        keys += re.findall(r"(?:^|\s)([\w.]+)=", l.value)
+    if len(keys) != 3:
+        yield Finding("L001", ERROR, img.name, "Dockerfile", f"expected exactly 3 LABEL key=value pairs, found {len(keys)}")
     for key in REQUIRED_LABEL_KEYS:
-        if key not in blob:
+        if key not in keys:
             yield Finding("L001", ERROR, img.name, "Dockerfile", f"missing required LABEL key: {key}")
 
 
@@ -70,41 +72,51 @@ def check_copy_root(img: Image) -> Iterable[Finding]:
 
 
 def check_from_class(img: Image) -> Iterable[Finding]:
-    """L004 — FROM matches declared class (stage identity + order for external)."""
+    """L004 — FROM matches declared class. Resolves the actual base ref via ARG
+    defaults (not a global substring), so a decoy `vastai/...` elsewhere can't fool it."""
     instrs = parse(img.text)
     ct = code_text(instrs)
+    defs = arg_defaults(instrs)
+    sts = stages(instrs)
     if img.cls == "derivative":
-        inline = "vastai/base-image" in ct
-        via_arg = bool(any(i.cmd == "ARG" and re.match(r"VAST_BASE\b", i.value) for i in instrs)
-                       and re.search(r"\$\{?VAST_BASE\}?", ct))
-        if not (inline or via_arg):
+        ok = any("vastai/base-image" in resolve(ref, defs) for ref, _ in sts)
+        if not ok:
+            # base injected via build-arg (pytorch hub): ARG VAST_BASE w/ no default
+            inj = (defs.get("VAST_BASE", "x") is None
+                   and any(re.fullmatch(r"\$\{?VAST_BASE\}?", ref.strip()) for ref, _ in sts))
+            ok = inj
+        if not ok:
             yield Finding("L004", ERROR, img.name, "Dockerfile", "derivative must derive from vastai/base-image")
     elif img.cls == "pytorch-nested":
-        if "vastai/pytorch" not in ct:
+        if not any("vastai/pytorch" in resolve(ref, defs) for ref, _ in sts):
             yield Finding("L004", ERROR, img.name, "Dockerfile", "pytorch-nested must derive from vastai/pytorch")
     elif img.cls == "external":
-        sts = stages(instrs)
-        aliases = [a for _, a in sts]
-        if "vast_base_image" not in aliases:
+        vast = [ref for ref, alias in sts if alias == "vast_base_image"]
+        if not vast:
             yield Finding("L004", ERROR, img.name, "Dockerfile", "external must have a `FROM ... AS vast_base_image` stage")
-        elif sts[0][1] != "vast_base_image":
-            yield Finding("L004", ERROR, img.name, "Dockerfile", "external stage order: vast_base_image must be the FIRST FROM")
-        if "vastai/base-image" not in ct:
-            yield Finding("L004", ERROR, img.name, "Dockerfile", "external vast stage must be vastai/base-image")
+        else:
+            if sts[0][1] != "vast_base_image":
+                yield Finding("L004", ERROR, img.name, "Dockerfile", "external stage order: vast_base_image must be the FIRST FROM")
+            if "vastai/base-image" not in resolve(vast[0], defs):
+                yield Finding("L004", ERROR, img.name, "Dockerfile", "external vast_base_image stage must resolve to vastai/base-image")
         if "convert-non-vast-image.sh" not in ct:
             yield Finding("L004", ERROR, img.name, "Dockerfile", "external must graft via convert-non-vast-image.sh")
 
 
 def check_torch_guard(img: Image) -> Iterable[Finding]:
-    """L020 — torch-drift guard with an actual pre==post comparison that exits."""
+    """L020 — torch-drift guard: the pre==post comparison must be wired to an exit
+    on the SAME statement (a stray `exit 1` elsewhere, e.g. the REF guard, must not satisfy it)."""
     if img.cls != "pytorch-nested":
         return
     ct = code_text(parse(img.text))
-    has_cmp = re.search(r'\$torch_versions_pre"?\s*=\s*"?\$torch_versions_post', ct)
-    if not has_cmp:
-        yield Finding("L020", ERROR, img.name, "Dockerfile", "missing torch-drift guard comparison (pre == post)")
-    elif "exit 1" not in ct:
-        yield Finding("L020", ERROR, img.name, "Dockerfile", "torch-drift guard does not `exit 1` on drift")
+    # [[ "$pre" = "$post" ]] || { ... exit ... }   OR   [ "$pre" = "$post" ] || exit 1
+    wired = re.search(
+        r'\[\[?\s*"\$torch_versions_pre"\s*=\s*"\$torch_versions_post"\s*\]\]?\s*\|\|\s*\{?[^}\n]*\bexit\b',
+        ct,
+    )
+    if not wired:
+        yield Finding("L020", ERROR, img.name, "Dockerfile",
+                      "torch-drift guard not wired to exit on drift (pre==post comparison must `|| ... exit`)")
 
 
 def check_no_auto_backend(img: Image) -> Iterable[Finding]:

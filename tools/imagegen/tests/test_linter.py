@@ -57,6 +57,11 @@ def errs(img: Image, repo: Path) -> set[str]:
     return {f.code for f in lint_image(img, repo) if f.severity == ERROR}
 
 
+def has(img: Image, repo: Path, code: str, sub: str = "") -> bool:
+    return any(f.code == code and sub in f.msg
+               for f in lint_image(img, repo) if f.severity == ERROR)
+
+
 def test_valid_image_is_clean(tmp_path):
     assert errs(make(tmp_path), tmp_path) == set()
 
@@ -179,6 +184,70 @@ def test_mut_conf_command_basename_mismatch(tmp_path):
     mut = replace(img, dir=dst, root=dst / "ROOT", dockerfile=dst / "Dockerfile",
                   text=(dst / "Dockerfile").read_text())
     assert "L010" in errs(mut, repo)
+
+
+def test_mut_torch_guard_action_removed():
+    """Keep the [[ pre = post ]] comparison but delete its `|| {...exit}` action.
+    The unrelated REF-guard `exit 1` must NOT satisfy L020 (the prior cosmetic bug)."""
+    repo, img = _real("comfyui")
+    mut_text = re.sub(
+        r'(\[\[ "\$torch_versions_pre" = "\$torch_versions_post" \]\])\s*\|\|\s*\{[^}]*\}',
+        r"\1", img.text)
+    assert mut_text != img.text and "torch_versions_pre" in mut_text  # comparison kept
+    assert has(replace(img, text=mut_text), repo, "L020")
+
+
+def test_mut_external_base_identity_decoy():
+    """Wrong base + a decoy `vastai/base-image` elsewhere must still fail L004."""
+    repo, img = _real("vllm")
+    assert "ARG VAST_BASE=" in img.text
+    t = re.sub(r"ARG VAST_BASE=\S+", "ARG VAST_BASE=evil/img:latest", img.text)
+    t += "\nENV DECOY=vastai/base-image\n"
+    assert has(replace(img, text=t), repo, "L004", "must resolve to vastai/base-image")
+
+
+def test_mut_copy_root_removed():
+    repo, img = _real("comfyui")
+    mut = replace(img, text=re.sub(r"(?m)^\s*COPY \./ROOT/? /\s*$", "", img.text))
+    assert "L003" in errs(mut, repo)
+
+
+def test_mut_util_order_real(tmp_path):
+    repo, img = _real("comfyui")
+    dst = tmp_path / "comfyui"
+    shutil.copytree(img.dir, dst)
+    sdir = dst / "ROOT/opt/supervisor-scripts"
+    target = next(s for s in sorted(sdir.glob("*.sh")) if "logging.sh" in s.read_text())
+    target.write_text('. "${utils}/exit_portal.sh"\n' + target.read_text())  # inversion
+    mut = replace(img, dir=dst, root=dst / "ROOT", dockerfile=dst / "Dockerfile",
+                  text=(dst / "Dockerfile").read_text())
+    assert "L011" in errs(mut, repo)
+
+
+def test_L001_consolidated_label_not_false_fail(tmp_path):
+    """One LABEL with 3 key=value pairs is legal Docker and must NOT trip L001."""
+    df = VALID_DF.replace(
+        'LABEL org.opencontainers.image.source="https://github.com/vastai/"\n'
+        'LABEL org.opencontainers.image.description="Test suitable for Vast.ai."\n'
+        'LABEL maintainer="Vast.ai Inc <contact@vast.ai>"\n',
+        'LABEL org.opencontainers.image.source="https://github.com/vastai/" '
+        'org.opencontainers.image.description="Test suitable for Vast.ai." '
+        'maintainer="Vast.ai Inc <contact@vast.ai>"\n')
+    assert "L001" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_parser_heredoc_final_run(tmp_path):
+    """env-hash via a heredoc final RUN must be recognised (no false L002, no leaked fake instrs)."""
+    df = VALID_DF.replace("RUN env-hash > /.env_hash\n",
+                          "RUN <<EOF\nenv-hash > /.env_hash\nEOF\n")
+    assert errs(make(tmp_path, df=df), tmp_path) == set()
+
+
+def test_parser_comment_in_continuation(tmp_path):
+    """A # comment inside a \\ continuation must not corrupt the instruction stream."""
+    df = VALID_DF.replace("COPY ./ROOT /\n",
+                          "RUN echo a \\\n# a comment\n    && echo b\nCOPY ./ROOT /\n")
+    assert errs(make(tmp_path, df=df), tmp_path) == set()
 
 
 def test_no_stale_exceptions():
