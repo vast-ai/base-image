@@ -21,6 +21,27 @@ Actions). Orient with [docs/context-map.md](docs/context-map.md).
 - Surface expert disagreement to me RAW; do not pre-resolve it.
 - Keep docs/invariants.md and docs/context-map.md current as the project grows.
 
+## Bug → Invariant protocol (when I report a mistake/miss/regression)
+
+A reported defect means a MISSING INVARIANT, not just a line to patch. When I say
+"we missed X" or report a bug in the image tooling, do this yourself, unprompted —
+do not just patch the symptom:
+
+1. **Ground truth first** — inspect the real repo; restate the exact invariant and
+   its boundary/exemptions.
+2. **Linter check BEFORE the fix** — add a new `RULES` code in
+   `tools/imagegen/imagegen/linter.py`; regenerate `docs/lint-rules.md`
+   (`imagegen rules > docs/lint-rules.md`). Run `imagegen lint --all`: the baseline
+   must stay CLEAN. If a real image fails, STOP and tell me (latent bug, or the
+   invariant is wrong).
+3. **Prove it bites** — a mutation test that corrupts a real image and asserts the
+   new code fires. No mutation test = the check doesn't count.
+4. **Then fix the source** (generator/etc.) + a round-trip/regression assertion.
+5. **Show evidence, don't claim** — report the new code, the baseline result, and
+   the mutation-test name. "Done" without evidence is a failure.
+
+Don't edit beyond what this requires; surface anything larger.
+
 ## Repo-specific cautions
 - **Bash for build/registry plumbing; Python 3.12 for structured/tested logic**
   (precedent: `lib/provisioner`, `portal-aio`, `tools/model-ui`). Don't introduce a
