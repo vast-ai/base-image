@@ -1593,16 +1593,16 @@ async def _collect_metrics() -> dict:
     nvidia_error = None
     rocm_error = None
     
-    # Try to get NVIDIA GPUs
+    # Try to get NVIDIA GPUs (offloaded — GPUtil shells out to nvidia-smi, blocking)
     try:
-        nvidia_gpus = GPUtil.getGPUs()
+        nvidia_gpus = await asyncio.to_thread(GPUtil.getGPUs)
         all_gpus.extend(nvidia_gpus)
     except Exception as e:
         nvidia_error = str(e)
-    
-    # Try to get ROCm GPUs
+
+    # Try to get ROCm GPUs (offloaded — get_rocm_gpus shells out to rocm-smi, blocking)
     try:
-        rocm_gpus = get_rocm_gpus()
+        rocm_gpus = await asyncio.to_thread(get_rocm_gpus)
         all_gpus.extend(rocm_gpus)
     except Exception as e:
         rocm_error = str(e)
@@ -1697,17 +1697,22 @@ async def get_system_metrics() -> JSONResponse:
 # --------------------------------------------------------------------------- #
 
 async def _build_capabilities(include: set[str]) -> dict:
-    # Supervisor states + GPU summary are cheap; metrics are opt-in.
+    # Supervisor states are already offloaded. The GPU summary and manifest
+    # assembly run blocking subprocesses (nvidia-smi via GPUtil, ldconfig/nvidia-smi
+    # inside assemble_live, each timeout=5), so offload them too — otherwise a single
+    # /capabilities call stalls the event loop and the live pollers. metrics are opt-in.
     try:
         processes = await _collect_supervisor()
     except Exception as e:
         logger.warning(f"capabilities: supervisor unavailable: {e}")
         processes = []
     metrics = await _collect_metrics() if "metrics" in include else None
-    return assemble_live(
+    gpu = await asyncio.to_thread(get_gpu_info)
+    return await asyncio.to_thread(
+        assemble_live,
         processes=processes,
         metrics=metrics,
-        gpu=get_gpu_info(),
+        gpu=gpu,
         include=include,
     )
 
