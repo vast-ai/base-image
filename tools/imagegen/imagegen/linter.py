@@ -67,6 +67,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L050", ERROR, "Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports"),
     ("L051", ERROR, "EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only)"),
     ("L052", WARN, "Image bakes a default PORTAL_CONFIG (else it relies on the launch template)"),
+    ("L060", ERROR, "A shipped derivative instance test (tests/<name>.d/*.sh) is executable, sources lib.sh, and has exactly one `test_pass`"),
 ]
 
 
@@ -400,11 +401,40 @@ def check_baked_portal_default(img: Image) -> Iterable[Finding]:
                       "no baked PORTAL_CONFIG default (relies on the launch template)")
 
 
+def check_instance_test_shape(img: Image) -> Iterable[Finding]:
+    """L060 — shape-only check on a SHIPPED derivative instance test
+    (ROOT/opt/instance-tools/tests/<name>.d/*.sh): it must be executable (the
+    runner discovers only `-executable` scripts), source the shared tests/lib.sh,
+    and have exactly one `test_pass` success terminal. This does NOT require any
+    image to ship a test (no mandate) and cannot judge coverage — a static linter
+    can only enforce that a test which DOES exist follows the harness contract, so
+    a present-but-malformed test (silently never runs, or has no success path)
+    can't masquerade as coverage."""
+    if not img.root:
+        return
+    tests_dir = img.root / "opt" / "instance-tools" / "tests"
+    if not tests_dir.is_dir():
+        return
+    for script in sorted(tests_dir.glob("*.d/*.sh")):
+        rel = str(script.relative_to(img.dir))
+        if not (script.stat().st_mode & 0o111):
+            yield Finding("L060", ERROR, img.name, rel,
+                          "instance test is not executable (runner discovers only -executable scripts; chmod +x)")
+        code = "\n".join(l for l in script.read_text(encoding="utf-8", errors="replace").splitlines()
+                         if not l.lstrip().startswith("#"))
+        if not re.search(r"^\s*(?:\.|source)\s+.*lib\.sh", code, re.M):
+            yield Finding("L060", ERROR, img.name, rel, "instance test does not source the shared tests/lib.sh")
+        n = len(re.findall(r"(?<![\w.])test_pass\b", code))
+        if n != 1:
+            yield Finding("L060", ERROR, img.name, rel,
+                          f"instance test must have exactly one `test_pass` success terminal (found {n})")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_script_exec,
-    check_baked_portal_default,
+    check_baked_portal_default, check_instance_test_shape,
 ]
 
 

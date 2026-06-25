@@ -138,6 +138,13 @@ test_pass "description of what passed"
 
 8. **Boot scripts are sourced** — if adding a boot script to `/etc/vast_boot.d/`, never use `exit` (it kills the boot sequence). Use `return` instead.
 
+> The *shape* of a shipped derivative test (rules 1 and 4, plus the `+x` bit the
+> runner needs to discover it) is statically enforced by the `imagegen` linter
+> (`L060`): a `tests/<name>.d/*.sh` that exists must be executable, source `lib.sh`,
+> and have exactly one `test_pass`. The linter cannot judge *coverage* and does not
+> require any image to ship a test — it only stops a present-but-malformed test from
+> silently never running or having no success path.
+
 ### Derivative tests
 
 Derivative images (pytorch, comfyui, etc.) add tests by creating a directory named `<derivative>.d/` alongside `base/`:

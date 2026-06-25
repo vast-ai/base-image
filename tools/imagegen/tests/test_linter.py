@@ -234,6 +234,51 @@ def test_mut_copy_root_removed():
     assert "L003" in errs(mut, repo)
 
 
+# ---- L060: derivative instance-test shape (source lib.sh + one test_pass + +x) ----
+
+_OOBA_TEST_REL = "ROOT/opt/instance-tools/tests/oobabooga.d/10-oobabooga-serving.sh"
+
+
+def _copy_image(tmp_path, name):
+    """Copy a real image dir to tmp and return an Image pointed at the copy, so a
+    test can mutate ROOT/ files on disk (L060 reads files, not img.text)."""
+    repo, img = _real(name)
+    dst = tmp_path / name
+    shutil.copytree(img.dir, dst)
+    mut = replace(img, dir=dst, root=dst / "ROOT", dockerfile=dst / "Dockerfile",
+                  text=(dst / "Dockerfile").read_text())
+    return repo, mut, dst
+
+
+def test_oobabooga_instance_test_clean():
+    """Positive: the real oobabooga test is executable, sources lib.sh, and has one
+    test_pass — L060 must NOT fire (guards the mutations from passing vacuously)."""
+    repo, img = _real("oobabooga")
+    p = img.root / "opt/instance-tools/tests/oobabooga.d/10-oobabooga-serving.sh"
+    assert p.is_file() and (p.stat().st_mode & 0o111), "fixture drifted: missing/non-exec test"
+    assert "L060" not in errs(img, repo)
+
+
+def test_mut_L060_no_lib_source(tmp_path):
+    repo, img, dst = _copy_image(tmp_path, "oobabooga")
+    p = dst / _OOBA_TEST_REL
+    p.write_text(p.read_text().replace('source "$(dirname "$0")/../lib.sh"', '# lib.sh source removed'))
+    assert has(img, repo, "L060", "lib.sh")
+
+
+def test_mut_L060_two_test_pass(tmp_path):
+    repo, img, dst = _copy_image(tmp_path, "oobabooga")
+    p = dst / _OOBA_TEST_REL
+    p.write_text(p.read_text() + '\ntest_pass "a second success terminal"\n')
+    assert has(img, repo, "L060", "exactly one")
+
+
+def test_mut_L060_not_executable(tmp_path):
+    repo, img, dst = _copy_image(tmp_path, "oobabooga")
+    (dst / _OOBA_TEST_REL).chmod(0o644)
+    assert has(img, repo, "L060", "not executable")
+
+
 def test_mut_util_order_real(tmp_path):
     repo, img = _real("comfyui")
     dst = tmp_path / "comfyui"

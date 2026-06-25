@@ -21,3 +21,4 @@
 | L050 | ERROR | Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports |
 | L051 | ERROR | EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only) |
 | L052 | WARN | Image bakes a default PORTAL_CONFIG (else it relies on the launch template) |
+| L060 | ERROR | A shipped derivative instance test (tests/<name>.d/*.sh) is executable, sources lib.sh, and has exactly one `test_pass` |
