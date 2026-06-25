@@ -7,14 +7,13 @@
 #   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
 # Optional: SLACK_WEBHOOK_URL
 #
-# Release detection: OOBABOOGA_REF is PINNED to a specific upstream release tag
-# (DEFAULT_OOBABOOGA_REF), because the derivative-owned accelerator wheel manifest
-# (ROOT/opt/accel-wheels.txt) is validated against that exact tag's
-# requirements/full/requirements.txt. REF and manifest move together, under review
-# (ADR 0004 condition 5). Bumping the tag is a deliberate action that re-validates
-# the manifest — never an unattended auto-latest. A manual OOBABOOGA_REF input
-# overrides for testing. Scheduled runs rebuild the pinned tag against the latest
-# base image (picks up base security/feature bumps).
+# Release detection: resolves HEAD of the upstream main branch (like the sibling
+# derivative workflows). The Dockerfile derives its accelerator-wheel handling from
+# the resolved ref's requirements at build time, so CI always tracks latest. A
+# scheduled run skips if the latest upstream commit is older than COMMIT_AGE_THRESHOLD;
+# a manual OOBABOOGA_REF input overrides. There is an accepted risk a new ref breaks
+# the build (a missing cp312 accel wheel, a new torch minor) — it fails LOUDLY and
+# the live-GPU QA gate (ADR 0005) is the runtime net (ADR 0004).
 #
 # Currently amd64-only: oobabooga's accelerator wheels (exllamav3, flash_attn,
 # xformers, llama_cpp_binaries) publish x86_64-only wheels. Re-enable arm64 when
@@ -30,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       OOBABOOGA_REF:
-        description: "Upstream release tag/commit - leave empty for the pinned default"
+        description: "Git ref (commit/branch/tag) - leave empty for latest upstream HEAD"
         required: false
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
@@ -42,9 +41,11 @@ on:
 
 env:
   DEFAULT_DOCKERHUB_REPO: "oobabooga"
-  # Pinned upstream release tag — kept in lockstep with
-  # derivatives/pytorch/derivatives/oobabooga/ROOT/opt/accel-wheels.txt (ADR 0004).
-  DEFAULT_OOBABOOGA_REF: "v4.9"
+  OOBABOOGA_GITHUB_REPO: "oobabooga/text-generation-webui"
+  OOBABOOGA_BRANCH: "main"
+  # 12 hours (matches the schedule cron) — scheduled runs skip if the latest
+  # upstream commit is older than this.
+  COMMIT_AGE_THRESHOLD: 43200
 
 jobs:
   preflight:
@@ -72,30 +73,60 @@ jobs:
             echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
-      - name: Resolve Oobabooga ref
+      - name: Resolve Oobabooga git ref
         id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          REF="${{ inputs.OOBABOOGA_REF }}"
-          if [[ -z "$REF" ]]; then
-            REF="${{ env.DEFAULT_OOBABOOGA_REF }}"
+          MANUAL_REF="${{ inputs.OOBABOOGA_REF }}"
+
+          if [[ -n "$MANUAL_REF" ]]; then
+            echo "Using manual ref: $MANUAL_REF"
+            echo "ref=$MANUAL_REF" >> $GITHUB_OUTPUT
+            echo "commit-age=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
-          if [[ -z "$REF" ]]; then
-            echo "::error::No OOBABOOGA_REF resolved (empty input and empty default)"
+
+          echo "Resolving HEAD of ${{ env.OOBABOOGA_BRANCH }} branch via GitHub API..."
+          # -L: the upstream repo path 301-redirects; follow it.
+          RESPONSE=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.OOBABOOGA_GITHUB_REPO }}/commits/${{ env.OOBABOOGA_BRANCH }}")
+          COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
+          COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')
+
+          if [[ "$COMMIT_SHA" == "null" || -z "$COMMIT_SHA" ]]; then
+            echo "::error::Could not resolve HEAD of ${{ env.OOBABOOGA_BRANCH }} branch"
             exit 1
           fi
-          echo "Using Oobabooga ref: $REF"
-          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+          COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+
+          echo "Resolved ${{ env.OOBABOOGA_BRANCH }} -> $COMMIT_SHA (${AGE}s old)"
+          echo "ref=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit-age=$AGE" >> $GITHUB_OUTPUT
 
       - name: Determine if build should run
         id: decision
         run: |
           SECRETS="${{ steps.secrets.outputs.available }}"
+          TRIGGER="${{ github.event_name }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
+          COMMIT_AGE="${{ steps.resolve-ref.outputs.commit-age }}"
+
           if [[ "$SECRETS" != "true" ]]; then
             echo "should-run=false" >> $GITHUB_OUTPUT
             echo "::notice::Skipping - Required secrets not configured"
-          else
+          elif [[ "$TRIGGER" == "workflow_dispatch" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
-            echo "Build for ref: ${{ steps.resolve-ref.outputs.ref }}"
+            echo "Manual build for ref: $RESOLVED_REF"
+          elif [[ "$COMMIT_AGE" -le "${{ env.COMMIT_AGE_THRESHOLD }}" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Scheduled build for ref: $RESOLVED_REF (${COMMIT_AGE}s old <= ${{ env.COMMIT_AGE_THRESHOLD }}s threshold)"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping scheduled build - latest upstream commit is ${COMMIT_AGE}s old (threshold ${{ env.COMMIT_AGE_THRESHOLD }}s)"
           fi
 
   build:

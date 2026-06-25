@@ -234,31 +234,6 @@ def test_mut_copy_root_removed():
     assert "L003" in errs(mut, repo)
 
 
-def test_oobabooga_accel_gate_clean():
-    """Positive: the real oobabooga ships accel-wheels.txt AND the ABI gate, so L053
-    must NOT fire — guards against the mutation tests passing vacuously."""
-    repo, img = _real("oobabooga")
-    assert (img.root / "opt" / "accel-wheels.txt").is_file(), "fixture drifted: no accel-wheels.txt"
-    assert "L053" not in errs(img, repo)
-
-
-def test_mut_accel_abi_gate_removed():
-    """L053 — dropping the build-time torch-ABI import gate while the accel-wheels.txt
-    manifest is still shipped/installed must fire (ADR 0004 binding condition 1)."""
-    repo, img = _real("oobabooga")
-    # neutralise the gate's sys.modules assertion (the import-gate signature)
-    mut = replace(img, text=img.text.replace("sys.modules", "loaded"))
-    assert "L053" in errs(mut, repo)
-
-
-def test_mut_accel_nodeps_removed():
-    """L053 — installing the accel manifest WITHOUT --no-deps lets the wheels' foreign
-    torch==2.9.0 METADATA pin downgrade the base torch; must fire."""
-    repo, img = _real("oobabooga")
-    mut = replace(img, text=img.text.replace("--no-deps ", ""))
-    assert "L053" in errs(mut, repo)
-
-
 def test_mut_util_order_real(tmp_path):
     repo, img = _real("comfyui")
     dst = tmp_path / "comfyui"

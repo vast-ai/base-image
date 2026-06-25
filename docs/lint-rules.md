@@ -21,4 +21,3 @@
 | L050 | ERROR | Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports |
 | L051 | ERROR | EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only) |
 | L052 | WARN | Image bakes a default PORTAL_CONFIG (else it relies on the launch template) |
-| L053 | ERROR | An accel-wheels.txt manifest is `--no-deps` installed AND guarded by a build-time torch-ABI import gate |

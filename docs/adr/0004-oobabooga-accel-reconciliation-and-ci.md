@@ -1,11 +1,42 @@
 # ADR 0004 — oobabooga: accel-wheel/torch reconciliation, ADR-0002 convention backfill, and CI
 
-- **Status:** Accepted (conditional — see Binding conditions)
+- **Status:** Accepted (conditional — see Binding conditions). **Amended 2026-06-25
+  — see Amendment below.**
 - **Date:** 2026-06-25
 - **Decision owner:** Rob Ballantyne
 - **Process:** idea brief → red-team gate → 3 blind architects → 3-lens blind panel
   (feasibility / maintainability / risk) → synthesis → final red-team gate on the
   plan (which empirically tested the load-bearing assumption).
+
+## Amendment (2026-06-25) — track latest upstream, do not pin
+
+The original synthesis pinned `OOBABOOGA_REF` to a release tag (`v4.9`) and shipped a
+static, owned `ROOT/opt/accel-wheels.txt` manifest validated against that tag (original
+condition 5: "REF and manifest move together"). **This was reversed**: pinning broke the
+house automation — every other derivative's CI resolves the latest upstream HEAD and
+rebuilds, and a pinned ref silently stops tracking upstream. Per the decision owner, the
+correct posture is: **CI resolves the latest upstream ref (HEAD of `main`, like the
+sibling workflows) and builds from it, accepting the risk that a future ref breaks the
+build** — the live-GPU QA gate (ADR 0005) is the runtime net being built for exactly this.
+
+Concretely, superseding the affected parts below:
+- **Install:** the static `accel-wheels.txt` manifest is **removed**. The Dockerfile now
+  derives the accel wheels from the *resolved ref's* `requirements/full/requirements.txt`
+  at build time (REF-agnostic): rewrite the cp313→cp312 ABI tag + marker, strip the base
+  torch ecosystem, split the externally-hosted accel wheels out **by stable host/org
+  token** (`turboderp-org/exllamav3`, `mjun0812/flash-attention-prebuild-wheels`,
+  `oobabooga/llama-cpp-binaries`, `download.pytorch.org/...xformers-`) and install them
+  `--no-deps`, then install the rest under a torch-ecosystem constraints floor. `--no-deps`
+  + the drift-guard + the hard ABI import gate are retained unchanged.
+- **CI (was condition-5 pinning):** `OOBABOOGA_REF` resolves to **HEAD of upstream `main`**
+  via the GitHub API with a commit-age threshold (scheduled runs skip stale upstreams) and
+  a manual override — matching `build-a1111.yml` / `build-fluxgym.yml`.
+- **Linter:** the manifest-coupled **`L053`** rule is **removed** (it keyed on the now-gone
+  `accel-wheels.txt`). The pre-existing **`L020`** drift-guard remains the codified
+  invariant that the base torch cannot be silently downgraded.
+
+Below, references to "the owned manifest" / "pinned tag" / "condition 5" / "L053" are
+retained as the historical record but are superseded by this amendment.
 
 ## Context
 

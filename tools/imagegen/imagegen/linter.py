@@ -67,7 +67,6 @@ RULES: list[tuple[str, str, str]] = [
     ("L050", ERROR, "Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports"),
     ("L051", ERROR, "EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only)"),
     ("L052", WARN, "Image bakes a default PORTAL_CONFIG (else it relies on the launch template)"),
-    ("L053", ERROR, "An accel-wheels.txt manifest is `--no-deps` installed AND guarded by a build-time torch-ABI import gate"),
 ]
 
 
@@ -401,35 +400,11 @@ def check_baked_portal_default(img: Image) -> Iterable[Finding]:
                       "no baked PORTAL_CONFIG default (relies on the launch template)")
 
 
-def check_accel_abi_gate(img: Image) -> Iterable[Finding]:
-    """L053 — an image that ships ROOT/opt/accel-wheels.txt (pinned external
-    compiled wheels carrying foreign torch-ABI METADATA pins) must (a) install that
-    manifest with `--no-deps` (so the pins cannot downgrade the base torch) AND
-    (b) prove at build time that the extensions import against the inherited torch,
-    via a `python -c` gate that imports torch and asserts a compiled module loaded
-    (`... in sys.modules`). Codifies ADR 0004 binding condition 1 so the gate cannot
-    be silently dropped by a later edit."""
-    if not img.root:
-        return
-    manifest = img.root / "opt" / "accel-wheels.txt"
-    if not manifest.is_file():
-        return
-    ct = code_text(parse(img.text))
-    if "accel-wheels.txt" not in ct or "--no-deps" not in ct:
-        yield Finding("L053", ERROR, img.name, "Dockerfile",
-                      "ships ROOT/opt/accel-wheels.txt but does not `uv pip install --no-deps` it "
-                      "(foreign torch-ABI pins could downgrade the base torch)")
-    if not re.search(r"python[0-9.]*\s+-c\b.*import\s+torch.*sys\.modules", ct):
-        yield Finding("L053", ERROR, img.name, "Dockerfile",
-                      "ships ROOT/opt/accel-wheels.txt but has no build-time torch-ABI import gate "
-                      "(`python -c \"import torch; ...; assert ... in sys.modules\"`)")
-
-
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_script_exec,
-    check_baked_portal_default, check_accel_abi_gate,
+    check_baked_portal_default,
 ]
 
 
