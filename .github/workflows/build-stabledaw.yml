@@ -1,0 +1,276 @@
+# Build StableDAW image - works on main repo (scheduled + manual) and forks (manual)
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
+# Optional: SLACK_WEBHOOK_URL
+#
+# Build source: upstream (gantasmo/theDAW) ships no releases/tags, so each run
+# builds the latest commit on the main branch (resolved via git ls-remote and
+# pinned into the tag). Scheduled runs rebuild latest; there is no release gate.
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner and pushes an arch-suffixed tag to STAGING; a per-base_image
+# merge job uses crane to assemble the multi-arch index at the PRODUCTION tag.
+# No QEMU emulation.
+#
+# Currently amd64-only: the Stable Audio 3 stack targets CUDA x86_64 wheels
+# (and flash-attn, when used, is amd64-only). Re-enable arm64 once the upstream
+# audio stack resolves cleanly on aarch64 (and update merge-manifests `arches`).
+
+name: Build StableDAW Image
+
+on:
+  schedule:
+    # Staggered (not the shared 0 0,12) to spread DockerHub/runner load.
+    - cron: '35 4,16 * * *'
+
+  workflow_dispatch:
+    inputs:
+      STABLEDAW_REF:
+        description: "Git ref (commit/branch) - leave empty for latest main"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "stabledaw"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "stabledaw"
+  STABLEDAW_GITHUB_REPO: "gantasmo/theDAW"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      stabledaw-ref: ${{ steps.resolve-ref.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
+          fi
+
+      - name: Resolve StableDAW git ref
+        id: resolve-ref
+        run: |
+          if [[ -n "${{ inputs.STABLEDAW_REF }}" ]]; then
+            REF="${{ inputs.STABLEDAW_REF }}"
+            echo "Using manual ref: $REF"
+          else
+            echo "Resolving HEAD of main branch..."
+            COMMIT=$(git ls-remote "https://github.com/${{ env.STABLEDAW_GITHUB_REPO }}.git" refs/heads/main | cut -f1 | cut -c1-7)
+            if [[ -n "$COMMIT" ]]; then
+              REF="$COMMIT"
+              echo "Resolved main -> $REF"
+            else
+              echo "::error::Could not resolve HEAD of main branch"
+              exit 1
+            fi
+          fi
+
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ -z "$RESOLVED_REF" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::error::No ref could be resolved"
+          else
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Building ref: $RESOLVED_REF"
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ${{ matrix.arch.runs_on }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15
+        # arm64 intentionally absent: the Stable Audio 3 stack targets CUDA
+        # x86_64 wheels. Re-add when the audio stack resolves on aarch64 (and
+        # update merge-manifests `arches` below).
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          if [[ -z "$CUDA_VERSION" ]]; then
+            echo "::error::Failed to parse base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          STABLEDAW_REF="${{ needs.preflight.outputs.stabledaw-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${STABLEDAW_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/stabledaw
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ matrix.base_image }}
+            STABLEDAW_REF=${{ needs.preflight.outputs.stabledaw-ref }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          STABLEDAW_REF="${{ needs.preflight.outputs.stabledaw-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${STABLEDAW_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
+          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # amd64-only until the audio stack resolves on aarch64 (see build
+          # matrix comment above).
+          arches: amd64
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload manifest tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build, merge-manifests]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, merge-manifests, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.merge-manifests.result }}
+      image-name: "StableDAW"
+      image-ref: ${{ needs.preflight.outputs.stabledaw-ref }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

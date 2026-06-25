@@ -39,6 +39,11 @@ All verified clean across existing images.
   *subsequence* of: `logging.sh → cleanup_generic.sh → environment.sh →
   exit_serverless.sh → exit_portal.sh`. Zero inversions exist. Match on path
   (`logging.sh` is sometimes called with an argument).
+- **Supervisor command-target scripts are executable** (L012). Direct children of
+  `opt/supervisor-scripts/*.sh` are run via `command=/opt/supervisor-scripts/<x>.sh`
+  (not `bash <x>.sh`), so they must have `+x` — 70/70 such scripts are `100755`.
+  EXEMPT: `utils/*.sh` (the 6 are `100644`) are *sourced* (`. logging.sh`), not
+  executed. (`vast_boot.d/*.sh` are also sourced — mixed modes — so NOT gated.)
 - **conf.d ↔ script ↔ program-name triple** (STRONGEST invariant, 60/60 clean):
   every `etc/supervisor/conf.d/*.conf` has `environment=PROC_NAME="%(program_name)s"`,
   `command=/opt/supervisor-scripts/<x>.sh`, and `[program:NAME]` where `NAME` ==

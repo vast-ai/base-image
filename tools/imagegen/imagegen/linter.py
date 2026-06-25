@@ -16,6 +16,11 @@ from typing import Callable, Iterable
 
 from .discover import Image
 from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve, parse_ref
+from .portal import (
+    extract_baked_default, parse_portal_config,
+    proxied_externals, forbidden_expose_ports,
+)
+from .portal_smoke import exposed_ports
 
 _DOCKER_HUB = (None, "docker.io", "index.docker.io", "registry-1.docker.io")
 
@@ -53,11 +58,16 @@ RULES: list[tuple[str, str, str]] = [
     ("L004", ERROR, "FROM matches the declared class — structural base identity (registry+repo), incl. external stage order"),
     ("L010", ERROR, "Each [program:NAME]: PROC_NAME + command=/opt/supervisor-scripts/NAME.sh; file stem is a program"),
     ("L011", ERROR, "Sourced utils appear as an ordered subsequence of the canonical order"),
+    ("L012", ERROR, "Supervisor command-target scripts (opt/supervisor-scripts/*.sh, excl. utils/) are executable"),
     ("L020", ERROR, "torch-drift guard: a pre==post comparison wired to an exit on the same statement"),
     ("L021", ERROR, "No `--torch-backend auto` except inside a real sed substitution"),
     ("L022", WARN, "Prefer `uv pip install` over bare `pip install`"),
     ("L030", WARN, "A build-<name>.yml workflow exists (not universal)"),
     ("L040", ERROR, "No unfilled generator skeleton markers (CHANGEME / CHANGEPORT / >>> FILL)"),
+    ("L050", ERROR, "Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports"),
+    ("L051", ERROR, "EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only)"),
+    ("L052", WARN, "Image bakes a default PORTAL_CONFIG (else it relies on the launch template)"),
+    ("L053", ERROR, "An accel-wheels.txt manifest is `--no-deps` installed AND guarded by a build-time torch-ABI import gate"),
 ]
 
 
@@ -210,6 +220,22 @@ def check_conf_triple(img: Image) -> Iterable[Finding]:
                 yield Finding("L010", WARN, img.name, rel, f"{pname}.sh not in this image's ROOT (may inherit from base)")
 
 
+def check_script_exec(img: Image) -> Iterable[Finding]:
+    """L012 — supervisord `command=` target scripts must be executable. conf.d runs
+    `command=/opt/supervisor-scripts/<x>.sh` directly (not `bash <x>.sh`), so a script
+    without +x fails to launch. Scope = direct children of opt/supervisor-scripts/;
+    utils/ are SOURCED (`. logging.sh`), not executed, and are exempt."""
+    if not img.root:
+        return
+    sdir = img.root / "opt" / "supervisor-scripts"
+    if not sdir.is_dir():
+        return
+    for script in sorted(sdir.glob("*.sh")):  # non-recursive: excludes utils/
+        if not (script.stat().st_mode & 0o111):
+            rel = str(script.relative_to(img.dir))
+            yield Finding("L012", ERROR, img.name, rel, "supervisor command-target script is not executable (chmod +x)")
+
+
 def check_util_order(img: Image) -> Iterable[Finding]:
     """L011 — sourced utils appear as an ordered subsequence of CANONICAL_UTILS."""
     if not img.root:
@@ -271,10 +297,139 @@ def check_skeleton(img: Image, repo: Path) -> Iterable[Finding]:
                           "unfilled skeleton marker (CHANGEME / >>> FILL) — complete before build")
 
 
+# ---- PORTAL_CONFIG <-> EXPOSE (ADR 0002) ------------------------------------
+
+def _baked_portal(img: Image):
+    """Find the image's baked default PORTAL_CONFIG (the `if [[ -z ]]`-guarded
+    literal in a vast_boot.d env script) and parse it. Returns (raw, entries, rel)
+    where raw is None if the image bakes no default. Note: this is the AT-REST
+    baked default — the runtime bind smoke gate (smoke/bind-check.sh) validates the
+    rendered, post-mutation config; this static check is its fast advisory layer."""
+    if not img.root:
+        return None, [], None
+    bootd = img.root / "etc" / "vast_boot.d"
+    if not bootd.is_dir():
+        return None, [], None
+    for sh in sorted(bootd.glob("*.sh")):
+        raw = extract_baked_default(sh.read_text(encoding="utf-8", errors="replace"))
+        if raw is not None:
+            rel = str(sh.relative_to(img.dir))
+            try:
+                return raw, parse_portal_config(raw), rel
+            except ValueError:
+                return raw, None, rel  # malformed — signalled by entries is None
+    return None, [], None
+
+
+def _ancestor_dockerfiles(img: Image, repo: Path) -> list[Path]:
+    """In-repo Dockerfiles whose EXPOSE this image inherits via FROM.
+
+    EXPOSE is cumulative through `FROM` (but NOT through `COPY`). derivative ←
+    base; pytorch-nested ← pytorch ← base. external is `FROM <upstream>` and grafts
+    the base via COPY, so it inherits NO base EXPOSE — it must declare its own
+    Caddy-front ports in full (incl. the Instance Portal). base has no in-repo parent."""
+    if img.cls == "pytorch-nested":
+        return [repo / "derivatives" / "pytorch" / "Dockerfile", repo / "Dockerfile"]
+    if img.cls == "derivative":
+        return [repo / "Dockerfile"]
+    return []  # external, base
+
+
+def _inherited_exposed(img: Image, repo: Path) -> set[int]:
+    ports: set[int] = set()
+    for df in _ancestor_dockerfiles(img, repo):
+        if df.is_file():
+            ports |= exposed_ports(df.read_text(encoding="utf-8", errors="replace"))
+    return ports
+
+
+def check_expose_portal(img: Image, repo: Path) -> Iterable[Finding]:
+    """L050/L051 — the EFFECTIVE exposed set (this image's own EXPOSE plus what it
+    inherits via FROM) must cover exactly the baked PORTAL_CONFIG's Caddy-front
+    ports, and the image must not itself EXPOSE a port nothing proxies. Fires only
+    once an image declares its OWN EXPOSE, so it ships dormant until migration
+    (ADR 0002). L051 is the fast advisory layer over the real bind smoke gate."""
+    if img.cls == "base":
+        return
+    own = exposed_ports(img.text)
+    if not own:
+        return  # dormant: image hasn't opted in by adding its own EXPOSE yet
+    raw, entries, rel = _baked_portal(img)
+    if raw is None:
+        yield Finding("L050", ERROR, img.name, "Dockerfile",
+                      f"EXPOSE {sorted(own)} but no baked PORTAL_CONFIG default to validate "
+                      "against (add a vast_boot.d env script with the `if [[ -z ]]` guarded default)")
+        return
+    if entries is None:
+        yield Finding("L050", ERROR, img.name, rel, "baked PORTAL_CONFIG default is malformed (cannot parse)")
+        return
+
+    required = proxied_externals(entries)          # full Caddy-front set (no hardcoded allowlist)
+    forbidden = forbidden_expose_ports(entries)
+    effective = own | _inherited_exposed(img, repo)
+
+    # completeness: every Caddy-front port must end up exposed (own or inherited) so
+    # Vast maps it. Missing ones the base would provide hint "migrate the base first".
+    missing = sorted(required - effective)
+    if missing:
+        yield Finding("L050", ERROR, img.name, "Dockerfile",
+                      f"Caddy-front port(s) {missing} are in PORTAL_CONFIG but not exposed "
+                      "(declare them here, or ensure an ancestor image EXPOSEs them)")
+    # this image must not itself EXPOSE a non-front port. forbidden ones are the
+    # security case (L051); other strays have no proxied entry at all (L050).
+    bad = sorted(own & forbidden)
+    if bad:
+        yield Finding("L051", ERROR, img.name, "Dockerfile",
+                      f"EXPOSE includes port(s) {bad} that no entry proxies (loopback/internal or "
+                      "equal-port-only) — never EXPOSE a port without a Caddy auth front")
+    stray = sorted(own - required - forbidden)
+    if stray:
+        yield Finding("L050", ERROR, img.name, "Dockerfile",
+                      f"EXPOSE port(s) {stray} have no proxied PORTAL_CONFIG entry — Caddy would "
+                      "not front them (remove, or add a proxied entry)")
+
+
+def check_baked_portal_default(img: Image) -> Iterable[Finding]:
+    """L052 (WARN) — image bakes no default PORTAL_CONFIG (relies on the launch
+    template). Advisory during the ADR 0002 migration; flips to ERROR once every
+    image self-describes."""
+    if img.cls == "base":
+        return
+    raw, _, _ = _baked_portal(img)
+    if raw is None:
+        yield Finding("L052", WARN, img.name, "ROOT/etc/vast_boot.d",
+                      "no baked PORTAL_CONFIG default (relies on the launch template)")
+
+
+def check_accel_abi_gate(img: Image) -> Iterable[Finding]:
+    """L053 — an image that ships ROOT/opt/accel-wheels.txt (pinned external
+    compiled wheels carrying foreign torch-ABI METADATA pins) must (a) install that
+    manifest with `--no-deps` (so the pins cannot downgrade the base torch) AND
+    (b) prove at build time that the extensions import against the inherited torch,
+    via a `python -c` gate that imports torch and asserts a compiled module loaded
+    (`... in sys.modules`). Codifies ADR 0004 binding condition 1 so the gate cannot
+    be silently dropped by a later edit."""
+    if not img.root:
+        return
+    manifest = img.root / "opt" / "accel-wheels.txt"
+    if not manifest.is_file():
+        return
+    ct = code_text(parse(img.text))
+    if "accel-wheels.txt" not in ct or "--no-deps" not in ct:
+        yield Finding("L053", ERROR, img.name, "Dockerfile",
+                      "ships ROOT/opt/accel-wheels.txt but does not `uv pip install --no-deps` it "
+                      "(foreign torch-ABI pins could downgrade the base torch)")
+    if not re.search(r"python[0-9.]*\s+-c\b.*import\s+torch.*sys\.modules", ct):
+        yield Finding("L053", ERROR, img.name, "Dockerfile",
+                      "ships ROOT/opt/accel-wheels.txt but has no build-time torch-ABI import gate "
+                      "(`python -c \"import torch; ...; assert ... in sys.modules\"`)")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
-    check_conf_triple, check_util_order,
+    check_conf_triple, check_util_order, check_script_exec,
+    check_baked_portal_default, check_accel_abi_gate,
 ]
 
 
@@ -287,6 +442,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out: list[Finding] = []
     for chk in IMAGE_CHECKS:
         out.extend(chk(img))
+    out.extend(check_expose_portal(img, repo))
     out.extend(check_workflow(img, repo))
     out.extend(check_skeleton(img, repo))
     if apply_exceptions:

@@ -7,6 +7,8 @@ from pathlib import Path
 from .discover import discover, find_repo_root, Image
 from .linter import lint_image, ERROR, WARN, EXCEPTIONS, rules_markdown
 from .generate import generate, CLASSES
+from .portal import parse_portal_config
+from . import portal_smoke
 
 
 def _gather(args) -> tuple[Path, list[Image]]:
@@ -72,6 +74,63 @@ def cmd_new(args) -> int:
     return 0
 
 
+def _read_arg(val: str | None) -> str:
+    """Return the literal value, or the file contents if given as `@path`."""
+    if not val:
+        return ""
+    if val.startswith("@"):
+        return Path(val[1:]).read_text(encoding="utf-8", errors="replace")
+    return val
+
+
+def cmd_bindcheck(args) -> int:
+    """ADR 0002 condition 1: the runtime bind-address smoke gate. Consumes a dumped
+    `ss -ltnp` and the rendered PORTAL_CONFIG string; fails on any public bind that
+    isn't the Caddy auth front. Orchestrated by tools/imagegen/smoke/bind-check.sh."""
+    ss_text = _read_arg(args.ss)
+    if not ss_text:
+        print("error: --ss (the `ss -ltnp` dump, literal or @file) is required", file=sys.stderr)
+        return 2
+
+    pc_text = _read_arg(args.portal_config)
+    try:
+        entries = parse_portal_config(pc_text) if pc_text else []
+    except ValueError as e:
+        print(f"error: bad PORTAL_CONFIG: {e}", file=sys.stderr)
+        return 2
+
+    # exposed ports: explicit override, else from the image/Dockerfile.
+    if args.exposed:
+        exposed = {int(t.split("/")[0]) for t in args.exposed.split() if t.split("/")[0].isdigit()}
+    elif args.dockerfile:
+        exposed = portal_smoke.exposed_ports(Path(args.dockerfile).read_text(encoding="utf-8", errors="replace"))
+    elif args.image:
+        repo = find_repo_root(Path(args.repo) if args.repo else Path.cwd())
+        img = next((i for i in discover(repo) if i.name == args.image), None)
+        if not img:
+            print(f"error: image {args.image!r} not found", file=sys.stderr)
+            return 2
+        exposed = portal_smoke.exposed_ports(img.text)
+    else:
+        print("error: need one of --exposed / --dockerfile / --image", file=sys.stderr)
+        return 2
+
+    listeners = portal_smoke.parse_ss(ss_text)
+    violations = portal_smoke.check_binds(listeners, exposed, entries)
+    errors = [v for v in violations if v.severity == ERROR]
+    warns = [v for v in violations if v.severity == WARN]
+
+    label = args.image or args.dockerfile or "image"
+    print(f"bind-check {label}: {len(listeners)} listeners | EXPOSE {sorted(exposed) or '∅'} "
+          f"| {len(errors)} errors | {len(warns)} warnings")
+    for v in sorted(violations, key=lambda v: (v.severity != ERROR, v.port)):
+        mark = "✗" if v.severity == ERROR else "·"
+        print(f"  {mark} [{v.severity} :{v.port}] {v.detail}")
+    if not errors:
+        print("bind-check PASS ✓ (nothing reachable is bound public without Caddy in front)")
+    return 1 if errors else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="imagegen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -93,6 +152,16 @@ def main(argv=None) -> int:
 
     rules = sub.add_parser("rules", help="print the generated lint-rules reference (docs/lint-rules.md)")
     rules.set_defaults(func=lambda a: (print(rules_markdown(), end=""), 0)[1])
+
+    bc = sub.add_parser("bindcheck", help="runtime bind-address smoke gate (ADR 0002 cond. 1)")
+    bc.add_argument("--ss", required=True, help="`ss -ltnp` output (literal or @file)")
+    bc.add_argument("--portal-config", dest="portal_config",
+                    help="rendered PORTAL_CONFIG string (literal or @file)")
+    bc.add_argument("--exposed", help='EXPOSE ports, space-separated (e.g. "7860 8000")')
+    bc.add_argument("--dockerfile", help="read EXPOSE ports from this Dockerfile")
+    bc.add_argument("--image", help="read EXPOSE ports from this image's Dockerfile (by name)")
+    bc.add_argument("--repo", help="repo root (default: autodetect from cwd)")
+    bc.set_defaults(func=cmd_bindcheck)
 
     args = ap.parse_args(argv)
     return args.func(args)

@@ -247,4 +247,10 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
 
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
+
+    # supervisord runs `command=/opt/supervisor-scripts/<name>.sh` directly, so the
+    # command-target script must be executable (L012). utils/ and boot.d scripts are
+    # sourced, not exec'd, so they stay as written.
+    script = root / "opt/supervisor-scripts" / f"{name}.sh"
+    script.chmod(script.stat().st_mode | 0o755)
     return d

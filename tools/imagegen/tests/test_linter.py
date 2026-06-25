@@ -51,7 +51,9 @@ def make(tmp: Path, *, cls="pytorch-nested", df=VALID_DF, confs=None, scripts=No
     for name, body in (confs or {"foo": VALID_CONF}).items():
         (d / "ROOT/etc/supervisor/conf.d" / f"{name}.conf").write_text(body)
     for name, body in (scripts or {"foo.sh": VALID_SCRIPT}).items():
-        (d / "ROOT/opt/supervisor-scripts" / name).write_text(body)
+        p = d / "ROOT/opt/supervisor-scripts" / name
+        p.write_text(body)
+        p.chmod(p.stat().st_mode | 0o755)  # real command-target scripts are +x (L012)
     return Image(name="img", cls=cls, dir=d, dockerfile=d / "Dockerfile", text=df, root=d / "ROOT")
 
 
@@ -107,6 +109,24 @@ def test_L010_program_name_mismatch(tmp_path):
 def test_L011_util_order_inversion(tmp_path):
     bad = '. "${utils}/exit_portal.sh"\n. "${utils}/logging.sh"\n'
     assert "L011" in errs(make(tmp_path, scripts={"foo.sh": bad}), tmp_path)
+
+
+def test_L012_non_executable_script_fails(tmp_path):
+    img = make(tmp_path)
+    script = img.root / "opt/supervisor-scripts/foo.sh"
+    script.chmod(0o644)  # strip the executable bit
+    assert "L012" in errs(img, tmp_path)
+
+
+def test_L012_sourced_utils_are_exempt(tmp_path):
+    # utils/ are sourced, not exec'd — a non-+x util must NOT trip L012.
+    img = make(tmp_path)
+    utils = img.root / "opt/supervisor-scripts/utils"
+    utils.mkdir(parents=True, exist_ok=True)
+    u = utils / "logging.sh"
+    u.write_text("# sourced helper\n")
+    u.chmod(0o644)
+    assert "L012" not in errs(img, tmp_path)
 
 
 def test_regression_net_real_repo_is_clean():
@@ -212,6 +232,31 @@ def test_mut_copy_root_removed():
     repo, img = _real("comfyui")
     mut = replace(img, text=re.sub(r"(?m)^\s*COPY \./ROOT/? /\s*$", "", img.text))
     assert "L003" in errs(mut, repo)
+
+
+def test_oobabooga_accel_gate_clean():
+    """Positive: the real oobabooga ships accel-wheels.txt AND the ABI gate, so L053
+    must NOT fire — guards against the mutation tests passing vacuously."""
+    repo, img = _real("oobabooga")
+    assert (img.root / "opt" / "accel-wheels.txt").is_file(), "fixture drifted: no accel-wheels.txt"
+    assert "L053" not in errs(img, repo)
+
+
+def test_mut_accel_abi_gate_removed():
+    """L053 — dropping the build-time torch-ABI import gate while the accel-wheels.txt
+    manifest is still shipped/installed must fire (ADR 0004 binding condition 1)."""
+    repo, img = _real("oobabooga")
+    # neutralise the gate's sys.modules assertion (the import-gate signature)
+    mut = replace(img, text=img.text.replace("sys.modules", "loaded"))
+    assert "L053" in errs(mut, repo)
+
+
+def test_mut_accel_nodeps_removed():
+    """L053 — installing the accel manifest WITHOUT --no-deps lets the wheels' foreign
+    torch==2.9.0 METADATA pin downgrade the base torch; must fire."""
+    repo, img = _real("oobabooga")
+    mut = replace(img, text=img.text.replace("--no-deps ", ""))
+    assert "L053" in errs(mut, repo)
 
 
 def test_mut_util_order_real(tmp_path):
@@ -349,6 +394,120 @@ def test_lint_rules_doc_in_sync():
     repo = find_repo_root(Path(__file__).resolve().parent)
     doc = (repo / "docs" / "lint-rules.md").read_text()
     assert doc == L.rules_markdown(), "docs/lint-rules.md is stale — run `imagegen rules > docs/lint-rules.md`"
+
+
+# ---- L050/L051/L052 EXPOSE <-> PORTAL_CONFIG (ADR 0002) ---------------------
+
+def _make_portal(tmp: Path, *, expose: str | None, cfg: str | None,
+                 cls: str = "pytorch-nested") -> Image:
+    """An image with an optional `EXPOSE <expose>` line and an optional baked
+    PORTAL_CONFIG default in ROOT/etc/vast_boot.d/05-img-env.sh."""
+    df = VALID_DF
+    if expose is not None:
+        df = df.replace("RUN env-hash > /.env_hash\n",
+                        f"EXPOSE {expose}\nRUN env-hash > /.env_hash\n")
+    img = make(tmp, cls=cls, df=df)
+    if cfg is not None:
+        bootd = img.dir / "ROOT/etc/vast_boot.d"
+        bootd.mkdir(parents=True, exist_ok=True)
+        (bootd / "05-img-env.sh").write_text(
+            "#!/bin/bash\n"
+            "if [[ -z $PORTAL_CONFIG ]]; then\n"
+            f'    export PORTAL_CONFIG="{cfg}"\n'
+            "fi\n")
+    return img
+
+
+def _seed_ancestors(tmp: Path, *, base_expose: str | None = None, pytorch_expose: str | None = None):
+    """Write in-repo ancestor Dockerfiles so _inherited_exposed resolves the FROM
+    chain (base = tmp/Dockerfile, pytorch = tmp/derivatives/pytorch/Dockerfile)."""
+    if base_expose is not None:
+        (tmp / "Dockerfile").write_text(f"FROM x\nEXPOSE {base_expose}\nRUN env-hash > /.env_hash\n")
+    if pytorch_expose is not None:
+        d = tmp / "derivatives" / "pytorch"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "Dockerfile").write_text(f"FROM x\nEXPOSE {pytorch_expose}\nRUN env-hash > /.env_hash\n")
+
+
+_CFG_APP = "localhost:7860:17860:/:App UI"  # one proxied front: {7860}
+# Portal + app + Jupyter — the shape a baked default copies from the base.
+_CFG_FULL = ("localhost:1111:11111:/:Instance Portal"
+             "|localhost:7860:17860:/:App UI"
+             "|localhost:8080:18080:/:Jupyter")
+
+
+def test_L050_clean_when_effective_covers_fronts(tmp_path):
+    img = _make_portal(tmp_path, expose="7860", cfg=_CFG_APP)  # no inherited; front == own
+    assert "L050" not in errs(img, tmp_path) and "L051" not in errs(img, tmp_path)
+
+
+def test_L050_fires_on_mismatch(tmp_path):
+    img = _make_portal(tmp_path, expose="8000", cfg=_CFG_APP)  # 7860 missing, 8000 stray
+    assert has(img, tmp_path, "L050")
+
+
+def test_L050_dormant_without_own_expose(tmp_path):
+    # bakes a default but declares no OWN EXPOSE → checks stay dormant (migration shape).
+    img = _make_portal(tmp_path, expose=None, cfg=_CFG_FULL)
+    assert "L050" not in errs(img, tmp_path) and "L051" not in errs(img, tmp_path)
+
+
+def test_L050_expose_without_baked_default_fires(tmp_path):
+    img = _make_portal(tmp_path, expose="7860", cfg=None)
+    assert has(img, tmp_path, "L050", "no baked PORTAL_CONFIG")
+
+
+def test_L050_inheritance_fills_base_ports(tmp_path):
+    # base EXPOSEs 1111+8080; the derivative only declares its own 7860 and is clean
+    # because the Caddy-front set is covered by own ∪ inherited (the user's point).
+    _seed_ancestors(tmp_path, base_expose="1111 8080", pytorch_expose="")
+    img = _make_portal(tmp_path, expose="7860", cfg=_CFG_FULL)
+    assert "L050" not in errs(img, tmp_path) and "L051" not in errs(img, tmp_path)
+
+
+def test_L050_missing_when_ancestors_do_not_expose_fronts(tmp_path):
+    # same derivative, but nothing inherited → 1111/8080 are uncovered fronts.
+    img = _make_portal(tmp_path, expose="7860", cfg=_CFG_FULL)
+    assert has(img, tmp_path, "L050", "1111")
+
+
+def test_external_must_declare_portal_ports_itself(tmp_path):
+    # external is FROM upstream (grafts base via COPY) → inherits NO base EXPOSE, so
+    # it must EXPOSE the Instance Portal itself. Declaring only 7860 leaves 1111 uncovered.
+    img = _make_portal(tmp_path, expose="7860",
+                       cfg="localhost:1111:11111:/:Instance Portal|localhost:7860:17860:/:App UI",
+                       cls="external")
+    assert has(img, tmp_path, "L050", "1111")
+
+
+def test_L051_internal_port_exposed_fails(tmp_path):
+    img = _make_portal(tmp_path, expose="17860", cfg=_CFG_APP)
+    assert has(img, tmp_path, "L051")
+
+
+def test_L051_equal_port_only_fails(tmp_path):
+    cfg = "localhost:1111:11111:/:Instance Portal|localhost:7861:7861:/:Wan2GP"
+    img = _make_portal(tmp_path, expose="7861", cfg=cfg)
+    assert has(img, tmp_path, "L051")
+
+
+def test_L050_L051_clean_for_proxied_plus_equal_sibling(tmp_path):
+    cfg = ("localhost:9000:19000:/:App"
+           "|localhost:9000:9000:/tools:App Tools")
+    img = _make_portal(tmp_path, expose="9000", cfg=cfg)
+    assert "L050" not in errs(img, tmp_path) and "L051" not in errs(img, tmp_path)
+
+
+def test_L052_warns_when_no_baked_default(tmp_path):
+    img = _make_portal(tmp_path, expose=None, cfg=None)
+    warns = {f.code for f in lint_image(img, tmp_path) if f.severity == L.WARN}
+    assert "L052" in warns
+
+
+def test_L052_silent_when_default_present(tmp_path):
+    img = _make_portal(tmp_path, expose=None, cfg=_CFG_FULL)
+    warns = {f.code for f in lint_image(img, tmp_path) if f.severity == L.WARN}
+    assert "L052" not in warns
 
 
 def test_no_stale_exceptions():

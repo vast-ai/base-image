@@ -33,6 +33,15 @@ def test_generated_images_structurally_valid_but_flagged_skeleton(tmp_path):
         assert any(f.code == "L040" for f in errors), f"{name}: skeleton not flagged by L040"
 
 
+def test_generated_supervisor_script_is_executable(tmp_path):
+    """Round-trip for the L012 fix: supervisord runs the command-target script
+    directly, so the generator must emit it executable."""
+    _gen_repo(tmp_path)
+    for name in ("mytool", "myapp", "myext"):
+        script = next(tmp_path.rglob(f"*/supervisor-scripts/{name}.sh"))
+        assert script.stat().st_mode & 0o111, f"{name}.sh not executable"
+
+
 def test_filled_image_lints_clean(tmp_path):
     """Once the markers are resolved, the image lints fully clean (no L040)."""
     _gen_repo(tmp_path)
