@@ -1,0 +1,39 @@
+# STUB (default-branch enabler) — NOT the real build.
+#
+# A `workflow_dispatch` workflow is only triggerable once it exists on the default
+# branch. This stub registers the trigger so the real Build Oobabooga workflow can be
+# manually dispatched FROM the feature branch (feature/oobabooga-adr0004-ci), where the
+# full workflow + the oobabooga image live. When dispatched against that branch, GitHub
+# runs THAT branch's version of this file (the real build), not this stub.
+#
+# Intentionally NO `schedule:` here — main must not auto-run a build it cannot satisfy
+# (the oobabooga image files are not on main yet). Running this stub from main is a no-op.
+# This file is replaced by the real workflow when the feature PR (#207) merges.
+
+name: Build Oobabooga Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      OOBABOOGA_REF:
+        description: "Git ref (commit/branch/tag) - leave empty for latest upstream HEAD"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "oobabooga"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain
+        run: |
+          echo "This is the main-branch STUB for 'Build Oobabooga Image'."
+          echo "It exists only to enable workflow_dispatch."
+          echo "To run the real build, dispatch this workflow against the branch"
+          echo "feature/oobabooga-adr0004-ci (Run workflow -> Use workflow from -> that branch)."
+          echo "That branch carries the full build + the oobabooga image."
