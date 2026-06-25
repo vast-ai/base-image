@@ -13,7 +13,8 @@
 # scheduled run skips if the latest upstream commit is older than COMMIT_AGE_THRESHOLD;
 # a manual OOBABOOGA_REF input overrides. There is an accepted risk a new ref breaks
 # the build (a missing cp312 accel wheel, a new torch minor) — it fails LOUDLY and
-# the live-GPU QA gate (ADR 0005) is the runtime net (ADR 0004).
+# the planned live-GPU QA gate (ADR 0005, not yet built) is the intended runtime
+# net (ADR 0004).
 #
 # Currently amd64-only: oobabooga's accelerator wheels (exllamav3, flash_attn,
 # xformers, llama_cpp_binaries) publish x86_64-only wheels. Re-enable arm64 when

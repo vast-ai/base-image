@@ -17,7 +17,10 @@ house automation — every other derivative's CI resolves the latest upstream HE
 rebuilds, and a pinned ref silently stops tracking upstream. Per the decision owner, the
 correct posture is: **CI resolves the latest upstream ref (HEAD of `main`, like the
 sibling workflows) and builds from it, accepting the risk that a future ref breaks the
-build** — the live-GPU QA gate (ADR 0005) is the runtime net being built for exactly this.
+build** — the **planned** live-GPU QA gate ([ADR 0005], not yet built) is the intended
+runtime net for exactly this. Until it exists, the only gates are the static linter,
+the `docker build` itself (incl. the hard ABI import gate), and a human acting on a red
+scheduled run; the build-time checks are deliberately fail-loud (no silent degrade).
 
 Concretely, superseding the affected parts below:
 - **Install:** the static `accel-wheels.txt` manifest is **removed**. The Dockerfile now
