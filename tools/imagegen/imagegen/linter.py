@@ -68,6 +68,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L051", ERROR, "EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only)"),
     ("L052", WARN, "Image bakes a default PORTAL_CONFIG (else it relies on the launch template)"),
     ("L060", ERROR, "A shipped derivative instance test (tests/<name>.d/*.sh) is executable, sources lib.sh, and has exactly one `test_pass`"),
+    ("L061", WARN, "An agent guide (etc/vast_agents/*.md) does not restate a Caddy-front external port from PORTAL_CONFIG (read it from /capabilities; internal ports exempt)"),
 ]
 
 
@@ -430,11 +431,38 @@ def check_instance_test_shape(img: Image) -> Iterable[Finding]:
                           f"instance test must have exactly one `test_pass` success terminal (found {n})")
 
 
+def check_agent_guide_thin(img: Image) -> Iterable[Finding]:
+    """L061 (WARN, ADR 0007) — a per-image agent guide (ROOT/etc/vast_agents/*.md)
+    carries the non-derivable DELTA, not facts the agent reads live from
+    /capabilities. Flags a Caddy-front EXTERNAL port (from the baked PORTAL_CONFIG)
+    hard-coded in the guide prose — read it from /capabilities/endpoints instead.
+    INTERNAL loopback ports are NOT flagged: they are load-bearing when the agent
+    must curl an app-internal API the manifest does not carry (e.g. /v1/internal/...)."""
+    if not img.root:
+        return
+    agents_dir = img.root / "etc" / "vast_agents"
+    if not agents_dir.is_dir():
+        return
+    _, entries, _ = _baked_portal(img)
+    ext_ports = sorted({e.external for e in entries if e.proxied})
+    if not ext_ports:
+        return
+    for guide in sorted(agents_dir.glob("*.md")):
+        text = guide.read_text(encoding="utf-8", errors="replace")
+        # match a bare port not embedded in a longer number (so 18080/15000 do not
+        # false-match the external 8080/5000 they proxy).
+        hits = [p for p in ext_ports if re.search(rf"(?<!\d){p}(?!\d)", text)]
+        if hits:
+            yield Finding("L061", WARN, img.name, str(guide.relative_to(img.dir)),
+                          f"restates Caddy-front external port(s) {hits} from PORTAL_CONFIG — "
+                          "read them from /capabilities/endpoints (ADR 0007 thin-delta; internal ports are exempt)")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_script_exec,
-    check_baked_portal_default, check_instance_test_shape,
+    check_baked_portal_default, check_instance_test_shape, check_agent_guide_thin,
 ]
 
 

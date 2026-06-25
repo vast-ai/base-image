@@ -22,3 +22,4 @@
 | L051 | ERROR | EXPOSE never includes a port no entry proxies (loopback/internal or equal-port-only) |
 | L052 | WARN | Image bakes a default PORTAL_CONFIG (else it relies on the launch template) |
 | L060 | ERROR | A shipped derivative instance test (tests/<name>.d/*.sh) is executable, sources lib.sh, and has exactly one `test_pass` |
+| L061 | WARN | An agent guide (etc/vast_agents/*.md) does not restate a Caddy-front external port from PORTAL_CONFIG (read it from /capabilities; internal ports exempt) |

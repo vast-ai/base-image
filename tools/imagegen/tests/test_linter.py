@@ -279,6 +279,34 @@ def test_mut_L060_not_executable(tmp_path):
     assert has(img, repo, "L060", "not executable")
 
 
+# ---- L061: agent guide must not restate a Caddy-front external port (ADR 0007) ----
+
+_OOBA_GUIDE_REL = "ROOT/etc/vast_agents/oobabooga.md"
+
+
+def test_oobabooga_agent_guide_thin_clean():
+    """Positive: the thin oobabooga guide restates no external Caddy-front port
+    (it keeps only the internal :15000 app-API port), so L061 must NOT fire."""
+    repo, img = _real("oobabooga")
+    assert "L061" not in {f.code for f in lint_image(img, repo)}
+
+
+def test_mut_L061_guide_restates_external_port(tmp_path):
+    repo, img, dst = _copy_image(tmp_path, "oobabooga")
+    g = dst / _OOBA_GUIDE_REL
+    g.write_text(g.read_text() + "\nThe API is reachable on external port 5000.\n")
+    assert any(f.code == "L061" and f.severity == L.WARN for f in lint_image(img, repo))
+
+
+def test_L061_internal_port_is_exempt(tmp_path):
+    """The internal :15000 the guide legitimately documents must NOT trip L061
+    (15000 is internal; only the external 5000/7860/8080/1111 are flagged)."""
+    repo, img, dst = _copy_image(tmp_path, "oobabooga")
+    g = dst / _OOBA_GUIDE_REL
+    g.write_text("## x\nManage models on the loopback API at 127.0.0.1:15000/v1/internal/model/info.\n")
+    assert "L061" not in {f.code for f in lint_image(img, repo)}
+
+
 def test_mut_util_order_real(tmp_path):
     repo, img = _real("comfyui")
     dst = tmp_path / "comfyui"
