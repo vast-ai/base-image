@@ -1,5 +1,6 @@
 """Offer selection (ADR 0005): VRAM-primary, compute_cap floor, bounded search."""
-from test_template import _required_floor, make_offer_sort_key, apply_vram_ceiling
+from test_template import (VRAM_CEILING_MULTIPLIER, _required_floor,
+                           apply_vram_ceiling, make_offer_sort_key)
 
 
 def _o(cc=800, total_mb=24576, per_gpu_mb=24576, num_gpus=1, dph=0.5):
@@ -68,3 +69,17 @@ def test_vram_ceiling_does_not_mutate_input():
     f = {"gpu_total_ram": {"gte": 12288}}
     apply_vram_ceiling(f, 2.0)
     assert f == {"gpu_total_ram": {"gte": 12288}}  # original unchanged
+
+
+def test_production_multiplier_admits_consumer_tier_excludes_datacenter():
+    # The cost guardrail (now the price filter is gone): with the shipped
+    # multiplier, an 8 GB floor must reach the abundant 24 GB consumer tier
+    # (RTX 3090/4090) to keep the market from going thin, but must NOT reach the
+    # 32 GB+ datacenter cards (V100-32 / A100 / H100). If someone widens the
+    # multiplier into datacenter range, this fails.
+    floor_mb = 8192
+    ceiling_mb = apply_vram_ceiling(
+        {"gpu_total_ram": {"gte": floor_mb}}, VRAM_CEILING_MULTIPLIER
+    )["gpu_total_ram"]["lte"]
+    assert ceiling_mb >= 24576       # includes a 24 GB 4090
+    assert ceiling_mb < 32768        # excludes a 32 GB datacenter card

@@ -47,7 +47,7 @@ env:
   # instance dropped before serving. A smoke proves the serving path works, not compiled
   # throughput, so eager is the right trade — production keeps full compilation.
   VLLM_ARGS: "--enforce-eager --max-model-len 4096 --download-dir /workspace/models --host 127.0.0.1 --port 18000"
-# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 2x.
+# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
 extra_filters:
   compute_cap:
     gte: 800                      # sm_80 — matches the production vLLM floor (vLLM kernels)

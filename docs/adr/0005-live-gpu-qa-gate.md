@@ -122,9 +122,11 @@ default to be silently wrong). The tester restricts to amd64 (`cpu_arch ==
 "amd64"`, a confirmed Vast offer field), then selects the **smallest VRAM above the
 declared floor, then the lowest `compute_cap`** above its floor — the cheapest box
 that still has the capacity and features the image needs. The VRAM search is
-**hard-bounded above** at `VRAM_CEILING_MULTIPLIER × floor` (default 2×): a
-"`>=12GB`" claim is never tested on a 96GB box (a template may set its own
-`gpu_total_ram` upper bound to override).
+**hard-bounded above** at `VRAM_CEILING_MULTIPLIER × floor` (default 3×): an
+"`>=8GB`" claim is never tested on a 96GB box (a template may set its own
+`gpu_total_ram` upper bound to override). 3× admits the abundant 24GB consumer
+tier to keep the market from going thin while still excluding the 40/80GB
+datacenter cards — the band, not a price filter, is the cost control.
 
 Generalisation is **directional — state it honestly:**
 - *Upward in VRAM it holds (the primary axis).* More VRAM is strictly safer for OOM,
@@ -190,7 +192,7 @@ surviving review finding.
    would otherwise become exit-2 inconclusive → mass silent promotion). The gating
    path is opt-in per promotion, not fanned out unattended.
 7. **Cost ceiling.** Every launch carries `--timeout`, and offer selection is
-   bounded to a near-floor VRAM band (`apply_vram_ceiling`, 2× the declared floor)
+   bounded to a near-floor VRAM band (`apply_vram_ceiling`, 3× the declared floor)
    so a `>=8GB` claim is never tested on a 96GB box — that band, not a price filter,
    is the cost control. (A `dph_total`/`--max-price` filter was removed from the
    gate: on top of the VRAM ceiling it mostly added `no_offers` inconclusives —

@@ -84,8 +84,12 @@ def classify_outcome(final_state):
 MAX_LAUNCH_ATTEMPTS = 25       # how many offers to try before giving up
 DISK_TOLERANCE = 1.0           # instance must provision at least the full requested disk
 OFFER_CANDIDATE_POOL = 50      # cap on offers kept for the retry loop
-VRAM_CEILING_MULTIPLIER = 2.0  # bound the VRAM search at N x the declared floor
-                               # (ADR 0005: don't test a >=12GB claim on a 96GB box)
+VRAM_CEILING_MULTIPLIER = 3.0  # bound the VRAM search at N x the declared floor
+                               # (ADR 0005: don't test a >=8GB claim on a 96GB box).
+                               # 3x = an 8GB floor admits the abundant 24GB consumer
+                               # tier (RTX 3090/4090) to widen a thin market, while
+                               # still excluding the 40/80GB datacenter cards. This
+                               # band is the cost control now the price filter is gone.
 NETWORK_PROBE_TIMEOUT = 60     # seconds of nothing-but-connection-timeouts before an
                                # instance is judged to have broken host networking.
                                # Connection *refused* does NOT count against this window —

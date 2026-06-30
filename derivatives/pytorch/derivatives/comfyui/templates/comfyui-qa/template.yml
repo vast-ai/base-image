@@ -38,12 +38,12 @@ env:
   JUPYTER_DIR: "/"
   DATA_DIRECTORY: "/workspace/"
   PROVISIONING_COMFYUI_WORKFLOWS: "https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json"
-# QA gate floors (ADR 0005): smallest viable box at/above these, VRAM bounded 2x.
+# QA gate floors (ADR 0005): smallest viable box at/above these, VRAM bounded 3x.
 extra_filters:
   compute_cap:
     gte: 750                      # sm_75 — matches the production template
   cuda_max_good:
     gte: 13.2                     # host driver must satisfy the newer matrix variant (cuda-13.2)
   gpu_total_ram:
-    gte: 8192                     # 8 GB floor (SD1.5 + headroom); selection bounds to [8,16] GB
+    gte: 8192                     # 8 GB floor (SD1.5 + headroom); selection bounds to [8,24] GB
 recommended_disk_space: 40.0      # ComfyUI image + 2.1 GB SD1.5 checkpoint + workspace
