@@ -11,7 +11,7 @@
 #     strategy: { matrix: { include: [ {cuda: "12.9", py: "py312"}, ... ] } }
 #     uses: ./.github/workflows/qa-gate.yml
 #     with: { repo: comfy, tag: "...-cuda-${{matrix.cuda}}-...-amd64", template_dir: ..., label: base-image-qa-<img>, ... }
-#     secrets: { VAST_API_KEY: ..., DOCKERHUB_NAMESPACE_STAGING: ... }
+#     secrets: { VAST_API_KEY: ..., DOCKERHUB_NAMESPACE_STAGING: ..., SLACK_WEBHOOK_URL: ... }
 #   merge-manifests: { needs: [preflight, build, qa] }   # gated on qa
 name: QA gate (reusable)
 
@@ -44,10 +44,6 @@ on:
         required: false
         type: string
         default: ""
-      max_price:
-        required: false
-        type: string
-        default: "0.50"
       timeout:
         required: false
         type: string
@@ -62,10 +58,17 @@ on:
         required: false
       DOCKERHUB_NAMESPACE_STAGING:
         required: false
+      SLACK_WEBHOOK_URL:
+        required: false
 
 jobs:
   qa:
     runs-on: ubuntu-latest
+    # soft_pass is set only when an unattended scheduled run promoted UNGATED
+    # (inconclusive infra outcome). notify-soft-pass below pings Slack so that
+    # silent no-op surfaces instead of decaying quietly.
+    outputs:
+      soft_pass: ${{ steps.verdict.outputs.soft_pass }}
     # Serialize live-GPU QA across ALL callers onto the single capped QA account so
     # concurrent builds can't 429-storm it (a 429 -> no_offers -> schedule soft-pass
     # -> silent promotion). Centralised here so every caller inherits it.
@@ -131,7 +134,7 @@ jobs:
           set +e
           python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
             --destroy --raw --force --label "${{ inputs.label }}" \
-            --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
+            --timeout "${{ inputs.timeout }}" \
             "${ARGS[@]}" \
             > /tmp/qa-raw.json
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
@@ -145,6 +148,7 @@ jobs:
             || echo "::warning::template ${{ steps.create.outputs.id }} delete failed (HTTP error) — harmless private-template clutter; the instance was already destroyed"
 
       - name: Verdict
+        id: verdict
         if: steps.guard.outputs.run == 'true'
         run: |
           CODE="${{ steps.test.outputs.exit_code }}"
@@ -168,8 +172,34 @@ jobs:
                 else
                   echo "::error::passed WITHOUT a result event — verdict not trustworthy (ADR 0005 cond 2)"; exit 1
                 fi ;;
-            2|3) echo "::warning::INCONCLUSIVE (state=${STATE}) — thin market / infra; holding unless scheduled"; exit ${INCONCLUSIVE_EXIT} ;;
+            2|3) echo "::warning::INCONCLUSIVE (state=${STATE}) — thin market / infra; holding unless scheduled"
+                 if [ "${INCONCLUSIVE_EXIT}" = "0" ]; then
+                   # Unattended schedule soft-passes (promotes ungated). Flag it so
+                   # notify-soft-pass pings Slack — a chronically-skipped gate must
+                   # not decay silently. Set BEFORE the exit so the output is written.
+                   echo "soft_pass=true" >> "$GITHUB_OUTPUT"
+                   echo "::warning::scheduled run promoted UNGATED (no live QA ran) — Slack alerted"
+                 fi
+                 exit ${INCONCLUSIVE_EXIT} ;;
             1|5) echo "::error::BLOCK (state=${STATE}) — a real test failure or instance crash"; exit 1 ;;
             4)  echo "::error::CONFIG ERROR (state=${STATE}) — CI/template bug, not the image"; exit 1 ;;
             *)  echo "::error::unexpected exit code ${CODE}"; exit 1 ;;
           esac
+
+  # When an unattended scheduled run soft-passed (promoted UNGATED on an infra-
+  # inconclusive outcome), ping Slack. Real test failures BLOCK the qa job, so
+  # this never runs for those — it exists solely so a silently-skipped gate on the
+  # release train surfaces instead of decaying to a no-op (review follow-up).
+  notify-soft-pass:
+    needs: qa
+    if: needs.qa.outputs.soft_pass == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: "failure"   # render as an alert — promotion happened without live QA
+      image-name: ${{ inputs.repo }}
+      image-ref: ${{ inputs.tag }}
+      image-tags: ${{ format('["{0}"]', inputs.tag) }}
+      trigger: "schedule — QA INCONCLUSIVE, image promoted UNGATED"
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

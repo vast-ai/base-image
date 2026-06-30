@@ -275,6 +275,7 @@ jobs:
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   merge-manifests:
     needs: [preflight, build, qa]

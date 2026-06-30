@@ -101,7 +101,10 @@ on both:
 "Inconclusive" (`2`/`3`) **never auto-promotes on the gating path** (manual
 dispatch / post-merge): the Verdict step **holds** (exit 1) so a human looks. Only
 the **unattended `schedule` path soft-passes** an inconclusive, so a thin 00:00
-market doesn't block the nightly promotion of an unchanged image.
+market doesn't block the nightly promotion of an unchanged image. A soft-pass is
+**not silent**: the gate sets a `soft_pass` output and a `notify-soft-pass` job
+pings Slack (`notify-slack.yml`), so a gate that chronically can't run (a too-tight
+floor, a thin market) surfaces instead of decaying to a no-op on the release train.
 
 **As shipped (cron gates too).** The narrower "non-gating smoke for non-allowlist
 images" in option C below is *not yet built* — the only gate wired is the comfyui
@@ -186,9 +189,15 @@ surviving review finding.
    a shared cron across ~22 workflows cannot self-DoS the account into 429s (which
    would otherwise become exit-2 inconclusive → mass silent promotion). The gating
    path is opt-in per promotion, not fanned out unattended.
-7. **Cost ceiling.** Every launch carries `--max-price` and `--timeout`; the
-   gating smoke config is cheap (no large model download where avoidable); a
-   per-run and per-day spend ceiling on the QA account is set and monitored.
+7. **Cost ceiling.** Every launch carries `--timeout`, and offer selection is
+   bounded to a near-floor VRAM band (`apply_vram_ceiling`, 2× the declared floor)
+   so a `>=8GB` claim is never tested on a 96GB box — that band, not a price filter,
+   is the cost control. (A `dph_total`/`--max-price` filter was removed from the
+   gate: on top of the VRAM ceiling it mostly added `no_offers` inconclusives —
+   i.e. soft-passes — without meaningfully lowering spend. `--max-price` remains
+   available on `test_template.py` for ad-hoc caps.) The gating smoke config is
+   cheap (no large model download where avoidable); a per-run and per-day spend
+   ceiling on the QA account is set and monitored.
 8. **Plaintext-channel acknowledged.** The harness auth token is the instance
    `jupyter_token` streamed over `http://` on a public IP — accepted only because
    the box is a short-lived throwaway; the QA key is never round-tripped through an
