@@ -1,0 +1,58 @@
+# vLLM QA template (ADR 0005 live-GPU QA gate, CON-1585).
+#
+# Mirrors the production vLLM template's LAUNCH path (vast_landing .../070-vllm):
+# runtype: jupyter, OPEN_BUTTON/JUPYTER env, the vLLM serving path. QA-only deltas
+# (per ADR 0005 rollout note — smoke model != production model):
+#  - VLLM_MODEL is a deliberately TINY chat model (prod ships Qwen3.5-9B @ 24GB floor,
+#    which would brick the small-box selector); vllm.d hits /v1/chat/completions and
+#    asserts completion_tokens > 0, so it must be chat-capable.
+#  - Single-GPU smoke: AUTO_PARALLEL off, so vLLM serves on one GPU with no tensor
+#    parallelism. Ray STILL runs: ray.sh self-skips (exit_portal "ray dash") unless a
+#    "Ray Dashboard" entry is in PORTAL_CONFIG, and vllm.sh hard-waits for Ray's
+#    gcs_server before it will serve — so the Ray Dashboard entry is mandatory for the
+#    image's real launch path, not decorative. Model UI (7860) is the one production
+#    service we omit: it's optional and skipping it avoids a port check on a service the
+#    serving smoke doesn't exercise. A portal entry whose port isn't listening fails the
+#    harness's port check, so we list only entries that actually bind.
+#  - Selection floors tuned for the tiny model, not production's 24GB.
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag.
+name: "vLLM QA — tiny-model smoke"
+image: vastai/vllm
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8000:8000"                   # vLLM API
+  - "8265:8265"                   # Ray Dashboard (ray.sh gates on this portal entry)
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:vLLM API|localhost:8265:28265:/:Ray Dashboard|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  AUTO_PARALLEL: "false"          # single-GPU smoke — no tensor parallelism (Ray head still required by vllm.sh)
+  RAY_ADDRESS: "127.0.0.1"        # local Ray head (mirrors production 070-vllm)
+  VLLM_MODEL: "Qwen/Qwen2.5-0.5B-Instruct"   # tiny chat model (~1 GB), fast load
+  # --enforce-eager is a QA-only delta: it disables torch.compile + CUDA-graph capture
+  # (VLLM_COMPILE captures 50+ graph sizes). That phase is silent, multi-minute and
+  # RAM/compile-heavy; on the smallest box it collided with the boot test sweep and the
+  # instance dropped before serving. A smoke proves the serving path works, not compiled
+  # throughput, so eager is the right trade — production keeps full compilation.
+  VLLM_ARGS: "--enforce-eager --max-model-len 4096 --download-dir /workspace/models --host 127.0.0.1 --port 18000"
+# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 2x.
+extra_filters:
+  compute_cap:
+    gte: 800                      # sm_80 — matches the production vLLM floor (vLLM kernels)
+  cuda_max_good:
+    gte: 13.0                     # host driver must satisfy the newest matrix variant (cuda-13.0)
+  gpu_total_ram:
+    gte: 8192                     # 8 GB — ample for a 0.5B model + KV cache
+recommended_disk_space: 32.0      # vLLM image + small model + workspace

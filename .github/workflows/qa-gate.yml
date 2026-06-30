@@ -1,0 +1,175 @@
+# Reusable live-GPU QA gate (ADR 0005, CON-1585). Image-agnostic: a build workflow
+# calls this once per staging artifact, passing the finished image coordinates +
+# the QA template. All per-image variation (tag derivation, matrix shape, the
+# provisioning/model env) stays in the CALLER; this job is just the shared core —
+# create a throwaway template -> launch + run the in-instance harness, DESTROYING
+# the instance -> delete the template -> map a machine-readable verdict.
+#
+# Caller pattern:
+#   qa:
+#     needs: [preflight, build]
+#     strategy: { matrix: { include: [ {cuda: "12.9", py: "py312"}, ... ] } }
+#     uses: ./.github/workflows/qa-gate.yml
+#     with: { repo: comfy, tag: "...-cuda-${{matrix.cuda}}-...-amd64", template_dir: ..., label: base-image-qa-<img>, ... }
+#     secrets: { VAST_API_KEY: ..., DOCKERHUB_NAMESPACE_STAGING: ... }
+#   merge-manifests: { needs: [preflight, build, qa] }   # gated on qa
+name: QA gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: "Dockerhub repo; the tested image is <staging-namespace>/<repo>"
+        required: true
+        type: string
+      tag:
+        description: "The amd64 staging tag to test (already derived by the caller)"
+        required: true
+        type: string
+      template_dir:
+        description: "Path to the QA template dir (<name>/template.yml)"
+        required: true
+        type: string
+      label:
+        description: "Vast instance label to stamp (reaper scope; prefix base-image-qa)"
+        required: true
+        type: string
+      log_paths:
+        description: "Space-separated in-instance log files to stream into the run"
+        required: false
+        type: string
+        default: ""
+      extra_env:
+        description: "Newline-separated KEY=VAL passed as test_template --env (e.g. a SHA-pinned provisioning URL)"
+        required: false
+        type: string
+        default: ""
+      max_price:
+        required: false
+        type: string
+        default: "0.50"
+      timeout:
+        required: false
+        type: string
+        default: "7800"
+      require_floor:
+        description: "Fail if the template declares no parseable compute_cap floor"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      VAST_API_KEY:
+        required: false
+      DOCKERHUB_NAMESPACE_STAGING:
+        required: false
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    # Serialize live-GPU QA across ALL callers onto the single capped QA account so
+    # concurrent builds can't 429-storm it (a 429 -> no_offers -> schedule soft-pass
+    # -> silent promotion). Centralised here so every caller inherits it.
+    concurrency:
+      group: qa-vast-account
+      cancel-in-progress: false
+    env:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      TM: tools/template_manager
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate readiness (advisory until the QA account secret exists)
+        id: guard
+        run: |
+          if [ -z "${VAST_API_KEY}" ]; then
+            echo "::warning::VAST_API_KEY not set — skipping live QA (advisory; promotion not blocked)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install template_manager deps
+        if: steps.guard.outputs.run == 'true'
+        run: pip install -r "${TM}/requirements.txt"
+
+      - name: Create throwaway QA template
+        if: steps.guard.outputs.run == 'true'
+        id: create
+        env:
+          STAGING_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+        run: |
+          IMAGE="${STAGING_NS}/${{ inputs.repo }}"
+          echo "Testing ${IMAGE}:${{ inputs.tag }}"
+          python "${TM}/create.py" "${{ github.workspace }}/${{ inputs.template_dir }}" \
+            --image "${IMAGE}" --tag "${{ inputs.tag }}" \
+            --emit-result /tmp/qa-create.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          r = json.load(open("/tmp/qa-create.json"))
+          assert r and r[0].get("hash_id") and r[0].get("id"), f"create returned no hash/id: {r}"
+          print(f"hash={r[0]['hash_id']}")
+          print(f"id={r[0]['id']}")
+          PY
+
+      - name: Run live test (DESTROY the instance after)
+        if: steps.guard.outputs.run == 'true'
+        id: test
+        continue-on-error: true
+        env:
+          LOG_PATHS: ${{ inputs.log_paths }}
+          EXTRA_ENV: ${{ inputs.extra_env }}
+        run: |
+          ARGS=()
+          for p in ${LOG_PATHS}; do ARGS+=(--log "$p"); done
+          while IFS= read -r kv; do [ -n "$kv" ] && ARGS+=(--env "$kv"); done <<< "${EXTRA_ENV}"
+          if [ "${{ inputs.require_floor }}" = "true" ]; then ARGS+=(--require-floor); fi
+          set +e
+          python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
+            --destroy --raw --force --label "${{ inputs.label }}" \
+            --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
+            "${ARGS[@]}" \
+            > /tmp/qa-raw.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          echo "---- machine-readable verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
+
+      - name: Delete the throwaway template (always)
+        if: always() && steps.create.outputs.id != ''
+        run: |
+          python "${TM}/create.py" --delete "${{ steps.create.outputs.id }}" \
+            || echo "::warning::template ${{ steps.create.outputs.id }} delete failed (HTTP error) — harmless private-template clutter; the instance was already destroyed"
+
+      - name: Verdict
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          CODE="${{ steps.test.outputs.exit_code }}"
+          # The client prints the verdict as a single-line JSON object (json.dumps,
+          # no indent) as its FINAL stdout line. Narration/system-logs go to stderr,
+          # but be robust to any bleed: take the last complete {...} line, not the
+          # whole file (json.load on a multi-line/polluted file fails -> '?', which
+          # silently turned a real PASS into a BLOCK on the cu12.9 cell).
+          RAW=$(grep -E '^\{.*\}$' /tmp/qa-raw.json | tail -n1)
+          STATE=$(printf '%s' "$RAW" | python -c "import sys,json;print(json.load(sys.stdin).get('state','?'))" 2>/dev/null || echo "?")
+          GOT=$(printf '%s' "$RAW" | python -c "import sys,json;print(json.load(sys.stdin).get('got_result_event',False))" 2>/dev/null || echo "?")
+          echo "exit_code=${CODE} state=${STATE} got_result_event=${GOT}"
+          # ADR 0005 cond 2: a 'passed' without a result event is not trustworthy.
+          # Inconclusive must not silently auto-promote on the gating path — a
+          # manual/dispatch run HOLDS (exit 1); only the unattended schedule soft-passes.
+          INCONCLUSIVE_EXIT=1
+          [ "${{ github.event_name }}" = "schedule" ] && INCONCLUSIVE_EXIT=0
+          case "${CODE}" in
+            0)  if [ "${GOT}" = "True" ]; then
+                  echo "::notice::FULL pass (state=${STATE})"; exit 0
+                else
+                  echo "::error::passed WITHOUT a result event — verdict not trustworthy (ADR 0005 cond 2)"; exit 1
+                fi ;;
+            2|3) echo "::warning::INCONCLUSIVE (state=${STATE}) — thin market / infra; holding unless scheduled"; exit ${INCONCLUSIVE_EXIT} ;;
+            1|5) echo "::error::BLOCK (state=${STATE}) — a real test failure or instance crash"; exit 1 ;;
+            4)  echo "::error::CONFIG ERROR (state=${STATE}) — CI/template bug, not the image"; exit 1 ;;
+            *)  echo "::error::unexpected exit code ${CODE}"; exit 1 ;;
+          esac

@@ -152,8 +152,37 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005, CON-1585) — calls the reusable qa-gate.yml once per
+  # promoted CUDA variant (amd64). All per-image specifics (tag, label, the
+  # SHA-pinned provisioning URL) are here; the shared create -> test -> destroy ->
+  # delete -> verdict core + the account concurrency group live in qa-gate.yml.
+  # amd64-only (ADR 0005 cond 4); advisory until VAST_API_KEY exists.
+  qa:
     needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      # cuda/py are constants per variant (matching the build matrix), so the
+      # staging tag is built inline below — no per-cell shell derivation.
+      matrix:
+        include:
+          - { cuda: "12.9", py: "py312" }
+          - { cuda: "13.2", py: "py312" }
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'comfy' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.comfyui-ref }}-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64
+      template_dir: derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa
+      label: base-image-qa-comfyui
+      log_paths: "/var/log/portal/comfyui.log /var/log/portal/api-wrapper.log"
+      # SHA-pinned so the QA box provisions the workflow on the ref under test.
+      extra_env: "PROVISIONING_COMFYUI_WORKFLOWS=https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json"
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+
+  merge-manifests:
+    needs: [preflight, build, qa]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}

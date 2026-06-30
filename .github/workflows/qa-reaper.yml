@@ -1,0 +1,63 @@
+# QA reaper (ADR 0005 condition 1) — scheduled backstop that destroys orphaned
+# QA instances a runner-kill may have leaked past test_template.py's --destroy.
+# The QA account is single-tenant, so any instance older than the max test
+# duration is an orphan. Schedule + dispatch only (no pull_request) so the QA
+# secret is never exposed to a fork. Active on schedule only once on the default
+# branch; until then, run it manually via workflow_dispatch.
+name: QA reaper — destroy orphaned QA instances
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes
+  workflow_dispatch:
+    inputs:
+      max_age_min:
+        description: "Reap instances with uptime over this many minutes"
+        required: false
+        default: "180"
+      dry_run:
+        description: "Report only — do not destroy"
+        type: boolean
+        default: false
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    env:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate readiness
+        id: guard
+        run: |
+          if [ -z "${VAST_API_KEY}" ]; then
+            echo "::notice::VAST_API_KEY not set — nothing to reap (QA account not configured)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Reap orphaned QA instances
+        if: steps.guard.outputs.run == 'true'
+        env:
+          # Primary scope: the QA label that test_template.py stamps on every
+          # instance it launches (prefix 'base-image-qa'). A good non-test instance
+          # carries no QA label, so it can never be reaped. The staging-namespace
+          # image prefix is ANDed as an extra layer when available. The script's
+          # --max-reap ceiling aborts if an implausible number match (wrong account).
+          QA_LABEL: base-image-qa
+          STAGING_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+        run: |
+          DESTROY="--destroy"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DESTROY=""; fi
+          PREFIX=""
+          if [ -n "${STAGING_NS}" ]; then PREFIX="--image-prefix ${STAGING_NS}/"; fi
+          python tools/template_manager/reap_orphans.py \
+            --label "${QA_LABEL}" \
+            --max-age-min "${{ inputs.max_age_min || '180' }}" $PREFIX $DESTROY

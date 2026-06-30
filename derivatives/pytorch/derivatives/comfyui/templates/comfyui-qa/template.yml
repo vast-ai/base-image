@@ -1,0 +1,49 @@
+# ComfyUI QA template (ADR 0005 live-GPU QA gate, CON-1585).
+#
+# Mirrors the PRODUCTION ComfyUI template (vast_landing .../recommended_templates/
+# 160-comfyui) so QA exercises the real launch path — `runtype: jupyter` (Jupyter
+# injected by Vast at runtime, not the entrypoint/args mode), the full PORTAL_CONFIG,
+# the production COMFYUI_ARGS, and the api-wrapper backend. QA-only deltas: private/
+# disposable, an SD1.5 smoke workflow (vs prod's SDXL-Turbo), and the ADR 0005
+# selection floors (amd64 is forced by the tool, not the template).
+#
+# CI overrides `tag` (and `image`) with the freshly-built staging tag via
+# `create.py --tag`, and PROVISIONING_COMFYUI_WORKFLOWS via `test_template.py --env`
+# pinned to the dispatched SHA (the `main` default below is for manual runs).
+name: "ComfyUI QA — SD1.5 smoke"
+image: vastai/comfyui
+tag: latest                       # CI overrides with the staging tag
+private: true                     # disposable QA template, never public
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode (was 'args' = entrypoint mode)
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8188:8188"                   # ComfyUI
+  - "8288:8288"                   # API Wrapper
+  - "8384:8384"                   # Syncthing
+env:
+  COMFYUI_ARGS: "--disable-auto-launch --disable-xformers --port 18188 --enable-cors-header"
+  # api-wrapper /health probes the backend's /system_stats + WebSocket; point it at
+  # ComfyUI DIRECTLY (18188), not the Caddy edge (8188) which OPEN_BUTTON_TOKEN auth-gates.
+  COMFYUI_API_BASE: "http://localhost:18188"
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8188:18188:/:ComfyUI|localhost:8288:18288:/docs:API Wrapper|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal|localhost:8384:18384:/:Syncthing"
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  PROVISIONING_COMFYUI_WORKFLOWS: "https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json"
+# QA gate floors (ADR 0005): smallest viable box at/above these, VRAM bounded 2x.
+extra_filters:
+  compute_cap:
+    gte: 750                      # sm_75 — matches the production template
+  cuda_max_good:
+    gte: 13.2                     # host driver must satisfy the newer matrix variant (cuda-13.2)
+  gpu_total_ram:
+    gte: 8192                     # 8 GB floor (SD1.5 + headroom); selection bounds to [8,16] GB
+recommended_disk_space: 40.0      # ComfyUI image + 2.1 GB SD1.5 checkpoint + workspace
