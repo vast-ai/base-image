@@ -99,3 +99,12 @@ def test_stamp_only_readme_does_not_accumulate(tmp_path):
     p = _readme(tmp_path, "updated 2020-01-01 00:00")
     out = inject_readme(VastTemplate(name="t"), p, "t")
     assert len(re.findall(r"updated \d{4}-\d{2}-\d{2} \d{2}:\d{2}", out.readme)) == 1
+
+
+def test_stamp_only_readme_has_no_leading_newline(tmp_path):
+    # When the body empties after stripping the old stamp, the fresh stamp must
+    # not be prefixed with a blank line.
+    p = _readme(tmp_path, "updated 2020-01-01 00:00")
+    out = inject_readme(VastTemplate(name="t"), p, "t")
+    assert not out.readme.startswith("\n")
+    assert out.readme.startswith("updated ")

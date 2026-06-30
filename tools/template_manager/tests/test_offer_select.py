@@ -1,6 +1,11 @@
 """Offer selection (ADR 0005): VRAM-primary, compute_cap floor, bounded search."""
-from test_template import (VRAM_CEILING_MULTIPLIER, _required_floor,
-                           apply_vram_ceiling, make_offer_sort_key)
+import json
+
+import pytest
+
+from test_template import (VRAM_CEILING_MULTIPLIER, _coerce_extra_filters,
+                           _required_floor, apply_vram_ceiling,
+                           make_offer_sort_key)
 
 
 def _o(cc=800, total_mb=24576, per_gpu_mb=24576, num_gpus=1, dph=0.5):
@@ -83,3 +88,32 @@ def test_production_multiplier_admits_consumer_tier_excludes_datacenter():
     )["gpu_total_ram"]["lte"]
     assert ceiling_mb >= 24576       # includes a 24 GB 4090
     assert ceiling_mb < 32768        # excludes a 32 GB datacenter card
+
+
+# --- _coerce_extra_filters: template-controlled input must fail cleanly --------
+
+def test_coerce_extra_filters_dict_passthrough():
+    assert _coerce_extra_filters({"compute_cap": {"gte": 800}}) == {"compute_cap": {"gte": 800}}
+
+
+def test_coerce_extra_filters_json_string():
+    assert _coerce_extra_filters('{"gpu_total_ram": {"gte": 8192}}') == {"gpu_total_ram": {"gte": 8192}}
+
+
+def test_coerce_extra_filters_empty_forms():
+    assert _coerce_extra_filters("") == {}
+    assert _coerce_extra_filters(None) == {}
+    assert _coerce_extra_filters("{}") == {}
+
+
+def test_coerce_extra_filters_malformed_json_raises():
+    with pytest.raises(json.JSONDecodeError):
+        _coerce_extra_filters("{not json")
+
+
+def test_coerce_extra_filters_non_object_raises():
+    # valid JSON, but not an object — would crash _required_floor() downstream
+    with pytest.raises(ValueError):
+        _coerce_extra_filters("[1, 2, 3]")
+    with pytest.raises(ValueError):
+        _coerce_extra_filters("42")

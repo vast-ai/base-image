@@ -85,7 +85,10 @@ def inject_readme(
     # Strip any existing "updated ..." line and append fresh timestamp
     content = re.sub(r'(?:^|\n)updated \d{4}-\d{2}-\d{2} \d{2}:\d{2}\s*$', '', content)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    content = content.rstrip() + f"\nupdated {now}"
+    body = content.rstrip()
+    # Avoid a leading blank line when the body is empty (e.g. a README that was
+    # only a prior "updated ..." stamp).
+    content = f"{body}\nupdated {now}" if body else f"updated {now}"
 
     template.readme = content
     return template

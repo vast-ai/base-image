@@ -33,7 +33,7 @@ entrypoint-mode approximation. QA-only deltas: `private`, the SD1.5 smoke workfl
 `extra_filters` declares the gate's selection floors: `compute_cap >= 750` (sm_75,
 matching production), `cuda_max_good >= 13.2` (host driver must satisfy the newer
 matrix variant), and `gpu_total_ram >= 8192` (8 GB). The gate picks the smallest
-viable amd64 box at/above these, bounded at 2× VRAM — so it smokes an ~8–16 GB box,
+viable amd64 box at/above these, bounded at 3× VRAM — so it smokes an ~8–24 GB box,
 generalising upward.
 
 ## CI overrides

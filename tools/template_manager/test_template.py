@@ -639,6 +639,24 @@ def _required_floor(extra_filters, key):
         return None
 
 
+def _coerce_extra_filters(raw):
+    """Coerce a template's ``extra_filters`` (JSON string or dict) to a dict.
+
+    ``extra_filters`` is template-controlled input that reaches us from the Vast
+    API, so a malformed publish can make it a non-JSON string or a non-object.
+    Raise ``ValueError``/``JSONDecodeError`` here so the caller can map it to a
+    clean ``config_error`` verdict instead of crashing with a raw traceback.
+    """
+    if isinstance(raw, str):
+        parsed = json.loads(raw) if raw else {}
+    else:
+        parsed = raw or {}
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"extra_filters must be an object, got {type(parsed).__name__}")
+    return parsed
+
+
 def _base_offer_score(o):
     """Legacy inet/price score; used as the final tie-breaker in sort key."""
     inet = o.get("inet_down", 0) + o.get("inet_up", 0)
@@ -1048,11 +1066,11 @@ def main():
     is_serverless = ("SERVERLESS=true" in template_env
                      or "SERVERLESS=true" in template_onstart)
 
-    extra_filters_raw = template.get("extra_filters", "{}")
-    if isinstance(extra_filters_raw, str):
-        extra_filters = json.loads(extra_filters_raw) if extra_filters_raw else {}
-    else:
-        extra_filters = extra_filters_raw or {}
+    try:
+        extra_filters = _coerce_extra_filters(template.get("extra_filters", "{}"))
+    except (json.JSONDecodeError, ValueError) as e:
+        emit_outcome("config_error", EXIT_CONFIG_ERROR,
+                     reason=f"malformed extra_filters: {e}")
 
     disk = args.disk or template.get("recommended_disk_space") or 40
 

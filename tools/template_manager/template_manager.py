@@ -22,13 +22,23 @@ def _redact_secrets(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of a payload with secret-bearing values masked.
 
     Used for dry-run/log output so a docker registry password (or any
-    ``*_pass``/``*_token``/``*_key`` field) is never printed in the clear.
+    ``*_pass``/``*_token``/``*_key``/``*_secret`` field) is never printed in the
+    clear — at any nesting depth, since payloads can carry nested dicts/lists.
     """
-    redacted = dict(payload)
-    for key, value in redacted.items():
-        if value and key.lower().endswith(("_pass", "_token", "_key", "_secret")):
-            redacted[key] = "***redacted***"
-    return redacted
+    _SECRET_SUFFIXES = ("_pass", "_token", "_key", "_secret")
+
+    def _walk(value):
+        if isinstance(value, dict):
+            return {k: ("***redacted***"
+                        if v and isinstance(k, str)
+                        and k.lower().endswith(_SECRET_SUFFIXES)
+                        else _walk(v))
+                    for k, v in value.items()}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    return _walk(payload)
 
 
 class TemplateManager:
@@ -156,12 +166,12 @@ class TemplateManager:
         retry_count = 0
 
         while retry_count <= max_retries:
+            # Backoff applies only AFTER a retryable failure — the first attempt
+            # fires immediately (no unconditional per-request latency).
             if retry_count > 0:
                 delay = min(base_delay * (2 ** (retry_count - 1)), 60)
                 print(f"    [Retry {retry_count}/{max_retries}] Waiting {delay:.1f}s before retry...")
                 time.sleep(delay)
-            else:
-                time.sleep(base_delay)
 
             try:
                 result = self._open(method, url, payload)
