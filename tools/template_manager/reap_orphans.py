@@ -79,6 +79,30 @@ def old_out_of_scope(instances, max_age_min, label, image_prefix):
             if _age_min(i) > max_age_min and not in_scope(i, label, image_prefix)]
 
 
+def destroy_instance(iid, key):
+    """Destroy one instance. Returns a (status, detail) pair:
+
+      "reaped" — deleted by us;
+      "gone"   — already destroyed (HTTP 404). A concurrent test_template
+                 --destroy, a prior reaper pass, or a spot reclaim beat us to it;
+                 that is the goal state, not a leak, so it must NOT count as a
+                 failure (mirrors test_template.py's _request_safe teardown). A
+                 404 that alarmed would train operators to ignore the one alert
+                 that signals a real leak;
+      "failed" — a genuine error (5xx, 429, transport) worth surfacing; detail
+                 carries the message.
+    """
+    try:
+        _request("DELETE", f"/instances/{iid}/", key)
+        return "reaped", None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return "gone", None
+        return "failed", str(e)
+    except urllib.error.URLError as e:
+        return "failed", str(e)
+
+
 def _request(method, path, key, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(f"{BASE_URL}{path}", data=data, method=method)
@@ -186,17 +210,20 @@ def main():
     failures = 0
     for inst in candidates:
         iid = inst.get("id")
-        if args.destroy:
-            try:
-                _request("DELETE", f"/instances/{iid}/", key)
-                print(f"  REAPED     id={iid}")
-                reaped += 1
-            except (urllib.error.HTTPError, urllib.error.URLError) as e:
-                print(f"  FAILED     id={iid}: {e}")
-                failures += 1
-        else:
+        if not args.destroy:
             print(f"  WOULD REAP id={iid}")
             reaped += 1
+            continue
+        status, detail = destroy_instance(iid, key)
+        if status == "reaped":
+            print(f"  REAPED     id={iid}")
+            reaped += 1
+        elif status == "gone":
+            print(f"  GONE       id={iid} (already destroyed)")
+            reaped += 1
+        else:
+            print(f"  FAILED     id={iid}: {detail}")
+            failures += 1
 
     print(f"{'reaped' if args.destroy else 'would reap'}: {reaped}/{len(instances)}")
     # A swallowed reap failure means a leaked paid instance persists; surface it so

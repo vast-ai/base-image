@@ -6,6 +6,8 @@ other tested module here: prove it (a) reaps a labeled, over-age orphan and
 (b) refuses anything outside scope or under age. The threshold tests pin it above
 test_template.py's healthy-run budget so a sweep can never clip a live instance.
 """
+import urllib.error
+
 import reap_orphans
 import test_template
 
@@ -121,6 +123,43 @@ def test_old_out_of_scope_empty_when_all_young_or_in_scope():
         inst(id=2, label="prod", uptime=10.0),             # out of scope but young
     ]
     assert reap_orphans.old_out_of_scope(instances, 260.0, "base-image-qa", None) == []
+
+
+# --- destroy classification (404 = already gone, not a leak) --------------
+
+def _http_error(code):
+    return urllib.error.HTTPError("https://x", code, "err", {}, None)
+
+
+def test_destroy_success_is_reaped(monkeypatch):
+    monkeypatch.setattr(reap_orphans, "_request", lambda *a, **k: {})
+    assert reap_orphans.destroy_instance(1, "key") == ("reaped", None)
+
+
+def test_destroy_404_is_gone_not_failure(monkeypatch):
+    # Already destroyed (concurrent --destroy / prior pass / spot reclaim) is the
+    # goal state — it must not be counted as a leak or it cries wolf.
+    def boom(*a, **k):
+        raise _http_error(404)
+    monkeypatch.setattr(reap_orphans, "_request", boom)
+    status, detail = reap_orphans.destroy_instance(1, "key")
+    assert status == "gone"
+
+
+def test_destroy_5xx_is_failure(monkeypatch):
+    def boom(*a, **k):
+        raise _http_error(500)
+    monkeypatch.setattr(reap_orphans, "_request", boom)
+    status, detail = reap_orphans.destroy_instance(1, "key")
+    assert status == "failed"
+    assert detail
+
+
+def test_destroy_transport_error_is_failure(monkeypatch):
+    def boom(*a, **k):
+        raise urllib.error.URLError("connection reset")
+    monkeypatch.setattr(reap_orphans, "_request", boom)
+    assert reap_orphans.destroy_instance(1, "key")[0] == "failed"
 
 
 # --- threshold drift guard ------------------------------------------------
