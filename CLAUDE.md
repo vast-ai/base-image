@@ -12,13 +12,14 @@ Actions). Orient with [docs/context-map.md](docs/context-map.md).
   partly STALE; where they disagree with `invariants.md`, reality wins.
 - [docs/adr/](docs/adr/) — decisions + rejected alternatives. Read these fresh.
 
-## How to work in this repo (expert-panel workflow)
-- For any non-trivial decision, run /panel (or /forge for idea→plan) BEFORE building.
-- Brief experts with the ARTIFACT only — never my preference or authorship.
-- Before claiming done, /redteam the change.
+## How to work in this repo
+- For any non-trivial decision, run a structured design review BEFORE building
+  (idea → critique → competing designs → decision).
+- Evaluate the ARTIFACT on its merits only — never my preference or authorship.
+- Before claiming done, critically review the change.
 - Record decisions as ADRs in docs/adr/ (template: docs/adr/0000-template.md).
-  Experts read these fresh each call.
-- Surface expert disagreement to me RAW; do not pre-resolve it.
+  Each ADR should stand on its own, read fresh.
+- Surface unresolved disagreement to me RAW; do not pre-resolve it.
 - Keep docs/invariants.md and docs/context-map.md current as the project grows.
 
 ## Bug → Invariant protocol (when I report a mistake/miss/regression)
@@ -55,8 +56,8 @@ the clean path, even against enthusiasm (mine included):
 2. **Challenge before designing.** State the strongest objection and the existing
    invariants/ADRs it interacts with. If it contradicts a current ADR or invariant,
    say so — it must SUPERSEDE that ADR explicitly, never silently drift.
-3. **Run it through `/forge`** (idea → red-team gate → competing designs → blind
-   panel → synthesis). Surface the disagreement to me RAW; don't pre-resolve it.
+3. **Run a structured design review** (idea → critical-review gate → competing
+   designs → synthesis). Surface the disagreement to me RAW; don't pre-resolve it.
 4. **Record an ADR** in `docs/adr/` before building — decision + rejected
    alternatives. If it changes an enforced rule, also update the linter (`RULES`) +
    `docs/invariants.md` so the new pattern is CODIFIED, not just described.
