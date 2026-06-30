@@ -12,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       max_age_min:
-        description: "Reap instances with uptime over this many minutes"
+        description: "Reap instances with uptime over this many minutes (blank = script default)"
         required: false
-        default: "180"
+        default: ""
       dry_run:
         description: "Report only — do not destroy"
         type: boolean
@@ -58,6 +58,10 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then DESTROY=""; fi
           PREFIX=""
           if [ -n "${STAGING_NS}" ]; then PREFIX="--image-prefix ${STAGING_NS}/"; fi
+          # Omit --max-age-min on the scheduled path so reap_orphans.py's derived
+          # default governs (single source of truth, kept in sync with the test
+          # budget). A manual dispatch may override it.
+          AGE=""
+          if [ -n "${{ inputs.max_age_min }}" ]; then AGE="--max-age-min ${{ inputs.max_age_min }}"; fi
           python tools/template_manager/reap_orphans.py \
-            --label "${QA_LABEL}" \
-            --max-age-min "${{ inputs.max_age_min || '180' }}" $PREFIX $DESTROY
+            --label "${QA_LABEL}" $AGE $PREFIX $DESTROY

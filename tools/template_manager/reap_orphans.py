@@ -24,6 +24,60 @@ import urllib.request
 
 BASE_URL = "https://console.vast.ai/api/v0"
 
+# Worst-case lifetime of a HEALTHY QA instance, mirrored from test_template.py's
+# auto-lifted client --timeout (prov + derivative + headroom; see
+# test_template.py:1100). The instance bills for this whole window on a good run,
+# so the reaper MUST stay above it or it deletes a live instance mid-test — a
+# false BLOCK plus the wasted spend of the whole run. The coupling is enforced by
+# tests/test_qa_reaper.py::test_default_threshold_stays_above_test_template_budget,
+# which fails if test_template.py raises its budget past our margin.
+_HEALTHY_TEST_PHASE_SEC = 3600 + 3600 + 600   # 7800s = 130 min
+# A live instance also bills during poll-to-running + connectivity probing before
+# the test phase and briefly during teardown, none of it counted above. Reaping
+# latency is cheap (an orphan over-running on a sub-$0.50/hr QA GPU costs cents),
+# but clipping a live run is expensive — so the default sits at 2x the test-phase
+# ceiling. Override per-run with --max-age-min when a gated image needs more.
+DEFAULT_MAX_AGE_MIN = (_HEALTHY_TEST_PHASE_SEC * 2) / 60   # 260 min
+
+
+def in_scope(inst, label, image_prefix):
+    """True if an instance falls within the QA reap scope.
+
+    Label and image-prefix are each optional; when set they are ANDed (an
+    instance must match every supplied filter). A non-QA instance carries no QA
+    label, so a label scope excludes it. Returns True only for the intended
+    targets — keep this the single definition of "in scope" so the dry-run report
+    and the destroy path can never diverge.
+    """
+    ilabel = inst.get("label") or ""
+    image = inst.get("image_uuid") or inst.get("image") or ""
+    return ((label is None or ilabel.startswith(label))
+            and (image_prefix is None or image.startswith(image_prefix)))
+
+
+def is_reapable(inst, max_age_min, label, image_prefix):
+    """An instance is reapable iff it is older than the threshold AND in scope."""
+    return _age_min(inst) > max_age_min and in_scope(inst, label, image_prefix)
+
+
+def select_candidates(instances, max_age_min, label, image_prefix):
+    """The instances the reaper would destroy under this scope and threshold."""
+    return [i for i in instances
+            if is_reapable(i, max_age_min, label, image_prefix)]
+
+
+def old_out_of_scope(instances, max_age_min, label, image_prefix):
+    """Over-age instances EXCLUDED only by scope.
+
+    On the single-tenant QA account these are the smoking gun for silent
+    under-reaping: an orphan whose ``--label`` failed to round-trip, or an image
+    string the ``--image-prefix`` AND no longer matches, ages forever while the
+    reaper reports a clean ``reaped: 0``. Surfacing them turns that invisible
+    no-op into a warning so a broken scope can't masquerade as a quiet account.
+    """
+    return [i for i in instances
+            if _age_min(i) > max_age_min and not in_scope(i, label, image_prefix)]
+
 
 def _request(method, path, key, body=None):
     data = json.dumps(body).encode() if body is not None else None
@@ -47,9 +101,10 @@ def _age_min(inst):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--max-age-min", type=float, default=180.0,
-                    help="reap instances whose uptime exceeds this many minutes "
-                         "(default 180 — comfortably above the max QA test duration)")
+    ap.add_argument("--max-age-min", type=float, default=DEFAULT_MAX_AGE_MIN,
+                    help=f"reap instances whose uptime exceeds this many minutes "
+                         f"(default {DEFAULT_MAX_AGE_MIN:.0f} — 2x the max healthy QA "
+                         f"test lifetime, derived from test_template.py's budget)")
     ap.add_argument("--label", default=None,
                     help="ONLY reap instances whose Vast label starts with this — the "
                          "primary QA scope (test_template.py --label stamps it at launch). "
@@ -100,14 +155,24 @@ def main():
         ilabel = inst.get("label") or ""
         desc = (f"id={inst.get('id')} {inst.get('gpu_name', '?')} {image} "
                 f"label={ilabel or '-'} uptime={age:.0f}min status={inst.get('actual_status', '?')}")
-        in_scope = ((args.label is None or ilabel.startswith(args.label))
-                    and (args.image_prefix is None or image.startswith(args.image_prefix)))
-        if age > args.max_age_min and in_scope:
+        scoped = in_scope(inst, args.label, args.image_prefix)
+        if age > args.max_age_min and scoped:
             candidates.append(inst)
             print(f"  CANDIDATE  {desc}")
         else:
             print(f"  keep       {desc}"
-                  + ("" if in_scope else "  (out of QA scope)"))
+                  + ("" if scoped else "  (out of QA scope)"))
+
+    # Canary for silent under-reaping: an over-age instance the scope EXCLUDED is,
+    # on the single-tenant QA account, most likely an orphan whose label/prefix
+    # stopped matching — exactly the failure a bare 'reaped: 0' would hide. Warn
+    # (not error) so it surfaces without false-failing a legitimately quiet sweep.
+    stale_unscoped = old_out_of_scope(instances, args.max_age_min, args.label, args.image_prefix)
+    if stale_unscoped:
+        ids = ", ".join(str(i.get("id")) for i in stale_unscoped)
+        print(f"::warning::{len(stale_unscoped)} over-age instance(s) are OUT of QA scope "
+              f"(id={ids}) — if these are leaked QA orphans the label/prefix is not matching; "
+              f"verify before trusting 'reaped: 0'.", file=sys.stderr)
 
     # Fail-closed: a count far above what QA ever produces means the key is
     # pointed at the wrong (e.g. production) account — abort rather than wipe it.
