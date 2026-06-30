@@ -4,8 +4,8 @@
   — see Amendment below.**
 - **Date:** 2026-06-25
 - **Decision owner:** Rob Ballantyne
-- **Process:** idea brief → red-team gate → 3 blind architects → 3-lens blind panel
-  (feasibility / maintainability / risk) → synthesis → final red-team gate on the
+- **Process:** idea brief → critical review → competing designs → multi-dimension review
+  (feasibility / maintainability / risk) → synthesis → final review gate on the
   plan (which empirically tested the load-bearing assumption).
 
 ## Amendment (2026-06-25) — track latest upstream, do not pin
@@ -84,8 +84,8 @@ into CI now. The UI **and** the API both get authed Caddy fronts.
 
 ## Options considered
 
-The install-strategy fork drew three blind architect designs, scored by a 3-lens
-blind panel. Scores (1–10): feasibility / maintainability / risk.
+The install-strategy fork drew three candidate designs, evaluated across three
+dimensions. Scores (1–10): feasibility / maintainability / risk.
 
 - **Option A — minimal `sed` repair (Alpha; 7 / 3 / 5).** Keep the existing
   `cp313→cp312` sed; drop the index-xformers; pull the exllamav3 line out and
@@ -114,7 +114,7 @@ blind panel. Scores (1–10): feasibility / maintainability / risk.
   while masking the exact failure the task exists to fix) and maintainability called
   green-but-degraded "silent capability loss behind an ignorable warning."
 
-The panel was complementary, not contradictory: Option C's install mechanism and
+The review was complementary, not contradictory: Option C's install mechanism and
 Option G's *verification* each fix the other's sole weakness. Both other judges were
 unanimous against G's **degrade** path specifically.
 
@@ -188,7 +188,7 @@ HARD gate (fail RED, no degrade).**
 
 ## Binding conditions
 
-Surviving conditions from the final red-team gate. If any is refused, the decision
+Surviving conditions from the final review gate. If any is refused, the decision
 is void.
 
 1. **The ABI gate uses the exact incantation above** (`import torch` first; bare

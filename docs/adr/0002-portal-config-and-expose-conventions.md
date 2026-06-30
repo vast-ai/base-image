@@ -3,8 +3,8 @@
 - **Status:** Accepted (conditional — see Binding conditions)
 - **Date:** 2026-06-23
 - **Decision owner:** Rob Ballantyne
-- **Process:** idea brief → red-team gate → 3 blind architects → 3-lens blind panel
-  (feasibility / maintainability / risk) → synthesis → final red-team gate on the plan.
+- **Process:** idea brief → critical review → competing designs → multi-dimension review
+  (feasibility / maintainability / risk) → synthesis → final review gate on the plan.
 
 ## Context
 
@@ -116,7 +116,7 @@ scaffold.
 
 ## Binding conditions
 
-Surviving conditions from the final red-team gate. If any is refused, the decision is
+Surviving conditions from the final review gate. If any is refused, the decision is
 void (it would manufacture a green check that ships the loopback-exposure regression
 it claims to prevent):
 

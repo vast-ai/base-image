@@ -17,7 +17,7 @@ What was chosen.
 
 ## Binding conditions
 Non-negotiable conditions the decision depends on (e.g. surviving findings from a
-`/redteam` gate). If a condition is later refused, the decision is void.
+design review). If a condition is later refused, the decision is void.
 
 ## Consequences
 Positive and accepted-negative outcomes.

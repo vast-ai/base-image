@@ -1,15 +1,15 @@
 # ADR 0003 — Install + run a HuggingFace Space on a live instance (portal feature)
 
-- **Status:** Accepted (conditional — binding conditions from the final red-team; conditions 1 & 3 remain blocking, **revised 2026-06-24**)
+- **Status:** Accepted (conditional — binding conditions from the final review; conditions 1 & 3 remain blocking, **revised 2026-06-24**)
 - **Date:** 2026-06-24
 - **Decision owner:** Rob Ballantyne
-- **Process:** idea brief → red-team gate (reshaped: dropped nothing, surfaced reachability) →
-  3 blind architects → 3-lens blind panel (feasibility / maintainability / risk) →
-  synthesis → final red-team gate → **revision after two Vast-fact corrections, re-gated.**
+- **Process:** idea brief → critical review (reshaped: dropped nothing, surfaced reachability) →
+  competing designs → multi-dimension review (feasibility / maintainability / risk) →
+  synthesis → final review gate → **revision after two Vast-fact corrections, re-gated.**
 
 ## Revision (2026-06-24) — two corrections to the experts' Vast model, re-gated
 
-Two premises the plan was gated on were wrong; both were re-examined by a red-team:
+Two premises the plan was gated on were wrong; both were re-examined on review:
 
 - **Overlay storage persists across stop/start** (lost only on DESTROY). `load_config()`
   reads `/etc/portal.yaml` when present and regenerates from the `PORTAL_CONFIG` env var
@@ -121,7 +121,7 @@ Verified reality that shapes the decision:
 
 ## Binding conditions
 
-Surviving findings from the red-team, **as revised 2026-06-24**. Conditions **1 and 3 are
+Surviving findings from the review, **as revised 2026-06-24**. Conditions **1 and 3 are
 blocking** (the decision is void without them); the rest are required before the
 corresponding surface ships.
 

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (conditional — see Binding conditions), **revised 2026-06-22 — see Revision**
 - **Date:** 2026-06-22
-- **Process:** idea brief → red-team gate → 2 blind architects → 3-lens blind panel → synthesis (panel red-team served as final gate)
+- **Process:** idea brief → critical review → competing designs → multi-dimension review → synthesis (with a final review gate)
 
 ## Revision (2026-06-22) — invariants verified against the repo
 
@@ -40,7 +40,7 @@ trailer; strict 4/5-job CI shape with a `base_image × arch` matrix to staging +
 `crane` manifest merge). We want to automate the mechanical bulk without
 producing plausible-but-wrong infrastructure.
 
-A red-team review of the original "an agent generates everything" idea rated it
+A critical review of the original "an agent generates everything" idea rated it
 **fatal as framed**: a new image is an all-green PR diff a reviewer can't
 diff-check, real validation needs GPUs/secrets/build, and the "which class /
 does it warrant an image" call is exactly what LLMs are worst at. The idea was
@@ -67,15 +67,15 @@ Adopt a four-part shape:
   invariant** (proves each check has teeth), a **regression net** over all
   existing images, and a **generator round-trip** test.
 - **Rejected: the pure shell linter** (the "Design A" approach, grep/awk +
-  *optional* `yq`). It scored highest on team-fit but the correctness lens rated
-  it 4/10 and the red-team called it *trending fatal as specified*: grep/awk over
+  *optional* `yq`). It scored highest on team-fit but the correctness review rated
+  it 4/10 and the review judged it *trending-fatal as specified*: grep/awk over
   YAML cannot model the CI job-shape DAG, and optional-`yq`-with-graceful-
   degradation yields **silent false passes** and machine-dependent verdicts on
   the single hardest invariant. A gate you can't trust is worse than no gate.
 - **Generator** shares the one Python/Jinja2 toolchain (plain, reviewable
   templates); do **not** split languages within the tool.
 
-## Binding conditions (non-negotiable — from the panel red-team)
+## Binding conditions (non-negotiable — from the design review)
 
 If any is refused, the approach reverts to fatal (it would manufacture false
 confidence — a green check that ships broken infra past a disengaged reviewer):
@@ -125,7 +125,7 @@ confidence — a green check that ships broken infra past a disengaged reviewer)
 
 ## Implementation status (2026-06-22)
 
-Built on `feature/CON-1585-image-linter`, each layer hardened by adversarial review:
+Built on `feature/CON-1585-image-linter`, each layer hardened by critical review:
 - **Linter** (`tools/imagegen`) — checks per §1–2; mutation-tested; clean baseline over 27 images.
 - **Generator** (`imagegen new`) — templates from real images; L040 gates unfilled skeletons.
 - **Skill** (`.claude/skills/new-image`) — orchestrates the flow with the contract above.
