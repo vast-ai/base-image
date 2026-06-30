@@ -3,7 +3,7 @@
 - **Status:** Accepted (conditional — see Binding conditions). Ships ADVISORY first.
 - **Date:** 2026-06-25
 - **Decision owner:** Rob Ballantyne
-- **Process:** discussion → red-team gate on the design (which found the first-draft
+- **Process:** discussion → critical review of the design (which found the first-draft
   protocol-probe approach fatally fail-open and the harness self-failing) → reshaped
   to the surviving design below.
 
@@ -67,7 +67,7 @@ on every image, with a **fail-closed, allowlist-based** verdict:
 
 ## Binding conditions
 
-Surviving conditions from the red-team gate. If any is refused, the decision is void.
+Surviving conditions from the critical review. If any is refused, the decision is void.
 
 1. **Fail-closed, never probe-to-downgrade.** The verdict is decided by
    `(bind, process, allowlist)`, not by whether `curl` confirms HTTP. Any public TCP that
