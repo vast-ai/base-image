@@ -64,9 +64,9 @@ CON-1585, under these terms:
 4. **Tool-local dependency policy.** Third-party deps for a tool live in
    `tools/<x>/requirements.txt` and are **not** part of any image. `pydantic` +
    `pyyaml` (typed validation of `template.yml`) earn their place; `httpx`/async
-   is heavier than this serial, self-paced workload needs (`test_template.py`
-   does gnarlier networking in stdlib) — kept for now, not to be cargo-culted by
-   the next tool.
+   was rejected in favor of stdlib `urllib` — heavier than this serial,
+   self-paced workload needs (`test_template.py` does gnarlier networking in
+   stdlib too), and not to be cargo-culted by the next tool.
 
 ## Binding conditions
 
@@ -95,7 +95,7 @@ If any condition is refused, this decision is void.
 - A duplicated, now-diverged Vast-API core exists in two repos. Mitigated by the
   ownership split and a fenced scope; the residual risk is parallel maintenance
   if the console API changes.
-- New tool-local deps (`httpx`, `pydantic`, `pyyaml`, `python-dotenv`) enter the
+- New tool-local deps (`pydantic`, `pyyaml`, `python-dotenv`) enter the
   repo's dev surface, but not any image.
 
 ## What would reverse this

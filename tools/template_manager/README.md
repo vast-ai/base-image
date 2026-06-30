@@ -12,7 +12,7 @@ dedicated QA-only key. The key is sent as an `Authorization: Bearer` header, nev
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt        # httpx, pydantic, PyYAML, python-dotenv
+pip install -r requirements.txt        # pydantic, PyYAML, python-dotenv
 ```
 
 Unknown keys in a `template.yml` are rejected (`extra="forbid"`) so a typo surfaces

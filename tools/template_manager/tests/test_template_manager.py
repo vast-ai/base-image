@@ -50,6 +50,17 @@ def test_load_env_string_passthrough(tmp_path):
     assert t.env == "-e A=b -p 9:9"
 
 
+@pytest.mark.parametrize("body", ["env: []\n", "env: {}\n"])
+def test_load_empty_list_or_dict_env_folds_to_empty_string(tmp_path, body):
+    # Regression: an empty `env: []`/`env: {}` is falsy, so the fold guard used to
+    # skip folding and assign the raw list/dict straight to entry['env'], which
+    # VastTemplate (env: Optional[str]) then rejected with a confusing
+    # ValidationError. Empty containers must fold to '' like any other shape.
+    p = _write(tmp_path, "name: t\n" + body)
+    (t,) = TemplateManager.load_templates_from_yaml(p)
+    assert t.env == ""
+
+
 def test_load_list_of_templates(tmp_path):
     p = _write(tmp_path, "- name: a\n- name: b\n")
     templates = TemplateManager.load_templates_from_yaml(p)

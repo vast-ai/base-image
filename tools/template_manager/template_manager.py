@@ -295,7 +295,7 @@ class TemplateManager:
             ports_list = entry.pop('ports', None)
             env_value = entry.pop('env', None)
 
-            if ports_list or (env_value and isinstance(env_value, (list, dict))):
+            if ports_list or isinstance(env_value, (list, dict)):
                 if isinstance(env_value, str) and ports_list:
                     # Mixed: ports as list + env as string — prepend port flags
                     port_flags = ' '.join(f'-p {p}' for p in ports_list)
