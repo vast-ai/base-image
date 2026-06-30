@@ -1,0 +1,75 @@
+# CLAUDE.md — base-image
+
+Monorepo for the Vast.ai Docker image family (base image + derivative/external app
+images sharing the `ROOT/` overlay, built and promoted to DockerHub via GitHub
+Actions). Orient with [docs/context-map.md](docs/context-map.md).
+
+## Ground truth (read before non-trivial work)
+- [docs/context-map.md](docs/context-map.md) — modules, responsibilities, where
+  things live.
+- [docs/invariants.md](docs/invariants.md) — the rules that must hold, **verified
+  against reality**. The authoritative `CONTRIBUTING.md` / `.github/AGENTS.md` are
+  partly STALE; where they disagree with `invariants.md`, reality wins.
+- [docs/adr/](docs/adr/) — decisions + rejected alternatives. Read these fresh.
+
+## How to work in this repo
+- For any non-trivial decision, run a structured design review BEFORE building
+  (idea → critique → competing designs → decision).
+- Evaluate the ARTIFACT on its merits only — never my preference or authorship.
+- Before claiming done, critically review the change.
+- Record decisions as ADRs in docs/adr/ (template: docs/adr/0000-template.md).
+  Each ADR should stand on its own, read fresh.
+- Surface unresolved disagreement to me RAW; do not pre-resolve it.
+- Keep docs/invariants.md and docs/context-map.md current as the project grows.
+
+## Bug → Invariant protocol (when I report a mistake/miss/regression)
+
+A reported defect means a MISSING INVARIANT, not just a line to patch. When I say
+"we missed X" or report a bug in the image tooling, do this yourself, unprompted —
+do not just patch the symptom:
+
+1. **Ground truth first** — inspect the real repo; restate the exact invariant and
+   its boundary/exemptions.
+2. **Linter check BEFORE the fix** — add a new `RULES` code in
+   `tools/imagegen/imagegen/linter.py`; regenerate `docs/lint-rules.md`
+   (`imagegen rules > docs/lint-rules.md`). Run `imagegen lint --all`: the baseline
+   must stay CLEAN. If a real image fails, STOP and tell me (latent bug, or the
+   invariant is wrong).
+3. **Prove it bites** — a mutation test that corrupts a real image and asserts the
+   new code fires. No mutation test = the check doesn't count.
+4. **Then fix the source** (generator/etc.) + a round-trip/regression assertion.
+5. **Show evidence, don't claim** — report the new code, the baseline result, and
+   the mutation-test name. "Done" without evidence is a failure.
+
+Don't edit beyond what this requires; surface anything larger.
+
+## Idea → Vetted change protocol (when I spring a new idea)
+
+Unreviewed ideas are how drift enters a shared repo. When I (or anyone) floats a
+feature/change/idea — especially one touching shared conventions, the `ROOT/`
+contract, invariants, CI, or the generator/linter — do NOT start building. Force
+the clean path, even against enthusiasm (mine included):
+
+1. **Triage blast radius.** Local, trivial, reversible → say so and proceed. Touches
+   conventions / the image contract / invariants / CI / tooling → full path below.
+   When unsure, treat it as non-trivial.
+2. **Challenge before designing.** State the strongest objection and the existing
+   invariants/ADRs it interacts with. If it contradicts a current ADR or invariant,
+   say so — it must SUPERSEDE that ADR explicitly, never silently drift.
+3. **Run a structured design review** (idea → critical-review gate → competing
+   designs → synthesis). Surface the disagreement to me RAW; don't pre-resolve it.
+4. **Record an ADR** in `docs/adr/` before building — decision + rejected
+   alternatives. If it changes an enforced rule, also update the linter (`RULES`) +
+   `docs/invariants.md` so the new pattern is CODIFIED, not just described.
+5. **Build only after the plan survives the gate.** "Great idea, here's the code" on
+   the spot is the failure mode — agreeing fast is how the pattern erodes.
+
+## Repo-specific cautions
+- **Bash for build/registry plumbing; Python 3.12 for structured/tested logic**
+  (precedent: `lib/provisioner`, `portal-aio`, `tools/model-ui`). Don't introduce a
+  new toolchain without a reason.
+- Static checks are a fast gate, not a correctness gate — the real `docker build`
+  (+ smoke test) is the correctness check (see ADR 0001).
+- Several headline "invariants" in the docs are NOT real (notably
+  `external port == internal + 10000`). Confirm against `docs/invariants.md` before
+  encoding any rule.
