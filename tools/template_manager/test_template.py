@@ -24,6 +24,7 @@ TEST_SERVER_PORT = 10199
 # ── Timeouts (seconds) ───────────────────────────────────────────────────
 DEFAULT_TEST_TIMEOUT = 7200      # 2 hours — total time for test suite to complete
 POLL_TIMEOUT = 7200              # 2 hours — max wait for instance to reach "running"
+POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
 TIMEOUT_HEADROOM = 600           # 10 min headroom added to computed minimum timeout
@@ -459,16 +460,23 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     Returns (test_url, auth_token) tuple. auth_token is the instance's
     jupyter_token used as Bearer auth for the test server, or None if
     the instance doesn't provide one.  Returns (None, None) on failure.
+
+    The per-tick poll uses the O(1) by-id status endpoint (``get_instance_status``)
+    — NOT the list-all endpoint, which rate-limits (429) under concurrent QA on
+    the shared account. The heavy list call (``get_instance``, the only source of
+    Docker-style port mappings) is made just once, when the instance actually
+    reaches "running".
     """
     deadline = time.time() + timeout
     last_status = ""
     while time.time() < deadline:
-        inst = api.get_instance(instance_id, safe=True)
+        # Cheap O(1) status poll — this runs every tick for the whole boot.
+        inst = api.get_instance_status(instance_id, safe=True)
 
         # Transient API error — sleep and retry rather than crash the whole
         # tool on a single network blip during a multi-hour boot poll.
         if inst is None:
-            time.sleep(5)
+            time.sleep(POLL_INTERVAL)
             continue
 
         if not inst:
@@ -501,24 +509,30 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
                   file=sys.stderr)
             return None, None
 
-        if status == "running" and inst.get("public_ipaddr"):
-            ports = inst.get("ports", {})
-            test_port = None
-            for key, mappings in (ports or {}).items():
-                if key.startswith(str(TEST_SERVER_PORT)):
-                    if isinstance(mappings, list) and mappings:
-                        test_port = mappings[0].get("HostPort")
-                    break
+        if status == "running":
+            # Now — and only now — pull the full record (one heavy list call per
+            # instance, not one per tick) for the Docker port mapping + public IP.
+            full = api.get_instance(instance_id, safe=True)
+            if full and full.get("public_ipaddr"):
+                ports = full.get("ports", {})
+                test_port = None
+                for key, mappings in (ports or {}).items():
+                    if key.startswith(str(TEST_SERVER_PORT)):
+                        if isinstance(mappings, list) and mappings:
+                            test_port = mappings[0].get("HostPort")
+                        break
 
-            if test_port:
-                host = inst["public_ipaddr"]
-                token = inst.get("jupyter_token")
-                # Clear status line and print final
-                print(f"\r\033[KInstance {instance_id} running ({host}:{test_port})",
-                      file=sys.stderr)
-                return f"http://{host}:{test_port}", token
+                if test_port:
+                    host = full["public_ipaddr"]
+                    token = full.get("jupyter_token")
+                    # Clear status line and print final
+                    print(f"\r\033[KInstance {instance_id} running ({host}:{test_port})",
+                          file=sys.stderr)
+                    return f"http://{host}:{test_port}", token
+            # running but ports/IP not published yet (or a transient list blip) —
+            # keep polling; ticks stay cheap (by-id) until the mapping appears.
 
-        time.sleep(5)
+        time.sleep(POLL_INTERVAL)
 
     print(f"\r\033[KTimeout waiting for instance {instance_id} to start", file=sys.stderr)
     return None, None
