@@ -97,3 +97,18 @@ until the real CI `docker build` + smoke test pass. Then prepare the change / op
 referencing the tracking ticket (e.g. CON-####), and add the `build-<name>.yml` workflow
 (generated as a skeleton — complete it per `.github/AGENTS.md`; CI job-shape is not
 linted, so review against a sibling).
+
+**Docker Hub repos — create staging *before* the build:**
+- Create the **staging** repo `${DOCKERHUB_NAMESPACE_STAGING}/<name>` and set it
+  **public** *before the first build*. The build pushes per-arch tags there, and if the
+  image is QA-gated the rented test GPU pulls that staging image **anonymously** — a
+  private staging repo fails the pull. (Same repo name as the eventual prod repo.)
+- The **prod** repo (`${DOCKERHUB_NAMESPACE}/<name>`, same name) is created at
+  **promotion**, which is already behind the workflow's `production` approval — so it
+  need not exist yet. **QA never needs prod** (it tests the staging image), so a new
+  image builds and QA's fine before any prod repo exists.
+- Namespaces are single-sourced as the `DOCKERHUB_NAMESPACE_STAGING` / `DOCKERHUB_NAMESPACE`
+  secrets. In any **committed** file (workflow, docs, scaffold) reference the secret —
+  `${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}` — never a literal account name. This is
+  about keeping the config single-sourced, not secrecy (a namespace is a public
+  identifier). **L041 fails the lint** if a new image's committed files hardcode it.

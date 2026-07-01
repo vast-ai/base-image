@@ -9,6 +9,7 @@ substring, not a whole check — so a *different* future break of the same code 
 NOT silently suppressed (tested by test_no_stale_exceptions).
 """
 from __future__ import annotations
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L022", WARN, "Prefer `uv pip install` over bare `pip install`"),
     ("L030", WARN, "A build-<name>.yml workflow exists (not universal)"),
     ("L040", ERROR, "No unfilled generator skeleton markers (CHANGEME / CHANGEPORT / >>> FILL)"),
+    ("L041", ERROR, "No hardcoded staging namespace in a new image's committed files — reference the DOCKERHUB_NAMESPACE_STAGING secret"),
     ("L050", ERROR, "A shipped template.yml declares a compute_cap floor in extra_filters (ADR 0005)"),
 ]
 
@@ -272,6 +274,61 @@ def check_skeleton(img: Image, repo: Path) -> Iterable[Finding]:
                           "unfilled skeleton marker (CHANGEME / >>> FILL) — complete before build")
 
 
+# Images whose base image legitimately lives on the staging account, so a staging
+# namespace in their Dockerfile is expected, not a leak (invariants §2). aio-studio
+# builds FROM a custom staging base and already carries L004/L020 exceptions for the
+# same reason. Grandfathered here rather than via EXCEPTIONS because L041 only emits its
+# ERROR when the namespace env is set, which would make the msg-scoped exception read as
+# "stale" on an env-unset run (test_no_stale_exceptions).
+_L041_GRANDFATHERED = frozenset({"aio-studio"})
+
+
+def check_no_hardcoded_staging_namespace(img: Image, repo: Path) -> Iterable[Finding]:
+    """L041 — a new image's committed files must not hardcode the staging Docker Hub
+    namespace; reference the ``DOCKERHUB_NAMESPACE_STAGING`` secret so the account stays
+    single-sourced. This is NOT about secrecy — a namespace is a public identifier, and
+    the prod namespace is the product users pull — it's about not adding new coupling that
+    a future rename would have to chase, and keeping scaffolds honest.
+
+    The namespace to match is supplied via the ``DOCKERHUB_NAMESPACE_STAGING`` env var at
+    lint time, so the literal never lives in this source. Unset -> a single WARN (never a
+    silent skip, so a run with the check disabled is visible); CI sets it from the secret,
+    so the gate is real there. Scoped to the image's own files (same set as L040), so
+    legacy repo-root scripts that predate this rule don't fail CI. The prod namespace is
+    deliberately NOT matched (it's the public product)."""
+    if img.cls == "base":
+        return
+    if img.name in _L041_GRANDFATHERED:
+        return
+    ns = os.environ.get("DOCKERHUB_NAMESPACE_STAGING", "").strip()
+    if not ns:
+        yield Finding("L041", WARN, img.name, "-",
+                      "L041 not enforced: DOCKERHUB_NAMESPACE_STAGING unset (CI sets it from the secret)")
+        return
+    pat = re.compile(r"(?<![\w./-])" + re.escape(ns) + r"/")
+    files = [img.dockerfile, img.dir / "README.md", img.dir / "README.template.md"]
+    if img.root:
+        files += [p for p in img.root.rglob("*") if p.is_file()]
+    wf = repo / ".github" / "workflows" / f"build-{img.name}.yml"
+    if wf.exists():
+        files.append(wf)
+    for p in files:
+        if not p.is_file():
+            continue
+        try:
+            t = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if pat.search(t):
+            try:
+                rel = str(p.relative_to(img.dir))
+            except ValueError:
+                rel = str(p.name)
+            yield Finding("L041", ERROR, img.name, rel,
+                          "hardcoded staging namespace — reference ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }} "
+                          "/ $DOCKERHUB_NAMESPACE_STAGING instead")
+
+
 def _is_number(v) -> bool:
     """True if v is a usable numeric floor (not a bool, not None, not unparseable)."""
     if isinstance(v, bool) or v is None:
@@ -358,6 +415,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
         out.extend(chk(img))
     out.extend(check_workflow(img, repo))
     out.extend(check_skeleton(img, repo))
+    out.extend(check_no_hardcoded_staging_namespace(img, repo))
     out.extend(check_template_floor(img, repo))
     if apply_exceptions:
         out = [f for f in out if not _suppressed(img.name, f)]

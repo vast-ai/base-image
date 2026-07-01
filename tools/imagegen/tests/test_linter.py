@@ -372,6 +372,46 @@ def test_heredoc_fed_to_dot_stdin_is_executed_L021(tmp_path):
     assert "L021" in errs(make(tmp_path, df=df), tmp_path)
 
 
+# --- L041: no hardcoded staging namespace in a new image's committed files ----
+
+def test_L041_flags_hardcoded_staging_namespace(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
+    df = VALID_DF.replace("uv pip install foo", "uv pip install foo  # see acmestaging/tooling")
+    assert "L041" in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L041_ignores_secret_reference(tmp_path, monkeypatch):
+    # The secret-reference form (what scaffolds/workflows use) must NOT trip L041.
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
+    df = VALID_DF + "# push to ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/img\n"
+    assert "L041" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L041_does_not_flag_prod_namespace(tmp_path, monkeypatch):
+    # Prod namespace is the public product users pull; only staging is matched.
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
+    assert "L041" not in errs(make(tmp_path), tmp_path)   # VALID_DF FROMs vastai/pytorch
+
+
+def test_L041_warns_not_errors_when_env_unset(tmp_path, monkeypatch):
+    # Unset -> the check can't run, but it must WARN (visible), never silently skip,
+    # and never ERROR (which would false-gate a legitimate image).
+    monkeypatch.delenv("DOCKERHUB_NAMESPACE_STAGING", raising=False)
+    df = VALID_DF.replace("uv pip install foo", "uv pip install foo  # acmestaging/x")
+    findings = lint_image(make(tmp_path, df=df), tmp_path)
+    assert "L041" not in {f.code for f in findings if f.severity == ERROR}
+    assert "L041" in {f.code for f in findings if f.severity == "WARN"}
+
+
+def test_L041_grandfathers_staging_based_image(tmp_path, monkeypatch):
+    # aio-studio legitimately builds FROM a staging-account base (invariants §2), so it
+    # must not false-gate even with the namespace set.
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
+    df = VALID_DF.replace("uv pip install foo", "uv pip install foo  # acmestaging/x")
+    img = replace(make(tmp_path, df=df), name="aio-studio")
+    assert "L041" not in errs(img, tmp_path)
+
+
 def test_rules_catalog_matches_emitted_codes():
     """ADR cond #2: the RULES catalog is authoritative — every code a check emits must
     be cataloged, and the catalog must not list codes no check emits."""

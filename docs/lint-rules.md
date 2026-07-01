@@ -17,4 +17,5 @@
 | L022 | WARN | Prefer `uv pip install` over bare `pip install` |
 | L030 | WARN | A build-<name>.yml workflow exists (not universal) |
 | L040 | ERROR | No unfilled generator skeleton markers (CHANGEME / CHANGEPORT / >>> FILL) |
+| L041 | ERROR | No hardcoded staging namespace in a new image's committed files — reference the DOCKERHUB_NAMESPACE_STAGING secret |
 | L050 | ERROR | A shipped template.yml declares a compute_cap floor in extra_filters (ADR 0005) |
