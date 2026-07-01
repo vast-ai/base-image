@@ -210,11 +210,13 @@ jobs:
     if: needs.qa.outputs.soft_pass == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: "failure"   # render as an alert — promotion happened without live QA
+      build-result: "success"   # it DID promote (ungated) — a warning, not a build failure
+      status: "warning"         # ⚠️ yellow, and render the promoted tag
+      headline: "${{ inputs.repo }} promoted UNGATED — scheduled QA inconclusive (thin market / infra); no live test ran"
       image-name: ${{ inputs.repo }}
       image-ref: ${{ inputs.tag }}
       image-tags: ${{ format('["{0}"]', inputs.tag) }}
-      trigger: "schedule — QA INCONCLUSIVE, image promoted UNGATED"
+      trigger: "schedule — QA inconclusive"
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
