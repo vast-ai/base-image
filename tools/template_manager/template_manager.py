@@ -29,8 +29,11 @@ def _redact_secrets(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     def _walk(value):
         if isinstance(value, dict):
+            # Redact on the KEY name alone — a falsy secret value (empty string, 0)
+            # must still be masked, or the "never printed in the clear" promise
+            # depends on the value being truthy.
             return {k: ("***redacted***"
-                        if v and isinstance(k, str)
+                        if isinstance(k, str)
                         and k.lower().endswith(_SECRET_SUFFIXES)
                         else _walk(v))
                     for k, v in value.items()}
@@ -164,14 +167,17 @@ class TemplateManager:
         """
         base_delay = 2.0
         retry_count = 0
+        # The SINGLE sleep point. A retryable handler sets how long to wait before
+        # the next attempt; the loop top does the one sleep. This is why a 429's
+        # Retry-After and the exponential backoff can never stack into a double sleep.
+        next_delay = 0.0
 
         while retry_count <= max_retries:
-            # Backoff applies only AFTER a retryable failure — the first attempt
-            # fires immediately (no unconditional per-request latency).
-            if retry_count > 0:
-                delay = min(base_delay * (2 ** (retry_count - 1)), 60)
-                print(f"    [Retry {retry_count}/{max_retries}] Waiting {delay:.1f}s before retry...")
-                time.sleep(delay)
+            # First attempt fires immediately (next_delay 0 = no per-request latency).
+            if next_delay > 0:
+                print(f"    [Retry {retry_count}/{max_retries}] Waiting {next_delay:.1f}s before retry...")
+                time.sleep(next_delay)
+            next_delay = 0.0
 
             try:
                 result = self._open(method, url, payload)
@@ -183,11 +189,13 @@ class TemplateManager:
                     if retry_count > max_retries:
                         print(f"    [Max retries] Reached {max_retries} attempts. Giving up.")
                         raise
+                    # Honor Retry-After but never wait LESS than the exponential
+                    # backoff (max of the two) — a single sleep, no under-waiting a
+                    # server that asked for longer, no stacking on top of backoff.
+                    next_delay = min(base_delay * (2 ** (retry_count - 1)), 60)
                     if retry_after != 'unknown':
                         try:
-                            wait_time = float(retry_after)
-                            print(f"    [Waiting] {wait_time}s as specified by server...")
-                            time.sleep(wait_time)
+                            next_delay = max(float(retry_after), next_delay)
                         except ValueError:
                             pass
                     continue
@@ -204,10 +212,8 @@ class TemplateManager:
                 retry_count += 1
                 if retry_count > max_retries:
                     raise
-                delay = min(base_delay * (2 ** (retry_count - 1)), 60)
+                next_delay = min(base_delay * (2 ** (retry_count - 1)), 60)
                 print(f"    [Transport error] {type(e).__name__}")
-                print(f"    [Retry {retry_count}/{max_retries}] Waiting {delay:.1f}s...")
-                time.sleep(delay)
                 continue
 
             if retry_count > 0:

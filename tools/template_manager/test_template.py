@@ -737,7 +737,11 @@ def _coerce_extra_filters(raw):
     if isinstance(raw, str):
         parsed = json.loads(raw) if raw else {}
     else:
-        parsed = raw or {}
+        # Only a missing value defaults to {}. A falsy non-string ([], 0, False)
+        # must fall through to the isinstance check and be REJECTED like any other
+        # non-object — not silently swallowed into {} (which would drop a required
+        # compute_cap/VRAM floor), consistent with how [1, 2] already raises.
+        parsed = {} if raw is None else raw
     if not isinstance(parsed, dict):
         raise ValueError(
             f"extra_filters must be an object, got {type(parsed).__name__}")

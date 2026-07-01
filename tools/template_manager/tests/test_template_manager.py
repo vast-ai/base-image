@@ -1,8 +1,15 @@
 """Env-string building and YAML loading (the ports/env normalization)."""
+import urllib.error
+
 import pytest
 
 import template_manager
 from template_manager import TemplateManager, _redact_secrets
+
+
+def _http_error(code, retry_after=None):
+    hdrs = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("http://x", code, "err", hdrs, None)
 
 build = TemplateManager.build_env_string_from_lists
 
@@ -95,6 +102,15 @@ def test_redact_secrets_nested():
     assert payload["nested"]["api_key"] == "s"
 
 
+def test_redact_secrets_masks_falsy_secret_value():
+    # Redaction keys off the field NAME, not the value's truthiness — a blank
+    # secret must still be masked, or "never printed in the clear" is conditional.
+    out = _redact_secrets({"docker_login_pass": "", "api_token": 0, "plain": ""})
+    assert out["docker_login_pass"] == "***redacted***"
+    assert out["api_token"] == "***redacted***"
+    assert out["plain"] == ""      # non-secret falsy value left untouched
+
+
 # --- _request_with_retry: the first attempt fires immediately, no backoff ------
 
 def test_request_with_retry_no_sleep_on_first_attempt(monkeypatch):
@@ -105,3 +121,41 @@ def test_request_with_retry_no_sleep_on_first_attempt(monkeypatch):
     out = mgr._request_with_retry("POST", "http://x", payload={}, label="t")
     assert out == {"ok": True}
     assert slept == []   # no unconditional per-request latency
+
+
+def test_request_with_retry_429_retry_after_single_sleep(monkeypatch):
+    # A 429 with a numeric Retry-After sleeps ONCE (that value) — not also the
+    # exponential backoff on top (the old double-sleep).
+    mgr = TemplateManager("k")
+    slept = []
+    monkeypatch.setattr(template_manager.time, "sleep", slept.append)
+    calls = {"n": 0}
+
+    def flaky(method, url, payload):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _http_error(429, retry_after="5")
+        return {"ok": True}
+
+    monkeypatch.setattr(mgr, "_open", flaky)
+    assert mgr._request_with_retry("POST", "http://x", payload={}, label="t") == {"ok": True}
+    assert slept == [5.0]          # exactly one sleep, the Retry-After value
+
+
+def test_request_with_retry_429_never_under_waits_backoff(monkeypatch):
+    # A too-short Retry-After is floored at the exponential backoff (max of the
+    # two) — honoring the header must never make us wait LESS than the backoff.
+    mgr = TemplateManager("k")
+    slept = []
+    monkeypatch.setattr(template_manager.time, "sleep", slept.append)
+    calls = {"n": 0}
+
+    def flaky(method, url, payload):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _http_error(429, retry_after="0.1")
+        return {"ok": True}
+
+    monkeypatch.setattr(mgr, "_open", flaky)
+    mgr._request_with_retry("POST", "http://x", payload={}, label="t")
+    assert slept == [2.0]          # 2s backoff wins over the 0.1s Retry-After

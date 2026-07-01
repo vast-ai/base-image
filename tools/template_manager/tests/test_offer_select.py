@@ -117,3 +117,11 @@ def test_coerce_extra_filters_non_object_raises():
         _coerce_extra_filters("[1, 2, 3]")
     with pytest.raises(ValueError):
         _coerce_extra_filters("42")
+
+
+def test_coerce_extra_filters_falsy_non_dict_raises():
+    # A falsy NON-string ([], 0, False) must be rejected like [1,2], NOT swallowed
+    # into {} — else a required compute_cap/VRAM floor is silently dropped.
+    for bad in ([], 0, False):
+        with pytest.raises(ValueError):
+            _coerce_extra_filters(bad)
