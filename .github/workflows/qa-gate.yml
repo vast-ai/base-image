@@ -69,6 +69,12 @@ on:
 jobs:
   qa:
     runs-on: ubuntu-latest
+    # Hard backstop below the 6h GitHub cap. test_template.py's own timeouts sum
+    # to ~3h worst case (poll 40m + test ~130m + launch/setup), so it should
+    # self-terminate and destroy its instance well before this fires; 240m only
+    # catches a true hang, killing it at 4h (not 6h) to limit wasted minutes and
+    # the orphan window (the reaper still backstops). See ADR 0005 runtime budget.
+    timeout-minutes: 240
     # soft_pass is set only when an unattended scheduled run promoted UNGATED
     # (inconclusive infra outcome). notify-soft-pass below pings Slack so that
     # silent no-op surfaces instead of decaying quietly.

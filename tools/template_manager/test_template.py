@@ -23,7 +23,10 @@ TEST_SERVER_PORT = 10199
 
 # ── Timeouts (seconds) ───────────────────────────────────────────────────
 DEFAULT_TEST_TIMEOUT = 7200      # 2 hours — total time for test suite to complete
-POLL_TIMEOUT = 7200              # 2 hours — max wait for instance to reach "running"
+POLL_TIMEOUT = 2400              # 40 min — max wait for instance to reach "running"
+                                 # (boot + image pull; beyond this the box is bad).
+                                 # Bounded well under the GitHub 6h job cap — see
+                                 # the runtime budget in ADR 0005.
 POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
@@ -83,7 +86,9 @@ def classify_outcome(final_state):
 
 
 # ── Retry + disk verification tuning ─────────────────────────────────────
-MAX_LAUNCH_ATTEMPTS = 25       # how many offers to try before giving up
+MAX_LAUNCH_ATTEMPTS = 12       # how many offers to try before giving up (if 12
+                               # fail the market is broken → inconclusive; bounds
+                               # the launch phase in the 6h runtime budget)
 DISK_TOLERANCE = 1.0           # instance must provision at least the full requested disk
 OFFER_CANDIDATE_POOL = 50      # cap on offers kept for the retry loop
 VRAM_CEILING_MULTIPLIER = 3.0  # bound the VRAM search at N x the declared floor

@@ -214,6 +214,17 @@ surviving review finding.
    backstopping a runaway-priced offer. The gating smoke config is cheap (no large
    model download where avoidable); a per-run and per-day spend ceiling on the QA
    account is set and monitored as the blunt backstop.
+   - **Runtime budget (the GitHub 6h job cap).** A GitHub-hosted job is killed at
+     6h, and a *killed* job is worse than a clean fail (→ `cancelled`, blocks
+     `merge-manifests`, risks an orphaned instance). So the client's own timeouts
+     must sum to well under a job backstop, itself under 6h: `POLL_TIMEOUT` 40m
+     (boot+pull; a box not `running` by then is bad) + test phase ~130m
+     (auto-lifted from the template's provisioning/health budget) + ≤12 launch
+     attempts + setup ≈ **~3h worst case**. The `qa` job sets **`timeout-minutes:
+     240`** (4h) as a hard backstop above that and below 6h — so test_template
+     self-terminates and tears down its instance first, and a true hang is killed
+     at 4h, not 6h. Rate-limit retries (`MAX_API_RETRIES`) are bounded by these
+     phase caps, so a 429 storm can't run the clock to the cap.
 8. **Plaintext-channel acknowledged.** The harness auth token is the instance
    `jupyter_token` streamed over `http://` on a public IP — accepted only because
    the box is a short-lived throwaway; the QA key is never round-tripped through an
