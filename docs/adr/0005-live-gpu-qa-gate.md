@@ -191,15 +191,17 @@ surviving review finding.
    a shared cron across ~22 workflows cannot self-DoS the account into 429s (which
    would otherwise become exit-2 inconclusive → mass silent promotion). The gating
    path is opt-in per promotion, not fanned out unattended.
-7. **Cost ceiling.** Every launch carries `--timeout`, and offer selection is
-   bounded to a near-floor VRAM band (`apply_vram_ceiling`, 3× the declared floor)
-   so a `>=8GB` claim is never tested on a 96GB box — that band, not a price filter,
-   is the cost control. (A `dph_total`/`--max-price` filter was removed from the
-   gate: on top of the VRAM ceiling it mostly added `no_offers` inconclusives —
-   i.e. soft-passes — without meaningfully lowering spend. `--max-price` remains
-   available on `test_template.py` for ad-hoc caps.) The gating smoke config is
-   cheap (no large model download where avoidable); a per-run and per-day spend
-   ceiling on the QA account is set and monitored.
+7. **Cost ceiling.** Every launch carries `--timeout` and two complementary spend
+   bounds: offer selection is bounded to a near-floor VRAM band
+   (`apply_vram_ceiling`, 3× the declared floor) so a `>=8GB` claim is never tested
+   on a 96GB box — the band bounds box *size* — and a per-run `--max-price`
+   (`dph_total`) cap bounds the `$/hr` rate (VRAM size ≠ price). The cap is
+   deliberately **generous** (default `$2.00`, was `$0.50`): a too-tight cap mostly
+   produced `no_offers` inconclusives (→ schedule soft-passes) without lowering
+   real spend, so it is set high enough to admit the near-floor band while still
+   backstopping a runaway-priced offer. The gating smoke config is cheap (no large
+   model download where avoidable); a per-run and per-day spend ceiling on the QA
+   account is set and monitored as the blunt backstop.
 8. **Plaintext-channel acknowledged.** The harness auth token is the instance
    `jupyter_token` streamed over `http://` on a public IP — accepted only because
    the box is a short-lived throwaway; the QA key is never round-tripped through an

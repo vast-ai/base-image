@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: ""
+      max_price:
+        description: "Per-run $/hr cost cap (dph_total). Backstops the VRAM band, which bounds box size but not price."
+        required: false
+        type: string
+        default: "2.00"
       timeout:
         required: false
         type: string
@@ -134,7 +139,7 @@ jobs:
           set +e
           python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
             --destroy --raw --force --label "${{ inputs.label }}" \
-            --timeout "${{ inputs.timeout }}" \
+            --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
             "${ARGS[@]}" \
             > /tmp/qa-raw.json
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
