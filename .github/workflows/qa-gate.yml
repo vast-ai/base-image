@@ -74,12 +74,16 @@ jobs:
     # silent no-op surfaces instead of decaying quietly.
     outputs:
       soft_pass: ${{ steps.verdict.outputs.soft_pass }}
-    # Serialize live-GPU QA across ALL callers onto the single capped QA account so
-    # concurrent builds can't 429-storm it (a 429 -> no_offers -> schedule soft-pass
-    # -> silent promotion). Centralised here so every caller inherits it.
-    concurrency:
-      group: qa-vast-account
-      cancel-in-progress: false
+    # NOTE: no account-wide concurrency group. A single `qa-vast-account` group
+    # (cancel-in-progress: false) only ever allows 1 running + 1 pending and
+    # CANCELS the rest — so >2 contending QA cells (e.g. two images building at
+    # once, or one image with 3+ CUDA cells) cancel each other, and a cancelled
+    # qa job blocks `merge-manifests` (needs: [qa]). At current scale that's pure
+    # downside: a handful of concurrent QA instances won't 429-storm one key, and
+    # `test_template.py` already retries/backs off on 429 (with the schedule
+    # soft-pass now pinging Slack, not silent). Bounded concurrency for the
+    # many-image rollout is a planned follow-up (an account-aware semaphore in the
+    # launcher; ADR 0005 cond 6). Until then: run QA concurrently.
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       TM: tools/template_manager

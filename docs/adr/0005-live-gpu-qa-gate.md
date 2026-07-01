@@ -187,10 +187,20 @@ surviving review finding.
    not asserted in prose. The QA `VAST_API_KEY` is a dedicated QA-account key with
    a **capped balance** (blast radius = balance) since Vast key scoping may be
    coarse.
-6. **Concurrency cap on the QA account.** QA launches are serialized/staggered so
-   a shared cron across ~22 workflows cannot self-DoS the account into 429s (which
-   would otherwise become exit-2 inconclusive → mass silent promotion). The gating
-   path is opt-in per promotion, not fanned out unattended.
+6. **Concurrency on the QA account — bounded, not serialized to 1.** The risk is a
+   scheduled fan-out (~22 workflows on crons) self-DoSing the single-key account into
+   429s → exit-2 inconclusive → mass silent promotion. The first cut used a GitHub
+   `concurrency` group (`qa-vast-account`, cancel-in-progress: false) to serialize —
+   but that mechanism allows only 1 running + 1 pending and **cancels** the rest, so
+   >2 contending QA cells (two images at once, or one image with 3+ CUDA cells) cancel
+   each other and a cancelled `qa` job blocks `merge-manifests`. That is worse than the
+   problem it solved. **The group is removed.** At current scale a handful of concurrent
+   QA instances do not storm one key; `test_template.py` already retries/backs off on
+   429, and the schedule soft-pass now pings Slack (not silent), so a storm-induced skip
+   surfaces. **Planned for the many-image rollout:** an account-aware *semaphore* in the
+   launcher — count live QA-labelled instances and wait if `≥ K` — giving bounded
+   concurrency K (scale-safe, cross-workflow-correct) instead of a lock of 1. Crons
+   remain staggered as defence in depth.
 7. **Cost ceiling.** Every launch carries `--timeout` and two complementary spend
    bounds: offer selection is bounded to a near-floor VRAM band
    (`apply_vram_ceiling`, 3× the declared floor) so a `>=8GB` claim is never tested
