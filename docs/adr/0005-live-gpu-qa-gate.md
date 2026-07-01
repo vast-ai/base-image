@@ -194,10 +194,12 @@ surviving review finding.
    but that mechanism allows only 1 running + 1 pending and **cancels** the rest, so
    >2 contending QA cells (two images at once, or one image with 3+ CUDA cells) cancel
    each other and a cancelled `qa` job blocks `merge-manifests`. That is worse than the
-   problem it solved. **The group is removed.** At current scale a handful of concurrent
-   QA instances do not storm one key; `test_template.py` already retries/backs off on
-   429, and the schedule soft-pass now pings Slack (not silent), so a storm-induced skip
-   surfaces. **Planned for the many-image rollout:** an account-aware *semaphore* in the
+   problem it solved. **The group is removed.** Concurrent QA *does* 429 the single-key
+   account (observed live — a 429 on `/instances/` hard-failed a cell into
+   `config_error`), so the correct handling is **client-side, not serialization**:
+   `test_template.py` now retries 429/5xx with exponential backoff + jitter (de-syncing
+   concurrent callers), and the schedule soft-pass pings Slack, so a genuinely sustained
+   storm surfaces rather than silently promoting. **Planned for the many-image rollout:** an account-aware *semaphore* in the
    launcher — count live QA-labelled instances and wait if `≥ K` — giving bounded
    concurrency K (scale-safe, cross-workflow-correct) instead of a lock of 1. Crons
    remain staggered as defence in depth.

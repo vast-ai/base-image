@@ -76,14 +76,14 @@ jobs:
       soft_pass: ${{ steps.verdict.outputs.soft_pass }}
     # NOTE: no account-wide concurrency group. A single `qa-vast-account` group
     # (cancel-in-progress: false) only ever allows 1 running + 1 pending and
-    # CANCELS the rest — so >2 contending QA cells (e.g. two images building at
-    # once, or one image with 3+ CUDA cells) cancel each other, and a cancelled
-    # qa job blocks `merge-manifests` (needs: [qa]). At current scale that's pure
-    # downside: a handful of concurrent QA instances won't 429-storm one key, and
-    # `test_template.py` already retries/backs off on 429 (with the schedule
-    # soft-pass now pinging Slack, not silent). Bounded concurrency for the
-    # many-image rollout is a planned follow-up (an account-aware semaphore in the
-    # launcher; ADR 0005 cond 6). Until then: run QA concurrently.
+    # CANCELS the rest — so >2 contending QA cells (two images at once, or one
+    # image with 3+ CUDA cells) cancel each other, and a cancelled qa job blocks
+    # `merge-manifests` (needs: [qa]). Concurrent QA DOES 429 the shared single-key
+    # account (observed live), so the fix is client-side, not serialization:
+    # `test_template.py` retries/backs off (with jitter) on 429/5xx, and the
+    # schedule soft-pass pings Slack. Bounded concurrency for the many-image rollout
+    # is a planned follow-up (an account-aware semaphore; ADR 0005 cond 6). Until
+    # then: run QA concurrently, relying on the client's rate-limit backoff.
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       TM: tools/template_manager

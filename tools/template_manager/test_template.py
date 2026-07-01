@@ -5,6 +5,7 @@ import argparse
 import errno
 import json
 import os
+import random
 import signal
 import sys
 import threading
@@ -252,6 +253,22 @@ class LogPanel:
             self.active = False
 
 
+# HTTP statuses worth retrying: rate-limit + transient gateway errors. The QA
+# account is a single shared key, so concurrent QA runs WILL see 429s under load;
+# a 429 must back off and retry, never hard-fail the gate into config_error.
+RETRYABLE_STATUS = frozenset((429, 502, 503, 504))
+MAX_API_RETRIES = 6
+
+
+def _retry_delay(retry_after, attempt):
+    """Backoff for a retryable API response: honour a numeric ``Retry-After`` if
+    the server sent one, else exponential (2**attempt capped at 30s). Add jitter
+    to de-sync concurrent QA runs hammering the shared account."""
+    ra = str(retry_after).strip() if retry_after is not None else ""
+    base = float(ra) if ra.isdigit() else float(min(2 ** attempt, 30))
+    return base + random.uniform(0, 1.5)
+
+
 class VastAPI:
     """Thin wrapper around Vast REST API."""
 
@@ -259,7 +276,9 @@ class VastAPI:
         self.api_key = api_key
 
     def _do_request(self, method, path, body=None, query=None):
-        """Execute the HTTP request. Raises HTTPError/URLError on failure."""
+        """Execute the HTTP request, retrying transient rate-limit/gateway errors
+        (429/502/503/504) with backoff + jitter. Raises HTTPError/URLError once
+        retries are exhausted (or immediately for non-retryable statuses)."""
         url = API_BASE + path
         if query:
             params = {k: v if isinstance(v, str) else json.dumps(v) for k, v in query.items()}
@@ -270,11 +289,18 @@ class VastAPI:
         req.add_header("Authorization", f"Bearer {self.api_key}")
         if data is not None:
             req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=API_REQUEST_TIMEOUT) as resp:
-            raw = resp.read().decode()
-            if not raw:
-                return {}
-            return json.loads(raw)
+        for attempt in range(MAX_API_RETRIES + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=API_REQUEST_TIMEOUT) as resp:
+                    raw = resp.read().decode()
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                if e.code not in RETRYABLE_STATUS or attempt == MAX_API_RETRIES:
+                    raise
+                delay = _retry_delay(e.headers.get("Retry-After") if e.headers else None, attempt)
+                print(f"API {e.code} on {path} — retry {attempt + 1}/{MAX_API_RETRIES} "
+                      f"in {delay:.1f}s", file=sys.stderr)
+                time.sleep(delay)
 
     def _request(self, method, path, body=None, query=None):
         """Make authenticated API request, return parsed JSON.  Exits on
