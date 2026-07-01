@@ -2,6 +2,7 @@
 """Launch a Vast.ai instance from a template and stream test results."""
 
 import argparse
+import atexit
 import errno
 import json
 import os
@@ -69,6 +70,47 @@ def emit_outcome(state, code, **extra):
     if _RAW_MODE:
         print(json.dumps({"state": state, "exit_code": code, **extra}))
     sys.exit(code)
+
+
+def install_teardown(api, ctx, args, log):
+    """Wire instance teardown to fire on EVERY process exit; return ``cleanup``.
+
+    A leaked instance costs money. ``cleanup()`` runs on the normal path, but
+    ``emit_outcome()`` (config_error / interrupted) and any other post-launch exit
+    call ``sys.exit`` WITHOUT reaching it, and the signal handler only covers
+    SIGINT/SIGTERM. So also register ``cleanup`` with ``atexit`` — it runs on any
+    interpreter exit, respects ``--keep``/``--destroy``, is idempotent (clears
+    ``ctx.instance_id`` on success), and ``destroy_instance`` is 404-safe, so a
+    second call after the normal path is a harmless no-op.
+    """
+    def cleanup(destroy=False):
+        if ctx.panel:
+            ctx.panel.cleanup()
+        if ctx.instance_id is None:
+            return
+        if args.keep and not destroy:
+            log(f"Instance {ctx.instance_id} kept running (--keep)")
+            return
+        try:
+            if destroy or args.destroy:
+                api.destroy_instance(ctx.instance_id)
+                log(f"Instance {ctx.instance_id} destroyed.")
+            else:
+                api.stop_instance(ctx.instance_id)
+                log(f"Instance {ctx.instance_id} stopped.")
+            ctx.instance_id = None   # idempotent: a later (atexit) call is a no-op
+        except Exception as e:
+            log(f"Cleanup error: {e}")
+
+    def sighandler(sig, frame):
+        log("\nInterrupted — destroying instance...")
+        cleanup(destroy=True)
+        emit_outcome("interrupted", EXIT_INTERRUPTED, reason="signal")
+
+    signal.signal(signal.SIGINT, sighandler)
+    signal.signal(signal.SIGTERM, sighandler)
+    atexit.register(cleanup)
+    return cleanup
 
 
 def classify_outcome(final_state):
@@ -1060,31 +1102,9 @@ def main():
     # the signal handler can clean up mid-retry.
     ctx = types.SimpleNamespace(panel=None, dead_reason="", instance_id=None)
 
-    def cleanup(destroy=False):
-        if ctx.panel:
-            ctx.panel.cleanup()
-        if ctx.instance_id is None:
-            return
-        if args.keep and not destroy:
-            log(f"Instance {ctx.instance_id} kept running (--keep)")
-            return
-        try:
-            if destroy or args.destroy:
-                api.destroy_instance(ctx.instance_id)
-                log(f"Instance {ctx.instance_id} destroyed.")
-            else:
-                api.stop_instance(ctx.instance_id)
-                log(f"Instance {ctx.instance_id} stopped.")
-        except Exception as e:
-            log(f"Cleanup error: {e}")
-
-    def sighandler(sig, frame):
-        log("\nInterrupted — destroying instance...")
-        cleanup(destroy=True)
-        emit_outcome("interrupted", EXIT_INTERRUPTED, reason="signal")
-
-    signal.signal(signal.SIGINT, sighandler)
-    signal.signal(signal.SIGTERM, sighandler)
+    # Teardown on ANY exit — normal path, emit_outcome (config_error/interrupted),
+    # signal, or unhandled exception — so a launched instance is never orphaned.
+    cleanup = install_teardown(api, ctx, args, log)
 
     # 1. Fetch template
     template = api.get_template(args.template_hash)
