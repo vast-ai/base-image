@@ -6,7 +6,10 @@ other tested module here: prove it (a) reaps a labeled, over-age orphan and
 (b) refuses anything outside scope or under age. The threshold tests pin it above
 test_template.py's healthy-run budget so a sweep can never clip a live instance.
 """
+import sys
 import urllib.error
+
+import pytest
 
 import reap_orphans
 import test_template
@@ -184,3 +187,100 @@ def test_default_threshold_stays_above_test_template_budget():
     budget_sec = prov + derivative + test_template.TIMEOUT_HEADROOM
     safety_margin_sec = 3600   # 60 min over the healthy ceiling, minimum
     assert reap_orphans.DEFAULT_MAX_AGE_MIN * 60 >= budget_sec + safety_margin_sec
+
+
+# --- null uptime_mins: age via start_date, else flag (silent-leak fix) -----
+
+def test_null_uptime_falls_back_to_start_date(monkeypatch):
+    # uptime_mins is nullable; a leaked orphan reporting null must still be aged via
+    # start_date and reaped — not coerced to 0 and left billing forever.
+    monkeypatch.setattr(reap_orphans.time, "time", lambda: 1_000_000.0)
+    i = {"id": 9, "label": "base-image-qa", "image_uuid": "stagingns/x:qa",
+         "uptime_mins": None, "start_date": 1_000_000.0 - 400 * 60}   # 400 min ago
+    assert reap_orphans._age_min(i) == 400.0
+    assert reap_orphans._age_known(i)
+    assert reap_orphans.is_reapable(i, 260.0, "base-image-qa", None)
+
+
+def test_null_uptime_and_no_start_date_is_unknown_and_kept():
+    i = {"id": 9, "label": "base-image-qa", "uptime_mins": None}   # neither usable
+    assert reap_orphans._age_min(i) == 0.0            # fail-safe: not auto-reaped
+    assert not reap_orphans._age_known(i)             # but flagged as unknown age
+    assert not reap_orphans.is_reapable(i, 260.0, "base-image-qa", None)
+
+
+# --- empty-label guard bypass fix -----------------------------------------
+
+def _run_main(monkeypatch, argv, instances):
+    monkeypatch.setenv("VAST_API_KEY", "k")
+    monkeypatch.setattr(reap_orphans, "_request",
+                        lambda method, path, key, body=None: {"instances": instances}
+                        if method == "GET" else {})
+    monkeypatch.setattr(sys, "argv", ["reap_orphans.py"] + argv)
+    return reap_orphans.main
+
+
+def test_empty_label_with_destroy_is_refused(monkeypatch, capsys):
+    # --label "" must NOT become startswith("") == match-everything; it collapses to
+    # no-scope and --destroy with no scope is fail-closed refused.
+    run = _run_main(monkeypatch, ["--label", "", "--destroy"], [inst(id=1, uptime=999.0)])
+    with pytest.raises(SystemExit) as e:
+        run()
+    assert e.value.code == 1
+    assert "requires --label" in capsys.readouterr().err
+
+
+def test_whitespace_label_with_destroy_is_refused(monkeypatch):
+    run = _run_main(monkeypatch, ["--label", "   ", "--destroy"], [inst(id=1, uptime=999.0)])
+    with pytest.raises(SystemExit) as e:
+        run()
+    assert e.value.code == 1
+
+
+def test_real_label_with_destroy_proceeds(monkeypatch, capsys):
+    # A genuine label is NOT refused — the guard only blocks a no-scope destroy.
+    run = _run_main(monkeypatch, ["--label", "base-image-qa", "--destroy"],
+                    [inst(id=1, label="prod", uptime=999.0)])   # nothing in scope
+    run()                                                        # no SystemExit
+    assert "reaped: 0" in capsys.readouterr().out
+
+
+# --- list-call 429 retry (backstop must not crash on a rate-limited account) --
+
+def test_request_retries_429_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _http_error(429)
+        return Resp()
+
+    monkeypatch.setattr(reap_orphans.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(reap_orphans.time, "sleep", lambda s: None)
+    assert reap_orphans._request("GET", "/instances/", "k") == {"ok": True}
+    assert calls["n"] == 3          # two 429s retried, third succeeded
+
+
+def test_request_non_retryable_raises_immediately(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        raise _http_error(404)
+
+    monkeypatch.setattr(reap_orphans.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(reap_orphans.time, "sleep", lambda s: None)
+    with pytest.raises(urllib.error.HTTPError):
+        reap_orphans._request("GET", "/instances/", "k")
+    assert calls["n"] == 1          # 404 not retried

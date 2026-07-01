@@ -19,10 +19,18 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
 BASE_URL = "https://console.vast.ai/api/v0"
+
+# The QA account is single-key and shared with concurrent QA runs, so the list
+# call can 429 (observed live on the gate). A */30 sweep that crashed on the
+# first 429 would mean the backstop never runs — so retry rate-limit/gateway
+# errors with backoff. 404 is NOT here: destroy_instance treats it as "gone".
+_RETRYABLE_STATUS = frozenset((429, 502, 503, 504))
+_MAX_API_RETRIES = 5
 
 # Worst-case lifetime of a HEALTHY QA instance, mirrored from test_template.py's
 # auto-lifted client --timeout (prov + derivative + headroom; see
@@ -110,17 +118,56 @@ def _request(method, path, key, body=None):
     req.add_header("Accept", "application/json")
     if data is not None:
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        text = resp.read().decode()
-    return json.loads(text) if text else {}
+    for attempt in range(_MAX_API_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                text = resp.read().decode()
+            return json.loads(text) if text else {}
+        except urllib.error.HTTPError as e:
+            if e.code not in _RETRYABLE_STATUS or attempt == _MAX_API_RETRIES:
+                raise
+            ra = e.headers.get("Retry-After") if e.headers else None
+            delay = float(ra) if (ra and str(ra).strip().isdigit()) else min(2 ** attempt, 30)
+            print(f"API {e.code} on {path} — retry {attempt + 1}/{_MAX_API_RETRIES} "
+                  f"in {delay:.1f}s", file=sys.stderr)
+            time.sleep(delay)
 
 
 def _age_min(inst):
-    """Uptime in minutes, defensively coerced. None/missing/malformed -> 0 (keep)."""
-    try:
-        return float(inst.get("uptime_mins") or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    """Age in minutes. Prefer ``uptime_mins``; fall back to ``start_date`` (both
+    in the show-instances response) because ``uptime_mins`` is documented as
+    nullable — a leaked orphan reporting ``uptime_mins: null`` must still be aged
+    (via start_date) and reaped, not coerced to 0 and left billing forever. When
+    NEITHER is usable, return 0.0 so an un-ageable instance is not auto-deleted
+    (fail-safe for deletion); ``_age_known`` lets the caller warn on that instead."""
+    um = inst.get("uptime_mins")
+    if um is not None:
+        try:
+            return float(um)
+        except (TypeError, ValueError):
+            pass
+    sd = inst.get("start_date")
+    if sd is not None:
+        try:
+            return max(0.0, (time.time() - float(sd)) / 60.0)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _age_known(inst):
+    """False when neither ``uptime_mins`` nor ``start_date`` yields a usable age.
+    Such an instance can't be reaped by age, so it must be surfaced rather than
+    hidden behind a clean ``reaped: 0`` (the null-uptime silent-leak failure)."""
+    for k in ("uptime_mins", "start_date"):
+        v = inst.get(k)
+        if v is not None:
+            try:
+                float(v)
+                return True
+            except (TypeError, ValueError):
+                pass
+    return False
 
 
 def main():
@@ -147,6 +194,13 @@ def main():
     ap.add_argument("--destroy", action="store_true",
                     help="actually destroy matching instances (default: dry-run report)")
     args = ap.parse_args()
+
+    # Treat an empty/whitespace filter as "no scope". An unset env/var that expands
+    # to --label "" must NOT become startswith("") == match-everything and slip past
+    # the fail-closed guard below (which would then reap EVERY over-age instance).
+    args.label = args.label.strip() if args.label and args.label.strip() else None
+    args.image_prefix = (args.image_prefix.strip()
+                         if args.image_prefix and args.image_prefix.strip() else None)
 
     key = os.environ.get("VAST_API_KEY")
     if not key:
@@ -197,6 +251,18 @@ def main():
         print(f"::warning::{len(stale_unscoped)} over-age instance(s) are OUT of QA scope "
               f"(id={ids}) — if these are leaked QA orphans the label/prefix is not matching; "
               f"verify before trusting 'reaped: 0'.", file=sys.stderr)
+
+    # Second silent-leak guard, independent of the age coercion: an IN-scope
+    # instance whose age can't be determined (both uptime_mins and start_date
+    # unusable) can't be reaped by age — flag it so a null-age orphan doesn't hide
+    # behind 'reaped: 0'.
+    unknown_age = [i for i in instances
+                   if in_scope(i, args.label, args.image_prefix) and not _age_known(i)]
+    if unknown_age:
+        ids = ", ".join(str(i.get("id")) for i in unknown_age)
+        print(f"::warning::{len(unknown_age)} in-scope instance(s) have no usable age "
+              f"(id={ids}) — cannot be reaped by age; check them manually for a leak.",
+              file=sys.stderr)
 
     # Fail-closed: a count far above what QA ever produces means the key is
     # pointed at the wrong (e.g. production) account — abort rather than wipe it.
