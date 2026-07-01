@@ -281,7 +281,7 @@ jobs:
       # build broke vs QA caught a bad image vs promotion (crane) failed. Empty on
       # success -> notify-slack renders the default "✅ ... Successful". (Soft-pass
       # is a separate ⚠️ alert fired per-cell inside qa-gate.yml.)
-      headline: ${{ (needs.build.result != 'success' && 'ComfyUI build failed') || (needs.qa.result == 'failure' && 'ComfyUI QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'ComfyUI promotion (manifest merge) failed') || '' }}
+      headline: ${{ (needs.build.result != 'success' && 'ComfyUI build failed') || (needs.qa.result == 'failure' && 'ComfyUI QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'ComfyUI promotion (manifest merge) failed') || (needs.qa.outputs.gated == 'true' && 'ComfyUI promoted — live-GPU QA passed') || '' }}
       image-name: "ComfyUI"
       image-ref: ${{ needs.preflight.outputs.comfyui-ref }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

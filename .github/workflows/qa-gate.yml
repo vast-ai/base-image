@@ -65,6 +65,10 @@ on:
         required: false
       SLACK_WEBHOOK_URL:
         required: false
+    outputs:
+      gated:
+        description: "true if the live QA test actually ran (VAST_API_KEY present); false = advisory-skipped. Identical across matrix cells (repo-secret driven), so relaying it via needs.qa.outputs is matrix-safe — unlike a per-cell verdict."
+        value: ${{ jobs.qa.outputs.gated }}
 
 jobs:
   qa:
@@ -80,6 +84,7 @@ jobs:
     # silent no-op surfaces instead of decaying quietly.
     outputs:
       soft_pass: ${{ steps.verdict.outputs.soft_pass }}
+      gated: ${{ steps.guard.outputs.run }}   # did the live test actually run (secret present)
     # NOTE: no account-wide concurrency group. A single `qa-vast-account` group
     # (cancel-in-progress: false) only ever allows 1 running + 1 pending and
     # CANCELS the rest — so >2 contending QA cells (two images at once, or one
