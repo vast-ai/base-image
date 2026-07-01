@@ -94,9 +94,13 @@ Loop until 0 errors. All `L040` (unfilled markers) must clear. If a structural c
 ## Step 6 — Hand off honestly
 State plainly: lint is green = structurally conformant; the image is **not** verified
 until the real CI `docker build` + smoke test pass. Then prepare the change / open a PR
-referencing the tracking ticket (e.g. CON-####), and add the `build-<name>.yml` workflow
-(generated as a skeleton — complete it per `.github/AGENTS.md`; CI job-shape is not
-linted, so review against a sibling).
+referencing the tracking ticket (e.g. CON-####). The `build-<name>.yml` workflow is
+scaffolded as the **full 5-job pipeline** (preflight → build → merge-manifests →
+collect-tags → notify) with the DockerHub **secret-refs, the `production` approval gate,
+and notify already wired** — you fill only the `CHANGEME`/`>>> FILL` bits: the preflight
+`check-*-release` action for the upstream, the base-image matrix, the tag derivation, and
+a staggered schedule offset. CI job-shape is **not linted**, so still review against a
+sibling before the PR.
 
 **Docker Hub repos — create staging *before* the build:**
 - Create the **staging** repo `${DOCKERHUB_NAMESPACE_STAGING}/<name>` and set it

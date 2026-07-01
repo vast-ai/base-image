@@ -159,6 +159,41 @@ def test_no_baked_false_conventions(tmp_path):
     assert "0 0,12 * * *" not in wf  # no baked uniform cron
 
 
+def test_workflow_scaffold_is_full_pipeline(tmp_path):
+    """The scaffolded build-<name>.yml is the full 5-job pipeline with the DockerHub
+    secret-refs, the prod approval gate, and notify wired — not a bare stub."""
+    _gen_repo(tmp_path)
+    for name in ("mytool", "myapp", "myext"):
+        wf = (tmp_path / ".github/workflows" / f"build-{name}.yml").read_text()
+        for job in ("preflight:", "build:", "merge-manifests:", "collect-tags:", "notify:"):
+            assert f"\n  {job}" in wf, f"{name}: missing job {job}"
+        # secret-refs, never a literal namespace (L041-clean by construction)
+        assert "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" in wf
+        assert "${{ secrets.DOCKERHUB_NAMESPACE }}" in wf
+        assert "'production'" in wf                              # prod approval gate
+        assert f'DEFAULT_DOCKERHUB_REPO: "{name}"' in wf         # repo defaults to image name
+        assert "./.github/workflows/notify-slack.yml" in wf     # notify wired
+
+
+def test_workflow_context_matches_class_dir(tmp_path):
+    _gen_repo(tmp_path)
+    for name, ctx in (("mytool", "derivatives/mytool"),
+                      ("myapp", "derivatives/pytorch/derivatives/myapp"),
+                      ("myext", "external/myext")):
+        wf = (tmp_path / ".github/workflows" / f"build-{name}.yml").read_text()
+        assert f"context: {ctx}" in wf
+
+
+def test_workflow_scaffold_is_l041_clean_with_namespace_set(tmp_path, monkeypatch):
+    """Even with the staging namespace set, the scaffold trips no L041 — it uses the
+    secret-ref, never a literal account name (correct by construction)."""
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
+    _gen_repo(tmp_path)
+    for img in discover(tmp_path):
+        codes = {f.code for f in lint_image(img, tmp_path) if f.severity == ERROR}
+        assert "L041" not in codes, f"{img.name}: scaffold tripped L041"
+
+
 if __name__ == "__main__":
     import inspect, tempfile, traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

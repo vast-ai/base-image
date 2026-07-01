@@ -182,17 +182,220 @@ fi
 
 # CI job-shape is NOT linted and is complex (5-job pipeline); schedules are staggered,
 # NOT uniform (invariants §3) — so no cron is baked in.
-_WORKFLOW = '''# >>> FILL: CI workflow for @@NAME@@ — complete per .github/AGENTS.md. Real shape is the
-# 5-job pipeline (preflight -> build -> merge-manifests -> collect-tags -> notify);
-# review against a sibling build-*.yml. Set a STAGGERED schedule, not a uniform cron. <<<
-name: Build @@NAME@@
+_WORKFLOW = '''# Build @@LABEL@@ image — scheduled + manual workflow_dispatch.
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN,
+#   DOCKERHUB_NAMESPACE (prod, final multi-arch index), DOCKERHUB_NAMESPACE_STAGING
+#   (per-arch build artifacts). Optional: SLACK_WEBHOOK_URL.
+#
+# imagegen scaffolds the standard 5-job pipeline (preflight -> build ->
+# merge-manifests -> collect-tags -> notify) with the DockerHub secret-refs, the
+# production approval gate, and Slack notify already wired. CI job-shape is NOT linted,
+# so before opening a PR: review this against the closest sibling build-*.yml and resolve
+# every CHANGEME / >>> FILL. The per-image variation is concentrated in the preflight
+# release check (which action) and the base-image matrix / tag derivation.
+name: Build @@LABEL@@ Image
+
 on:
+  schedule:
+    # Staggered schedule — pick a unique offset (avoid a time shared with siblings),
+    # or drop the schedule entirely until the image is proven.
+    - cron: 'CHANGEME'
   workflow_dispatch:
+    inputs:
+      @@NAME_UPPER@@_REF:
+        description: "@@LABEL@@ upstream ref/version - empty for latest"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to <namespace>/<repo>"
+        required: true
+        default: "@@NAME@@"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (auto by default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "@@NAME@@"
+  RELEASE_AGE_THRESHOLD: 43200   # 12h
+
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      resolved-ref: ${{ steps.release-check.outputs.resolved-ref }}
     steps:
-      - run: 'echo ">>> FILL <<<"'
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
+          fi
+
+      # Plug in the preflight check for this image's upstream — one of:
+      #   check-github-release (GitHub repo) | check-pypi-release (PyPI package) |
+      #   check-ghcr-release (GHCR image)    | check-dockerhub-release (DockerHub image).
+      # It must emit `new-release` + a resolved ref/version. Copy the block from a sibling.
+      - name: Check release and resolve ref
+        id: release-check
+        uses: ./.github/actions/check-github-release   # >>> FILL: correct action for the upstream <<<
+        with:
+          repository: CHANGEME
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trigger: ${{ github.event_name }}
+          manual-ref: ${{ inputs.@@NAME_UPPER@@_REF }}
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ${{ matrix.arch.runs_on }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          # Pin the base image(s) — copy the CURRENT matrix from the closest sibling.
+          # pytorch-nested: vastai/pytorch:<dated>; derivative: vastai/base-image:<dated>;
+          # external: the upstream image (e.g. org/app).
+          - CHANGEME
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          IMAGE_TAG="CHANGEME"   # >>> FILL: derive from the resolved ref + base tag, per a sibling <<<
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: @@CONTEXT@@
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          # Pass the base image + resolved ref as the build-args your Dockerfile expects
+          # (pytorch-nested: PYTORCH_BASE; derivative: BASE_IMAGE; external: <UP>_BASE +
+          # a `build-contexts: |` line with `base_image_source=.`). See a sibling.
+          build-args: |
+            CHANGEME=${{ matrix.base_image }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    # Production approval gate: a manual dispatch must clear the `production` environment
+    # approval before the multi-arch index is published to the prod namespace.
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          # Same base-image matrix as the build job above.
+          - CHANGEME
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          IMAGE_TAG="CHANGEME"   # >>> FILL: identical to the build job's derive step <<<
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+          MATRIX_ID=$(echo "${{ matrix.base_image }}" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload manifest tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build, merge-manifests]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\\n") | map(select(length > 0))')
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, merge-manifests, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.merge-manifests.result }}
+      image-name: "@@LABEL@@"
+      image-ref: ${{ needs.preflight.outputs.resolved-ref }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 '''
 
 
@@ -217,6 +420,7 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
 
     sub = dict(NAME=name, NAME_UPPER=name.upper().replace("-", "_"), LABEL=label,
                PORT=str(port), UPSTREAM=upstream or "",
+               CONTEXT=f"{_CLASS_DIR[cls]}/{name}",   # build-arch-image context = the image dir
                LABELS=_render(_LABELS, LABEL=label), SNAP=_SNAP)
     df_tmpl = {"derivative": _DF_DERIVATIVE, "pytorch-nested": _DF_PYTORCH,
                "external": _DF_EXTERNAL}[cls]
