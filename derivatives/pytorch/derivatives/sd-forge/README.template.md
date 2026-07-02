@@ -184,6 +184,7 @@ Images tagged `cu130` or above automatically enable CUDA forward compatibility. 
 - **Forge Documentation:** [Official Repository](https://github.com/lllyasviel/stable-diffusion-webui-forge)
 - **A1111 Wiki:** [Features and Usage](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki)
 - **Base Image Features:** [GitHub Repository](https://github.com/vast-ai/base-image/)
+- **License:** SD WebUI Forge is AGPL-3.0. Full license text and modification notes ship in the image at `/LICENSES.md` and `/licenses/`.
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 
 ### **Community & Support**

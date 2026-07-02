@@ -17,4 +17,8 @@ as the canonical source for the license text.
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/AUTOMATIC1111/stable-diffusion-webui
-- **License file in image:** `$WORKSPACE/stable-diffusion-webui/LICENSE.txt`
+- **License file in image:** `/opt/workspace-internal/stable-diffusion-webui/LICENSE.txt`
+- **Modifications:** This image strips the torch/torchvision/torchaudio/torchcodec
+  pins from `requirements_versions.txt` so the app inherits the base image's torch
+  build (AGPL §5a). Complete corresponding source, including this change, is public
+  at https://github.com/vast-ai/base-image (see the image's Dockerfile).
