@@ -58,9 +58,13 @@ as the canonical source for the license text.
   text, vendored so a copy ships *with the program* (AGPL §4), since the
   pip-installed `unsloth` package does not reliably carry the Studio LICENSE (its
   `dist-info` carries the Apache-2.0 license for the core library).
+- **Modifications:** This image patches the AGPL-3.0 Studio component (AGPL §5a):
+  `studio/install_python_stack.py` is patched to pin the CUDA torch backend
+  (`--torch-backend=cu128`). Complete corresponding source, including this change,
+  is public at https://github.com/vast-ai/base-image (see the image's Dockerfile).
 - **Notes:** The Unsloth core library is Apache-2.0. The Studio component
   (frontend and related tooling under `studio/`) is separately licensed under
-  AGPL-3.0. This image installs the Studio component unmodified.
+  AGPL-3.0.
 
 ## Whisper WebUI
 

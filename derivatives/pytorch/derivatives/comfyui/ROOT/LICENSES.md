@@ -18,3 +18,8 @@ as the canonical source for the license text.
 - **License:** GPL-3.0
 - **Upstream:** https://github.com/Comfy-Org/ComfyUI
 - **License file in image:** `$WORKSPACE/ComfyUI/LICENSE`
+- **Modifications:** This image (GPL-3.0 §5a) strips the torch/torchvision/torchaudio/
+  torchcodec pins from ComfyUI's `requirements.txt` and from ComfyUI-Manager's
+  `requirements.txt` so the apps inherit the base image's torch build. Complete
+  corresponding source, including these changes, is public at
+  https://github.com/vast-ai/base-image (see the image's Dockerfile).
