@@ -310,8 +310,38 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005): rent a real GPU, boot the freshly-built STAGING image,
+  # run a functional test, and gate promotion on the verdict. Fires only when a build ran
+  # (should-run). If this image genuinely cannot be functionally tested, remove this job
+  # AND drop `qa` from merge-manifests/notify `needs` below — but surface that to a human.
+  qa:
     needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # >>> FILL: one { cuda, py } per base-image matrix cell above (constants, used to
+          # build the staging tag inline below — no per-cell shell derivation). <<<
+          - { cuda: 'CHANGEME', py: 'CHANGEME' }
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}
+      # >>> FILL: the amd64 staging tag for this cell — must match the build job's derived
+      # IMAGE_TAG with the -amd64 suffix (…-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64). <<<
+      tag: CHANGEME
+      template_dir: @@CONTEXT@@/templates/@@NAME@@-qa
+      label: base-image-qa-@@NAME@@
+      # >>> FILL: in-instance log files to stream into the run (space-separated), e.g.
+      # "/var/log/portal/@@NAME@@.log" — or delete this line. <<<
+      log_paths: "CHANGEME"
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  merge-manifests:
+    needs: [preflight, build, qa]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     # Production approval gate: a manual dispatch must clear the `production` environment
@@ -384,11 +414,14 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.merge-manifests.result }}
+      # Distinct headline per outcome; `needs.qa.outputs.gated` is matrix-safe (all cells
+      # share the repo secret, so they agree). A plain pass renders the default success.
+      headline: ${{ (needs.build.result != 'success' && '@@LABEL@@ build failed') || (needs.qa.result == 'failure' && '@@LABEL@@ QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && '@@LABEL@@ promotion (manifest merge) failed') || (needs.qa.outputs.gated == 'true' && '@@LABEL@@ promoted — live-GPU QA passed') || '' }}
       image-name: "@@LABEL@@"
       image-ref: ${{ needs.preflight.outputs.resolved-ref }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
@@ -396,6 +429,30 @@ jobs:
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+'''
+
+
+# The QA gate (ADR 0005) boots this template with the freshly-built STAGING image (CI
+# overrides image/tag via create.py --tag) and runs the functional test on it. The
+# compute_cap floor is pre-set to a valid number (sm_75) so L050 passes; the launch spec
+# is left to FILL because it must faithfully mirror how this image actually runs.
+_QA_TEMPLATE = '''# QA template for @@LABEL@@ — the live-GPU gate boots this with the freshly-built
+# STAGING image (CI overrides image/tag) and runs the functional test on it. Keep it
+# minimal, private, and faithful to how the image really launches; model the launch spec
+# on a sibling templates/<name>-qa (comfyui-qa, vllm-qa).
+name: "@@LABEL@@ QA smoke"
+image: CHANGEME
+tag: latest
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+# >>> FILL: complete the launch spec — the production template's ports / env /
+# PORTAL_CONFIG, plus the QA functional-test provisioning (what the gate exercises on the
+# GPU: a workflow to run, a model to load + a prompt, etc.). <<<
+extra_filters:
+  compute_cap:
+    # >>> FILL: set the real minimum compute capability for this image (sm_XX x 10). <<<
+    gte: 750
 '''
 
 
@@ -431,11 +488,13 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
     (root / "etc/supervisor/conf.d").mkdir(parents=True, exist_ok=True)
     (root / "etc/vast_capabilities.d").mkdir(parents=True, exist_ok=True)
     (root / "etc/vast_agents").mkdir(parents=True, exist_ok=True)
+    (d / "templates" / f"{name}-qa").mkdir(parents=True, exist_ok=True)
 
     files = {
         d / "Dockerfile": _render(df_tmpl, **sub),
         d / "README.md": _render(_README_DEV, **sub),
         d / "README.template.md": _render(_README_TEMPLATE, **sub),
+        d / "templates" / f"{name}-qa" / "template.yml": _render(_QA_TEMPLATE, **sub),
         root / "opt/supervisor-scripts" / f"{name}.sh": _render(_SUPERVISOR_SH, **sub),
         root / "etc/supervisor/conf.d" / f"{name}.conf": _render(_CONF, **sub),
         root / "etc/vast_capabilities.d" / f"{_CAP_NN[cls]}-{name}.yaml": _render(_CAP, **sub),

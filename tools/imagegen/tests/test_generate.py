@@ -184,6 +184,39 @@ def test_workflow_context_matches_class_dir(tmp_path):
         assert f"context: {ctx}" in wf
 
 
+def test_workflow_scaffold_includes_qa_gate(tmp_path):
+    """The scaffold wires the live-GPU QA gate: a qa job calling qa-gate.yml with the
+    pre-filled repo/template_dir/label + secrets, and promotion + notify gated on it."""
+    _gen_repo(tmp_path)
+    for name, ctx in (("mytool", "derivatives/mytool"),
+                      ("myapp", "derivatives/pytorch/derivatives/myapp"),
+                      ("myext", "external/myext")):
+        wf = (tmp_path / ".github/workflows" / f"build-{name}.yml").read_text()
+        assert "\n  qa:" in wf                                            # qa job present
+        assert "uses: ./.github/workflows/qa-gate.yml" in wf             # calls the gate
+        assert f"template_dir: {ctx}/templates/{name}-qa" in wf          # pre-filled dir
+        assert f"label: base-image-qa-{name}" in wf                       # pre-filled label
+        assert "VAST_API_KEY: ${{ secrets.VAST_API_KEY }}" in wf          # secrets wired
+        assert "needs: [preflight, build, qa]" in wf                      # merge gated on qa
+        assert "needs: [preflight, build, qa, merge-manifests, collect-tags]" in wf  # notify
+        assert "needs.qa.outputs.gated" in wf                             # gated-pass headline
+
+
+def test_qa_template_scaffolded(tmp_path):
+    """A QA template skeleton is scaffolded per image: private, with an L050-satisfying
+    numeric compute_cap floor, and L040-flagged as an incomplete skeleton."""
+    _gen_repo(tmp_path)
+    for name, ctx in (("mytool", "derivatives/mytool"),
+                      ("myapp", "derivatives/pytorch/derivatives/myapp"),
+                      ("myext", "external/myext")):
+        qat = tmp_path / ctx / "templates" / f"{name}-qa" / "template.yml"
+        assert qat.is_file(), f"{name}: QA template not scaffolded"
+        t = qat.read_text()
+        assert "private: true" in t
+        assert "compute_cap" in t and "gte: 750" in t                     # L050 floor (numeric)
+        assert ">>> FILL" in t or "CHANGEME" in t                         # skeleton marker
+
+
 def test_workflow_scaffold_is_l041_clean_with_namespace_set(tmp_path, monkeypatch):
     """Even with the staging namespace set, the scaffold trips no L041 — it uses the
     secret-ref, never a literal account name (correct by construction)."""

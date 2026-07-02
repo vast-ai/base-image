@@ -95,12 +95,20 @@ Loop until 0 errors. All `L040` (unfilled markers) must clear. If a structural c
 State plainly: lint is green = structurally conformant; the image is **not** verified
 until the real CI `docker build` + smoke test pass. Then prepare the change / open a PR
 referencing the tracking ticket (e.g. CON-####). The `build-<name>.yml` workflow is
-scaffolded as the **full 5-job pipeline** (preflight → build → merge-manifests →
-collect-tags → notify) with the DockerHub **secret-refs, the `production` approval gate,
-and notify already wired** — you fill only the `CHANGEME`/`>>> FILL` bits: the preflight
-`check-*-release` action for the upstream, the base-image matrix, the tag derivation, and
-a staggered schedule offset. CI job-shape is **not linted**, so still review against a
-sibling before the PR.
+scaffolded as the **full 6-job QA-gated pipeline** (preflight → build → **qa** →
+merge-manifests → collect-tags → notify) with the DockerHub **secret-refs, the `qa` job
+calling `qa-gate.yml` (promotion gated on it), the `production` approval gate, and notify
+(with the gated-pass headline) already wired**. You fill only the `CHANGEME`/`>>> FILL`
+bits: the preflight `check-*-release` action, the base-image matrix, the tag derivation, a
+staggered schedule offset, and — in the **qa** job — the cuda/py matrix, the staging tag,
+and `log_paths`. CI job-shape is **not linted**, so still review against a sibling.
+
+The generator also scaffolds a **QA template** at `templates/<name>-qa/template.yml`
+(private, with a placeholder `compute_cap` floor) — fill its launch spec + functional
+test (the gate boots this image on a real GPU and runs it) modelled on a sibling
+`*-qa/template.yml`. If this image genuinely **cannot** be functionally tested, removing
+the `qa` job (and dropping `qa` from the `needs:` of merge-manifests/notify) is an
+**escape-hatch** case — surface it to the human, don't silently strip it.
 
 **Docker Hub repos — create staging *before* the build:**
 - Create the **staging** repo `${DOCKERHUB_NAMESPACE_STAGING}/<name>` and set it
