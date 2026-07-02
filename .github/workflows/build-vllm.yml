@@ -253,8 +253,32 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005, CON-1585) — calls the reusable qa-gate.yml once per
+  # promoted variant (amd64), gating the prod manifest merge. Per-image specifics
+  # (the {tag,cuda} matrix, the staging tag, the QA template, the label) are here;
+  # the shared core + account concurrency group live in qa-gate.yml. amd64-only;
+  # advisory until VAST_API_KEY exists.
+  qa:
     needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'vllm' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.vllm-version }}-cuda-${{ matrix.cuda }}-amd64
+      template_dir: external/vllm/templates/vllm-qa
+      label: base-image-qa-vllm
+      log_paths: "/var/log/portal/vllm.log /var/log/portal/ray.log"
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  merge-manifests:
+    needs: [preflight, build, qa]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
@@ -335,11 +359,16 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.merge-manifests.result }}
+      # Distinct failure labels via AGGREGATED .result (never matrix .outputs):
+      # build broke vs QA caught a bad image vs promotion (crane) failed. Empty on
+      # success -> notify-slack renders the default "✅ ... Successful". (Soft-pass
+      # is a separate ⚠️ alert fired per-cell inside qa-gate.yml.)
+      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM"
       image-ref: ${{ needs.preflight.outputs.vllm-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

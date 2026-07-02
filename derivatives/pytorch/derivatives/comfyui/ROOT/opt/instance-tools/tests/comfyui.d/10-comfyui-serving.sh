@@ -168,7 +168,17 @@ wait_for_service_health api-wrapper "${API_URL}/health" "API wrapper"
 echo ""
 echo "  -- workflow payloads --"
 
+# If the template DECLARED workflows to provision (PROVISIONING_COMFYUI_WORKFLOWS
+# set) but none materialised, that's a failure — a 404 on the workflow URL, a
+# provisioning error, or a conversion bug — NOT a skip. A skip would be reported
+# as an overall pass (skip-as-pass), defeating the QA gate (ADR 0005 cond 3). With
+# no workflows declared, skipping is correct (a plain ComfyUI image, nothing to run).
+_declared_workflows="${PROVISIONING_COMFYUI_WORKFLOWS:-}"
+
 if [[ ! -d "$PAYLOADS_DIR" ]]; then
+    if [[ -n "$_declared_workflows" ]]; then
+        test_fail "PROVISIONING_COMFYUI_WORKFLOWS is set but ${PAYLOADS_DIR} does not exist — provisioning/conversion produced no payloads"
+    fi
     test_skip "payloads directory ${PAYLOADS_DIR} does not exist (no API workflows configured)"
 fi
 
@@ -177,6 +187,9 @@ payloads=("${PAYLOADS_DIR}"/*.json)
 shopt -u nullglob
 
 if [[ ${#payloads[@]} -eq 0 ]]; then
+    if [[ -n "$_declared_workflows" ]]; then
+        test_fail "PROVISIONING_COMFYUI_WORKFLOWS is set but no API-format workflows in ${PAYLOADS_DIR} — provisioning/conversion produced nothing"
+    fi
     test_skip "no API-format workflows in ${PAYLOADS_DIR} (nothing to exercise)"
 fi
 

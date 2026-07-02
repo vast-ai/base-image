@@ -28,6 +28,16 @@ on:
         description: "URL to the workflow run"
         required: true
         type: string
+      status:
+        description: "Override render state: '' = derive ✅/❌ from build-result (default, back-compat); 'warning' = ⚠️ yellow (e.g. a QA soft-pass / ungated promotion)"
+        required: false
+        type: string
+        default: ""
+      headline:
+        description: "Override the header/fallback text (emoji is prepended). '' = default '<name> Image Build <Successful|Failed>'"
+        required: false
+        type: string
+        default: ""
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
@@ -51,8 +61,20 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           IMAGE_TAGS: ${{ inputs.image-tags }}
+          STATUS: ${{ inputs.status }}
+          HEADLINE: ${{ inputs.headline }}
+          BUILD_RESULT: ${{ inputs.build-result }}
+          IMAGE_NAME: ${{ inputs.image-name }}
         run: |
-          if [[ "${{ inputs.build-result }}" == "success" ]]; then
+          # Three render states. `status: warning` is an explicit override (the QA
+          # soft-pass / ungated-promotion alert); otherwise derive ✅/❌ from
+          # build-result exactly as before — callers passing neither `status` nor
+          # `headline` render byte-identically to the original.
+          if [[ "$STATUS" == "warning" ]]; then
+            STATUS_EMOJI="⚠️"
+            STATUS_TEXT="Warning"
+            COLOR="warning"
+          elif [[ "$BUILD_RESULT" == "success" ]]; then
             STATUS_EMOJI="✅"
             STATUS_TEXT="Successful"
             COLOR="good"
@@ -61,12 +83,24 @@ jobs:
             STATUS_TEXT="Failed"
             COLOR="danger"
           fi
-          
+
+          # Header/fallback text: a caller-supplied headline wins; else the default.
+          if [[ -n "$HEADLINE" ]]; then
+            HEADER_TEXT="${STATUS_EMOJI} ${HEADLINE}"
+          else
+            HEADER_TEXT="${STATUS_EMOJI} ${IMAGE_NAME} Image Build ${STATUS_TEXT}"
+          fi
+
+          # Show the promoted-tags block when something was promoted: a normal
+          # success, OR a soft-pass warning (ungated promotion — show the tags).
+          SHOW_TAGS="false"
+          if [[ "$BUILD_RESULT" == "success" || "$STATUS" == "warning" ]]; then
+            SHOW_TAGS="true"
+          fi
+
           # Build base blocks
           BLOCKS=$(jq -n \
-            --arg emoji "$STATUS_EMOJI" \
-            --arg status "$STATUS_TEXT" \
-            --arg name "${{ inputs.image-name }}" \
+            --arg header "$HEADER_TEXT" \
             --arg trigger "${{ inputs.trigger }}" \
             --arg ref "${{ inputs.image-ref }}" \
             '[
@@ -74,7 +108,7 @@ jobs:
                 "type": "header",
                 "text": {
                   "type": "plain_text",
-                  "text": ($emoji + " " + $name + " Image Build " + $status),
+                  "text": $header,
                   "emoji": true
                 }
               },
@@ -93,8 +127,8 @@ jobs:
               }
             ]')
           
-          # Add image tags on success
-          if [[ "${{ inputs.build-result }}" == "success" ]]; then
+          # Add image tags when something was promoted (success or soft-pass warning)
+          if [[ "$SHOW_TAGS" == "true" ]]; then
             # Filter out per-arch tags (keep only merged manifests) and format as code blocks
             # Slack block text has a 3000 char limit, so we truncate with a count if needed
             TOTAL_COUNT=$(echo "$IMAGE_TAGS" | jq 'length')
@@ -150,7 +184,7 @@ jobs:
             }]')
           BLOCKS=$(echo "$BLOCKS" | jq --argjson ctx "$CONTEXT_BLOCK" '. + $ctx')
           
-          FALLBACK="${STATUS_EMOJI} ${{ inputs.image-name }} Image Build ${STATUS_TEXT} (${{ inputs.image-ref }})"
+          FALLBACK="${HEADER_TEXT} (${{ inputs.image-ref }})"
 
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
