@@ -117,3 +117,41 @@ an image should have a matching `:<Label>` entry in that image's `PORTAL_CONFIG`
 the boot-sequence list (§3), the 4-job pipeline + missing `merge-manifests` (§2),
 the undeclared `base_image_source` stage (§1), the missing utils
 `exit_serverless.sh`/`pty.sh` (§1), the port +10000 claim (§3), and uniform cron (§3).
+
+## 6. Planned invariants — statically checkable, not yet gated
+
+Two policies are enforced today only by review; both are statically checkable and
+should become lint rules (with the ADR-binding + `RULES`-catalog pattern of §1).
+Proposed IDs are indicative, not reserved.
+
+### No baked model weights (proposed)
+
+Model weights must NOT be downloaded or baked into the image; they arrive at
+runtime via provisioning or the app's own on-start download. Rationale: keeps
+images small and rebuildable, and — because the *tenant* triggers the download —
+the weight licence (non-commercial / gated / territory-restricted) is the tenant's
+to honour, not something the image distributes.
+
+Detection heuristic, inside a Dockerfile `RUN`: `huggingface-cli download` /
+`hf download`; `wget`/`curl` of `*.safetensors|*.gguf|*.ckpt|*.pth|*.bin|*.onnx`;
+a `from_pretrained(...)` / `snapshot_download(...)` that writes into an image layer.
+Scope: model weights only — not small non-model assets (tokenizer/config files, a
+UI's bundled icons). Reference: the "download on start, never bake" policy.
+
+### Copyleft licence compliance (proposed)
+
+An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in
+the image (a LICENSE at a known path, vendored to `/licenses/` if the package does
+not carry one), and (b) when the Dockerfile patches the copyleft upstream (a
+`sed -i` / `patch` / `git apply` against a cloned or installed copyleft source),
+carry a **modification notice** in `LICENSES.md` — GPL §5 / AGPL §4 + §5a.
+Corresponding source is this public repo; AGPL §13 (network source offer to users)
+stays the tenant-operator's obligation, not the image's.
+
+Because "is this upstream copyleft?" is not reliably inferable, the check is
+**declarative**: `LICENSES.md` declares the licence, and the rule verifies that for
+each copyleft entry (a) the stated in-image licence path resolves and (b) a
+`Modifications:` note exists whenever the Dockerfile patches that app's tree.
+Applies to GPL-3.0 too (e.g. ComfyUI), not only AGPL. Reference implementation of
+the obligations themselves: the `fix/agpl-license-compliance` change (unsloth-studio,
+aio-studio, a1111, sd-forge, oobabooga).
