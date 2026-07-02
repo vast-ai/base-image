@@ -585,6 +585,24 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     return None, None
 
 
+def ssh_endpoint(api, instance_id):
+    """SSH coords for a held (--keep) instance, so the QA-fix loop can log in and diagnose.
+    Prefer the ssh_host/ssh_port fields; fall back to the 22/tcp port mapping on the public
+    IP. Returns {"host", "port"} or {} if not resolvable."""
+    full = api.get_instance(instance_id, safe=True) or {}
+    host = full.get("ssh_host") or full.get("public_ipaddr")
+    port = full.get("ssh_port")
+    if not port:
+        for key, mappings in (full.get("ports") or {}).items():
+            if key.startswith("22/") and isinstance(mappings, list) and mappings:
+                port = mappings[0].get("HostPort")
+                break
+    try:
+        return {"host": host, "port": int(port)} if host and port else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 def _parse_sse_event(data_lines, event_type):
     """Parse SSE data lines into an event dict."""
     raw_data = "\n".join(data_lines)
@@ -1473,6 +1491,12 @@ def main():
         raw_output["got_result_event"] = got_result_event
         raw_output["exit_code"] = exit_code
         raw_output["stream_counts"] = stream_counts
+        # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
+        # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
+        if instance_id:
+            raw_output["instance_id"] = instance_id
+            if args.keep:
+                raw_output["ssh"] = ssh_endpoint(api, instance_id)
         print(json.dumps(raw_output))
 
     # 7. Cleanup — destroy if instance died or connection was lost
