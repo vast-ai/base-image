@@ -164,7 +164,7 @@ management, and other conveniences from the Vast.ai
 '''
 
 _README_TEMPLATE = '''# @@LABEL@@
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=@@NAME@@)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=@@NAME@@)**
 
 ## What is this template?
 

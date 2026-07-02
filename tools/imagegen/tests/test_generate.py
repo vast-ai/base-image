@@ -227,6 +227,16 @@ def test_workflow_scaffold_is_l041_clean_with_namespace_set(tmp_path, monkeypatc
         assert "L041" not in codes, f"{img.name}: scaffold tripped L041"
 
 
+def test_qa_template_markers_are_linted(tmp_path):
+    """The QA template lives OUTSIDE ROOT/ — regression guard that L040 scans it, else a
+    scaffolded QA template's CHANGEME/FILL markers slip past the lint gate."""
+    _gen_repo(tmp_path)
+    img = next(i for i in discover(tmp_path) if i.name == "myapp")
+    flagged = {f.path for f in lint_image(img, tmp_path) if f.code == "L040"}
+    assert any("templates/myapp-qa/template.yml" in p for p in flagged), \
+        f"QA template not L040-scanned; flagged={flagged}"
+
+
 if __name__ == "__main__":
     import inspect, tempfile, traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

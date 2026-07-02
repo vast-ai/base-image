@@ -247,17 +247,29 @@ def check_workflow(img: Image, repo: Path) -> Iterable[Finding]:
 _SKELETON_MARKERS = ("CHANGEME", "CHANGEPORT", ">>> FILL")
 
 
+def _image_files(img: Image, repo: Path) -> list:
+    """The image's own committed files that skeleton/leak checks scan: Dockerfile, both
+    READMEs, everything under ROOT/, the QA template(s) under templates/ (which sit OUTSIDE
+    ROOT/, so they must be added explicitly — else a scaffolded QA template's markers slip
+    past L040), and the build workflow."""
+    files = [img.dockerfile, img.dir / "README.md", img.dir / "README.template.md"]
+    if img.root:
+        files += [p for p in img.root.rglob("*") if p.is_file()]
+    tdir = img.dir / "templates"
+    if tdir.is_dir():
+        files += [p for p in tdir.rglob("*") if p.is_file()]
+    wf = repo / ".github" / "workflows" / f"build-{img.name}.yml"
+    if wf.exists():
+        files.append(wf)
+    return files
+
+
 def check_skeleton(img: Image, repo: Path) -> Iterable[Finding]:
     """L040 — unfilled generator markers must not pass as 'clean'. So a scaffold can
     never be mistaken for a complete, buildable image. Scoped to the image's own files."""
     if img.cls == "base":
         return
-    files = [img.dockerfile, img.dir / "README.md", img.dir / "README.template.md"]
-    if img.root:
-        files += [p for p in img.root.rglob("*") if p.is_file()]
-    wf = repo / ".github" / "workflows" / f"build-{img.name}.yml"
-    if wf.exists():
-        files.append(wf)
+    files = _image_files(img, repo)
     for p in files:
         if not p.is_file():
             continue
@@ -306,12 +318,7 @@ def check_no_hardcoded_staging_namespace(img: Image, repo: Path) -> Iterable[Fin
                       "L041 not enforced: DOCKERHUB_NAMESPACE_STAGING unset (CI sets it from the secret)")
         return
     pat = re.compile(r"(?<![\w./-])" + re.escape(ns) + r"/")
-    files = [img.dockerfile, img.dir / "README.md", img.dir / "README.template.md"]
-    if img.root:
-        files += [p for p in img.root.rglob("*") if p.is_file()]
-    wf = repo / ".github" / "workflows" / f"build-{img.name}.yml"
-    if wf.exists():
-        files.append(wf)
+    files = _image_files(img, repo)
     for p in files:
         if not p.is_file():
             continue

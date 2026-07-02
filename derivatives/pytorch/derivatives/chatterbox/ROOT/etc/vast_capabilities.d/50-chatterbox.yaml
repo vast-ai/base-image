@@ -1,0 +1,5 @@
+# Chatterbox — image identity (overrides the base image block).
+image:
+  name: Chatterbox
+  readme: "https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/chatterbox"
+  preinstalled: "PyTorch + Chatterbox-TTS-Server"
