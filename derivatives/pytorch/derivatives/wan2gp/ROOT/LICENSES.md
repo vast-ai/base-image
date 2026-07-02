@@ -15,6 +15,9 @@ as the canonical source for the license text.
 
 ## Wan2GP
 
-- **License:** Apache-2.0
+- **License:** WanGP Community License 2.0 (custom)
 - **Upstream:** https://github.com/deepbeepmeep/Wan2GP
-- **License file in image:** `$WORKSPACE/Wan2GP/LICENSE.txt`
+- **License file in image:** `/opt/workspace-internal/Wan2GP/LICENSE.txt`
+- **Notes:** Free for personal and company use. Commercial redistribution, SaaS,
+  and paid API hosting require a separate commercial license. See the license file
+  for full terms. (Upstream ships no SPDX identifier — GitHub reports NOASSERTION.)

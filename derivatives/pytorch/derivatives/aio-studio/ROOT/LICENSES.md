@@ -17,13 +17,13 @@ as the canonical source for the license text.
 
 - **License:** GPL-3.0
 - **Upstream:** https://github.com/Comfy-Org/ComfyUI
-- **License file in image:** `$WORKSPACE/ComfyUI/LICENSE`
+- **License file in image:** `/opt/workspace-internal/ComfyUI/LICENSE`
 
 ## SD Forge (Classic)
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/Haoming02/sd-webui-forge-classic
-- **License file in image:** `$WORKSPACE/stable-diffusion-webui-forge/LICENSE.txt`
+- **License file in image:** `/opt/workspace-internal/stable-diffusion-webui-forge/LICENSE.txt`
 - **Modifications:** This image (AGPL §5a) comments out `launch_utils.verify_version()`
   in `launch.py` (bypassed for the Docker build) and strips the torch pins from the
   Forge requirements so it inherits the base image's torch build. Complete
@@ -45,7 +45,7 @@ as the canonical source for the license text.
 
 - **License:** WanGP Community License 2.0 (custom)
 - **Upstream:** https://github.com/deepbeepmeep/Wan2GP
-- **License file in image:** `$WORKSPACE/Wan2GP/LICENSE`
+- **License file in image:** `/opt/workspace-internal/Wan2GP/LICENSE.txt`
 - **Notes:** Free for personal and company use. Commercial redistribution,
   SaaS, and paid API hosting require a separate commercial license. See the
   license file for full terms.
