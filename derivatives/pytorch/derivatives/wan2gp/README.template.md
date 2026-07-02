@@ -1,6 +1,6 @@
 # Wan2GP
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Wan2GP)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Wan2GP)**
 
 ## What is this template?
 
@@ -41,7 +41,7 @@ Set your preferred configuration via environment variables:
 - **`PROVISIONING_SCRIPT`**: URL to auto-download dependencies on first boot
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Wan2GP)"** when you've found a suitable GPU instance
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Wan2GP)"** when you've found a suitable GPU instance
 
 ### **Step 3: Wait for Setup**
 Wan2GP will be ready automatically with all required dependencies pre-installed *(initial model downloads may take additional time)*
