@@ -1,6 +1,6 @@
 # Stable Diffusion WebUI Forge
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=SD%20Forge)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=SD%20Forge)**
 
 ## What is this template?
 
@@ -69,7 +69,7 @@ Set your preferred configuration via environment variables:
 > **Template Customization:** Want to modify this setup? Click **edit**, make your changes, and save as your own template. Find it later in **"My Templates"**. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=SD%20Forge)"** when you've found a suitable GPU instance
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=SD%20Forge)"** when you've found a suitable GPU instance
 
 ### **Step 3: Wait for Setup**
 Forge will be ready automatically *(initial model downloads may take additional time)*

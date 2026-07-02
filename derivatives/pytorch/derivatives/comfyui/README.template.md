@@ -1,6 +1,6 @@
 # ComfyUI
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=ComfyUI)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=ComfyUI)**
 
 ## What is this template?
 
@@ -53,7 +53,7 @@ Set your preferred configuration via environment variables:
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=ComfyUI)"** when you've found a suitable GPU instance
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=ComfyUI)"** when you've found a suitable GPU instance
 
 ### **Step 3: Wait for Setup**
 ComfyUI will be ready automatically with ComfyUI-Manager pre-installed *(initial model downloads may take additional time)*
