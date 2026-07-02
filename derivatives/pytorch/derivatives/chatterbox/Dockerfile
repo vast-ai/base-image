@@ -17,8 +17,8 @@ RUN set -euo pipefail; \
     cd /opt/workspace-internal/chatterbox && git checkout "${CHATTERBOX_REF}"; \
     sed -i -E '/^--extra-index-url .*download\.pytorch\.org/d; /^torch(vision|audio|codec)?[=<>! ]/d' requirements-nvidia-cu128.txt; \
     uv pip install --no-cache-dir -r requirements-nvidia-cu128.txt; \
-    uv pip install --no-cache-dir --no-deps git+https://github.com/devnen/chatterbox-v2.git@df73ac81662c9354e0d408832a876ddd72a42480 s3tokenizer==0.3.0 onnx==1.16.0; \
-    uv pip install --no-cache-dir "protobuf>=4.25.0"; \
+    uv pip install --no-cache-dir --no-deps git+https://github.com/devnen/chatterbox-v2.git@cc0357396d9c73fc1e6c544ee40bb596020edd09 s3tokenizer==0.3.0 onnx==1.16.0; \
+    uv pip install --no-cache-dir "protobuf>=4.25.0" "setuptools<81"; \
     sed -i -E 's/^([[:space:]]*host:).*/\1 127.0.0.1/' /opt/workspace-internal/chatterbox/config.yaml; \
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)"; \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem drift for chatterbox"; exit 1; }
