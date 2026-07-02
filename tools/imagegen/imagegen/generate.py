@@ -326,7 +326,7 @@ jobs:
           - { cuda: 'CHANGEME', py: 'CHANGEME' }
     uses: ./.github/workflows/qa-gate.yml
     with:
-      repo: ${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}
+      repo: ${{ inputs.DOCKERHUB_REPO || '@@NAME@@' }}
       # >>> FILL: the amd64 staging tag for this cell — must match the build job's derived
       # IMAGE_TAG with the -amd64 suffix (…-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64). <<<
       tag: CHANGEME

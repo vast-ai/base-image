@@ -237,6 +237,20 @@ def test_qa_template_markers_are_linted(tmp_path):
         f"QA template not L040-scanned; flagged={flagged}"
 
 
+def test_qa_repo_uses_literal_not_env(tmp_path):
+    """`env` is unavailable in a reusable-workflow (`uses: qa-gate.yml`) `with:` block —
+    GitHub rejects the whole file — so the qa job's `repo:` must use a LITERAL fallback,
+    not env.DEFAULT_DOCKERHUB_REPO. Regression from the QA-CI scaffold (only GitHub's
+    workflow validator catches it; YAML parses + lint passes)."""
+    _gen_repo(tmp_path)
+    for name in ("mytool", "myapp", "myext"):
+        wf = (tmp_path / ".github/workflows" / f"build-{name}.yml").read_text()
+        assert "repo: ${{ inputs.DOCKERHUB_REPO || env." not in wf, \
+            f"{name}: qa `repo:` references env. in a reusable with: (GitHub rejects it)"
+        assert ("repo: ${{ inputs.DOCKERHUB_REPO || '" + name + "' }}") in wf, \
+            f"{name}: qa `repo:` should fall back to the literal image name"
+
+
 if __name__ == "__main__":
     import inspect, tempfile, traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

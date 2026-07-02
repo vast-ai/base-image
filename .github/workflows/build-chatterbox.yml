@@ -146,7 +146,7 @@ jobs:
           - { cuda: "12.9", py: "py312" }
     uses: ./.github/workflows/qa-gate.yml
     with:
-      repo: ${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}
+      repo: ${{ inputs.DOCKERHUB_REPO || 'chatterbox' }}
       tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.resolved-ref }}-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64
       template_dir: derivatives/pytorch/derivatives/chatterbox/templates/chatterbox-qa
       label: base-image-qa-chatterbox
