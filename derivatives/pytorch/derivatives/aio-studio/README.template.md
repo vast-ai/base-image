@@ -247,6 +247,7 @@ Want to save your perfect setup? Templates can't be changed directly, but you ca
 - **AI Toolkit:** [Official Repository](https://github.com/ostris/ai-toolkit)
 - **Unsloth:** [Official Repository](https://github.com/unslothai/unsloth)
 - **Image Source & Features:** [GitHub Repository](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/aio-studio)
+- **License:** Bundled apps include AGPL-3.0 (SD Forge, Unsloth Studio) and GPL-3.0 (ComfyUI) components. Full license text and modification notes ship in the image at `/LICENSES.md` and `/licenses/`.
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 - **SSH Setup Guide:** [Vast.ai SSH Documentation](https://docs.vast.ai/instances/sshscp)
 - **Template Configuration:** [Vast.ai Template Guide](https://docs.vast.ai/templates)
