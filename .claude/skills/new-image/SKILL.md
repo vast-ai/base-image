@@ -116,12 +116,19 @@ bits: the preflight `check-*-release` action, the base-image matrix, the tag der
 staggered schedule offset, and — in the **qa** job — the cuda/py matrix, the staging tag,
 and `log_paths`. CI job-shape is **not linted**, so still review against a sibling.
 
-The generator also scaffolds a **QA template** at `templates/<name>-qa/template.yml`
-(private, with a placeholder `compute_cap` floor) — fill its launch spec + functional
-test (the gate boots this image on a real GPU and runs it) modelled on a sibling
-`*-qa/template.yml`. If this image genuinely **cannot** be functionally tested, removing
-the `qa` job (and dropping `qa` from the `needs:` of merge-manifests/notify) is an
-**escape-hatch** case — surface it to the human, don't silently strip it.
+The generator scaffolds **two templates** under `templates/`:
+- **`templates/default/template.yml`** — the public, user-facing launch template (the
+  eventual recommended/marketplace listing; `private: false`, `readme_visible: true`,
+  `image: vastai/<name>`). Fill its launch spec (ports / env / `PORTAL_CONFIG`) so a human
+  can launch the image and use it. This is the source the QA smoke should mirror.
+- **`templates/<name>-qa/template.yml`** — the private QA-gate template (`private: true`);
+  fill its launch spec + functional test (the gate boots this image on a real GPU and runs
+  it) modelled on `templates/default/` + a sibling `*-qa/`. If this image genuinely
+  **cannot** be functionally tested, removing the `qa` job (and dropping `qa` from the
+  `needs:` of merge-manifests/notify) is an **escape-hatch** case — surface it to the
+  human, don't silently strip it.
+
+Both carry a placeholder `compute_cap` floor (L050) and are L040-scanned.
 
 **Docker Hub repos — create staging *before* the build:**
 - Create the **staging** repo `${DOCKERHUB_NAMESPACE_STAGING}/<name>` and set it

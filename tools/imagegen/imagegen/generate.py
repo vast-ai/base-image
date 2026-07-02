@@ -456,6 +456,25 @@ extra_filters:
 '''
 
 
+_DEFAULT_TEMPLATE = '''# Default launch template for @@LABEL@@ — the public, user-facing template (the eventual
+# recommended/marketplace listing). This is how a user launches the image to try it on a
+# real GPU. Keep it faithful to how the image actually serves; the QA gate models its
+# smoke on this.
+name: "@@LABEL@@"
+image: vastai/@@NAME@@
+tag: latest
+private: false
+readme_visible: true
+onstart: entrypoint.sh
+# >>> FILL: complete the launch spec — ports / env / PORTAL_CONFIG, wiring the app's real
+# interface:port into the portal (model this on how the supervisor launches the app). <<<
+extra_filters:
+  compute_cap:
+    # >>> FILL: set the real minimum compute capability for this image (sm_XX x 10). <<<
+    gte: 750
+'''
+
+
 def _render(tmpl: str, **kw: str) -> str:
     for k, v in kw.items():
         tmpl = tmpl.replace(f"@@{k}@@", v)
@@ -489,12 +508,14 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
     (root / "etc/vast_capabilities.d").mkdir(parents=True, exist_ok=True)
     (root / "etc/vast_agents").mkdir(parents=True, exist_ok=True)
     (d / "templates" / f"{name}-qa").mkdir(parents=True, exist_ok=True)
+    (d / "templates" / "default").mkdir(parents=True, exist_ok=True)
 
     files = {
         d / "Dockerfile": _render(df_tmpl, **sub),
         d / "README.md": _render(_README_DEV, **sub),
         d / "README.template.md": _render(_README_TEMPLATE, **sub),
         d / "templates" / f"{name}-qa" / "template.yml": _render(_QA_TEMPLATE, **sub),
+        d / "templates" / "default" / "template.yml": _render(_DEFAULT_TEMPLATE, **sub),
         root / "opt/supervisor-scripts" / f"{name}.sh": _render(_SUPERVISOR_SH, **sub),
         root / "etc/supervisor/conf.d" / f"{name}.conf": _render(_CONF, **sub),
         root / "etc/vast_capabilities.d" / f"{_CAP_NN[cls]}-{name}.yaml": _render(_CAP, **sub),

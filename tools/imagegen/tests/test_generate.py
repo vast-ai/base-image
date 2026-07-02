@@ -251,6 +251,19 @@ def test_qa_repo_uses_literal_not_env(tmp_path):
             f"{name}: qa `repo:` should fall back to the literal image name"
 
 
+def test_default_launch_template_scaffolded(tmp_path):
+    """Every image gets a public default launch template at templates/default/template.yml —
+    the user-facing template, with an L050 floor and an L040-flagged launch spec."""
+    _gen_repo(tmp_path)
+    for name, ctx in (("mytool", "derivatives/mytool"),
+                      ("myapp", "derivatives/pytorch/derivatives/myapp"),
+                      ("myext", "external/myext")):
+        t = (tmp_path / ctx / "templates" / "default" / "template.yml").read_text()
+        assert "private: false" in t and "readme_visible: true" in t  # public launch template
+        assert "gte: 750" in t                                         # L050 floor
+        assert ">>> FILL" in t                                         # launch-spec skeleton
+
+
 if __name__ == "__main__":
     import inspect, tempfile, traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
