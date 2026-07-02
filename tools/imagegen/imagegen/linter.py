@@ -61,6 +61,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L040", ERROR, "No unfilled generator skeleton markers (CHANGEME / CHANGEPORT / >>> FILL)"),
     ("L041", ERROR, "No hardcoded staging namespace in a new image's committed files — reference the DOCKERHUB_NAMESPACE_STAGING secret"),
     ("L050", ERROR, "A shipped template.yml declares a compute_cap floor in extra_filters (ADR 0005)"),
+    ("L051", ERROR, "Supervisor launch scripts (ROOT/opt/supervisor-scripts/*.sh) are executable — the .conf execs them directly"),
 ]
 
 
@@ -404,10 +405,32 @@ def check_template_floor(img: Image, repo: Path) -> Iterable[Finding]:
                 break  # one finding per file is enough
 
 
+def check_supervisor_executable(img: Image) -> Iterable[Finding]:
+    """L051 — supervisor launch scripts must be executable. The generated .conf runs
+    `command=/opt/supervisor-scripts/<name>.sh` directly (no interpreter prefix), so a
+    non-executable script makes supervisor fail the program on launch — a fatal the static
+    scaffold otherwise hides (the generator wrote the file 0644). Checks the on-disk mode,
+    which git tracks (100755). Only the top-level launch scripts; sourced `utils/` are
+    excluded (glob is non-recursive)."""
+    if img.cls == "base" or not img.root:
+        return
+    sdir = img.root / "opt" / "supervisor-scripts"
+    if not sdir.is_dir():
+        return
+    for sh in sorted(sdir.glob("*.sh")):
+        if not (sh.stat().st_mode & 0o111):
+            try:
+                rel = str(sh.relative_to(img.dir))
+            except ValueError:
+                rel = sh.name
+            yield Finding("L051", ERROR, img.name, rel,
+                          "supervisor script is not executable (chmod +x); the .conf execs it directly")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
-    check_conf_triple, check_util_order,
+    check_conf_triple, check_util_order, check_supervisor_executable,
 ]
 
 

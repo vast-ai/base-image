@@ -264,6 +264,26 @@ def test_default_launch_template_scaffolded(tmp_path):
         assert ">>> FILL" in t                                         # launch-spec skeleton
 
 
+def test_generator_supervisor_is_executable(tmp_path):
+    """L051 regression: the generator must write supervisor launch scripts executable — the
+    .conf execs them directly (command=...sh), so 0644 is fatal on launch."""
+    _gen_repo(tmp_path)
+    for name, ctx in (("mytool", "derivatives/mytool"),
+                      ("myapp", "derivatives/pytorch/derivatives/myapp"),
+                      ("myext", "external/myext")):
+        sh = tmp_path / ctx / "ROOT/opt/supervisor-scripts" / f"{name}.sh"
+        assert sh.stat().st_mode & 0o111, f"{name}: supervisor script not executable"
+
+
+def test_l051_fires_on_non_executable_supervisor(tmp_path):
+    """Mutation: strip +x from a generated supervisor script -> L051 fires."""
+    _gen_repo(tmp_path)
+    sh = tmp_path / "derivatives/pytorch/derivatives/myapp/ROOT/opt/supervisor-scripts/myapp.sh"
+    sh.chmod(0o644)
+    img = next(i for i in discover(tmp_path) if i.name == "myapp")
+    assert "L051" in {f.code for f in lint_image(img, tmp_path)}, "L051 must fire on a non-exec supervisor script"
+
+
 if __name__ == "__main__":
     import inspect, tempfile, traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

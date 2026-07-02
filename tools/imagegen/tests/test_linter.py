@@ -51,7 +51,9 @@ def make(tmp: Path, *, cls="pytorch-nested", df=VALID_DF, confs=None, scripts=No
     for name, body in (confs or {"foo": VALID_CONF}).items():
         (d / "ROOT/etc/supervisor/conf.d" / f"{name}.conf").write_text(body)
     for name, body in (scripts or {"foo.sh": VALID_SCRIPT}).items():
-        (d / "ROOT/opt/supervisor-scripts" / name).write_text(body)
+        sp = (d / "ROOT/opt/supervisor-scripts" / name)
+        sp.write_text(body)
+        sp.chmod(0o755)   # supervisor scripts must be executable (L051)
     return Image(name="img", cls=cls, dir=d, dockerfile=d / "Dockerfile", text=df, root=d / "ROOT")
 
 

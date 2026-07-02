@@ -531,4 +531,8 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
 
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
+        # Supervisor launch scripts are exec'd directly by the .conf (command=...sh), so
+        # they must be executable — write_text leaves 0644, which is fatal on launch (L051).
+        if path.parent.name == "supervisor-scripts":
+            path.chmod(0o755)
     return d

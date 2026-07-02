@@ -19,3 +19,4 @@
 | L040 | ERROR | No unfilled generator skeleton markers (CHANGEME / CHANGEPORT / >>> FILL) |
 | L041 | ERROR | No hardcoded staging namespace in a new image's committed files — reference the DOCKERHUB_NAMESPACE_STAGING secret |
 | L050 | ERROR | A shipped template.yml declares a compute_cap floor in extra_filters (ADR 0005) |
+| L051 | ERROR | Supervisor launch scripts (ROOT/opt/supervisor-scripts/*.sh) are executable — the .conf execs them directly |
