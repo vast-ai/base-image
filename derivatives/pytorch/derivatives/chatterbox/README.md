@@ -18,5 +18,5 @@ supervisor (`supervisorctl start chatterbox`), bound to `127.0.0.1:8004` behind 
   Multilingual ~8 GB. Some model repos are HF-gated — set `HF_TOKEN` to use them.
 - **Output is watermarked** with Resemble AI's imperceptible Perth watermark (by design).
 
-**Config:** `$WORKSPACE/chatterbox/config.yaml` (host is pinned to loopback at build). **Tags:**
+**Config:** `$WORKSPACE/chatterbox/config.yaml` (host+port explicitly pinned to 127.0.0.1:8004 at launch). **Tags:**
 `<ref>-cuda-<ver>-py312` per the build matrix. **System deps:** `libsndfile1`, `ffmpeg`.

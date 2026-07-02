@@ -76,8 +76,13 @@ Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
   existing tag — e.g. comfyui pins a dated `vastai/pytorch:...` tag). Never invent a tag;
   a non-existent tag lints clean but fails `docker build` on the `FROM` pull. (Filling
   this token is a normal in-fence fill, NOT an escape-hatch case.)
-- **supervisor script**: the real launch (use `pty`, like the sibling); ensure it binds
-  the `--port` you supplied; remove the `exit 1  # >>> FILL` stub line entirely.
+- **supervisor script**: the real launch (use `pty`, like the sibling); remove the
+  `exit 1  # >>> FILL` stub line entirely. **Make the bind explicit** — the launch must
+  show which interface:port it listens on: pass the app's `--host 127.0.0.1 --port <port>`
+  flags. If the app has no host/port flag or env override and binds only from a config
+  file, pin host+port into that config at launch (don't leave the bind implicit/hidden in
+  a baked file), and never let it fall back to a `0.0.0.0` default (Caddy is the sole
+  public edge). Always loopback.
 - **PORTAL_CONFIG / port wiring**: external → fill `05-<name>-env.sh` with the app's real
   bind port. **pytorch-nested / derivative** → check the sibling: if it ships a
   `ROOT/etc/vast_boot.d/05-<name>-env.sh`, add one wiring your port into PORTAL_CONFIG;
