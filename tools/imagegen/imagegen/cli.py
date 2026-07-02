@@ -94,6 +94,19 @@ def main(argv=None) -> int:
     rules = sub.add_parser("rules", help="print the generated lint-rules reference (docs/lint-rules.md)")
     rules.set_defaults(func=lambda a: (print(rules_markdown(), end=""), 0)[1])
 
+    qa = sub.add_parser("qa", help="run the live-GPU QA smoke; hold the box on failure for the qa-fix skill (ADR 0009)")
+    qa.add_argument("name", help="image name (e.g. chatterbox)")
+    qa.add_argument("--tag", help="staging image to test: a full repo/name:tag, or a bare tag (default: <STAGING_NS>/<name>:latest)")
+    qa.add_argument("--log", dest="logs", action="append", help="in-instance log file to stream (repeatable; default /var/log/portal/<name>.log)")
+    qa.add_argument("--max-price", default="0.60", help="max $/hr for the rented GPU")
+    qa.add_argument("--timeout", default="1800", help="per-run timeout seconds")
+    qa.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["run"]).run(
+        a.name, tag=a.tag, logs=a.logs, max_price=a.max_price, timeout=a.timeout))
+
+    qat = sub.add_parser("qa-teardown", help="tear down the held QA box recorded in the image's ledger")
+    qat.add_argument("name", help="image name")
+    qat.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["teardown"]).teardown(a.name))
+
     args = ap.parse_args(argv)
     return args.func(args)
 
