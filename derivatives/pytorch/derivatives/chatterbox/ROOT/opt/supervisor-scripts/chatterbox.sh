@@ -18,9 +18,10 @@ while [ -f "/.provisioning" ]; do
     sleep 5
 done
 
-# Chatterbox-TTS-Server lives at /opt/chatterbox (internal app dir, like voicebox);
-# it reads host/port only from config.yaml — the build patched host to 127.0.0.1
-# (loopback, behind Caddy), port 8004. Weights download to model_cache on first synth.
-cd /opt/chatterbox
+# Chatterbox-TTS-Server is built into /opt/workspace-internal/chatterbox and migrated to
+# $WORKSPACE/chatterbox on first boot (volume-backed, so model_cache persists across
+# restarts). It reads host/port only from config.yaml — the build patched host to
+# 127.0.0.1 (loopback, behind Caddy), port 8004. Weights download to model_cache on first synth.
+cd "${WORKSPACE}/chatterbox" 2>/dev/null || cd "${WORKSPACE}"
 
 pty python3 server.py

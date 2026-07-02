@@ -1,6 +1,6 @@
 # Chatterbox
 
-**What it is:** Chatterbox-TTS-Server (TTS + zero-shot voice cloning) at `/opt/chatterbox`.
+**What it is:** Chatterbox-TTS-Server (TTS + zero-shot voice cloning) at `$WORKSPACE/chatterbox`.
 
 **Start/stop:** `supervisorctl start chatterbox` / `stop chatterbox`. Logs:
 `supervisorctl tail -f chatterbox`.
@@ -17,6 +17,6 @@ curl -X POST http://127.0.0.1:8004/v1/audio/speech \
   -d '{"model":"tts-1","input":"Hello from Vast.","voice":"Emily.wav","response_format":"wav"}' -o out.wav
 ```
 
-**Models/data:** weights download on first synth to `/opt/chatterbox/model_cache`. Set
-`HF_TOKEN` for gated model repos. Config: `/opt/chatterbox/config.yaml`. Output audio
+**Models/data:** weights download on first synth to `$WORKSPACE/chatterbox/model_cache`. Set
+`HF_TOKEN` for gated model repos. Config: `$WORKSPACE/chatterbox/config.yaml`. Output audio
 carries Resemble AI's Perth watermark.

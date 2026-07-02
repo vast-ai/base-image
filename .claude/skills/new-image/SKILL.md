@@ -64,6 +64,14 @@ Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
   window makes the torch-drift guard a silent no-op that the linter CANNOT catch. Keep
   the generated `[[ -n "${NAME_REF}" ]] || exit` ref-presence guard. Inside: git clone at
   the pinned ref, strip torch pins, `uv pip install`.
+- **Install location — `/opt/workspace-internal/<name>`** (a1111, comfyui, sd-forge): the
+  boot-sync (`36-sync-workspace.sh`) migrates that dir to `$WORKSPACE/<name>` on first
+  boot (volume-backed → the app's caches/models persist across restarts). So clone into
+  `/opt/workspace-internal/<name>` in the Dockerfile, and the supervisor `cd`s to
+  `$WORKSPACE/<name>` (the migrated path — this is the generator's default, keep it). A
+  few images (voicebox) instead keep the app in `/opt/<name>` with only a separate
+  `$WORKSPACE/<name>-data` dir — that's the exception, not the rule; prefer
+  workspace-internal unless the app must not be user-editable.
 - **`CHANGEME` base tag**: set it to the tag the chosen **sibling currently pins** (an
   existing tag — e.g. comfyui pins a dated `vastai/pytorch:...` tag). Never invent a tag;
   a non-existent tag lints clean but fails `docker build` on the `FROM` pull. (Filling
