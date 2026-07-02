@@ -24,6 +24,10 @@ as the canonical source for the license text.
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/Haoming02/sd-webui-forge-classic
 - **License file in image:** `$WORKSPACE/stable-diffusion-webui-forge/LICENSE.txt`
+- **Modifications:** This image (AGPL §5a) comments out `launch_utils.verify_version()`
+  in `launch.py` (bypassed for the Docker build) and strips the torch pins from the
+  Forge requirements so it inherits the base image's torch build. Complete
+  corresponding source is public at https://github.com/vast-ai/base-image.
 
 ## Voicebox
 
@@ -50,12 +54,13 @@ as the canonical source for the license text.
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/unslothai/unsloth
-- **License file in image:** See `studio/LICENSE.AGPL-3.0` in the upstream
-  repository. The pip-installed `unsloth` package carries the Apache-2.0
-  license for the core library.
+- **License file in image:** `/licenses/AGPL-3.0.txt` — the canonical AGPL-3.0
+  text, vendored so a copy ships *with the program* (AGPL §4), since the
+  pip-installed `unsloth` package does not reliably carry the Studio LICENSE (its
+  `dist-info` carries the Apache-2.0 license for the core library).
 - **Notes:** The Unsloth core library is Apache-2.0. The Studio component
   (frontend and related tooling under `studio/`) is separately licensed under
-  AGPL-3.0.
+  AGPL-3.0. This image installs the Studio component unmodified.
 
 ## Whisper WebUI
 

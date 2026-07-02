@@ -188,6 +188,7 @@ Want to save your perfect setup? Templates can't be changed directly, but you ca
 - **Unsloth Documentation:** [Official Repository](https://github.com/unslothai/unsloth)
 - **Unsloth Studio Announcement:** [GitHub Discussion](https://github.com/unslothai/unsloth/discussions/4370)
 - **Image Source & Features:** [GitHub Repository](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/unsloth-studio)
+- **License:** Unsloth Studio is AGPL-3.0 (the Unsloth core library is Apache-2.0). Full license text and modification notes ship in the image at `/LICENSES.md` and `/licenses/`.
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 - **SSH Setup Guide:** [Vast.ai SSH Documentation](https://docs.vast.ai/instances/sshscp)
 - **Template Configuration:** [Vast.ai Template Guide](https://docs.vast.ai/templates)
