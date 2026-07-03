@@ -22,13 +22,16 @@ OUT=/tmp/chatterbox-smoke.wav
 
 has_gpu || test_skip "no GPU detected — Chatterbox synthesis requires a GPU"
 
-# 1. The server binds only what config.yaml says (loopback :8004). A dead launch never opens it.
-wait_for_port "$PORT" 300 || test_fail "chatterbox never opened :${PORT} (supervisor/launch failed)"
+# 1. Uvicorn runs the FastAPI startup — which LOADS the model — BEFORE it binds the listening
+#    socket, so :8004 does NOT open until the model is ready. First boot downloads the ~4 GB
+#    Turbo model, so allow the full model budget for the port to appear (a 300s wait false-fails
+#    a slow-but-fine cold boot). A dead launch or a hung model-load is what times this out.
+wait_for_port "$PORT" "$READY_TIMEOUT" || test_fail "chatterbox never opened :${PORT} within ${READY_TIMEOUT}s (supervisor/launch failed, or model-load hung — check chatterbox.log; set HF_TOKEN if the model repo is gated)"
 
-# 2. Readiness: /v1/audio/voices returns 200 only once the model is loaded (503 'model is not
-#    currently loaded' until the first-boot download + load completes). A model-load bug hangs here.
-if ! wait_for_url "${BASE}/v1/audio/voices" "$READY_TIMEOUT"; then
-    test_fail "model not ready at /v1/audio/voices within ${READY_TIMEOUT}s (model-load failure — check engine/deps, or HF_TOKEN if gated)"
+# 2. Port up => startup (incl. model load) finished, so readiness is immediate. A non-200 here
+#    means the model loaded with an error.
+if ! wait_for_url "${BASE}/v1/audio/voices" 120; then
+    test_fail "port up but /v1/audio/voices not ready — model load errored (check chatterbox.log)"
 fi
 
 # 3. Synthesize a real clip on the GPU via the OpenAI-compatible endpoint (Emily.wav is bundled).
