@@ -210,4 +210,74 @@ def test_ensure_repo_skips_non_dockerhub_and_missing_creds(monkeypatch):
     monkeypatch.setattr(q, "_dockerhub_creds", lambda: None)
     logs = []
     q._ensure_repo("ns/foo", logs.append)                  # no creds -> warn, no hub call
-    assert any("no docker-login creds" in m for m in logs)
+    assert any("docker-login creds" in m for m in logs)
+
+
+def test_run_test_multi_attempt_ledger_tracks_survivor(tmp_path, monkeypatch):
+    """Retry case (code-review must-fix + red-team #4): markers 111 (destroyed), None, 222
+    (survivor) -> the ledger must end at 222, not the destroyed 111."""
+    qa_dir = tmp_path / ".qa"; qa_dir.mkdir()
+
+    class FakeProc:
+        def __init__(self):
+            self.stderr = iter(["QA-INSTANCE-CREATED 111\n", "attempt failed\n",
+                                "QA-INSTANCE-CREATED None\n", "QA-INSTANCE-CREATED 222\n"])
+            self.stdout = types.SimpleNamespace(read=lambda: '{"exit_code":1}\n')
+            self.returncode = 1
+
+        def wait(self):
+            pass
+
+    monkeypatch.setattr(q.subprocess, "Popen", lambda *a, **k: FakeProc())
+    rc, out, cid = q._run_test(["x"], qa_dir, "L", log=lambda m: None)
+    assert cid == "222"
+    assert json.loads((qa_dir / "teardown-ledger.json").read_text())["instance_id"] == "222"
+
+
+def test_ensure_repo_flips_existing_private(monkeypatch):
+    monkeypatch.setattr(q, "_dockerhub_creds", lambda: ("u", "p"))
+    calls = []
+    def fake_hub(method, path, token=None, body=None):
+        calls.append((method, path, body))
+        if path == "/v2/users/login/":
+            return 200, {"token": "j"}
+        if path.startswith("/v2/repositories/ns/foo"):
+            return (200, {"is_private": True}) if method == "GET" else (200, {})
+        return None, {}
+    monkeypatch.setattr(q, "_hub_req", fake_hub)
+    logs = []
+    q._ensure_repo("ns/foo", logs.append)
+    patch = [c for c in calls if c[0] == "PATCH"]
+    assert patch and patch[0][2] == {"is_private": False}
+    assert any("PUBLIC" in m for m in logs)
+
+
+def test_disagreement_tears_down_not_hold(tmp_path, monkeypatch):
+    tmp_path, img = _fake_repo(tmp_path); torn = []
+    v = {"state": "passed", "exit_code": 0, "got_result_event": True, "instance_id": 9}
+    _fakes(monkeypatch, tmp_path, v, "9", torn, returncode=1)   # payload 0 vs process 1
+    q.run("myimg", log=lambda m: None)
+    assert torn == [9], "ambiguous verdict -> teardown, NOT a held billing box"
+    assert not (img / ".qa" / "bundle.json").exists()
+
+
+def test_qa_reuses_build_json_tag(tmp_path, monkeypatch):
+    tmp_path, img = _fake_repo(tmp_path)
+    (img / ".qa").mkdir(parents=True, exist_ok=True)
+    (img / ".qa" / "build.json").write_text(json.dumps({"ref": "v1", "tag": "robatvastai/myimg:v1"}))
+    monkeypatch.setattr(q, "_REPO", tmp_path)
+    monkeypatch.setenv("VAST_API_KEY", "k"); monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "ns")
+    seen = {}
+    def fake_run(cmd, **kw):
+        parts = [str(c) for c in cmd]
+        if "create.py" in " ".join(parts) and "--image" in parts:
+            seen["image"] = parts[parts.index("--image") + 1]
+            seen["tag"] = parts[parts.index("--tag") + 1]
+            Path(parts[parts.index("--emit-result") + 1]).write_text(json.dumps([{"hash_id": "h", "id": "t"}]))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(q, "_run", fake_run)
+    monkeypatch.setattr(q, "_run_test", lambda a, qd, l, lg: (0, json.dumps(
+        {"state": "passed", "exit_code": 0, "got_result_event": True, "instance_id": 5}), "5"))
+    monkeypatch.setattr(q, "_teardown", lambda *a, **k: None)
+    q.run("myimg", log=lambda m: None)
+    assert seen["image"] == "robatvastai/myimg" and seen["tag"] == "v1", f"reuse build.json, got {seen}"
