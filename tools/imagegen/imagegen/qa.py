@@ -78,10 +78,14 @@ def _check_deps() -> None:
     third-party deps must be importable here. Fail with the install hint, not a traceback."""
     missing = [m for m in ("dotenv", "yaml", "pydantic") if importlib.util.find_spec(m) is None]
     if missing:
+        req = (_TM / "requirements.txt").relative_to(_REPO)
+        have_pip = importlib.util.find_spec("pip") is not None
+        how = (f"  {Path(sys.executable).name} -m pip install -r {req}" if have_pip else
+               f"  uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -r {req}\n"
+               f"then invoke with .venv/bin/python (this interpreter has no pip)")
         raise SystemExit(
-            f"imagegen qa: template_manager deps not importable ({', '.join(missing)}). Install them "
-            f"into this interpreter:\n  {Path(sys.executable).name} -m pip install -r "
-            f"{(_TM / 'requirements.txt').relative_to(_REPO)}")
+            f"imagegen qa: template_manager deps not importable ({', '.join(missing)}). "
+            f"Run with an interpreter that has them:\n{how}\n(see tools/imagegen/README.md)")
 
 
 def _run(cmd: list, **kw) -> subprocess.CompletedProcess:
