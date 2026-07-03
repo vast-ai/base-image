@@ -71,11 +71,12 @@ DOCKERHUB_NAMESPACE_STAGING=<staging ns>   # only when --tag is a bare tag / omi
 **The lifecycle is all commands** — scaffold → build+push → test → (fix) — so the skills can
 invoke and iterate (`.venv/bin/python` shown; `qa`/`build` shell the tools via `sys.executable`):
 ```bash
-imagegen new --class pytorch-nested --name foo --label "Foo" --port 8000   # scaffold (then fill + lint)
-imagegen build foo --ref <upstream-ref> --tag foo:v1 --push                # build + push to staging
-imagegen qa foo --tag foo:v1                                               # live-GPU test; holds the box on failure
-imagegen qa-teardown foo                                                   # release a held box when done
+imagegen new --class pytorch-nested --name foo --label "Foo" --port 8000       # scaffold (then fill + lint)
+imagegen build foo --ref <upstream-ref> --tag <ns>/foo:v1 --push               # build + push to staging
+imagegen qa foo --tag <ns>/foo:v1                                              # live-GPU test; holds the box on failure
+imagegen qa-teardown foo                                                       # release a held box when done
 ```
+`--tag` is a full `repo/name:tag`, or a bare tag (just the tag → `<STAGING_NS>/foo:<tag>`).
 On a held box, the **`qa-fix` skill** diagnoses on the instance and proposes a fix; its
 rebuild step is just `imagegen build foo --push` (reuses the recorded ref/tag) → `imagegen qa foo`.
 
