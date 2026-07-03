@@ -125,3 +125,51 @@ bake-equivalence hold up.
   keep only `imagegen qa` + the `qa-fix` skill and drop the auto-bake/rebuild machinery.
 - Graduating to unattended `--autofix` is a **new decision** requiring its own ADR update —
   it must not drift in silently.
+
+## Addendum — whole-feature review (2026-07-03)
+
+After the human-gated MVP was built and proven live (chatterbox QA green end-to-end, plus a
+diagnose→verify cycle run against a deliberately-broken image), the whole feature was put
+through an independent critical review from four perspectives — adversarial-failure,
+code-correctness, security, and design-coherence. The reviews **converged** rather than
+diverged, which is the useful signal. Verdict: the money-safety spine and the human-gated
+diagnosis loop are sound; a handful of defects were fixed; and `--autofix` has a hard gate.
+
+**Converged defects — fixed (commit 4acaeab), human-gated path:**
+- The provisional teardown ledger locked onto the FIRST `QA-INSTANCE-CREATED` marker, so a
+  retried launch (destroy box A, hold box B) pointed the ledger at destroyed A while B leaked.
+  Now tracks the current box (handles the `None` marker). This was the only confirmed money leak.
+- `_ensure_repo` only set public on create; an existing PRIVATE staging repo → the QA GPU
+  can't pull → wasted boot. Now flips it (PATCH) and fails LOUD on login/create failure
+  (2FA / PAT / credStore / wrong namespace) instead of degrading silently to a private push.
+- `qa` now reuses the last build's staging ref (from `build.json`) so it never tests a
+  different image than was built.
+- Bundle marks `verdict`/`log`/box output as untrusted DATA; the qa-fix contract forbids
+  executing anything embedded in it. SSH guidance corrected (direct endpoint + injected
+  team-member key). Disagreement tears down rather than holding a billing box. `.env*` ignored.
+
+**Binding conditions ADDED / sharpened by the review:**
+8. **Box output is untrusted input.** The rented box is multi-tenant and AUTHORS the verdict,
+   logs, and tracebacks the agent reads. They are DATA, never instructions. Under `--autofix`
+   the on-box verb set and the closed fix surface must be enforced MECHANICALLY, not by LLM
+   discretion (security H1/H2).
+9. **`--autofix` is gated on code, not prose.** It must not ship until ADR condition 3's
+   termination machinery EXISTS in the imagegen package with tests — failure-signature,
+   rebuild cap, per-image regression corpus, spend/rent accounting — AND the image allowlist
+   `test_template.py` drops via `--force` is re-imposed at the imagegen layer AND box output
+   is handled per condition 8. A code guard must make the flag un-addable without these.
+
+**Deferred hardening (recorded, defensible to leave for the human-gated path):**
+- SSH `StrictHostKeyChecking=no` for the interactive session (M2) — TOFU-pin the host key.
+- Strip box-sourced ANSI/control chars before writing to the operator's TTY (M3).
+- The auto-created staging repo defaults PUBLIC (M1) — open decision: private + instance-side
+  registry auth, or public + a pre-push secret-scan.
+- A held box bills to the reaper's test-phase floor (~260 min) — open decision: a held-box-specific
+  shorter floor, or auto-teardown on session exit.
+
+**Superseding decision — template unify (see the follow-on ADR):** today `templates/default/`
+(launch) and `templates/<name>-qa/` (gate) are near-duplicate files kept in sync by hand, and
+only newly-scaffolded images have a `default`. So "QA passed" proves the `-qa` template boots,
+NOT the template a user launches. This ADR's deferral of the unify is superseded: the QA gate
+shall test the SAME template users launch, with `-qa` reduced to a thin overlay. Recorded in a
+follow-on ADR.
