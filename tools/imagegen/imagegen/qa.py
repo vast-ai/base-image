@@ -17,6 +17,7 @@ It never rounds the API key through the box.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -70,6 +71,17 @@ def _staging_ref(name: str, tag: str | None) -> tuple[str, str]:
         raise SystemExit("imagegen qa: DOCKERHUB_NAMESPACE_STAGING unset and --tag not a full ref; "
                          "set it in .env or pass --tag <repo/name:tag>")
     return f"{ns}/{name}", (tag or "latest")
+
+
+def _check_deps() -> None:
+    """create.py / test_template.py are shelled with this same interpreter, so their
+    third-party deps must be importable here. Fail with the install hint, not a traceback."""
+    missing = [m for m in ("dotenv", "yaml", "pydantic") if importlib.util.find_spec(m) is None]
+    if missing:
+        raise SystemExit(
+            f"imagegen qa: template_manager deps not importable ({', '.join(missing)}). Install them "
+            f"into this interpreter:\n  {Path(sys.executable).name} -m pip install -r "
+            f"{(_TM / 'requirements.txt').relative_to(_REPO)}")
 
 
 def _run(cmd: list, **kw) -> subprocess.CompletedProcess:
@@ -170,6 +182,7 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     """Publish the QA template, run the live smoke (holding the box), and route on the
     verdict. Holds the box for diagnosis ONLY on a real app-failure (exit 1)."""
     log = log or (lambda m: print(m, file=sys.stderr))
+    _check_deps()
     _load_dotenv(_REPO)
     api_key = os.environ.get("VAST_API_KEY")
     if not api_key:
@@ -257,6 +270,7 @@ def teardown(name: str, log=None) -> int:
     """Tear down the held box recorded in the image's teardown ledger (interactive
     counterpart to a crash being reaped by label)."""
     log = log or (lambda m: print(m, file=sys.stderr))
+    _check_deps()
     _load_dotenv(_REPO)
     api_key = os.environ.get("VAST_API_KEY")
     qa_dir = _find_image_dir(_REPO, name) / ".qa"
