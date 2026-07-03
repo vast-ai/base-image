@@ -587,16 +587,19 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
 
 def ssh_endpoint(api, instance_id):
     """SSH coords for a held (--keep) instance, so the QA-fix loop can log in and diagnose.
-    Prefer the ssh_host/ssh_port fields; fall back to the 22/tcp port mapping on the public
-    IP. Returns {"host", "port"} or {} if not resolvable."""
+
+    Prefer DIRECT ssh — the public IP + the 22/tcp mapped port — because Vast injects the
+    operator's key into the instance's authorized_keys, so direct works. The ssh_host/ssh_port
+    PROXY needs the key registered on the Vast ACCOUNT, which an API-launched QA box does not
+    have, so it's only a fallback. Returns {"host", "port"} or {} if not resolvable."""
     full = api.get_instance(instance_id, safe=True) or {}
-    host = full.get("ssh_host") or full.get("public_ipaddr")
-    port = full.get("ssh_port")
-    if not port:
-        for key, mappings in (full.get("ports") or {}).items():
-            if key.startswith("22/") and isinstance(mappings, list) and mappings:
-                port = mappings[0].get("HostPort")
-                break
+    host, port = full.get("public_ipaddr"), None
+    for key, mappings in (full.get("ports") or {}).items():
+        if key.startswith("22/") and isinstance(mappings, list) and mappings:
+            port = mappings[0].get("HostPort")
+            break
+    if not (host and port):                       # fall back to the proxy
+        host, port = full.get("ssh_host"), full.get("ssh_port")
     try:
         return {"host": host, "port": int(port)} if host and port else {}
     except (TypeError, ValueError):
