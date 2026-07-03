@@ -32,6 +32,12 @@ Dockerfile / supervisor-scripts / template paths you may change). Start there �
 re-derive it.
 
 ## Step 2 — Get onto the live workbench and read the failure
+
+**First confirm SSH works** — `imagegen qa` prints `ssh: reachable ✓` or `NOT reachable ✗`.
+Vast injects the SSH keys registered on the *account that owns the box* (the QA account,
+525202), NOT a personal account — so if it's NOT reachable, **stop and tell the operator to
+add their pubkey to the QA account**. Do not diagnose blind; the whole method is
+verify-on-the-box.
 ```
 ssh -o StrictHostKeyChecking=no -p <ssh.port> root@<ssh.host>
 ```

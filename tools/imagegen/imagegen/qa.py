@@ -92,6 +92,19 @@ def _run(cmd: list, **kw) -> subprocess.CompletedProcess:
     return subprocess.run([str(c) for c in cmd], text=True, **kw)
 
 
+def _ssh_reachable(ssh: dict) -> bool:
+    """Probe whether the operator can actually SSH into the held box. Vast auto-injects the
+    SSH keys registered on the *account that owns the instance* (the QA account) — so a key
+    that's only on a personal account means qa-fix can't get in. Non-interactive, ~12s cap."""
+    host, port = ssh.get("host"), ssh.get("port")
+    if not host or not port:
+        return False
+    r = _run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+              "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=12",
+              "-p", str(port), f"root@{host}", "true"], capture_output=True)
+    return r.returncode == 0
+
+
 def _last_json(stdout: str) -> dict:
     for line in reversed((stdout or "").splitlines()):
         line = line.strip()
@@ -255,6 +268,12 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
             log(f"  instance {instance_id}  label {label}")
         if ssh.get("host"):
             log(f"  ssh -p {ssh['port']} root@{ssh['host']}")
+            if _ssh_reachable(ssh):
+                log("  ssh: reachable ✓ — qa-fix can diagnose on the box.")
+            else:
+                log("  ssh: NOT reachable ✗ — Vast injects the keys registered on the QA account")
+                log("       (525202), not your personal account. Add your pubkey there, or qa-fix")
+                log("       cannot diagnose. (Box still held; teardown below when you give up.)")
         log(f"  bundle: {(qa_dir / 'bundle.json').relative_to(_REPO)}")
         log("  next: run the qa-fix skill to diagnose + propose a fix (human-gated).")
         log(f"  teardown when done: imagegen qa-teardown {name}")

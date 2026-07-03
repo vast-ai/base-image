@@ -128,3 +128,13 @@ def test_launcher_label_is_inside_reaper_scope():
     import reap_orphans
     assert reap_orphans.in_scope({"label": f"{q._LABEL_PREFIX}-chatterbox"}, "base-image-qa", None) is True
     assert reap_orphans.in_scope({"label": "someones-dev-box"}, "base-image-qa", None) is False
+
+
+def test_ssh_reachable_reflects_probe(monkeypatch):
+    """The held-box SSH check enforces that the operator can actually get in (Vast injects
+    per-account keys) — reachable iff the probe exits 0, and False without coords."""
+    monkeypatch.setattr(q, "_run", lambda cmd, **k: types.SimpleNamespace(returncode=0))
+    assert q._ssh_reachable({"host": "h", "port": 22}) is True
+    monkeypatch.setattr(q, "_run", lambda cmd, **k: types.SimpleNamespace(returncode=255))
+    assert q._ssh_reachable({"host": "h", "port": 22}) is False
+    assert q._ssh_reachable({}) is False
