@@ -173,3 +173,12 @@ only newly-scaffolded images have a `default`. So "QA passed" proves the `-qa` t
 NOT the template a user launches. This ADR's deferral of the unify is superseded: the QA gate
 shall test the SAME template users launch, with `-qa` reduced to a thin overlay. Recorded in a
 follow-on ADR.
+
+**Scope extension — `new-image` drives the loop (the human-gated one-shot).** The `new-image`
+skill previously stopped at a clean lint + handoff (ADR 0001). It now continues through
+build → live-GPU `qa` → (on failure) the `qa-fix` diagnosis loop → rebuild, iterating until a
+green rebuilt verdict, the human approving the fills and each fix diff. This makes
+`/new-image` the scaffold→working-image one-shot the owner specified, and supersedes ADR
+0001's stop-at-handoff. It stays HUMAN-GATED — not the unattended `--autofix` (cond 9); the
+`qa-fix` procedure is reused, not duplicated. The editable surface widens past lint from
+FILL-only (ADR 0001) to the qa-fix closed surface (cond 6) for real runtime fixes.

@@ -1,12 +1,14 @@
 ---
 name: new-image
-description: Scaffold a new Vast.ai base-image (derivative / pytorch-nested / external) for a GitHub project, using the imagegen generator + linter. Use when adding a new image to this repo. The human picks the class; the agent fills only the fenced residue and must reach a clean lint before a PR.
+description: Take a new Vast.ai base-image (derivative / pytorch-nested / external) from nothing to a live-GPU-tested working image + usable launch template. Use when adding a new image to this repo. The human picks the class; the agent scaffolds with the imagegen generator, fills the fenced residue to a clean lint, then builds, live-GPU tests, and iterates on real failures (the qa-fix loop, human approving each fix) until the image passes.
 ---
 
 # Add a new image
 
-Orchestrates the deterministic generator (`tools/imagegen`) and the static linter to
-scaffold a new image, then fills only the judgment residue. Read
+The one-shot: scaffold → fill → **build → live-GPU test → iterate until it works**. Orchestrates
+the deterministic generator (`tools/imagegen`) + the static linter to scaffold and fill, then
+drives the image to a green live-GPU verdict, folding in the `qa-fix` diagnosis loop on each
+real failure (human-gated). Read
 [docs/invariants.md](../../../docs/invariants.md),
 [docs/context-map.md](../../../docs/context-map.md), and
 [docs/adr/0001-image-scaffolding-tooling.md](../../../docs/adr/0001-image-scaffolding-tooling.md)
@@ -104,14 +106,42 @@ PYTHONPATH=tools/imagegen python3 -m imagegen.cli lint <name>
 Loop until 0 errors. All `L040` (unfilled markers) must clear. If a structural check
 (L001–L030) fails, fix the cause; do not work around the linter.
 
-## Step 6 — Hand off honestly
-State plainly: lint is green = structurally conformant; the image is **not** verified until
-a real `docker build` + live-GPU smoke pass. You can run that correctness gate yourself,
-locally — every stage is a command:
-`imagegen build <name> --ref <upstream-ref> --tag <staging-ref> --push` then
-`imagegen qa <name> --tag <staging-ref>` (fails → the `qa-fix` skill diagnoses on the held
-box). Then prepare the change / open a PR
-referencing the tracking ticket (e.g. CON-####). The `build-<name>.yml` workflow is
+## Step 6 — Build, test, and iterate to a working image
+Lint green is NOT done — it means "ready to build," never "runs" (ADR 0001). Now DRIVE the
+image to a live-GPU pass, iterating on real failures — the one-shot's core. It's
+**human-gated**: you approve each fix diff (this is not the unattended `--autofix`, gated
+behind ADR 0009 cond 9). From here the editable surface widens from Step 4's FILL-only to the
+**`qa-fix` closed surface** — the image's own `Dockerfile` / `ROOT/opt/supervisor-scripts/*.sh`
+/ `templates/*.yml` — because you're now fixing real runtime failures, not filling a skeleton.
+
+**Running `imagegen` here:** `new`/`lint` are pure-stdlib (any `python3`), but `build`/`qa`
+shell `tools/template_manager` (its venv + the QA-account `.env`) and there is **no `imagegen`
+on PATH**. Invoke those as
+`PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli <build|qa|qa-teardown> …`
+(one-time venv + creds setup: `tools/imagegen/README.md`).
+
+1. **Build + push** — `build <name> [--ref <upstream-ref>] --tag <ns>/<name>:<tag> --push`
+   (pytorch-nested/derivative: `--ref` sets the `<NAME>_REF` build-arg; external: omit it;
+   `--push` auto-creates the staging repo public). A `docker build` failure is a fill bug —
+   fix it and rebuild; don't QA a broken build.
+2. **Live-GPU test** — `qa <name> --tag <ns>/<name>:<tag>` boots the `templates/default`
+   launch template at the staging image and runs the baked functional test.
+   - **PASS** → the image works AND its launch template is validated (ADR 0010) → Step 7.
+   - **FAIL** → it HOLDS the box + writes `.qa/bundle.json` → step 3.
+3. **Diagnose + fix on the held box — follow the `qa-fix` skill**; its procedure *is* this
+   step (read the bundle, SSH in, root-cause against the upstream's OWN install, verify the
+   fix ON the box, bake it into the closed surface — you approve the diff).
+4. **Rebuild + re-test** — `build <name> --push` then `qa <name>`. Loop 1→4 until green, but
+   **bound it**: same failure signature twice → the bake didn't reproduce the live fix, stop
+   and surface; `upstream-broken` (nothing in-image resolves it live) → STOP with evidence; a
+   fix needing anything **outside the image's own files** → escape hatch (may be a
+   Bug→Invariant for the linter). Tear down on stop: `qa-teardown <name>`.
+
+A **green rebuilt** verdict is the certification (live-green was only a hypothesis). The
+deliverable is real: a working image + the usable launch template it was tested through.
+
+## Step 7 — Hand off
+Once green, prepare the change / open a PR referencing the tracking ticket (e.g. CON-####). The `build-<name>.yml` workflow is
 scaffolded as the **full 6-job QA-gated pipeline** (preflight → build → **qa** →
 merge-manifests → collect-tags → notify) with the DockerHub **secret-refs, the `qa` job
 calling `qa-gate.yml` (promotion gated on it), the `production` approval gate, and notify
