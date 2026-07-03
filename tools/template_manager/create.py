@@ -26,6 +26,10 @@ _GENERATOR_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_GENERATOR_ROOT))
 
 from dotenv import load_dotenv
+# Canonical location is the repo-root .env (what `imagegen qa` loads); the
+# tools/template_manager/.env path is kept for back-compat with standalone use.
+# load_dotenv does not override already-set vars, so repo-root takes precedence.
+load_dotenv(_GENERATOR_ROOT.parents[1] / ".env")
 load_dotenv(_GENERATOR_ROOT / ".env")
 
 from models import VastTemplate

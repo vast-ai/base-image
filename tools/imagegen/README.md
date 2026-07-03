@@ -1,8 +1,9 @@
 # imagegen
 
-Static invariant-linter for base-image Docker images (the generator comes later).
-Scope and rationale: [docs/adr/0001](../../docs/adr/0001-image-scaffolding-tooling.md),
-verified rules: [docs/invariants.md](../../docs/invariants.md).
+Generator + static invariant-linter + live-GPU QA loop for base-image Docker images.
+Scope and rationale: [docs/adr/0001](../../docs/adr/0001-image-scaffolding-tooling.md)
+(scaffold+lint) and [docs/adr/0009](../../docs/adr/0009-self-healing-qa-fix-loop.md)
+(QA-fix loop); verified rules: [docs/invariants.md](../../docs/invariants.md).
 
 **The linter is a FAST gate, not a correctness gate.** It checks file *shape* with
 no build/GPU/registry. The real `docker build` (+ smoke test) is the correctness
@@ -41,7 +42,45 @@ PYTHONPATH=tools/imagegen python3 -m imagegen.cli lint comfyui
 ```
 
 Once installed (`pip install -e tools/imagegen`) the `imagegen` console script works
-directly.
+directly. `new` and `lint` are pure-stdlib — no venv or deps needed, any Python 3.12.
+
+## Live-GPU QA + fix loop (`imagegen qa`)
+
+`imagegen qa <image>` rents a real GPU, boots the image from its `templates/<name>-qa`
+template, runs the in-instance functional test, and — on a real failure — HOLDS the box so
+the `qa-fix` skill can diagnose against it (human-gated). See
+[docs/adr/0009](../../docs/adr/0009-self-healing-qa-fix-loop.md).
+
+Unlike `new`/`lint`, `qa` shells `tools/template_manager` (`create.py`, `test_template.py`),
+which need third-party deps **and** QA-account credentials.
+
+**Setup (once)** — a project interpreter with the deps (this host ships no system `pip`):
+```bash
+uv venv .venv --python 3.12
+uv pip install --python .venv/bin/python -r tools/template_manager/requirements.txt
+```
+
+**Credentials — `.env` at the REPO ROOT** (gitignored; the canonical location, also read by
+`create.py`):
+```
+VAST_API_KEY=<QA-account key>              # the dedicated QA Vast account, NOT a personal one
+DOCKERHUB_NAMESPACE_STAGING=<staging ns>   # only when --tag is a bare tag / omitted
+# HF_TOKEN=<token>                         # only if the image pulls gated model weights
+```
+
+**Run** — use the venv interpreter (the launcher shells the tools via `sys.executable`, so
+they inherit its env + deps):
+```bash
+PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli qa chatterbox \
+  --tag robatvastai/chatterbox:latest        # full ref, or a bare tag against the staging ns
+
+# tear down a box that was held for diagnosis, when done:
+PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli qa-teardown chatterbox
+```
+
+The box is held only on a real functional failure (exit 1); every other verdict (pass /
+no_offers / config_error / …) tears it down. A teardown ledger + the label-scoped scheduled
+reaper are the money-safety backstops.
 
 ## Rules reference (single source of truth)
 
