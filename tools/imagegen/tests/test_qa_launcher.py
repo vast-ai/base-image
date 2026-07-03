@@ -181,3 +181,33 @@ def test_build_external_adds_context_and_reuses_persisted(tmp_path, monkeypatch)
     assert any("base_image_source=" in c for c in build_cmd)   # external graft context
     assert "--build-arg" not in build_cmd                      # no <NAME>_REF for external
     assert "ns/myext:latest" in build_cmd
+
+
+def test_ensure_repo_creates_public_when_missing(monkeypatch):
+    monkeypatch.setattr(q, "_dockerhub_creds", lambda: ("user", "pw"))
+    calls = []
+    def fake_hub(method, path, token=None, body=None):
+        calls.append((method, path, body))
+        if path == "/v2/users/login/":
+            return 200, {"token": "jwt"}
+        if path.startswith("/v2/repositories/robatvastai/foo"):
+            return 404, {}                      # repo missing
+        if path == "/v2/repositories/":
+            return 201, {}                      # created
+        return None, {}
+    monkeypatch.setattr(q, "_hub_req", fake_hub)
+    logs = []
+    q._ensure_repo("robatvastai/foo", logs.append)
+    create = [c for c in calls if c[1] == "/v2/repositories/"]
+    assert create and create[0][2]["is_private"] is False and create[0][2]["name"] == "foo"
+    assert any("created PUBLIC" in m for m in logs)
+
+
+def test_ensure_repo_skips_non_dockerhub_and_missing_creds(monkeypatch):
+    monkeypatch.setattr(q, "_hub_req",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call")))
+    q._ensure_repo("ghcr.io/org/name", lambda m: None)     # ns has '.', 2 slashes -> early no-op
+    monkeypatch.setattr(q, "_dockerhub_creds", lambda: None)
+    logs = []
+    q._ensure_repo("ns/foo", logs.append)                  # no creds -> warn, no hub call
+    assert any("no docker-login creds" in m for m in logs)

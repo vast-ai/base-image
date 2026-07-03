@@ -17,6 +17,7 @@ It never rounds the API key through the box.
 """
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
@@ -24,6 +25,8 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 _TM = Path(__file__).resolve().parents[2] / "template_manager"   # tools/template_manager
@@ -297,6 +300,73 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     return exit_code
 
 
+def _dockerhub_creds():
+    """(username, password) from the `docker login` creds in ~/.docker/config.json, or None.
+    Only works for inline auth (no external credStore)."""
+    cfg = Path.home() / ".docker" / "config.json"
+    if not cfg.is_file():
+        return None
+    try:
+        auths = json.loads(cfg.read_text()).get("auths", {})
+    except Exception:
+        return None
+    for key in ("https://index.docker.io/v1/", "index.docker.io", "registry-1.docker.io"):
+        enc = (auths.get(key) or {}).get("auth")
+        if enc:
+            try:
+                user, _, pw = base64.b64decode(enc).decode().partition(":")
+                if user and pw:
+                    return user, pw
+            except Exception:
+                pass
+    return None
+
+
+def _hub_req(method, path, token=None, body=None):
+    """Minimal hub.docker.com/v2 request. Returns (status, json) — (None, {}) on network error."""
+    req = urllib.request.Request("https://hub.docker.com" + path, method=method)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "JWT " + token)
+    data = json.dumps(body).encode() if body is not None else None
+    try:
+        with urllib.request.urlopen(req, data=data, timeout=20) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    except Exception:
+        return None, {}
+
+
+def _ensure_repo(image: str, log) -> None:
+    """Ensure the DockerHub repo <ns>/<name> exists and is PUBLIC (qa pulls anonymously),
+    using the docker-login creds. A push alone auto-creates it PRIVATE, which qa can't pull —
+    so this is the bit that matters. Best-effort: on any snag, log and let the push proceed."""
+    ns, _, repo = image.partition("/")
+    if image.count("/") != 1 or "." in ns or ":" in ns:      # not a plain DockerHub ns/repo
+        return
+    creds = _dockerhub_creds()
+    if not creds:
+        log(f"  repo-ensure: no docker-login creds — `docker login`, then ensure {ns}/{repo} is PUBLIC")
+        return
+    status, data = _hub_req("POST", "/v2/users/login/", body={"username": creds[0], "password": creds[1]})
+    token = data.get("token") if status == 200 else None
+    if not token:
+        log(f"  repo-ensure: DockerHub login failed — ensure {ns}/{repo} exists and is PUBLIC")
+        return
+    st, _ = _hub_req("GET", f"/v2/repositories/{ns}/{repo}/", token)
+    if st == 200:
+        log(f"  repo {ns}/{repo}: exists")
+    elif st == 404:
+        cst, _ = _hub_req("POST", "/v2/repositories/", token,
+                          {"namespace": ns, "name": repo, "is_private": False,
+                           "description": "Vast.ai staging image (imagegen qa)"})
+        log(f"  repo {ns}/{repo}: created PUBLIC" if cst in (200, 201)
+            else f"  repo {ns}/{repo}: create failed (HTTP {cst}) — create it manually, public")
+    else:
+        log(f"  repo {ns}/{repo}: check returned HTTP {st}")
+
+
 def build(name: str, *, ref: str | None = None, tag: str | None = None,
           push: bool = False, log=None) -> int:
     """Build the image locally (single-arch) and optionally push to staging — the step the
@@ -330,7 +400,8 @@ def build(name: str, *, ref: str | None = None, tag: str | None = None,
     if _run(cmd).returncode != 0:
         raise SystemExit("imagegen build: docker build failed")
     if push:
-        log(f"imagegen build: pushing {image_ref} (staging must be public for qa)")
+        _ensure_repo(image, log)                 # create the repo PUBLIC if missing (qa pulls anonymously)
+        log(f"imagegen build: pushing {image_ref}")
         if _run(["docker", "push", image_ref]).returncode != 0:
             raise SystemExit("imagegen build: docker push failed")
 

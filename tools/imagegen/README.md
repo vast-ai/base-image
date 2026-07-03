@@ -72,7 +72,7 @@ DOCKERHUB_NAMESPACE_STAGING=<staging ns>   # only when --tag is a bare tag / omi
 invoke and iterate (`.venv/bin/python` shown; `qa`/`build` shell the tools via `sys.executable`):
 ```bash
 imagegen new --class pytorch-nested --name foo --label "Foo" --port 8000       # scaffold (then fill + lint)
-imagegen build foo --ref <upstream-ref> --tag <ns>/foo:v1 --push               # build + push to staging
+imagegen build foo --ref <upstream-ref> --tag <ns>/foo:v1 --push               # build + push (auto-creates the repo PUBLIC)
 imagegen qa foo --tag <ns>/foo:v1                                              # live-GPU test; holds the box on failure
 imagegen qa-teardown foo                                                       # release a held box when done
 ```

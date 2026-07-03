@@ -134,11 +134,13 @@ The generator scaffolds **two templates** under `templates/`:
 
 Both carry a placeholder `compute_cap` floor (L050) and are L040-scanned.
 
-**Docker Hub repos — create staging *before* the build:**
-- Create the **staging** repo `${DOCKERHUB_NAMESPACE_STAGING}/<name>` and set it
-  **public** *before the first build*. The build pushes per-arch tags there, and if the
-  image is QA-gated the rented test GPU pulls that staging image **anonymously** — a
-  private staging repo fails the pull. (Same repo name as the eventual prod repo.)
+**Docker Hub repos — the staging repo must be PUBLIC (QA pulls it anonymously):**
+- `imagegen build <name> --push` **auto-creates the staging repo public** if it's missing
+  (using your `docker login` creds) — so for a local run you usually don't create it by
+  hand. A bare `docker push` alone would auto-create it **private**, which the rented test
+  GPU can't pull. If the auto-create can't authenticate (no inline docker creds), create
+  `${DOCKERHUB_NAMESPACE_STAGING}/<name>` public yourself. (Same repo name as the eventual
+  prod repo.)
 - The **prod** repo (`${DOCKERHUB_NAMESPACE}/<name>`, same name) is created at
   **promotion**, which is already behind the workflow's `production` approval — so it
   need not exist yet. **QA never needs prod** (it tests the staging image), so a new
