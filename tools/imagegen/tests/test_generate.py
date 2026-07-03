@@ -194,7 +194,7 @@ def test_workflow_scaffold_includes_qa_gate(tmp_path):
         wf = (tmp_path / ".github/workflows" / f"build-{name}.yml").read_text()
         assert "\n  qa:" in wf                                            # qa job present
         assert "uses: ./.github/workflows/qa-gate.yml" in wf             # calls the gate
-        assert f"template_dir: {ctx}/templates/{name}-qa" in wf          # pre-filled dir
+        assert f"template_dir: {ctx}/templates/default" in wf            # pre-filled dir (ADR 0010)
         assert f"label: base-image-qa-{name}" in wf                       # pre-filled label
         assert "VAST_API_KEY: ${{ secrets.VAST_API_KEY }}" in wf          # secrets wired
         assert "needs: [preflight, build, qa]" in wf                      # merge gated on qa
@@ -202,19 +202,15 @@ def test_workflow_scaffold_includes_qa_gate(tmp_path):
         assert "needs.qa.outputs.gated" in wf                             # gated-pass headline
 
 
-def test_qa_template_scaffolded(tmp_path):
-    """A QA template skeleton is scaffolded per image: private, with an L050-satisfying
-    numeric compute_cap floor, and L040-flagged as an incomplete skeleton."""
+def test_only_the_default_template_is_scaffolded(tmp_path):
+    """ADR 0010: one template per image — the launch template at templates/default/ (which the
+    QA gate boots). No separate templates/<name>-qa/ is emitted."""
     _gen_repo(tmp_path)
     for name, ctx in (("mytool", "derivatives/mytool"),
                       ("myapp", "derivatives/pytorch/derivatives/myapp"),
                       ("myext", "external/myext")):
-        qat = tmp_path / ctx / "templates" / f"{name}-qa" / "template.yml"
-        assert qat.is_file(), f"{name}: QA template not scaffolded"
-        t = qat.read_text()
-        assert "private: true" in t
-        assert "compute_cap" in t and "gte: 750" in t                     # L050 floor (numeric)
-        assert ">>> FILL" in t or "CHANGEME" in t                         # skeleton marker
+        assert (tmp_path / ctx / "templates" / "default" / "template.yml").is_file()
+        assert not (tmp_path / ctx / "templates" / f"{name}-qa").exists(), "no legacy -qa template"
 
 
 def test_workflow_scaffold_is_l041_clean_with_namespace_set(tmp_path, monkeypatch):
@@ -227,14 +223,14 @@ def test_workflow_scaffold_is_l041_clean_with_namespace_set(tmp_path, monkeypatc
         assert "L041" not in codes, f"{img.name}: scaffold tripped L041"
 
 
-def test_qa_template_markers_are_linted(tmp_path):
-    """The QA template lives OUTSIDE ROOT/ — regression guard that L040 scans it, else a
-    scaffolded QA template's CHANGEME/FILL markers slip past the lint gate."""
+def test_template_markers_are_linted(tmp_path):
+    """The template lives OUTSIDE ROOT/ — regression guard that L040 scans it, else a
+    scaffolded template's CHANGEME/FILL markers slip past the lint gate."""
     _gen_repo(tmp_path)
     img = next(i for i in discover(tmp_path) if i.name == "myapp")
     flagged = {f.path for f in lint_image(img, tmp_path) if f.code == "L040"}
-    assert any("templates/myapp-qa/template.yml" in p for p in flagged), \
-        f"QA template not L040-scanned; flagged={flagged}"
+    assert any("templates/default/template.yml" in p for p in flagged), \
+        f"template not L040-scanned; flagged={flagged}"
 
 
 def test_qa_repo_uses_literal_not_env(tmp_path):

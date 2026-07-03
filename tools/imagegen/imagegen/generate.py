@@ -330,7 +330,7 @@ jobs:
       # >>> FILL: the amd64 staging tag for this cell — must match the build job's derived
       # IMAGE_TAG with the -amd64 suffix (…-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64). <<<
       tag: CHANGEME
-      template_dir: @@CONTEXT@@/templates/@@NAME@@-qa
+      template_dir: @@CONTEXT@@/templates/default
       label: base-image-qa-@@NAME@@
       # >>> FILL: in-instance log files to stream into the run (space-separated), e.g.
       # "/var/log/portal/@@NAME@@.log" — or delete this line. <<<
@@ -436,30 +436,11 @@ jobs:
 # overrides image/tag via create.py --tag) and runs the functional test on it. The
 # compute_cap floor is pre-set to a valid number (sm_75) so L050 passes; the launch spec
 # is left to FILL because it must faithfully mirror how this image actually runs.
-_QA_TEMPLATE = '''# QA template for @@LABEL@@ — the live-GPU gate boots this with the freshly-built
-# STAGING image (CI overrides image/tag) and runs the functional test on it. Keep it
-# minimal, private, and faithful to how the image really launches; model the launch spec
-# on a sibling templates/<name>-qa (comfyui-qa, vllm-qa).
-name: "@@LABEL@@ QA smoke"
-image: CHANGEME
-tag: latest
-private: true
-readme_visible: false
-onstart: entrypoint.sh
-# >>> FILL: complete the launch spec — the production template's ports / env /
-# PORTAL_CONFIG, plus the QA functional-test provisioning (what the gate exercises on the
-# GPU: a workflow to run, a model to load + a prompt, etc.). <<<
-extra_filters:
-  compute_cap:
-    # >>> FILL: set the real minimum compute capability for this image (sm_XX x 10). <<<
-    gte: 750
-'''
-
-
-_DEFAULT_TEMPLATE = '''# Default launch template for @@LABEL@@ — the public, user-facing template (the eventual
-# recommended/marketplace listing). This is how a user launches the image to try it on a
-# real GPU. Keep it faithful to how the image actually serves; the QA gate models its
-# smoke on this.
+_DEFAULT_TEMPLATE = '''# THE template for @@LABEL@@ (ADR 0010): the public, user-facing launch template AND the
+# one the live-GPU QA gate boots — so "QA passed" means "the template users launch passed".
+# The gate overrides image/tag to the freshly-built staging image (a transient copy); the
+# functional test is the image's baked ROOT/opt/instance-tools/tests/@@NAME@@.d/, not a
+# template field. Keep the launch spec faithful to how the image actually serves.
 name: "@@LABEL@@"
 image: vastai/@@NAME@@
 tag: latest
@@ -507,14 +488,12 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
     (root / "etc/supervisor/conf.d").mkdir(parents=True, exist_ok=True)
     (root / "etc/vast_capabilities.d").mkdir(parents=True, exist_ok=True)
     (root / "etc/vast_agents").mkdir(parents=True, exist_ok=True)
-    (d / "templates" / f"{name}-qa").mkdir(parents=True, exist_ok=True)
     (d / "templates" / "default").mkdir(parents=True, exist_ok=True)
 
     files = {
         d / "Dockerfile": _render(df_tmpl, **sub),
         d / "README.md": _render(_README_DEV, **sub),
         d / "README.template.md": _render(_README_TEMPLATE, **sub),
-        d / "templates" / f"{name}-qa" / "template.yml": _render(_QA_TEMPLATE, **sub),
         d / "templates" / "default" / "template.yml": _render(_DEFAULT_TEMPLATE, **sub),
         root / "opt/supervisor-scripts" / f"{name}.sh": _render(_SUPERVISOR_SH, **sub),
         root / "etc/supervisor/conf.d" / f"{name}.conf": _render(_CONF, **sub),

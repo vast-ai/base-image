@@ -148,7 +148,7 @@ jobs:
     with:
       repo: ${{ inputs.DOCKERHUB_REPO || 'chatterbox' }}
       tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.resolved-ref }}-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64
-      template_dir: derivatives/pytorch/derivatives/chatterbox/templates/chatterbox-qa
+      template_dir: derivatives/pytorch/derivatives/chatterbox/templates/default
       label: base-image-qa-chatterbox
       log_paths: "/var/log/portal/chatterbox.log"
     secrets:

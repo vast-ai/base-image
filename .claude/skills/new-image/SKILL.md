@@ -120,19 +120,15 @@ bits: the preflight `check-*-release` action, the base-image matrix, the tag der
 staggered schedule offset, and — in the **qa** job — the cuda/py matrix, the staging tag,
 and `log_paths`. CI job-shape is **not linted**, so still review against a sibling.
 
-The generator scaffolds **two templates** under `templates/`:
-- **`templates/default/template.yml`** — the public, user-facing launch template (the
-  eventual recommended/marketplace listing; `private: false`, `readme_visible: true`,
-  `image: vastai/<name>`). Fill its launch spec (ports / env / `PORTAL_CONFIG`) so a human
-  can launch the image and use it. This is the source the QA smoke should mirror.
-- **`templates/<name>-qa/template.yml`** — the private QA-gate template (`private: true`);
-  fill its launch spec + functional test (the gate boots this image on a real GPU and runs
-  it) modelled on `templates/default/` + a sibling `*-qa/`. If this image genuinely
-  **cannot** be functionally tested, removing the `qa` job (and dropping `qa` from the
-  `needs:` of merge-manifests/notify) is an **escape-hatch** case — surface it to the
-  human, don't silently strip it.
-
-Both carry a placeholder `compute_cap` floor (L050) and are L040-scanned.
+The generator scaffolds **one template** — `templates/default/template.yml` (ADR 0010): the
+public, user-facing launch template (`private: false`, `readme_visible: true`, `image:
+vastai/<name>`, a placeholder `compute_cap` floor for L050) **that the QA gate also boots**,
+so "QA passed" means "the template users launch passed." Fill its launch spec (ports / env /
+`PORTAL_CONFIG`, wiring the app's real interface:port into the portal). The gate overrides
+`image`/`tag` to the staging image at publish; the functional test is the image's baked
+`ROOT/opt/instance-tools/tests/<name>.d/`, **not** a template field. If this image genuinely
+**cannot** be functionally tested, removing the `qa` job (and dropping `qa` from the `needs:`
+of merge-manifests/notify) is an **escape-hatch** — surface it, don't silently strip it.
 
 **Docker Hub repos — the staging repo must be PUBLIC (QA pulls it anonymously):**
 - `imagegen build <name> --push` **auto-creates the staging repo public** if it's missing

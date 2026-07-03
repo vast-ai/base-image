@@ -46,7 +46,7 @@ directly. `new` and `lint` are pure-stdlib — no venv or deps needed, any Pytho
 
 ## Live-GPU QA + fix loop (`imagegen qa`)
 
-`imagegen qa <image>` rents a real GPU, boots the image from its `templates/<name>-qa`
+`imagegen qa <image>` rents a real GPU, boots the image from its `templates/default` launch
 template, runs the in-instance functional test, and — on a real failure — HOLDS the box so
 the `qa-fix` skill can diagnose against it (human-gated). See
 [docs/adr/0009](../../docs/adr/0009-self-healing-qa-fix-loop.md).

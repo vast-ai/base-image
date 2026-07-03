@@ -3,7 +3,7 @@ rented box so the ``qa-fix`` skill can diagnose against a live workbench (ADR 00
 human-gated).
 
 Reuses ``tools/template_manager`` wholesale: ``create.py`` publishes the private
-``<name>-qa`` template pointed at the staging image, ``test_template.py <hash> --keep``
+``templates/default`` launch template pointed at the staging image (ADR 0010), ``test_template.py <hash> --keep``
 rents+boots+streams+verdicts. This module orchestrates, and — the load-bearing part —
 guarantees teardown of a billing box:
 
@@ -54,12 +54,20 @@ def _load_dotenv(repo: Path) -> None:
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+def _qa_template_dir(img_dir: Path, name: str) -> Path:
+    """The template the QA gate boots (ADR 0010): the launch template `templates/default/`,
+    falling back to the legacy `templates/<name>-qa/` for images not yet migrated."""
+    d = img_dir / "templates" / "default"
+    return d if (d / "template.yml").is_file() else img_dir / "templates" / f"{name}-qa"
+
+
 def _find_image_dir(repo: Path, name: str) -> Path:
     for rel in (f"derivatives/pytorch/derivatives/{name}", f"derivatives/{name}", f"external/{name}"):
         d = repo / rel
-        if (d / "templates" / f"{name}-qa" / "template.yml").is_file():
+        if (d / "templates" / "default" / "template.yml").is_file() \
+                or (d / "templates" / f"{name}-qa" / "template.yml").is_file():
             return d
-    raise SystemExit(f"imagegen qa: no {name}/templates/{name}-qa/template.yml found under any class root")
+    raise SystemExit(f"imagegen qa: no {name}/templates/default (or {name}-qa)/template.yml found")
 
 
 def _staging_ref(name: str, tag: str | None) -> tuple[str, str]:
@@ -187,11 +195,9 @@ def _write_bundle(qa_dir: Path, verdict: dict, name: str, img_dir: Path,
         "dockerfile": str((img_dir / "Dockerfile").relative_to(_REPO)),
         "supervisor_scripts": str((img_dir / "ROOT/opt/supervisor-scripts").relative_to(_REPO)),
         "tests": str((img_dir / "ROOT/opt/instance-tools/tests").relative_to(_REPO)),
-        "qa_template": str((template_dir / "template.yml").relative_to(_REPO)),
+        # the launch template IS the QA template (ADR 0010) — the resolved dir (default, or legacy -qa)
+        "template": str((template_dir / "template.yml").relative_to(_REPO)),
     }
-    default_tpl = img_dir / "templates" / "default" / "template.yml"
-    if default_tpl.is_file():                            # not every image has a default template
-        fix_surface["default_template"] = str(default_tpl.relative_to(_REPO))
     bundle = {
         "schema": 1,
         "image": name,
@@ -220,7 +226,7 @@ _EXPLAIN = {
 
 def run(name: str, *, tag: str | None = None, logs: list | None = None,
         max_price: str = "0.60", timeout: str = "1800", log=None) -> int:
-    """Publish the QA template, run the live smoke (holding the box), and route on the
+    """Publish the launch template (ADR 0010), run the live smoke (holding the box), and route on the
     verdict. Holds the box for diagnosis ONLY on a real app-failure (exit 1)."""
     log = log or (lambda m: print(m, file=sys.stderr))
     _check_deps()
@@ -230,7 +236,7 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
         raise SystemExit("imagegen qa: VAST_API_KEY unset (put the QA-account key in a gitignored .env)")
 
     img_dir = _find_image_dir(_REPO, name)
-    template_dir = img_dir / "templates" / f"{name}-qa"
+    template_dir = _qa_template_dir(img_dir, name)
     # Reuse the ref the last `imagegen build` pushed, so qa never tests a DIFFERENT image than
     # was built. --tag overrides; a persisted build tag is only used when --tag is omitted.
     if tag is None:
@@ -249,7 +255,7 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     qa_dir.mkdir(parents=True, exist_ok=True)
     py = sys.executable
 
-    # 1. publish the throwaway QA template pointed at the staging image
+    # 1. publish the throwaway QA copy of the launch template, pointed at the staging image
     created_json = qa_dir / "create.json"
     log(f"imagegen qa: {name} → {image_ref}:{tag_ref}  (template {template_dir.relative_to(_REPO)})")
     cp = _run([py, _TM / "create.py", template_dir, "--image", image_ref, "--tag", tag_ref,
