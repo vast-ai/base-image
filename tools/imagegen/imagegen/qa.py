@@ -297,6 +297,50 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     return exit_code
 
 
+def build(name: str, *, ref: str | None = None, tag: str | None = None,
+          push: bool = False, log=None) -> int:
+    """Build the image locally (single-arch) and optionally push to staging — the step the
+    qa-fix loop rebuilds with. Detects what the Dockerfile needs from the closed fix surface:
+    a `<NAME>_REF` build-arg (pytorch-nested/derivative) and/or the `base_image_source`
+    build-context (external). Persists {ref, tag} so a rebuild can reuse them."""
+    log = log or (lambda m: print(m, file=sys.stderr))
+    _load_dotenv(_REPO)
+    img_dir = _find_image_dir(_REPO, name)
+    dockerfile = (img_dir / "Dockerfile").read_text()
+    state = img_dir / ".qa" / "build.json"
+    prev = json.loads(state.read_text()) if state.is_file() else {}
+    ref = ref or prev.get("ref")
+    tag = tag or prev.get("tag")
+
+    image, tag_part = _staging_ref(name, tag)          # same resolution as `imagegen qa --tag`
+    image_ref = f"{image}:{tag_part}"
+
+    cmd = ["docker", "build", "-t", image_ref]
+    ref_arg = f"{name.upper().replace('-', '_')}_REF"
+    if f"ARG {ref_arg}" in dockerfile:
+        if not ref:
+            raise SystemExit(f"imagegen build: {name} needs an upstream ref — pass --ref <ref> "
+                             f"(sets the {ref_arg} build-arg)")
+        cmd += ["--build-arg", f"{ref_arg}={ref}"]
+    if "base_image_source" in dockerfile:              # external images graft the base overlay
+        cmd += ["--build-context", f"base_image_source={_REPO}"]
+    cmd.append(str(img_dir))
+
+    log(f"imagegen build: {image_ref}")
+    if _run(cmd).returncode != 0:
+        raise SystemExit("imagegen build: docker build failed")
+    if push:
+        log(f"imagegen build: pushing {image_ref} (staging must be public for qa)")
+        if _run(["docker", "push", image_ref]).returncode != 0:
+            raise SystemExit("imagegen build: docker push failed")
+
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"ref": ref, "tag": image_ref}, indent=2))
+    log(f"imagegen build: done → {image_ref}"
+        + ("" if push else "  (add --push to stage it for `imagegen qa`)"))
+    return 0
+
+
 def teardown(name: str, log=None) -> int:
     """Tear down the held box recorded in the image's teardown ledger (interactive
     counterpart to a crash being reaped by label)."""

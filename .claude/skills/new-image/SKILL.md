@@ -105,8 +105,12 @@ Loop until 0 errors. All `L040` (unfilled markers) must clear. If a structural c
 (L001–L030) fails, fix the cause; do not work around the linter.
 
 ## Step 6 — Hand off honestly
-State plainly: lint is green = structurally conformant; the image is **not** verified
-until the real CI `docker build` + smoke test pass. Then prepare the change / open a PR
+State plainly: lint is green = structurally conformant; the image is **not** verified until
+a real `docker build` + live-GPU smoke pass. You can run that correctness gate yourself,
+locally — every stage is a command:
+`imagegen build <name> --ref <upstream-ref> --tag <staging-ref> --push` then
+`imagegen qa <name> --tag <staging-ref>` (fails → the `qa-fix` skill diagnoses on the held
+box). Then prepare the change / open a PR
 referencing the tracking ticket (e.g. CON-####). The `build-<name>.yml` workflow is
 scaffolded as the **full 6-job QA-gated pipeline** (preflight → build → **qa** →
 merge-manifests → collect-tags → notify) with the DockerHub **secret-refs, the `qa` job

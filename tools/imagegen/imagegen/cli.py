@@ -103,6 +103,14 @@ def main(argv=None) -> int:
     qa.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["run"]).run(
         a.name, tag=a.tag, logs=a.logs, max_price=a.max_price, timeout=a.timeout))
 
+    build = sub.add_parser("build", help="build the image locally (+ --push to staging) — the step qa-fix rebuilds with")
+    build.add_argument("name", help="image name")
+    build.add_argument("--ref", help="upstream ref for the <NAME>_REF build-arg (reused from the last build if omitted)")
+    build.add_argument("--tag", help="image ref to tag: a full repo/name:tag, a bare tag under the staging ns, or default <ns>/<name>:latest")
+    build.add_argument("--push", action="store_true", help="docker push after building (staging must be public for qa to pull it)")
+    build.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["build"]).build(
+        a.name, ref=a.ref, tag=a.tag, push=a.push))
+
     qat = sub.add_parser("qa-teardown", help="tear down the held QA box recorded in the image's ledger")
     qat.add_argument("name", help="image name")
     qat.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["teardown"]).teardown(a.name))

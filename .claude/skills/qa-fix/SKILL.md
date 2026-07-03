@@ -80,14 +80,17 @@ Hand the human ONE structured proposal, not a transcript:
   bake-in of the verified command).
 The human approves the **diff**; the on-box verification is the proof behind it.
 
-## Step 7 — On approval: apply, rebuild once, re-verify, tear down
-Apply the diff to source, then **rebuild once** and re-run `imagegen qa <image>` — a green
-verdict from the freshly-built image is the certification (Step-4 live-green was only the
-hypothesis). If it comes back green: report done, and the box from this run is already torn
-down by the PASS path. If it comes back red with a **new** failure, that's progress —
-diagnose the next one. If it comes back with the **same** failure, the bake didn't
-reproduce the live fix (a Dockerfile ordering/caching issue) — surface that explicitly,
-don't just retry. Then `imagegen qa-teardown <image>` if any box is still held.
+## Step 7 — On approval: rebuild once, re-verify, tear down
+Every stage is a command — apply the diff to source, then:
+```
+imagegen build <image> --push          # rebuild the staging image with your fix (reuses the recorded ref/tag)
+imagegen qa <image> --tag <same ref>   # re-test — a green verdict is the certification
+```
+Green from the freshly-built image is the proof (Step-4 live-green was only the hypothesis).
+If red with a **new** failure → progress, diagnose the next. If the **same** failure → the
+bake didn't reproduce the live fix (a Dockerfile ordering/caching issue) — surface it, don't
+just retry. Then `imagegen qa-teardown <image>` if any box is still held. This build→qa loop
+is the iteration the autonomous `--autofix` mode (ADR 0009) will drive on its own.
 
 **Escape hatch:** a correct fix that needs to touch anything outside the image's own three
 file types — the generator, a shared convention, an invariant, CI, or upstream — is not a

@@ -148,3 +148,36 @@ def test_ssh_reachable_reflects_probe(monkeypatch):
     monkeypatch.setattr(q, "_run", lambda cmd, **k: types.SimpleNamespace(returncode=255))
     assert q._ssh_reachable({"host": "h", "port": 22}, attempts=2) is False
     assert q._ssh_reachable({}) is False
+
+
+def test_build_pytorch_nested_passes_ref_and_persists(tmp_path, monkeypatch):
+    tmp_path, img = _fake_repo(tmp_path, "chatterbox")
+    (img / "Dockerfile").write_text("ARG CHATTERBOX_REF\nRUN echo hi\n")
+    monkeypatch.setattr(q, "_REPO", tmp_path)
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "ns")
+    calls = []
+    monkeypatch.setattr(q, "_run", lambda cmd, **k: (calls.append([str(c) for c in cmd]),
+                                                     types.SimpleNamespace(returncode=0))[1])
+    q.build("chatterbox", ref="v2.0.0", tag="robatvastai/chatterbox:latest", push=True, log=lambda m: None)
+    build_cmd = calls[0]
+    assert "CHATTERBOX_REF=v2.0.0" in build_cmd and "robatvastai/chatterbox:latest" in build_cmd
+    assert calls[1][:2] == ["docker", "push"]
+    state = json.loads((img / ".qa" / "build.json").read_text())
+    assert state == {"ref": "v2.0.0", "tag": "robatvastai/chatterbox:latest"}
+
+
+def test_build_external_adds_context_and_reuses_persisted(tmp_path, monkeypatch):
+    tmp_path, img = _fake_repo(tmp_path, "myext")
+    (img / "Dockerfile").write_text("FROM x\nCOPY --from=base_image_source /ROOT /\n")
+    (img / ".qa").mkdir()
+    (img / ".qa" / "build.json").write_text(json.dumps({"ref": None, "tag": "ns/myext:latest"}))
+    monkeypatch.setattr(q, "_REPO", tmp_path)
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "ns")
+    calls = []
+    monkeypatch.setattr(q, "_run", lambda cmd, **k: (calls.append([str(c) for c in cmd]),
+                                                     types.SimpleNamespace(returncode=0))[1])
+    q.build("myext", log=lambda m: None)                       # no ref/tag -> reuse persisted
+    build_cmd = calls[0]
+    assert any("base_image_source=" in c for c in build_cmd)   # external graft context
+    assert "--build-arg" not in build_cmd                      # no <NAME>_REF for external
+    assert "ns/myext:latest" in build_cmd

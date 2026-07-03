@@ -68,15 +68,16 @@ DOCKERHUB_NAMESPACE_STAGING=<staging ns>   # only when --tag is a bare tag / omi
 # HF_TOKEN=<token>                         # only if the image pulls gated model weights
 ```
 
-**Run** — use the venv interpreter (the launcher shells the tools via `sys.executable`, so
-they inherit its env + deps):
+**The lifecycle is all commands** — scaffold → build+push → test → (fix) — so the skills can
+invoke and iterate (`.venv/bin/python` shown; `qa`/`build` shell the tools via `sys.executable`):
 ```bash
-PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli qa chatterbox \
-  --tag robatvastai/chatterbox:latest        # full ref, or a bare tag against the staging ns
-
-# tear down a box that was held for diagnosis, when done:
-PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli qa-teardown chatterbox
+imagegen new --class pytorch-nested --name foo --label "Foo" --port 8000   # scaffold (then fill + lint)
+imagegen build foo --ref <upstream-ref> --tag foo:v1 --push                # build + push to staging
+imagegen qa foo --tag foo:v1                                               # live-GPU test; holds the box on failure
+imagegen qa-teardown foo                                                   # release a held box when done
 ```
+On a held box, the **`qa-fix` skill** diagnoses on the instance and proposes a fix; its
+rebuild step is just `imagegen build foo --push` (reuses the recorded ref/tag) → `imagegen qa foo`.
 
 The box is held only on a real functional failure (exit 1); every other verdict (pass /
 no_offers / config_error / …) tears it down. A teardown ledger + the label-scoped scheduled
