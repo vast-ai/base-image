@@ -1315,6 +1315,11 @@ def main():
 
     def _track_instance(new_id):
         ctx.instance_id = new_id
+        # Machine marker: a box now exists and is BILLING, before any verdict. `imagegen qa`
+        # streams stderr and writes a provisional teardown ledger the instant it sees this,
+        # so a crash / early-exit (config_error-after-launch, etc.) can never strand an
+        # unrecorded box — the recovery no longer depends on instance_id reaching --raw.
+        print(f"QA-INSTANCE-CREATED {new_id}", file=sys.stderr, flush=True)
 
     launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
                                max_attempts, _track_instance, log,

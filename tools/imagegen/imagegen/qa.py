@@ -1,47 +1,55 @@
-"""``imagegen qa`` — run the live-GPU QA smoke for an image, and on failure HOLD the rented
-box so the ``qa-fix`` skill can diagnose against a live workbench (ADR 0009, human-gated).
+"""``imagegen qa`` — run the live-GPU QA smoke for an image, and on a real failure HOLD the
+rented box so the ``qa-fix`` skill can diagnose against a live workbench (ADR 0009,
+human-gated).
 
 Reuses ``tools/template_manager`` wholesale: ``create.py`` publishes the private
 ``<name>-qa`` template pointed at the staging image, ``test_template.py <hash> --keep``
-rents+boots+streams+verdicts. This module only orchestrates, and — the load-bearing part —
-guarantees teardown: it writes a teardown LEDGER the instant a box is held, tears the box
-down itself on PASS, and stamps a ``base-image-qa-*`` label so the scheduled reaper
-(``reap_orphans.py``) destroys any box a crash abandons. It never rounds the API key
-through the box.
+rents+boots+streams+verdicts. This module orchestrates, and — the load-bearing part —
+guarantees teardown of a billing box:
+
+- it **streams the child's stderr and writes a teardown LEDGER the instant the box is
+  created** (the ``QA-INSTANCE-CREATED`` marker), so recovery never depends on ``instance_id``
+  reaching the final ``--raw`` verdict (which it doesn't, on an early-exit-after-launch);
+- it **holds the box only on a real app-failure (exit 1)** and 404-safely tears the box down
+  on every other verdict (pass / suspicious / no_offers / config_error / instance_error);
+- the ``base-image-qa-imagegen-*`` label is the reaper's backstop for a crashed run.
+It never rounds the API key through the box.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 _TM = Path(__file__).resolve().parents[2] / "template_manager"   # tools/template_manager
 _REPO = Path(__file__).resolve().parents[3]                      # repo root
-
-# Label prefix: MUST stay under the scheduled reaper's scope (reap_orphans.py --label
-# base-image-qa) so an abandoned held box is destroyed even if this process dies.
-_LABEL_PREFIX = "base-image-qa-imagegen"
+_LABEL_PREFIX = "base-image-qa-imagegen"      # MUST stay under reap_orphans' base-image-qa scope
+_CREATED_RE = re.compile(r"QA-INSTANCE-CREATED\s+(\S+)")
 
 
 def _load_dotenv(repo: Path) -> None:
-    """Populate os.environ from a gitignored repo-root .env (VAST_API_KEY for the QA
-    account, DOCKERHUB_NAMESPACE_STAGING). Never overrides an already-set var."""
+    """Populate os.environ from a gitignored repo-root .env. Tolerates `export KEY=VAL`,
+    quotes, and ` #` inline comments (on unquoted values). Never overrides a set var."""
     env = repo / ".env"
     if not env.is_file():
         return
     for line in env.read_text().splitlines():
         line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
+        v = v.strip()
+        if v[:1] not in "\"'" and " #" in v:      # strip inline comment on unquoted values only
+            v = v.split(" #", 1)[0].strip()
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 def _find_image_dir(repo: Path, name: str) -> Path:
-    """Locate the image directory across the three class roots."""
     for rel in (f"derivatives/pytorch/derivatives/{name}", f"derivatives/{name}", f"external/{name}"):
         d = repo / rel
         if (d / "templates" / f"{name}-qa" / "template.yml").is_file():
@@ -50,24 +58,21 @@ def _find_image_dir(repo: Path, name: str) -> Path:
 
 
 def _staging_ref(name: str, tag: str | None) -> tuple[str, str]:
-    """Return (image, tag) for the box under test. --tag may be a full ref
-    (repo/name:tag) or a bare tag; otherwise use the staging-namespace convention."""
+    """(image, tag) for the box under test. --tag may be a full ref (repo/name[:tag], incl.
+    a registry:port) or a bare tag; otherwise the staging-namespace convention."""
     if tag and "/" in tag:
-        ref, _, t = tag.partition(":")
-        return ref, (t or "latest")
-    if tag:
-        ns = os.environ.get("DOCKERHUB_NAMESPACE_STAGING") or _die_ns()
-        return f"{ns}/{name}", tag
-    ns = os.environ.get("DOCKERHUB_NAMESPACE_STAGING") or _die_ns()
-    return f"{ns}/{name}", "latest"
+        if ":" in tag.rsplit("/", 1)[1]:          # a tag after the last '/', not a registry:port
+            ref, _, t = tag.rpartition(":")
+            return ref, t
+        return tag, "latest"
+    ns = os.environ.get("DOCKERHUB_NAMESPACE_STAGING")
+    if not ns:
+        raise SystemExit("imagegen qa: DOCKERHUB_NAMESPACE_STAGING unset and --tag not a full ref; "
+                         "set it in .env or pass --tag <repo/name:tag>")
+    return f"{ns}/{name}", (tag or "latest")
 
 
-def _die_ns():
-    raise SystemExit("imagegen qa: DOCKERHUB_NAMESPACE_STAGING unset and --tag not a full ref; "
-                     "set it in .env or pass --tag <repo/name:tag>")
-
-
-def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+def _run(cmd: list, **kw) -> subprocess.CompletedProcess:
     return subprocess.run([str(c) for c in cmd], text=True, **kw)
 
 
@@ -83,44 +88,66 @@ def _last_json(stdout: str) -> dict:
 
 
 def _write_ledger(qa_dir: Path, instance_id, label: str) -> None:
-    """Written the instant a box is held — the contract the reaper and the interactive
-    teardown both honour. Must precede any long-running hold."""
     qa_dir.mkdir(parents=True, exist_ok=True)
     (qa_dir / "teardown-ledger.json").write_text(json.dumps(
-        {"instance_id": instance_id, "label": label, "held_at": int(time.time())}, indent=2))
+        {"instance_id": instance_id, "label": label}, indent=2))
 
 
-def _teardown(api_key: str, instance_id, qa_dir: Path, log) -> None:
-    """Destroy the held box and clear the ledger. Reuses test_template's API+destroy so the
-    404-is-gone semantics are shared."""
+def _run_test(args: list, qa_dir: Path, label: str, log) -> tuple[int, str, str | None]:
+    """Run test_template.py, streaming its stderr live, and write a PROVISIONAL teardown
+    ledger the instant the box is created (the QA-INSTANCE-CREATED marker) — so a billing
+    box is recorded before any verdict, whatever way the child exits. stdout carries only
+    the single --raw JSON line (test_template sends all human output to stderr), so reading
+    it after draining stderr cannot deadlock. Returns (returncode, stdout, created_id)."""
+    proc = subprocess.Popen([str(a) for a in args], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, bufsize=1)
+    created_id = None
+    for line in proc.stderr:
+        sys.stderr.write(line)                    # live passthrough — the operator watches the run
+        m = _CREATED_RE.search(line)
+        if m and created_id is None:
+            created_id = m.group(1)
+            _write_ledger(qa_dir, created_id, label)
+            log(f"  [ledger] box {created_id} recorded — teardown-ledger.json")
+    out = proc.stdout.read()
+    proc.wait()
+    return proc.returncode, out, created_id
+
+
+def _teardown(api_key, instance_id, qa_dir: Path, log) -> None:
+    """Destroy the box; clear the ledger ONLY on confirmed destroy (destroy_instance is
+    404-safe, so 'already gone' counts as success). A real failure (bad key, 5xx) keeps the
+    ledger so `qa-teardown`/the reaper can still recover it."""
     if instance_id is None:
+        return
+    if not api_key:
+        log(f"  WARN: no VAST_API_KEY — cannot tear down {instance_id}; ledger kept, reaper is the backstop")
         return
     sys.path.insert(0, str(_TM))
     import test_template as tt  # noqa: E402
     try:
-        tt.VastAPI(api_key).destroy_instance(instance_id)
+        tt.VastAPI(api_key).destroy_instance(instance_id)   # 404-safe
         log(f"  torn down instance {instance_id}")
-    except Exception as e:  # best-effort; the reaper is the backstop
-        log(f"  WARN: teardown of {instance_id} failed ({e}); reaper will reap by label")
-    (qa_dir / "teardown-ledger.json").unlink(missing_ok=True)
+        (qa_dir / "teardown-ledger.json").unlink(missing_ok=True)
+    except Exception as e:
+        log(f"  WARN: teardown of {instance_id} failed ({e}); ledger KEPT, reaper will reap by label")
 
 
 def _write_bundle(qa_dir: Path, verdict: dict, name: str, img_dir: Path,
-                  template_dir: Path, logs: list[str], staging: str) -> None:
-    """The file-based handoff the qa-fix skill consumes: verdict, streamed logs, SSH coords,
-    and the image's source-fix surface. Versioned so a launcher change can't feed stale shape."""
+                  template_dir: Path, logs: list, staging: str, instance_id) -> None:
     qa_dir.mkdir(parents=True, exist_ok=True)
     bundle = {
         "schema": 1,
         "image": name,
         "staging_ref": staging,
-        "verdict": verdict,                       # state, exit_code, got_result_event, tests, stream_counts
-        "instance_id": verdict.get("instance_id"),
-        "ssh": verdict.get("ssh", {}),            # {host, port} — SSH into the live workbench
+        "verdict": verdict,
+        "instance_id": instance_id,
+        "ssh": verdict.get("ssh", {}),
         "log_paths": logs,
-        "fix_surface": {                          # the CLOSED set the skill may change (ADR 0009 cond 6)
+        "fix_surface": {          # the CLOSED set the skill may change (ADR 0009 cond 6)
             "dockerfile": str((img_dir / "Dockerfile").relative_to(_REPO)),
             "supervisor_scripts": str((img_dir / "ROOT/opt/supervisor-scripts").relative_to(_REPO)),
+            "tests": str((img_dir / "ROOT/opt/instance-tools/tests").relative_to(_REPO)),
             "qa_template": str((template_dir / "template.yml").relative_to(_REPO)),
             "default_template": str((img_dir / "templates/default/template.yml").relative_to(_REPO)),
         },
@@ -128,10 +155,20 @@ def _write_bundle(qa_dir: Path, verdict: dict, name: str, img_dir: Path,
     (qa_dir / "bundle.json").write_text(json.dumps(bundle, indent=2))
 
 
-def run(name: str, *, tag: str | None = None, logs: list[str] | None = None,
+_EXPLAIN = {
+    0: "inconclusive — 'passed' but no result event (ADR 0005 cond 2); re-run.",
+    2: "no GPU offers matched — re-run later or raise --max-price.",
+    3: "bad instance — the box never came up cleanly; re-run.",
+    4: "config error — the QA template / args / creds are wrong (a harness bug, NOT the image).",
+    5: "instance died mid-test — re-run; if it recurs the image may crash on boot (check the logs).",
+    130: "interrupted.",
+}
+
+
+def run(name: str, *, tag: str | None = None, logs: list | None = None,
         max_price: str = "0.60", timeout: str = "1800", log=None) -> int:
-    """Publish the QA template, run the live smoke holding the box, and on failure write the
-    diagnosis bundle + teardown ledger. Returns the verdict exit code."""
+    """Publish the QA template, run the live smoke (holding the box), and route on the
+    verdict. Holds the box for diagnosis ONLY on a real app-failure (exit 1)."""
     log = log or (lambda m: print(m, file=sys.stderr))
     _load_dotenv(_REPO)
     api_key = os.environ.get("VAST_API_KEY")
@@ -144,60 +181,80 @@ def run(name: str, *, tag: str | None = None, logs: list[str] | None = None,
     logs = logs or [f"/var/log/portal/{name}.log"]
     label = f"{_LABEL_PREFIX}-{name}"
     qa_dir = img_dir / ".qa"
+    qa_dir.mkdir(parents=True, exist_ok=True)
     py = sys.executable
 
     # 1. publish the throwaway QA template pointed at the staging image
     created_json = qa_dir / "create.json"
-    qa_dir.mkdir(parents=True, exist_ok=True)
     log(f"imagegen qa: {name} → {image_ref}:{tag_ref}  (template {template_dir.relative_to(_REPO)})")
     cp = _run([py, _TM / "create.py", template_dir, "--image", image_ref, "--tag", tag_ref,
                "--emit-result", created_json])
     if cp.returncode != 0:
         raise SystemExit(f"imagegen qa: template publish failed (exit {cp.returncode})")
-    created = json.loads(created_json.read_text())[0]
-    tmpl_hash, tmpl_id = created["hash_id"], created["id"]
+    results = json.loads(created_json.read_text())
+    if not results:
+        raise SystemExit("imagegen qa: template publish returned no templates")
+    created = results[0]
+    tmpl_hash, tmpl_id = created.get("hash_id"), created.get("id")
+    if tmpl_hash in (None, "N/A") or tmpl_id in (None, "N/A"):
+        raise SystemExit(f"imagegen qa: publish returned no usable hash_id/id ({created})")
 
-    # 2. run the live smoke, HOLDING the box (--keep) regardless of verdict
+    # 2. run the live smoke, HOLDING the box; provisional ledger written on box-create
     args = [py, _TM / "test_template.py", tmpl_hash, "--keep", "--raw", "--force", "--label", label,
             "--max-price", max_price, "--timeout", timeout]
     for p in logs:
         args += ["--log", p]
-    cp = _run(args, capture_output=True)
-    sys.stderr.write(cp.stderr or "")
-    verdict = _last_json(cp.stdout)
-    exit_code = verdict.get("exit_code", cp.returncode)
-    instance_id = verdict.get("instance_id")
+    returncode, out, created_id = _run_test(args, qa_dir, label, log)
+    verdict = _last_json(out)
+    raw_code = verdict.get("exit_code")
+    # Reconcile: prefer the payload, but NEVER report PASS on a nonzero process code.
+    if raw_code is None:
+        exit_code = returncode
+    elif raw_code == returncode:
+        exit_code = raw_code
+    else:
+        exit_code = raw_code or returncode
+    instance_id = verdict.get("instance_id") or created_id
 
-    # 3. LEDGER FIRST — the instant a box is held, before any slow path. Then drop the template.
-    if instance_id is not None:
-        _write_ledger(qa_dir, instance_id, label)
-    _run([py, _TM / "create.py", "--delete", tmpl_id], capture_output=True)  # box, not template, is the workbench
+    # 3. drop the throwaway template (the reaper sweeps instances, not templates — warn on leak)
+    dcp = _run([py, _TM / "create.py", "--delete", tmpl_id], capture_output=True)
+    if dcp.returncode != 0:
+        log(f"  WARN: template {tmpl_id} delete failed: {(dcp.stderr or '').strip()[:200]}")
 
-    # 4. route on the verdict
-    passed = exit_code == 0 and verdict.get("got_result_event") is True
-    if passed:
+    # 4. front-gate route
+    if exit_code == 0 and verdict.get("got_result_event") is True:
         log("\nQA PASSED — live-GPU smoke green.")
         _teardown(api_key, instance_id, qa_dir, log)
         (qa_dir / "bundle.json").unlink(missing_ok=True)
         return 0
 
-    _write_bundle(qa_dir, verdict, name, img_dir, template_dir, logs, f"{image_ref}:{tag_ref}")
-    ssh = verdict.get("ssh") or {}
-    log("\n" + "=" * 70)
-    log(f"QA BLOCKED (exit {exit_code}, state={verdict.get('state')}). Box HELD for diagnosis.")
-    if instance_id is not None:
-        log(f"  instance {instance_id}  label {label}")
-    if ssh.get("host"):
-        log(f"  ssh -p {ssh['port']} root@{ssh['host']}")
-    log(f"  bundle: {(qa_dir / 'bundle.json').relative_to(_REPO)}")
-    log("  next: run the qa-fix skill to diagnose + propose a fix (human-gated).")
-    log(f"  teardown when done: imagegen qa-teardown {name}   (reaper reaps by label after TTL)")
-    log("=" * 70)
+    if exit_code == 1:   # failed: booted, functional test failed → diagnosable, box kept alive
+        _write_bundle(qa_dir, verdict, name, img_dir, template_dir, logs,
+                      f"{image_ref}:{tag_ref}", instance_id)
+        ssh = verdict.get("ssh") or {}
+        log("\n" + "=" * 70)
+        log("QA FAILED (functional test red). Box HELD for diagnosis.")
+        if instance_id is not None:
+            log(f"  instance {instance_id}  label {label}")
+        if ssh.get("host"):
+            log(f"  ssh -p {ssh['port']} root@{ssh['host']}")
+        log(f"  bundle: {(qa_dir / 'bundle.json').relative_to(_REPO)}")
+        log("  next: run the qa-fix skill to diagnose + propose a fix (human-gated).")
+        log(f"  teardown when done: imagegen qa-teardown {name}")
+        log("=" * 70)
+        return 1
+
+    # 0-without-result / no_offers / bad_instance / config_error / instance_error / interrupted:
+    # NOT a diagnosable image failure. Tear the box down (404-safe) and report.
+    _teardown(api_key, instance_id, qa_dir, log)
+    (qa_dir / "bundle.json").unlink(missing_ok=True)
+    log(f"\nQA not run to a pass (exit {exit_code}, state={verdict.get('state')}): "
+        + _EXPLAIN.get(exit_code, "see the verdict above."))
     return exit_code
 
 
 def teardown(name: str, log=None) -> int:
-    """Tear down the held box recorded in the image's teardown ledger (the interactive
+    """Tear down the held box recorded in the image's teardown ledger (interactive
     counterpart to a crash being reaped by label)."""
     log = log or (lambda m: print(m, file=sys.stderr))
     _load_dotenv(_REPO)
