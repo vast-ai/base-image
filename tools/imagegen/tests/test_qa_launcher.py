@@ -131,10 +131,20 @@ def test_launcher_label_is_inside_reaper_scope():
 
 
 def test_ssh_reachable_reflects_probe(monkeypatch):
-    """The held-box SSH check enforces that the operator can actually get in (Vast injects
-    per-account keys) — reachable iff the probe exits 0, and False without coords."""
+    """The held-box SSH probe reflects reachability, RETRIES before failing (Vast SSH is
+    flaky on first connect), and is False without coords."""
+    monkeypatch.setattr(q.time, "sleep", lambda s: None)   # don't actually wait between retries
     monkeypatch.setattr(q, "_run", lambda cmd, **k: types.SimpleNamespace(returncode=0))
     assert q._ssh_reachable({"host": "h", "port": 22}) is True
+
+    # transient then success -> reachable (proves the retry)
+    calls = {"n": 0}
+    def flaky(cmd, **k):
+        calls["n"] += 1
+        return types.SimpleNamespace(returncode=0 if calls["n"] >= 2 else 255)
+    monkeypatch.setattr(q, "_run", flaky)
+    assert q._ssh_reachable({"host": "h", "port": 22}) is True and calls["n"] == 2
+
     monkeypatch.setattr(q, "_run", lambda cmd, **k: types.SimpleNamespace(returncode=255))
-    assert q._ssh_reachable({"host": "h", "port": 22}) is False
+    assert q._ssh_reachable({"host": "h", "port": 22}, attempts=2) is False
     assert q._ssh_reachable({}) is False

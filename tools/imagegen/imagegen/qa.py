@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _TM = Path(__file__).resolve().parents[2] / "template_manager"   # tools/template_manager
@@ -92,17 +93,23 @@ def _run(cmd: list, **kw) -> subprocess.CompletedProcess:
     return subprocess.run([str(c) for c in cmd], text=True, **kw)
 
 
-def _ssh_reachable(ssh: dict) -> bool:
-    """Probe whether the operator can actually SSH into the held box. Vast auto-injects the
-    SSH keys registered on the *account that owns the instance* (the QA account) — so a key
-    that's only on a personal account means qa-fix can't get in. Non-interactive, ~12s cap."""
+def _ssh_reachable(ssh: dict, attempts: int = 4) -> bool:
+    """Probe whether the operator can actually SSH into the held box (Vast injects the
+    starting team member's personal key). Vast SSH is flaky on first connect ("try again
+    after a few seconds"), so RETRY before concluding unreachable — a single shot gives
+    false negatives. Non-interactive."""
     host, port = ssh.get("host"), ssh.get("port")
     if not host or not port:
         return False
-    r = _run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-              "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=12",
-              "-p", str(port), f"root@{host}", "true"], capture_output=True)
-    return r.returncode == 0
+    for i in range(attempts):
+        r = _run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                  "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=15",
+                  "-p", str(port), f"root@{host}", "true"], capture_output=True)
+        if r.returncode == 0:
+            return True
+        if i < attempts - 1:
+            time.sleep(6)
+    return False
 
 
 def _last_json(stdout: str) -> dict:
@@ -271,9 +278,10 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
             if _ssh_reachable(ssh):
                 log("  ssh: reachable ✓ — qa-fix can diagnose on the box.")
             else:
-                log("  ssh: NOT reachable ✗ — Vast injects the keys registered on the QA account")
-                log("       (525202), not your personal account. Add your pubkey there, or qa-fix")
-                log("       cannot diagnose. (Box still held; teardown below when you give up.)")
+                log("  ssh: not reachable after retries ✗ — Vast injects the STARTING team member's")
+                log("       personal key and its SSH is flaky on first connect, so this is often")
+                log(f"       transient: try `ssh -p {ssh['port']} root@{ssh['host']}` manually before")
+                log("       giving up. If it persists, check your key is on your Vast account.")
         log(f"  bundle: {(qa_dir / 'bundle.json').relative_to(_REPO)}")
         log("  next: run the qa-fix skill to diagnose + propose a fix (human-gated).")
         log(f"  teardown when done: imagegen qa-teardown {name}")
