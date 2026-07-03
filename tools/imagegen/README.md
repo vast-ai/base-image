@@ -60,8 +60,8 @@ uv venv .venv --python 3.12
 uv pip install --python .venv/bin/python -r tools/template_manager/requirements.txt
 ```
 
-**Credentials — `.env` at the REPO ROOT** (gitignored; the canonical location, also read by
-`create.py`):
+**Credentials — copy [`.env.example`](../../.env.example) to `.env` at the REPO ROOT**
+(gitignored; the canonical location, also read by `create.py`):
 ```
 VAST_API_KEY=<QA-account key>              # the dedicated QA Vast account, NOT a personal one
 DOCKERHUB_NAMESPACE_STAGING=<staging ns>   # only when --tag is a bare tag / omitted
