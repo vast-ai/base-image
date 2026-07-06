@@ -1,9 +1,11 @@
 # Default launch template for Chatterbox — the public, user-facing template (the eventual
 # recommended/marketplace listing). Launch it as-is to try the image on a real GPU.
 name: "Chatterbox"
-# Interim test image (the local build pushed for manual testing). At promotion this
-# becomes vastai/chatterbox.
-image: robatvastai/chatterbox
+# Production image: the QA gate and `imagegen publish` override image/tag to the freshly-built
+# staging ref at publish (ADR 0010/0011), so this stays the prod ref (no hardcoded staging
+# namespace — L041). Pin a concrete promoted tag before the production listing ships (apps do
+# not use @vastai-automatic-tag); `latest` here is a placeholder until chatterbox is promoted.
+image: vastai/chatterbox
 tag: latest
 private: false
 readme_visible: true

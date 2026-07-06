@@ -20,3 +20,5 @@
 | L041 | ERROR | No hardcoded staging namespace in a new image's committed files — reference the DOCKERHUB_NAMESPACE_STAGING secret |
 | L050 | ERROR | A shipped template.yml declares a compute_cap floor in extra_filters (ADR 0005) |
 | L051 | ERROR | Supervisor launch scripts (ROOT/opt/supervisor-scripts/*.sh) are executable — the .conf execs them directly |
+| L052 | ERROR | A shipped templates/*/README.md launch link uses the <<LAUNCH_LINK>> placeholder, not a hardcoded cloud.vast.ai ref link (ADR 0011) |
+| L053 | ERROR | No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6) |

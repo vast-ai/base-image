@@ -118,25 +118,32 @@ the boot-sequence list (§3), the 4-job pipeline + missing `merge-manifests` (§
 the undeclared `base_image_source` stage (§1), the missing utils
 `exit_serverless.sh`/`pty.sh` (§1), the port +10000 claim (§3), and uniform cron (§3).
 
-## 6. Planned invariants — statically checkable, not yet gated
+## 6. Invariants codified from review
 
-Two policies are enforced today only by review; both are statically checkable and
-should become lint rules (with the ADR-binding + `RULES`-catalog pattern of §1).
-Proposed IDs are indicative, not reserved.
+The no-baked-weights policy below is now **gated (L053)**. The copyleft policy remains
+review-only for now (statically checkable; should become a lint rule with the ADR-binding +
+`RULES`-catalog pattern of §1).
 
-### No baked model weights (proposed)
+### No baked model weights — **GATED (L053)**
 
 Model weights must NOT be downloaded or baked into the image; they arrive at
-runtime via provisioning or the app's own on-start download. Rationale: keeps
-images small and rebuildable, and — because the *tenant* triggers the download —
-the weight licence (non-commercial / gated / territory-restricted) is the tenant's
-to honour, not something the image distributes.
+runtime via provisioning or the app's own on-start download (see the runtime
+conventions in §7). Rationale: keeps images small and rebuildable, and — because
+the *tenant* triggers the download — the weight licence (non-commercial / gated /
+territory-restricted) is the tenant's to honour, not something the image distributes.
 
-Detection heuristic, inside a Dockerfile `RUN`: `huggingface-cli download` /
-`hf download`; `wget`/`curl` of `*.safetensors|*.gguf|*.ckpt|*.pth|*.bin|*.onnx`;
-a `from_pretrained(...)` / `snapshot_download(...)` that writes into an image layer.
-Scope: model weights only — not small non-model assets (tokenizer/config files, a
-UI's bundled icons). Reference: the "download on start, never bake" policy.
+**L053** enforces it, instruction-aware (operates on the parsed RUN code, so a
+*commented* example download does not fire). Detected inside a Dockerfile `RUN`:
+`hf download` / `huggingface-cli download` / `hf_hub_download(` / `snapshot_download(`,
+and a `wget`/`curl` of `*.safetensors|*.gguf|*.ckpt|*.pth|*.onnx`. `*.bin` is
+deliberately **excluded** (too many non-model `.bin` files → false positives). Scope:
+model weights only — not small non-model assets (tokenizer/config files, a UI's
+bundled icons).
+
+**Exemption (dated, tracked):** `comfyui` bakes one small default SD-1.5 checkpoint
+for the out-of-box / QA first-run (a §6-style deviation, tracked for migration to
+runtime provisioning — see the `EXCEPTIONS` entry). It is the only current exemption;
+new images must provision, not bake.
 
 ### Copyleft licence compliance (proposed)
 
@@ -155,3 +162,31 @@ each copyleft entry (a) the stated in-image licence path resolves and (b) a
 Applies to GPL-3.0 too (e.g. ComfyUI), not only AGPL. Reference implementation of
 the obligations themselves: the `fix/agpl-license-compliance` change (unsloth-studio,
 aio-studio, a1111, sd-forge, oobabooga).
+
+## 7. Application runtime conventions (how apps are launched & fed models)
+
+These govern how an application's supervisor script launches the app and how a model
+reaches it. Verified across the LLM-serving fleet (vllm, sglang, ollama, llama-cpp,
+oobabooga). The `new-image` skill + generator encode them.
+
+- **`<APP>_ARGS` — runtime args from the template, not baked into code.** The primary
+  app-server launch reads `${<NAME_UPPER>_ARGS:-<sensible defaults incl. the explicit
+  loopback bind>}`, so a template or user tunes runtime flags without editing the image
+  (`VLLM_ARGS`, `SGLANG_ARGS`, `LLAMA_ARGS`, `OOBABOOGA_ARGS`, …). The default **must**
+  carry `--host 127.0.0.1 --port <port>` (Caddy is the sole public edge; never `0.0.0.0`).
+  **Not statically gated** — it is *not* universal by design: config-file apps (chatterbox
+  pins via `config.yaml`, invokeai, fluxgym, …) and infra/helper services (desktop stack,
+  `model-ui`, `api-wrapper`, `ray`) legitimately have no `<APP>_ARGS`, and there is no
+  reliable static way to distinguish "primary launch that should have ARGS" from those. It
+  is enforced by the skill + scaffold, not the linter.
+
+- **`<APP>_MODEL` + provision the model at runtime (never bake — see §6 / L053).** A
+  model-serving app names a default model via an `<APP>_MODEL` env set in
+  `templates/default/template.yml` (`VLLM_MODEL: Qwen/Qwen3-8B-FP8`, `SGLANG_MODEL`,
+  `OLLAMA_MODEL`, `LLAMA_MODEL`). The supervisor waits for provisioning
+  (`while [ -f /.provisioning ]; do …`), then the app downloads that model to
+  `$WORKSPACE/<name>/models` (or its own `--download-dir`) at runtime and serves it,
+  **refusing/skipping if the model env is unset** (`vllm.sh`: *"Refusing to start —
+  VLLM_MODEL not set"*). Heavier/multi-step setup lives in a `provisioning_scripts/<name>.sh`
+  (run via `PROVISIONING_SCRIPT`). So "launch the template" yields a working model, and no
+  weights ship in the image.

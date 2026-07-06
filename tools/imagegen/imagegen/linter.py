@@ -39,6 +39,12 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, str]] = {
                              "must derive from vastai/pytorch"),
     ("aio-studio", "L020"): ("uses per-app venvs, not a single /venv/main guard (invariants §2)",
                              "torch-drift guard"),
+    # Provisional (2026-07-06): comfyui bakes one small default SD-1.5 checkpoint for the
+    # out-of-box / QA first-run. Deviation from invariants §6 (no baked weights), tracked for
+    # migration to runtime provisioning — not an endorsement of baking. See ADR 0011 discussion.
+    ("comfyui", "L053"): ("bakes one small default SD-1.5 checkpoint for out-of-box/QA — "
+                          "provisioning migration tracked (2026-07-06)",
+                          "baked model weights"),
 }
 
 CANONICAL_UTILS = ["logging", "cleanup_generic", "environment", "exit_serverless", "exit_portal"]
@@ -62,6 +68,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L041", ERROR, "No hardcoded staging namespace in a new image's committed files — reference the DOCKERHUB_NAMESPACE_STAGING secret"),
     ("L050", ERROR, "A shipped template.yml declares a compute_cap floor in extra_filters (ADR 0005)"),
     ("L051", ERROR, "Supervisor launch scripts (ROOT/opt/supervisor-scripts/*.sh) are executable — the .conf execs them directly"),
+    ("L052", ERROR, "A shipped templates/*/README.md launch link uses the <<LAUNCH_LINK>> placeholder, not a hardcoded cloud.vast.ai ref link (ADR 0011)"),
+    ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
 ]
 
 
@@ -185,6 +193,38 @@ def check_uv_pip(img: Image) -> Iterable[Finding]:
     for line in code_text(parse(img.text)).splitlines():
         if re.search(r"(?<![\w/])pip\s+install\b", line) and not re.search(r"\buv\s+pip\s+install\b", line):
             yield Finding("L022", WARN, img.name, "Dockerfile", "bare `pip install` (prefer `uv pip install`)")
+
+
+# A model-weight file fetched into the image, or an explicit model download, inside a RUN.
+# .bin is intentionally excluded (too many non-model .bin files → false positives).
+_WEIGHT_FILE = re.compile(r"\.(?:safetensors|gguf|ckpt|pth|onnx)\b")
+_MODEL_DOWNLOAD = re.compile(
+    r"\bhf\s+download\b|\bhuggingface-cli\s+download\b|\bhf_hub_download\s*\(|\bsnapshot_download\s*\(")
+
+
+def check_no_baked_weights(img: Image) -> Iterable[Finding]:
+    """L053 — model weights must NOT be baked into the image (invariants §6). They arrive at
+    runtime via provisioning (a `provisioning_scripts/<name>.sh` / `PROVISIONING_SCRIPT`) or the
+    app's own on-start download driven by an `<APP>_MODEL` env — because the *tenant* triggers
+    the download, the weight licence stays theirs and the image stays small and rebuildable.
+
+    Instruction-aware (operates on `code_text`, so COMMENTED example downloads don't fire).
+    Detects, inside a real RUN: `hf download` / `huggingface-cli download` / `hf_hub_download(` /
+    `snapshot_download(`, or a `wget`/`curl` of a model-weight file. Small non-model assets
+    (tokenizer/config, a UI's bundled icons) are out of scope — only the weight extensions match."""
+    if img.cls == "base":
+        return
+    for line in code_text(parse(img.text)).splitlines():
+        reason = None
+        if _MODEL_DOWNLOAD.search(line):
+            reason = "a model download (hf/huggingface-cli/snapshot_download)"
+        elif re.search(r"\b(?:wget|curl)\b", line) and _WEIGHT_FILE.search(line):
+            reason = "a wget/curl of a model-weight file"
+        if reason:
+            yield Finding("L053", ERROR, img.name, "Dockerfile",
+                          f"baked model weights — {reason}; models must arrive at runtime via "
+                          f"provisioning / <APP>_MODEL, not the image layer (invariants §6)")
+            return  # one finding per image is enough
 
 
 # ---- ROOT/ overlay checks (supervisor) --------------------------------------
@@ -427,6 +467,42 @@ def check_supervisor_executable(img: Image) -> Iterable[Finding]:
                           "supervisor script is not executable (chmod +x); the .conf execs it directly")
 
 
+# A hardcoded Vast launch link carries a referral id (ref_id / creator_id) — the exact
+# anti-pattern L052 forbids in a co-located recommended-template README.
+_HARDCODED_LAUNCH_LINK = re.compile(r"cloud\.vast\.ai[^)\s]*[?&](?:ref_id|creator_id)=")
+
+
+def check_launch_link_placeholder(img: Image) -> Iterable[Finding]:
+    """L052 — a shipped recommended-template README (``templates/*/README.md``) must express
+    its Vast launch link as the ``<<LAUNCH_LINK>>`` placeholder, which ``create.py`` substitutes
+    with the publisher's referral URL at publish time — NOT a hardcoded
+    ``cloud.vast.ai/?ref_id=…`` link. A baked ref link nails one account's referral id into
+    every published template and silently diverges from the publish tooling (ADR 0011).
+
+    Scoped to ``templates/*/README.md`` — the co-located file ``create.py`` actually injects.
+    The legacy root ``README.template.md`` (which the tooling never consumed) is intentionally
+    out of scope, so this rule bites exactly where publishing happens and the baseline stays
+    clean during the migration."""
+    if img.cls == "base":
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    for readme in sorted(tdir.rglob("README.md")):
+        try:
+            text = readme.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if _HARDCODED_LAUNCH_LINK.search(text):
+            try:
+                rel = str(readme.relative_to(img.dir))
+            except ValueError:
+                rel = readme.name
+            yield Finding("L052", ERROR, img.name, rel,
+                          "hardcoded cloud.vast.ai launch link — use the <<LAUNCH_LINK>> "
+                          "placeholder (create.py substitutes the referral URL at publish) — ADR 0011")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
@@ -447,6 +523,8 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_skeleton(img, repo))
     out.extend(check_no_hardcoded_staging_namespace(img, repo))
     out.extend(check_template_floor(img, repo))
+    out.extend(check_launch_link_placeholder(img))
+    out.extend(check_no_baked_weights(img))
     if apply_exceptions:
         out = [f for f in out if not _suppressed(img.name, f)]
     return out

@@ -94,7 +94,8 @@ def test_l040_flags_all_placeholder_files(tmp_path):
     img = next(i for i in discover(tmp_path) if i.name == "myext")
     flagged = {f.path for f in lint_image(img, tmp_path) if f.code == "L040"}
     assert any("vast_agents" in p for p in flagged), "agent doc not flagged"
-    assert "README.md" in flagged and "README.template.md" in flagged, "READMEs not flagged"
+    assert "README.md" in flagged, "dev README not flagged"
+    assert any("templates/default/README.md" in p for p in flagged), "marketplace README not flagged"
     assert any("supervisor-scripts" in p for p in flagged), "launch stub not flagged"
 
 
@@ -138,10 +139,32 @@ def test_supervisor_sources_exit_portal_with_label(tmp_path):
 
 
 def test_readmes_are_distinct(tmp_path):
+    """Dev README.md (image root) and the marketplace recommended README
+    (templates/default/README.md, ADR 0011) are distinct artifacts; the marketplace one uses
+    the <<LAUNCH_LINK>> placeholder, never a hardcoded ref link (L052)."""
     _gen_repo(tmp_path)
     d = tmp_path / "external/myext"
-    assert (d / "README.md").read_text() != (d / "README.template.md").read_text()
-    assert "Create an Instance" in (d / "README.template.md").read_text()
+    marketplace = (d / "templates" / "default" / "README.md").read_text()
+    assert (d / "README.md").read_text() != marketplace
+    assert "Create an Instance" in marketplace
+    assert "<<LAUNCH_LINK>>" in marketplace
+    assert "cloud.vast.ai/?ref_id" not in marketplace  # placeholder, not a baked ref link
+
+
+def test_scaffold_launch_link_is_l052_clean_but_hardcode_trips_l052(tmp_path):
+    """The scaffolded marketplace README passes L052 (uses <<LAUNCH_LINK>>); mutating it to a
+    hardcoded cloud.vast.ai ref link makes L052 fire (ADR 0011). Proves the check has teeth."""
+    _gen_repo(tmp_path)
+    img = next(i for i in discover(tmp_path) if i.name == "myext")
+    codes = {f.code for f in lint_image(img, tmp_path)}
+    assert "L052" not in codes, "scaffold README should be L052-clean (uses <<LAUNCH_LINK>>)"
+
+    readme = tmp_path / "external/myext/templates/default/README.md"
+    readme.write_text(readme.read_text().replace(
+        "<<LAUNCH_LINK>>",
+        "https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=myext"))
+    l052 = [f for f in lint_image(img, tmp_path) if f.code == "L052"]
+    assert l052 and l052[0].severity == ERROR, "hardcoded ref link must trip L052 (ERROR)"
 
 
 def test_capability_yaml_has_image_mapping(tmp_path):

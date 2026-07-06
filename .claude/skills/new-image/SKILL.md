@@ -52,11 +52,21 @@ PYTHONPATH=tools/imagegen python3 -m imagegen.cli new \
 It reports `structure: valid ✓` and `skeleton: N files … NOT buildable yet`. That N is
 your fill list.
 
-## Step 3 — Study a real sibling FIRST
-Before filling, read the closest **same-class** existing image as an exemplar (e.g. a
-pytorch-nested app like `derivatives/pytorch/derivatives/comfyui/`, or `external/vllm/`).
-Match its real conventions — do not invent. (This is where guessing has burned us:
-always diff against ground truth.)
+## Step 3 — Study BOTH the sibling and the upstream's own install
+Two sources, two jobs — read both before filling:
+- **The closest same-class sibling** (`derivatives/pytorch/derivatives/comfyui/`, `external/vllm/`, …)
+  gives the **shape**: where the app is cloned, the torch-guard window, the supervisor / `.conf` /
+  portal wiring, the template. Match its real conventions — do not invent.
+- **The upstream's OWN install** gives the **actual dependency resolution**: read the app's
+  README/wiki install guide, its `pyproject.toml` / `setup.py` / `requirements*.txt`, **and its
+  own `Dockerfile`** (the authoritative install — not a blog post or a research summary). That is
+  where the real pins, extras, and prebuilt-wheel URLs live (e.g. TabbyAPI's `cu12` extra pins the
+  exact exllamav3 / flash-attn wheel URLs). Then **translate** it to our pattern: install into
+  `/venv/main` with `uv pip`, keep the base torch unclobbered (strip upstream torch pins;
+  `--no-deps` on any wheel whose metadata would drag a different torch), all inside the
+  drift-guard window.
+
+This is where guessing has burned us: always diff against ground truth — **both** of them.
 
 ## Step 4 — Fill only the fenced residue
 Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
@@ -78,20 +88,46 @@ Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
   existing tag — e.g. comfyui pins a dated `vastai/pytorch:...` tag). Never invent a tag;
   a non-existent tag lints clean but fails `docker build` on the `FROM` pull. (Filling
   this token is a normal in-fence fill, NOT an escape-hatch case.)
-- **supervisor script**: the real launch (use `pty`, like the sibling); remove the
-  `exit 1  # >>> FILL` stub line entirely. **Make the bind explicit** — the launch must
-  show which interface:port it listens on: pass the app's `--host 127.0.0.1 --port <port>`
-  flags. If the app has no host/port flag or env override and binds only from a config
-  file, pin host+port into that config at launch (don't leave the bind implicit/hidden in
-  a baked file), and never let it fall back to a `0.0.0.0` default (Caddy is the sole
-  public edge). Always loopback.
+- **supervisor script — `pty` launch driven by an `<APP>_ARGS` env** (fleet convention:
+  `VLLM_ARGS`, `SGLANG_ARGS`, `LLAMA_ARGS`, `OOBABOOGA_ARGS`). Every application's launch must
+  read `${<NAME_UPPER>_ARGS:-<sensible defaults>}` so a template or user can set runtime
+  arguments **without touching the image** — e.g.
+  `pty <cmd> ${MYAPP_ARGS:---host 127.0.0.1 --port <port>}`. Remove the `exit 1  # >>> FILL`
+  stub line entirely. **The default MUST carry the explicit loopback bind** — `--host 127.0.0.1
+  --port <port>`, so the launch shows which interface:port it listens on. If the app has no
+  host/port flag or env override and binds only from a config file, pin host+port into that
+  config at launch (don't leave the bind implicit/hidden in a baked file), and never let it
+  fall back to a `0.0.0.0` default (Caddy is the sole public edge). Always loopback. Surface
+  the app's real runtime flags through `<NAME_UPPER>_ARGS` (default set in the template), never
+  hardcoded — so behaviour is tunable from the template.
+- **Model-serving apps — provision the model at runtime, NEVER bake weights** (invariants §6;
+  model this on vllm / sglang / ollama / llama-cpp). Do **not** download a model into the image.
+  Expose a `<NAME_UPPER>_MODEL` env with a sensible **default** model; the supervisor waits for
+  provisioning (`while [ -f /.provisioning ]; do sleep …; done`), then the app downloads that
+  model to `$WORKSPACE/<name>/models` (or its own `--download-dir`) at runtime and serves it —
+  and **refuses/skips if the model env is unset** (`[[ -z "${<NAME_UPPER>_MODEL:-}" ]] && { echo
+  "Refusing to start — <NAME_UPPER>_MODEL not set"; exit 0; }`, like `vllm.sh`). Set the default
+  `<NAME_UPPER>_MODEL` (and `<NAME_UPPER>_ARGS`) in `templates/default/template.yml`, so
+  "launch the template" yields a **working model**, not an empty server. Heavier/multi-step
+  setup belongs in a `provisioning_scripts/<name>.sh` (run via `PROVISIONING_SCRIPT`). Because
+  the *tenant* triggers the download, the model licence stays theirs and the image stays small
+  and rebuildable.
 - **PORTAL_CONFIG / port wiring**: external → fill `05-<name>-env.sh` with the app's real
   bind port. **pytorch-nested / derivative** → check the sibling: if it ships a
   `ROOT/etc/vast_boot.d/05-<name>-env.sh`, add one wiring your port into PORTAL_CONFIG;
   otherwise confirm how the sibling's port reaches the portal. The `--port` is not wired
   automatically — you must place it.
-- **capability yaml / agent doc / READMEs**: real content (capability `readme:` = the
-  GitHub URL; README.md = dev docs; README.template.md = marketplace listing — distinct).
+- **capability yaml / agent doc**: real content (capability `readme:` = the GitHub URL; the
+  agent doc = how an AI operates the app). The image-root `README.md` is developer docs.
+- **recommended template + marketplace README** (`templates/default/`, ADR 0011): fill
+  `template.yml` to the production recommended-template format — model it on a **vast_landing
+  recommended template** (`~/vast/vast_landing/scripts/template_manager/recommended_templates/templates/`)
+  or the closest base-image sibling: real `desc`, `recommended_disk_space`, ports / env /
+  `PORTAL_CONFIG`. **Keep the scaffold's `compute_cap` floor** (L050) even if the exemplar uses
+  a different `extra_filters` shape. Fill `templates/default/README.md` (the marketplace
+  listing `create.py` injects) to the recommended structure — keep the **`<<LAUNCH_LINK>>`
+  placeholder** (never a hardcoded `cloud.vast.ai/?ref_id=` link — **L052 fails**) and a real
+  Licenses section.
 
 **Escape hatch:** if a correct change requires touching **structure the generator did not
 scaffold** — adding a build stage, changing the CI job shape, changing the class or the
@@ -114,10 +150,10 @@ behind ADR 0009 cond 9). From here the editable surface widens from Step 4's FIL
 **`qa-fix` closed surface** — the image's own `Dockerfile` / `ROOT/opt/supervisor-scripts/*.sh`
 / `templates/*.yml` — because you're now fixing real runtime failures, not filling a skeleton.
 
-**Running `imagegen` here:** `new`/`lint` are pure-stdlib (any `python3`), but `build`/`qa`
-shell `tools/template_manager` (its venv + the QA-account `.env`) and there is **no `imagegen`
-on PATH**. Invoke those as
-`PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli <build|qa|qa-teardown> …`
+**Running `imagegen` here:** `new`/`lint` are pure-stdlib (any `python3`), but
+`build`/`qa`/`publish` shell `tools/template_manager` (its venv + the account `.env`) and
+there is **no `imagegen` on PATH**. Invoke those as
+`PYTHONPATH=tools/imagegen .venv/bin/python -m imagegen.cli <build|qa|publish|qa-teardown> …`
 (one-time venv + creds setup: `tools/imagegen/README.md`).
 
 1. **Build + push** — `build <name> [--ref <upstream-ref>] --tag <ns>/<name>:<tag> --push`
@@ -150,15 +186,25 @@ bits: the preflight `check-*-release` action, the base-image matrix, the tag der
 staggered schedule offset, and — in the **qa** job — the cuda/py matrix, the staging tag,
 and `log_paths`. CI job-shape is **not linted**, so still review against a sibling.
 
-The generator scaffolds **one template** — `templates/default/template.yml` (ADR 0010): the
-public, user-facing launch template (`private: false`, `readme_visible: true`, `image:
-vastai/<name>`, a placeholder `compute_cap` floor for L050) **that the QA gate also boots**,
-so "QA passed" means "the template users launch passed." Fill its launch spec (ports / env /
-`PORTAL_CONFIG`, wiring the app's real interface:port into the portal). The gate overrides
-`image`/`tag` to the staging image at publish; the functional test is the image's baked
-`ROOT/opt/instance-tools/tests/<name>.d/`, **not** a template field. If this image genuinely
-**cannot** be functionally tested, removing the `qa` job (and dropping `qa` from the `needs:`
-of merge-manifests/notify) is an **escape-hatch** — surface it, don't silently strip it.
+The generator scaffolds **one template** — `templates/default/` (ADR 0010/0011): the
+production-ready **recommended** template (`template.yml` + a rich `README.md`) that the QA
+gate also boots, so "QA passed" means "the template users launch passed." It carries the
+recommended production fields (`image: vastai/<name>`, `tag: "@vastai-automatic-tag"`,
+`href`/`repo`, `desc`, `recommended_disk_space`, `private: false`, a `compute_cap` floor for
+L050), and its `README.md` uses the `<<LAUNCH_LINK>>` placeholder (L052). Fill its launch spec
+(ports / env / `PORTAL_CONFIG`, wiring the app's real interface:port into the portal). The gate
+overrides `image`/`tag` to the staging image at publish; the functional test is the image's
+baked `ROOT/opt/instance-tools/tests/<name>.d/`, **not** a template field. If this image
+genuinely **cannot** be functionally tested, removing the `qa` job (and dropping `qa` from the
+`needs:` of merge-manifests/notify) is an **escape-hatch** — surface it, don't silently strip it.
+
+**Publish a live dogfood template (ADR 0011):** once QA is green, run `imagegen publish <name>`
+— it publishes a **private, staging-pointed, idempotent** copy of `templates/default` (named
+from the template's `name`, delete-prior so runs don't accrete duplicates) on the account in
+`.env`, and prints a launch link to dogfood the freshly-built image immediately. This is **not**
+the production publish: the public, prod-image recommended template is published through
+**vast_landing** at promotion (base-image `templates/default` is the production-ready source a
+human promotes unchanged — there is no automated sync).
 
 **Docker Hub repos — the staging repo must be PUBLIC (QA pulls it anonymously):**
 - `imagegen build <name> --push` **auto-creates the staging repo public** if it's missing

@@ -111,6 +111,12 @@ def main(argv=None) -> int:
     build.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["build"]).build(
         a.name, ref=a.ref, tag=a.tag, push=a.push))
 
+    pub = sub.add_parser("publish", help="publish a PRIVATE, staging-pointed, idempotent dogfood template (ADR 0011)")
+    pub.add_argument("name", help="image name")
+    pub.add_argument("--tag", help="staging image to point at: a full repo/name:tag or a bare tag (default: the last `imagegen build` tag, else <STAGING_NS>/<name>:latest)")
+    pub.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["publish"]).publish(
+        a.name, tag=a.tag))
+
     qat = sub.add_parser("qa-teardown", help="tear down the held QA box recorded in the image's ledger")
     qat.add_argument("name", help="image name")
     qat.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["teardown"]).teardown(a.name))

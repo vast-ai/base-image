@@ -281,3 +281,111 @@ def test_qa_reuses_build_json_tag(tmp_path, monkeypatch):
     monkeypatch.setattr(q, "_teardown", lambda *a, **k: None)
     q.run("myimg", log=lambda m: None)
     assert seen["image"] == "robatvastai/myimg" and seen["tag"] == "v1", f"reuse build.json, got {seen}"
+
+
+# --- imagegen publish (ADR 0011): private, staging-pointed, idempotent dogfood ---
+import pytest
+
+
+def _fake_publish_repo(tmp_path, name="myimg"):
+    td = tmp_path / "derivatives/pytorch/derivatives" / name / "templates" / "default"
+    td.mkdir(parents=True, exist_ok=True)
+    (td / "template.yml").write_text(
+        'name: "MyImg"\nimage: vastai/myimg\ntag: "@vastai-automatic-tag"\n'
+        'private: false\nextra_filters:\n  compute_cap:\n    gte: 800\n')
+    (td / "README.md").write_text("# MyImg\n> [Create an Instance](<<LAUNCH_LINK>>)\n")
+    return td.parents[1]   # the image dir
+
+
+def _publish_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(q, "_REPO", tmp_path)
+    monkeypatch.setattr(q, "_check_deps", lambda: None)
+    monkeypatch.setenv("VAST_API_KEY", "k")
+    monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "ns")
+
+
+def test_publish_forces_private_injects_readme_and_writes_ledger(tmp_path, monkeypatch):
+    img = _fake_publish_repo(tmp_path)
+    _publish_env(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        import yaml as _y
+        parts = [str(c) for c in cmd]
+        calls.append(parts)
+        if "create.py" in " ".join(parts) and "--delete" not in parts:
+            tdir = Path(parts[parts.index("--image") - 1])   # the positional dir precedes --image
+            data = _y.safe_load((tdir / "template.yml").read_text())
+            assert data["private"] is True, "private not forced true on the published copy"
+            assert (tdir / "README.md").is_file(), "README.md not co-located for injection"
+            Path(parts[parts.index("--emit-result") + 1]).write_text(
+                json.dumps([{"hash_id": "h9", "id": "id9", "name": "MyImg"}]))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(q, "_run", fake_run)
+    assert q.publish("myimg", tag="ns/myimg:t1", log=lambda m: None) == 0
+    led = json.loads((img / ".qa" / "publish.json").read_text())
+    assert led["id"] == "id9" and led["hash_id"] == "h9" and "orphaned" not in led
+    assert not any("--delete" in c for c in calls), "no prior ledger => no delete"
+
+
+def test_publish_deletes_prior_before_create(tmp_path, monkeypatch):
+    img = _fake_publish_repo(tmp_path)
+    (img / ".qa").mkdir(parents=True, exist_ok=True)
+    (img / ".qa" / "publish.json").write_text(json.dumps({"id": "old7"}))
+    _publish_env(monkeypatch, tmp_path)
+    seq = []
+
+    def fake_run(cmd, **kw):
+        parts = [str(c) for c in cmd]
+        if "--delete" in parts:
+            seq.append("delete:" + parts[parts.index("--delete") + 1])
+        else:
+            seq.append("create")
+            Path(parts[parts.index("--emit-result") + 1]).write_text(
+                json.dumps([{"hash_id": "h", "id": "new", "name": "MyImg"}]))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(q, "_run", fake_run)
+    q.publish("myimg", tag="ns/myimg:t1", log=lambda m: None)
+    assert seq == ["delete:old7", "create"], f"delete must precede create, got {seq}"
+    assert json.loads((img / ".qa" / "publish.json").read_text())["id"] == "new"
+
+
+def test_publish_failed_delete_keeps_orphan_id(tmp_path, monkeypatch):
+    img = _fake_publish_repo(tmp_path)
+    (img / ".qa").mkdir(parents=True, exist_ok=True)
+    (img / ".qa" / "publish.json").write_text(json.dumps({"id": "old7"}))
+    _publish_env(monkeypatch, tmp_path)
+
+    def fake_run(cmd, **kw):
+        parts = [str(c) for c in cmd]
+        if "--delete" in parts:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        Path(parts[parts.index("--emit-result") + 1]).write_text(
+            json.dumps([{"hash_id": "h", "id": "new", "name": "MyImg"}]))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(q, "_run", fake_run)
+    q.publish("myimg", tag="ns/myimg:t1", log=lambda m: None)
+    led = json.loads((img / ".qa" / "publish.json").read_text())
+    assert led["id"] == "new" and led["orphaned"] == ["old7"], f"orphan id lost: {led}"
+
+
+def test_publish_create_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    img = _fake_publish_repo(tmp_path)
+    (img / ".qa").mkdir(parents=True, exist_ok=True)
+    (img / ".qa" / "publish.json").write_text(json.dumps({"id": "keep"}))
+    _publish_env(monkeypatch, tmp_path)
+
+    def fake_run(cmd, **kw):
+        parts = [str(c) for c in cmd]
+        if "--delete" in parts:
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="create failed")
+
+    monkeypatch.setattr(q, "_run", fake_run)
+    with pytest.raises(SystemExit):
+        q.publish("myimg", tag="ns/myimg:t1", log=lambda m: None)
+    assert json.loads((img / ".qa" / "publish.json").read_text())["id"] == "keep", \
+        "ledger must not be overwritten when create fails"

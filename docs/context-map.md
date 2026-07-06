@@ -88,7 +88,9 @@ Per `.github/AGENTS.md`: native-arch builds (no QEMU) → arch-suffixed tags to
 - `CONTRIBUTING.md` — how to add an image (the invariant set; **partly stale** —
   see [invariants.md](invariants.md)).
 - `.github/AGENTS.md` — canonical CI/CD conventions for agents.
-- `README.template.md` — source for per-image generated `README.md`.
+- Per-image marketplace listing: `derivatives/**/templates/default/README.md` (co-located with
+  the recommended `template.yml`; injected at publish with `<<LAUNCH_LINK>>` substituted — ADR
+  0011). Superseded the old root `README.template.md`.
 - `docs/adr/` — decision records; `docs/invariants.md`, `docs/context-map.md` (here).
 
 ## 9. Languages / toolchains (decides where new tooling goes)

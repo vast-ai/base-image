@@ -80,7 +80,7 @@ def _staging_ref(name: str, tag: str | None) -> tuple[str, str]:
         return tag, "latest"
     ns = os.environ.get("DOCKERHUB_NAMESPACE_STAGING")
     if not ns:
-        raise SystemExit("imagegen qa: DOCKERHUB_NAMESPACE_STAGING unset and --tag not a full ref; "
+        raise SystemExit("imagegen: DOCKERHUB_NAMESPACE_STAGING unset and --tag not a full ref; "
                          "set it in .env or pass --tag <repo/name:tag>")
     return f"{ns}/{name}", (tag or "latest")
 
@@ -455,6 +455,97 @@ def build(name: str, *, ref: str | None = None, tag: str | None = None,
     state.write_text(json.dumps({"ref": ref, "tag": image_ref}, indent=2))
     log(f"imagegen build: done → {image_ref}"
         + ("" if push else "  (add --push to stage it for `imagegen qa`)"))
+    return 0
+
+
+def publish(name: str, *, tag: str | None = None, log=None) -> int:
+    """``imagegen publish`` — publish a PRIVATE, staging-pointed, IDEMPOTENT dogfood copy of
+    the image's ``templates/default`` recommended template (ADR 0011), so the author can
+    launch the freshly-built image immediately. This is NOT the production publish: the
+    public, prod-image recommended template is published through vast_landing at promotion.
+
+    - PRIVATE: forces ``private: true`` on the copy (``templates/default`` is ``private: false``
+      for production) so the dogfood is not a public marketplace listing.
+    - STAGING: points ``image``/``tag`` at the freshly-built staging ref (same resolution as
+      ``imagegen qa`` — reuses the last ``imagegen build`` tag when ``--tag`` is omitted).
+    - IDEMPOTENT: deletes the previously-published dogfood template (recorded in
+      ``.qa/publish.json``) before creating the new one, so repeated runs don't accrete
+      duplicate public/private templates on the account (``create.py`` is POST-only)."""
+    import shutil
+    import tempfile
+    import yaml
+    log = log or (lambda m: print(m, file=sys.stderr))
+    _check_deps()
+    _load_dotenv(_REPO)
+    if not os.environ.get("VAST_API_KEY"):
+        raise SystemExit("imagegen publish: VAST_API_KEY unset (put the account key in a gitignored .env)")
+
+    img_dir = _find_image_dir(_REPO, name)
+    tdir = _qa_template_dir(img_dir, name)
+    if tag is None:
+        bstate = img_dir / ".qa" / "build.json"
+        if bstate.is_file():
+            tag = (json.loads(bstate.read_text()) or {}).get("tag")
+            if tag:
+                log(f"imagegen publish: pointing the dogfood at the last-built staging ref {tag} (from build.json)")
+    image_ref, tag_ref = _staging_ref(name, tag)
+    py = sys.executable
+    ledger = img_dir / ".qa" / "publish.json"
+
+    # Idempotency: delete the prior dogfood template of record before re-creating, so runs do
+    # NOT accrete duplicates (ADR 0011 binding condition). A FAILED delete must not silently
+    # orphan it — check the result and, on failure, KEEP the id (in the ledger's `orphaned`
+    # list) so a later run or a human can still clean it up, rather than dropping it. Note the
+    # ledger lives in gitignored `.qa/` (per-clone), so delete-prior only fires on the machine
+    # that published; a fresh clone can't see prior ids (documented in ADR 0011).
+    orphaned = []
+    if ledger.is_file():
+        prior = (json.loads(ledger.read_text()) or {}).get("id")
+        if prior not in (None, "N/A"):
+            log(f"imagegen publish: deleting prior dogfood template id={prior}")
+            dcp = _run([py, _TM / "create.py", "--delete", str(prior)], capture_output=True)
+            if dcp.returncode != 0:
+                orphaned.append(prior)
+                log(f"  WARN: could not delete prior template id={prior} (it may already be gone). "
+                    f"Keeping it in the ledger's 'orphaned' list — delete it by hand if it lingers.\n"
+                    f"  {(dcp.stderr or '').strip()[:300]}")
+
+    # Build a PRIVATE copy of the template dir. create.py has no --private override and
+    # templates/default is private:false (production), so force it here. Co-locate README.md
+    # so create.py auto-discovers + injects it (substituting <<LAUNCH_LINK>>).
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td) / "default"
+        tmp.mkdir()
+        data = yaml.safe_load((tdir / "template.yml").read_text())
+        for entry in (data if isinstance(data, list) else [data]):
+            entry["private"] = True
+        (tmp / "template.yml").write_text(yaml.safe_dump(data, sort_keys=False))
+        readme = tdir / "README.md"
+        if readme.is_file():
+            shutil.copy(readme, tmp / "README.md")
+
+        result = Path(td) / "result.json"
+        log(f"imagegen publish: {name} → {image_ref}:{tag_ref}  (private dogfood, template {tdir.relative_to(_REPO)})")
+        cp = _run([py, _TM / "create.py", str(tmp), "--image", image_ref, "--tag", tag_ref,
+                   "--emit-result", str(result)])
+        if cp.returncode != 0:
+            raise SystemExit(f"imagegen publish: template create failed (exit {cp.returncode})")
+        created = json.loads(result.read_text())
+        entry = (created[0] if isinstance(created, list) else created) if created else None
+        if not entry or entry.get("hash_id") in (None, "N/A") or entry.get("id") in (None, "N/A"):
+            raise SystemExit(f"imagegen publish: create returned no usable template ({created})")
+
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"id": entry["id"], "hash_id": entry["hash_id"], "name": entry["name"],
+           "image": image_ref, "tag": tag_ref}
+    if orphaned:
+        rec["orphaned"] = orphaned    # prior ids whose delete failed — clean up by hand
+    ledger.write_text(json.dumps(rec, indent=2))
+    log(f"imagegen publish: '{entry['name']}' → private dogfood template")
+    log(f"  hash_id {entry['hash_id']}  id {entry['id']}  → {image_ref}:{tag_ref}")
+    log(f"  launch: https://cloud.vast.ai/?template_id={entry['hash_id']}  "
+        f"(or the publishing account's Templates → My Templates)")
+    log("  (dogfood only — the production recommended template is published via vast_landing at promotion)")
     return 0
 
 

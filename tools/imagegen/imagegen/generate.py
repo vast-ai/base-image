@@ -125,7 +125,13 @@ done
 
 cd "${WORKSPACE}/@@NAME@@" 2>/dev/null || cd "${WORKSPACE}"
 
-# >>> FILL: launch @@NAME@@ using `pty` (e.g. `pty python main.py ...`) <<<
+# Launch via `pty` and a @@NAME_UPPER@@_ARGS env so a template/user sets runtime args WITHOUT
+# touching the image (fleet convention: VLLM_ARGS, SGLANG_ARGS, LLAMA_ARGS, …). The default MUST
+# carry the explicit loopback bind (--host 127.0.0.1 --port <port>); never fall back to 0.0.0.0.
+# Model-serving app? Do NOT bake weights (invariants §6): add a @@NAME_UPPER@@_MODEL default in
+# templates/default/template.yml, download it to $WORKSPACE/@@NAME@@/models here and serve it,
+# and refuse/skip if unset (see external/vllm/ROOT/opt/supervisor-scripts/vllm.sh).
+# >>> FILL: the real launch, e.g.  pty <cmd> ${@@NAME_UPPER@@_ARGS:---host 127.0.0.1 --port <port>} <<<
 exit 1  # >>> FILL: remove this line once the launch command above is in place <<<
 '''
 
@@ -152,8 +158,9 @@ _AGENT = '''# @@LABEL@@
 ports, where models/data live, common tasks. <<<
 '''
 
-# README.md = developer docs; README.template.md = Vast.ai marketplace listing.
-# These are DISTINCT artifacts (see real vllm/README.md vs README.template.md).
+# The image's root README.md = developer docs. The marketplace listing is the recommended
+# template's README, co-located at templates/default/README.md (ADR 0011) — create.py
+# auto-discovers a README.md beside a template.yml and injects it, substituting <<LAUNCH_LINK>>.
 _README_DEV = '''# @@LABEL@@ Image
 
 A Vast.ai image for @@NAME@@. Includes the Instance Portal, Supervisor process
@@ -163,12 +170,69 @@ management, and other conveniences from the Vast.ai
 >>> FILL: how this image works, available tags, environment variables. <<<
 '''
 
+# The recommended-template marketplace README (ADR 0011), modelled on vast_landing's
+# recommended templates: structured sections + a Licenses block + the <<LAUNCH_LINK>>
+# PLACEHOLDER (create.py substitutes the referral URL at publish — never hardcode a ref link;
+# L052 is an ERROR on a hardcoded cloud.vast.ai/?ref_id=… here).
 _README_TEMPLATE = '''# @@LABEL@@
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=@@NAME@@)**
+> **[Create an Instance](<<LAUNCH_LINK>>)**
 
 ## What is this template?
 
->>> FILL: marketplace description of @@LABEL@@ for end users — what it does and why. <<<
+>>> FILL: 1–2 paragraph marketplace description of @@LABEL@@ — what it does and why a user
+would run it on Vast. <<<
+
+---
+
+## What can I do with this?
+
+>>> FILL: bullet list of the main things a user can do (serve an API, run a UI, fine-tune, …). <<<
+
+---
+
+## Quick Start Guide
+
+### Step 1: Launch
+Click **"[Rent](<<LAUNCH_LINK>>)"** on an instance that fits (see the compute/VRAM notes below).
+
+### Step 2: Wait for setup
+The app starts automatically via supervisor. Open the **Instance Portal** (port 1111) to reach it.
+
+### Step 3: Use @@LABEL@@
+>>> FILL: how to actually use it once up — the portal tab, the main endpoint/UI, a first
+request or action, and where models/data live. Mirror ROOT/etc/vast_agents/@@NAME@@.md. <<<
+
+---
+
+## Key Features
+
+>>> FILL: short list/table of notable features and access methods (UI, API, Jupyter, SSH,
+Instance Portal). <<<
+
+---
+
+## Ports
+
+>>> FILL: the app's port(s) and what they serve, matching templates/default/template.yml's
+PORTAL_CONFIG (e.g. internal 5000 → mapped external, path /docs). <<<
+
+---
+
+## Licenses
+
+This template ships vendor application(s) under the following license(s):
+
+>>> FILL: list each shipped app + its SPDX license + upstream link, e.g.
+- **<app>** — <SPDX> ([upstream](<url>))
+
+See `/LICENSES.md` in the image for license details and file locations. <<<
+
+## Need More Help?
+
+- **Base Image Features:** [GitHub Repository](https://github.com/vast-ai/base-image/)
+- **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
+- **Template Configuration:** [Vast.ai Template Guide](https://docs.vast.ai/templates)
+- **Support:** Use the messaging icon in the Vast.ai console
 '''
 
 # external only: PORTAL_CONFIG ports are NOT internal+10000 by rule (invariants §3),
@@ -436,17 +500,27 @@ jobs:
 # overrides image/tag via create.py --tag) and runs the functional test on it. The
 # compute_cap floor is pre-set to a valid number (sm_75) so L050 passes; the launch spec
 # is left to FILL because it must faithfully mirror how this image actually runs.
-_DEFAULT_TEMPLATE = '''# THE template for @@LABEL@@ (ADR 0010): the public, user-facing launch template AND the
-# one the live-GPU QA gate boots — so "QA passed" means "the template users launch passed".
-# The gate overrides image/tag to the freshly-built staging image (a transient copy); the
-# functional test is the image's baked ROOT/opt/instance-tools/tests/@@NAME@@.d/, not a
-# template field. Keep the launch spec faithful to how the image actually serves.
+_DEFAULT_TEMPLATE = '''# THE production-ready recommended template for @@LABEL@@ (ADR 0010/0011): the user-facing
+# launch template AND the one the live-GPU QA gate boots — so "QA passed" means "the template
+# users launch passed". The gate overrides image/tag to the freshly-built staging image (a
+# transient copy); `imagegen publish` dogfoods a private copy of it. The functional test is
+# the image's baked ROOT/opt/instance-tools/tests/@@NAME@@.d/, not a template field. Match
+# vast_landing's recommended-template format; keep the launch spec faithful to how it serves.
 name: "@@LABEL@@"
 image: vastai/@@NAME@@
-tag: latest
+tag: "CHANGEME"                  # pin a CONCRETE promoted tag (build scheme <ref>-cuda-<ver>-py<n>, e.g. v1.2.3-cuda-12.9-py312). Apps pin a known-good tag; @vastai-automatic-tag is for base-image/pytorch only (it auto-selects the newest, possibly unvetted, tag).
+href: https://hub.docker.com/r/vastai/@@NAME@@/
+repo: vastai/@@NAME@@
+desc: ">>> FILL: one-line marketplace description of @@LABEL@@ <<<"
+recommended_disk_space: 16.0   # >>> FILL: sensible default disk (GB) for @@LABEL@@ <<<
 private: false
 readme_visible: true
 onstart: entrypoint.sh
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+runtype: jupyter
 # >>> FILL: complete the launch spec — ports / env / PORTAL_CONFIG, wiring the app's real
 # interface:port into the portal (model this on how the supervisor launches the app). <<<
 extra_filters:
@@ -493,8 +567,8 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
     files = {
         d / "Dockerfile": _render(df_tmpl, **sub),
         d / "README.md": _render(_README_DEV, **sub),
-        d / "README.template.md": _render(_README_TEMPLATE, **sub),
         d / "templates" / "default" / "template.yml": _render(_DEFAULT_TEMPLATE, **sub),
+        d / "templates" / "default" / "README.md": _render(_README_TEMPLATE, **sub),
         root / "opt/supervisor-scripts" / f"{name}.sh": _render(_SUPERVISOR_SH, **sub),
         root / "etc/supervisor/conf.d" / f"{name}.conf": _render(_CONF, **sub),
         root / "etc/vast_capabilities.d" / f"{_CAP_NN[cls]}-{name}.yaml": _render(_CAP, **sub),

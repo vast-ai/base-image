@@ -461,3 +461,21 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     raise SystemExit(1 if failed else 0)
+
+
+def test_mut_baked_weights_L053(tmp_path):
+    """L053 — a model download baked into a RUN trips the gate; a COMMENTED one does not
+    (instruction-aware via code_text); the clean baseline Dockerfile is L053-clean."""
+    assert not has(make(tmp_path), tmp_path, "L053")                        # clean baseline
+
+    baked = VALID_DF.replace("    uv pip install foo; \\",
+        "    uv pip install foo; \\\n    hf download org/model model.safetensors -d /opt/models; \\")
+    assert has(make(tmp_path, df=baked), tmp_path, "L053", "baked model weights")
+
+    wget = VALID_DF.replace("    uv pip install foo; \\",
+        "    uv pip install foo; \\\n    wget -O /opt/models/m.gguf https://example/m.gguf; \\")
+    assert has(make(tmp_path, df=wget), tmp_path, "L053")                   # weight file via wget
+
+    commented = VALID_DF.replace("    uv pip install foo; \\",
+        "    uv pip install foo; \\\n    # hf download org/model model.safetensors; \\")
+    assert not has(make(tmp_path, df=commented), tmp_path, "L053")          # comment must not fire
