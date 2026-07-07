@@ -52,24 +52,41 @@ PYTHONPATH=tools/imagegen python3 -m imagegen.cli new \
 It reports `structure: valid ✓` and `skeleton: N files … NOT buildable yet`. That N is
 your fill list.
 
-## Step 3 — Study BOTH the sibling and the upstream's own install
-Two sources, two jobs — read both before filling:
-- **The closest same-class sibling** (`derivatives/pytorch/derivatives/comfyui/`, `external/vllm/`, …)
-  gives the **shape**: where the app is cloned, the torch-guard window, the supervisor / `.conf` /
-  portal wiring, the template. Match its real conventions — do not invent.
-- **The upstream's OWN install** gives the **actual dependency resolution**: read the app's
-  README/wiki install guide, its `pyproject.toml` / `setup.py` / `requirements*.txt`, **and its
-  own `Dockerfile`** (the authoritative install — not a blog post or a research summary). That is
-  where the real pins, extras, and prebuilt-wheel URLs live (e.g. TabbyAPI's `cu12` extra pins the
-  exact exllamav3 / flash-attn wheel URLs). Then **translate** it to our pattern: install into
-  `/venv/main` with `uv pip`, keep the base torch unclobbered (strip upstream torch pins;
-  `--no-deps` on any wheel whose metadata would drag a different torch), all inside the
-  drift-guard window.
+## Step 3 — Study the sibling (and, for BUILD classes only, the upstream's own install)
+**First know which model your class uses — `external` and the build classes are fundamentally different:**
+- **`external` — you WRAP a prebuilt image; you do NOT build the app.** `FROM` the upstream's
+  **published image** (their `pip install` / custom torch base is already baked in) and graft our
+  overlay on top, exactly like `external/vllm/Dockerfile`: `FROM ${<NAME>_BASE}` + `COPY
+  --from=base_image_source /ROOT /` + the portal / caddy / tools. From the upstream you need **only
+  three things: (1) the published image tag to base on, (2) the app's launch command, (3) its
+  ports.** Do **NOT** read their Dockerfile / requirements for dependencies or pins — *how they
+  built their image is irrelevant to us*. Skip the dependency-resolution bullet below.
+- **`pytorch-nested` / `derivative` — you BUILD the app from source into our base.** The
+  dependency-resolution work below applies in full.
 
-This is where guessing has burned us: always diff against ground truth — **both** of them.
+Sources to read before filling:
+- **The closest same-class sibling** (`external/vllm/` for external; `derivatives/pytorch/derivatives/comfyui/`
+  for pytorch-nested) gives the **shape**: the Dockerfile structure, the supervisor / `.conf` /
+  portal wiring, the template. Match its real conventions — do not invent.
+- **(BUILD classes only) The upstream's OWN install** gives the **actual dependency resolution**:
+  read the app's README/wiki install guide, its `pyproject.toml` / `setup.py` / `requirements*.txt`,
+  **and its own `Dockerfile`** (the authoritative install). That is where the real pins, extras, and
+  prebuilt-wheel URLs live (e.g. TabbyAPI's `cu12` extra pins the exact exllamav3 / flash-attn wheel
+  URLs). Then **translate** it to our pattern: install into `/venv/main` with `uv pip`, keep the base
+  torch unclobbered (strip upstream torch pins; `--no-deps` on any wheel whose metadata would drag a
+  different torch), all inside the drift-guard window.
+
+This is where guessing has burned us: always diff against ground truth. For **external** that ground
+truth is the **prebuilt image + the sibling's wrap** (never the upstream's build); for the build
+classes it's the sibling **and** the upstream's own install.
 
 ## Step 4 — Fill only the fenced residue
 Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
+- **Dockerfile base (external)**: set the `>>> FILL` upstream image to the app's **prebuilt
+  published tag** (`FROM ${<NAME>_BASE}` → e.g. `hiyouga/llamafactory:latest`) and leave the graft
+  (`COPY --from=base_image_source /ROOT /`, portal, caddy, tools) as scaffolded — there is **no app
+  install step** to write; it's already in the upstream image. The only per-app work is the base
+  tag, the supervisor launch command, and the ports.
 - **Dockerfile install (pytorch-nested)**: the install MUST stay **inside the existing
   RUN, between the `torch_versions_pre` and `torch_versions_post` lines** — the marker is
   already placed there; do **not** move it to a separate RUN. An install outside that
