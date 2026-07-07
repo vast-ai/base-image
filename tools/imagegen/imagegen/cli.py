@@ -100,8 +100,10 @@ def main(argv=None) -> int:
     qa.add_argument("--log", dest="logs", action="append", help="in-instance log file to stream (repeatable; default /var/log/portal/<name>.log)")
     qa.add_argument("--max-price", default="0.60", help="max $/hr for the rented GPU")
     qa.add_argument("--timeout", default="1800", help="per-run timeout seconds")
+    qa.add_argument("--min-vram", type=float, help="VRAM floor in GB the qa box must have — for a "
+                    "multi-model host whose template leaves it unset (injected as gpu_total_ram)")
     qa.set_defaults(func=lambda a: __import__("imagegen.qa", fromlist=["run"]).run(
-        a.name, tag=a.tag, logs=a.logs, max_price=a.max_price, timeout=a.timeout))
+        a.name, tag=a.tag, logs=a.logs, max_price=a.max_price, timeout=a.timeout, min_vram=a.min_vram))
 
     build = sub.add_parser("build", help="build the image locally (+ --push to staging) — the step qa-fix rebuilds with")
     build.add_argument("name", help="image name")

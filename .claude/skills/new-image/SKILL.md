@@ -112,6 +112,13 @@ Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
   setup belongs in a `provisioning_scripts/<name>.sh` (run via `PROVISIONING_SCRIPT`). Because
   the *tenant* triggers the download, the model licence stays theirs and the image stays small
   and rebuildable.
+- **VRAM floor decision (the `extra_filters` `>>> FILL` block, L054 + invariants §7):** resolve
+  it consciously. If the image runs **one fixed/provisioned model**, set a floor sized to it —
+  `gpu_ram: {gte: <MB>}` (fits a single GPU) or `gpu_total_ram: {gte: <MB>}` (across GPUs) — so
+  box selection rents a GPU that can hold it. If it's a **multi-model host** (tenant picks the
+  model via `<NAME_UPPER>_MODEL`), **delete the block** — the launch template must not
+  over-constrain, and QA supplies the floor at rent time (`imagegen qa --min-vram <GB>`, ADR
+  0010). L054 validates the *format* of whatever you set; sizing is your judgment.
 - **PORTAL_CONFIG / port wiring**: external → fill `05-<name>-env.sh` with the app's real
   bind port. **pytorch-nested / derivative** → check the sibling: if it ships a
   `ROOT/etc/vast_boot.d/05-<name>-env.sh`, add one wiring your port into PORTAL_CONFIG;

@@ -190,3 +190,14 @@ oobabooga). The `new-image` skill + generator encode them.
   VLLM_MODEL not set"*). Heavier/multi-step setup lives in a `provisioning_scripts/<name>.sh`
   (run via `PROVISIONING_SCRIPT`). So "launch the template" yields a working model, and no
   weights ship in the image.
+- **VRAM floor sized to the model — `gpu_ram` / `gpu_total_ram` (validity GATED, L054).** A
+  template's `extra_filters` should carry a VRAM floor sized to the model the image actually
+  runs, so box selection rents a GPU that can hold it — `gpu_ram: {gte: <MB>}` (must fit a
+  single GPU) or `gpu_total_ram: {gte: <MB>}` (summed across GPUs). **Boundary:** a *single*
+  fixed/provisioned-model image SHOULD set it; a **multi-model host** (the user picks the model
+  via `<APP>_MODEL`) leaves it **unset** on the launch template, and the live-GPU gate supplies
+  a floor at rent time (`imagegen qa --min-vram <GB>` → injected `gpu_total_ram`, ADR 0010) so
+  the *test* model fits without over-constraining the launch template. Presence + the value are
+  judgment (the linter can't know a model's footprint); **L054 gates only FORMAT** — a VRAM
+  filter, if set, must use a valid key with a numeric floor (a misspelled key or a key-only
+  floor lints falsely clean but selects nothing).

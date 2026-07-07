@@ -70,6 +70,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L051", ERROR, "Supervisor launch scripts (ROOT/opt/supervisor-scripts/*.sh) are executable — the .conf execs them directly"),
     ("L052", ERROR, "A shipped templates/*/README.md launch link uses the <<LAUNCH_LINK>> placeholder, not a hardcoded cloud.vast.ai ref link (ADR 0011)"),
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
+    ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
 ]
 
 
@@ -445,6 +446,60 @@ def check_template_floor(img: Image, repo: Path) -> Iterable[Finding]:
                 break  # one finding per file is enough
 
 
+_VALID_VRAM_KEYS = ("gpu_ram", "gpu_total_ram")
+_VRAM_TYPO_KEYS = ("vram", "gpu_vram", "gpu_mem", "gpu_memory", "gpu_ram_gb",
+                   "gpu_ram_mb", "gpu_ram_total", "total_ram", "min_vram")
+
+
+def _vram_findings(entry, img_name: str, rel: str) -> Iterable[Finding]:
+    if not isinstance(entry, dict):
+        return
+    ef = entry.get("extra_filters")
+    if not isinstance(ef, dict):
+        return
+    for bad in _VRAM_TYPO_KEYS:
+        if bad in ef:
+            yield Finding("L054", ERROR, img_name, rel,
+                          f"extra_filters.{bad} is not a Vast filter — a VRAM floor is "
+                          f"`gpu_ram` (per-GPU MB) or `gpu_total_ram` (total MB)")
+    for key in _VALID_VRAM_KEYS:
+        if key not in ef:
+            continue
+        spec = ef[key]
+        ok = (isinstance(spec, dict) and any(op in spec and _is_number(spec[op])
+                                             for op in ("gte", "gt", "eq"))) or _is_number(spec)
+        if not ok:
+            yield Finding("L054", ERROR, img_name, rel,
+                          f"extra_filters.{key} needs a numeric floor (MB), e.g. "
+                          f"{{{key}: {{gte: 24000}}}} — a key-only floor selects nothing")
+
+
+def check_template_vram(img: Image, repo: Path) -> Iterable[Finding]:
+    """L054 — a template's VRAM floor, IF present, must use a valid key (gpu_ram / gpu_total_ram,
+    in MB) with a numeric value. Presence is OPTIONAL and by judgment: a single-fixed-model image
+    SHOULD set it sized to its model; a model-agnostic host leaves it unset and the qa gate
+    supplies a floor at rent time (ADR 0010 amendment). The linter validates FORMAT only — a
+    misspelled key or a key-only floor lints falsely clean but selects nothing at rent time.
+    """
+    if img.cls == "base":
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            yield from _vram_findings(entry, img.name, rel)
+
+
 def check_supervisor_executable(img: Image) -> Iterable[Finding]:
     """L051 — supervisor launch scripts must be executable. The generated .conf runs
     `command=/opt/supervisor-scripts/<name>.sh` directly (no interpreter prefix), so a
@@ -523,6 +578,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_skeleton(img, repo))
     out.extend(check_no_hardcoded_staging_namespace(img, repo))
     out.extend(check_template_floor(img, repo))
+    out.extend(check_template_vram(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))
     if apply_exceptions:

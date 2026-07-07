@@ -389,3 +389,24 @@ def test_publish_create_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
         q.publish("myimg", tag="ns/myimg:t1", log=lambda m: None)
     assert json.loads((img / ".qa" / "publish.json").read_text())["id"] == "keep", \
         "ledger must not be overwritten when create fails"
+
+
+def test_inject_vram_floor_supplies_and_preserves(tmp_path):
+    import yaml
+    tdir = tmp_path / "templates" / "default"; tdir.mkdir(parents=True)
+    (tdir / "template.yml").write_text(
+        "name: X\nimage: vastai/x\nextra_filters:\n  compute_cap:\n    gte: 750\n")
+    qa_dir = tmp_path / ".qa"; qa_dir.mkdir()
+    out = q._inject_vram_floor(tdir, qa_dir, 24, log=lambda m: None)
+    ef = yaml.safe_load((out / "template.yml").read_text())["extra_filters"]
+    assert ef["gpu_total_ram"]["gte"] == 24 * 1024        # supplied
+    assert ef["compute_cap"]["gte"] == 750                # preserved
+
+
+def test_inject_vram_floor_never_lowers_stricter(tmp_path):
+    import yaml
+    tdir = tmp_path / "templates" / "default"; tdir.mkdir(parents=True)
+    (tdir / "template.yml").write_text("name: X\nextra_filters:\n  gpu_total_ram:\n    gte: 81920\n")
+    qa_dir = tmp_path / ".qa"; qa_dir.mkdir()
+    out = q._inject_vram_floor(tdir, qa_dir, 24, log=lambda m: None)   # 24 GB < 80 GB existing
+    assert yaml.safe_load((out / "template.yml").read_text())["extra_filters"]["gpu_total_ram"]["gte"] == 81920

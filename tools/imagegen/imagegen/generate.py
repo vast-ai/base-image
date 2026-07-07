@@ -527,6 +527,10 @@ extra_filters:
   compute_cap:
     # >>> FILL: set the real minimum compute capability for this image (sm_XX x 10). <<<
     gte: 750
+  # >>> FILL: VRAM floor (L054). If this image runs ONE fixed/provisioned model, add a floor
+  # sized to it — `gpu_ram: {gte: <MB>}` (must fit a single GPU) or `gpu_total_ram: {gte: <MB>}`
+  # (summed across GPUs). If this is a MULTI-MODEL host (the user picks the model via
+  # <APP>_MODEL), DELETE this block — the qa gate supplies a floor at rent time (ADR 0010). <<<
 '''
 
 

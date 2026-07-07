@@ -68,3 +68,25 @@ image, not in this change.
 - If a future need genuinely requires the gate to test a materially different config than the
   launch template (not just image/tag/private), that's a real second template — revisit then.
   Overriding image/tag/private at publish covers every case seen so far.
+
+## Amendment (2026-07-07) — the QA gate supplies the VRAM floor
+
+Unifying launch + QA into one template exposed a conflict for **multi-model hosts**: the
+launch template must leave the VRAM floor **unset** (the user picks the model, so the image
+must not over-constrain the rentable box — invariants §7), but the QA run still needs its
+*test* model to fit the cheapest box that meets `compute_cap`. One template can't do both.
+
+**Decision:** the QA gate supplies the VRAM floor at rent time, exactly as it already
+overrides `image`/`tag`. `imagegen qa --min-vram <GB>` injects `gpu_total_ram: {gte: <GB×1024>}`
+into the throwaway QA copy's `extra_filters` (never lowering a floor the template already
+declares) before publish; `test_template.py`'s offer search already reads that floor. So:
+
+- **single fixed/provisioned-model image** → the *launch* template sets a VRAM floor sized to
+  its model (invariants §7); QA inherits it, no `--min-vram` needed.
+- **multi-model host** → launch template leaves VRAM unset; QA passes `--min-vram` sized to the
+  functional test's model. The launch template stays unconstrained; the gate still fits the box.
+
+L054 gates the *format* of any VRAM floor that is set (valid key + numeric); presence/sizing
+stays human judgment. The legacy `vllm-qa` / `comfyui-qa` templates that hand-set
+`gpu_total_ram: 8192` are the pre-amendment manual form of this and fold into `--min-vram` once
+migrated to the unified template.

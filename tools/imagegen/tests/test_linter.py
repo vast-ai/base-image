@@ -134,6 +134,34 @@ def test_L050_no_templates_dir_is_clean(tmp_path):
     assert "L050" not in errs(make(tmp_path), tmp_path)
 
 
+def test_L054_misspelled_vram_key_fires(tmp_path):
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\nextra_filters:\n"
+                         "  compute_cap:\n    gte: 700\n  gpu_vram:\n    gte: 24000\n")
+    assert "L054" in errs(img, tmp_path)
+
+
+def test_L054_key_only_vram_floor_fires(tmp_path):
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\nextra_filters:\n"
+                         "  compute_cap:\n    gte: 700\n  gpu_ram:\n    lte: 40000\n")  # no gte/gt/eq
+    assert "L054" in errs(img, tmp_path)
+
+
+def test_L054_valid_vram_floor_is_clean(tmp_path):
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\nextra_filters:\n"
+                         "  compute_cap:\n    gte: 700\n  gpu_total_ram:\n    gte: 24000\n")
+    assert "L054" not in errs(img, tmp_path)
+
+
+def test_L054_absent_vram_floor_is_clean(tmp_path):
+    # Presence is OPTIONAL — a multi-model host omits it (qa supplies the floor). Not an L054.
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\nextra_filters:\n  compute_cap:\n    gte: 700\n")
+    assert "L054" not in errs(img, tmp_path)
+
+
 def test_L050_null_floor_value_is_rejected(tmp_path):
     # A key-only floor ({gte: null}) lints clean under presence-only checks but the
     # tester can't parse it -> must fire L050.

@@ -54,6 +54,29 @@ def _load_dotenv(repo: Path) -> None:
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+def _inject_vram_floor(template_dir: Path, qa_dir: Path, min_vram_gb: float, log) -> Path:
+    """Write a throwaway copy of the template with a `gpu_total_ram` floor injected into
+    extra_filters, so the rented qa box is big enough for the TEST model (ADR 0010 amendment).
+    For a multi-model host the launch template leaves VRAM unset (the user picks the model);
+    the qa gate supplies the floor here, the same way it overrides image/tag. Never lowers a
+    floor the template already declares. Comments are dropped (transient copy)."""
+    import yaml
+    floor_mb = int(min_vram_gb * 1024)
+    data = yaml.safe_load((template_dir / "template.yml").read_text())
+    for e in (data if isinstance(data, list) else [data]):
+        ef = e.setdefault("extra_filters", {}) or {}
+        cur = ef.get("gpu_total_ram")
+        cur_gte = cur.get("gte") if isinstance(cur, dict) else None
+        if not isinstance(cur_gte, (int, float)) or cur_gte < floor_mb:
+            ef["gpu_total_ram"] = {**(cur if isinstance(cur, dict) else {}), "gte": floor_mb}
+        e["extra_filters"] = ef
+    dst = qa_dir / "template-vram"
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / "template.yml").write_text(yaml.safe_dump(data, sort_keys=False))
+    log(f"imagegen qa: supplying VRAM floor gpu_total_ram≥{floor_mb} MB ({min_vram_gb} GB) for the test model")
+    return dst
+
+
 def _qa_template_dir(img_dir: Path, name: str) -> Path:
     """The template the QA gate boots (ADR 0010): the launch template `templates/default/`,
     falling back to the legacy `templates/<name>-qa/` for images not yet migrated."""
@@ -225,9 +248,11 @@ _EXPLAIN = {
 
 
 def run(name: str, *, tag: str | None = None, logs: list | None = None,
-        max_price: str = "0.60", timeout: str = "1800", log=None) -> int:
+        max_price: str = "0.60", timeout: str = "1800", min_vram: float | None = None,
+        log=None) -> int:
     """Publish the launch template (ADR 0010), run the live smoke (holding the box), and route on the
-    verdict. Holds the box for diagnosis ONLY on a real app-failure (exit 1)."""
+    verdict. Holds the box for diagnosis ONLY on a real app-failure (exit 1). --min-vram supplies a
+    gpu_total_ram floor at rent time for a multi-model host whose launch template leaves it unset."""
     log = log or (lambda m: print(m, file=sys.stderr))
     _check_deps()
     _load_dotenv(_REPO)
@@ -254,6 +279,8 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     qa_dir = img_dir / ".qa"
     qa_dir.mkdir(parents=True, exist_ok=True)
     py = sys.executable
+    if min_vram:                         # ADR 0010: qa supplies the VRAM floor (host template leaves it unset)
+        template_dir = _inject_vram_floor(template_dir, qa_dir, min_vram, log)
 
     # 1. publish the throwaway QA copy of the launch template, pointed at the staging image
     created_json = qa_dir / "create.json"
