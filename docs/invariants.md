@@ -201,3 +201,11 @@ oobabooga). The `new-image` skill + generator encode them.
   judgment (the linter can't know a model's footprint); **L054 gates only FORMAT** — a VRAM
   filter, if set, must use a valid key with a numeric floor (a misspelled key or a key-only
   floor lints falsely clean but selects nothing).
+- **External images set `TCLLIBPATH` (GATED, L055).** An external image `FROM`s the upstream's
+  prebuilt image, so it does NOT inherit the base image's ENV. It must set
+  `ENV TCLLIBPATH=/usr/lib/tcltk/default` itself, or the base pty helper's `unbuffer` (Tcl/Expect)
+  fails early in boot and the launch cascade dies — the LLaMA-Factory scaffold shipped without it
+  and died on a live box (no supervisord, `can't find package Expect`). The `/opt/sys-venv/shim`
+  PATH entry most externals also carry is **NOT gated**: `vast_boot.d/10-prep-env.sh` adds it at
+  runtime, so `vllm-omni` omits it from the Dockerfile and works fine. Root cause was a generator
+  bug (`_DF_EXTERNAL` set neither); fixed + gated.

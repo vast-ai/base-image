@@ -71,6 +71,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L052", ERROR, "A shipped templates/*/README.md launch link uses the <<LAUNCH_LINK>> placeholder, not a hardcoded cloud.vast.ai ref link (ADR 0011)"),
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
+    ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
 ]
 
 
@@ -558,10 +559,29 @@ def check_launch_link_placeholder(img: Image) -> Iterable[Finding]:
                           "placeholder (create.py substitutes the referral URL at publish) — ADR 0011")
 
 
+def check_external_env(img: Image) -> Iterable[Finding]:
+    """L055 — an external image FROMs the upstream, so it does NOT inherit the base image's ENV
+    and must set `TCLLIBPATH=/usr/lib/tcltk/default` itself, or the base pty helper's `unbuffer`
+    (Tcl/Expect) fails early in boot ("can't find package Expect") and the launch cascade dies.
+    llama-factory scaffolded without it and died on a live box; every working external (incl.
+    vllm-omni, which omits the /opt/sys-venv/shim PATH entry — that one is runtime-provided by
+    vast_boot.d/10-prep-env.sh, so NOT gated here) sets it. Fix surface: the Dockerfile ENV.
+    External only."""
+    if img.cls != "external":
+        return
+    env = " ".join(i.value for i in parse(img.text) if i.cmd == "ENV")
+    if "TCLLIBPATH" not in env:
+        yield Finding("L055", ERROR, img.name, "Dockerfile",
+                      "external image must set ENV TCLLIBPATH=/usr/lib/tcltk/default — it does not "
+                      "inherit the base ENV, and the pty helper's unbuffer/Expect needs it or the "
+                      "app launch dies at boot")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
+    check_external_env,
 ]
 
 

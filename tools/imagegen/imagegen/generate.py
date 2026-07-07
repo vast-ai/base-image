@@ -72,13 +72,19 @@ FROM ${@@NAME_UPPER@@_BASE} AS @@NAME@@_build
 
 SHELL ["/bin/bash", "-c"]
 WORKDIR /
+# An external image FROMs the upstream, so it does NOT inherit the base image's ENV. TCLLIBPATH
+# is REQUIRED (L055): without it the base pty helper's `unbuffer` (Tcl/Expect) fails early in boot
+# and the launch cascade dies. The /opt/sys-venv/shim PATH entry (convert-non-vast-image.sh puts
+# supervisord/jupyter there) matches vllm/sglang/ollama, but vast_boot.d/10-prep-env.sh also adds
+# it at runtime — belt-and-suspenders, so it's not gated (vllm-omni omits it and is fine).
 ENV DATA_DIRECTORY=/workspace \\
     WORKSPACE=/workspace \\
     DEBIAN_FRONTEND=noninteractive \\
     PYTHONUNBUFFERED=1 \\
     PIP_BREAK_SYSTEM_PACKAGES=1 \\
     UV_LINK_MODE=copy \\
-    PATH=/opt/instance-tools/bin:$PATH
+    TCLLIBPATH=/usr/lib/tcltk/default \\
+    PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:$PATH
 
 # NOTE: the `base_image_source` stage is supplied at build time via
 # `--build-context base_image_source=<repo root>` (see .github/AGENTS.md).

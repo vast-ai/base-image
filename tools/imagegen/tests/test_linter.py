@@ -507,3 +507,32 @@ def test_mut_baked_weights_L053(tmp_path):
     commented = VALID_DF.replace("    uv pip install foo; \\",
         "    uv pip install foo; \\\n    # hf download org/model model.safetensors; \\")
     assert not has(make(tmp_path, df=commented), tmp_path, "L053")          # comment must not fire
+
+
+_EXT_ENV_GOOD = ("FROM ${VAST_BASE} AS vast_base_image\nFROM ${FOO_BASE} AS foo_build\n"
+                 "ENV TCLLIBPATH=/usr/lib/tcltk/default \\\n"
+                 "    PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:$PATH\nCOPY ./ROOT /\n")
+
+
+def test_L055_external_missing_tcllibpath_fires(tmp_path):
+    df = ("FROM ${VAST_BASE} AS vast_base_image\nFROM ${FOO_BASE} AS foo_build\n"
+          "ENV PATH=/opt/instance-tools/bin:$PATH\nCOPY ./ROOT /\n")   # no TCLLIBPATH -> fires
+    assert "L055" in errs(make(tmp_path, cls="external", df=df), tmp_path)
+
+
+def test_L055_external_with_tcllibpath_is_clean(tmp_path):
+    assert "L055" not in errs(make(tmp_path, cls="external", df=_EXT_ENV_GOOD), tmp_path)
+
+
+def test_L055_shim_on_path_is_not_required(tmp_path):
+    # vllm-omni case: TCLLIBPATH set but no /opt/sys-venv/shim on PATH (10-prep-env.sh adds it at
+    # runtime) -> a working image, must stay clean. The shim is convention, not a gated invariant.
+    df = ("FROM ${VAST_BASE} AS vast_base_image\nFROM ${FOO_BASE} AS foo_build\n"
+          "ENV TCLLIBPATH=/usr/lib/tcltk/default\nENV PATH=/opt/instance-tools/bin:$PATH\nCOPY ./ROOT /\n")
+    assert "L055" not in errs(make(tmp_path, cls="external", df=df), tmp_path)
+
+
+def test_L055_not_applied_to_non_external(tmp_path):
+    # pytorch-nested FROMs our base and inherits its ENV, so the rule does not apply
+    df = "FROM ${PYTORCH_BASE}\nENV PATH=/opt/instance-tools/bin:$PATH\nCOPY ./ROOT /\n"
+    assert "L055" not in errs(make(tmp_path, cls="pytorch-nested", df=df), tmp_path)
