@@ -225,11 +225,12 @@ surviving review finding.
      self-terminates and tears down its instance first, and a true hang is killed
      at 4h, not 6h. Rate-limit retries (`MAX_API_RETRIES`) are bounded by these
      phase caps, so a 429 storm can't run the clock to the cap.
-8. **Plaintext-channel acknowledged.** The harness auth token is the instance
-   `jupyter_token` streamed over `http://` on a public IP — accepted only because
-   the box is a short-lived throwaway; the QA key is never round-tripped through an
-   instance `--env` (the `*_pass/_token/_key/_secret` redactor would not catch a
-   `VAST_API_KEY`-named value).
+8. **Transport posture reviewed and accepted.** The QA harness's auth channel to a
+   throwaway box carries a plaintext exposure, accepted *only* because the box is
+   short-lived and disposable, and the QA credential is never passed into the
+   instance environment. The exact channel and credential-redaction specifics are
+   internal security detail tracked in CON-1585 — deliberately not restated in this
+   public repo.
 9. **Prerequisite work shipped first.** Landed: the `cpu_arch == "amd64"` filter and
    the VRAM-primary + bounded `compute_cap`-floor selection (condition 10), with unit
    tests. Still to build before the gate is enabled: `create.py`/`models.py`
