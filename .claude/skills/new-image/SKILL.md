@@ -101,10 +101,17 @@ Resolve every `>>> FILL` / `CHANGEME` / `CHANGEPORT`:
   few images (voicebox) instead keep the app in `/opt/<name>` with only a separate
   `$WORKSPACE/<name>-data` dir — that's the exception, not the rule; prefer
   workspace-internal unless the app must not be user-editable.
-- **`CHANGEME` base tag**: set it to the tag the chosen **sibling currently pins** (an
-  existing tag — e.g. comfyui pins a dated `vastai/pytorch:...` tag). Never invent a tag;
-  a non-existent tag lints clean but fails `docker build` on the `FROM` pull. (Filling
-  this token is a normal in-fence fill, NOT an escape-hatch case.)
+- **`CHANGEME` base tag (pytorch-nested)** — **resolve it, don't copy a sibling** (ADR 0013).
+  The torch + CUDA are your deliberate choice from Step 3's dependency resolution; the *date*
+  should be the newest published for that combo, not whatever a sibling last pinned (siblings
+  drift). Run `PYTHONPATH=tools/imagegen python3 -m imagegen.cli resolve-base --torch <v>
+  --cuda <toolkit> [--py 312] [--variant mini]` and paste the concrete tag it prints (it probes
+  DockerHub and picks the latest-dated `vastai/pytorch` index tag for the tuple, failing loud if
+  none matches). Or scaffold it in one shot: `imagegen new --class pytorch-nested … --resolve-base
+  --torch <v> --cuda <toolkit>` writes the concrete pin instead of `CHANGEME`. Never invent or
+  float a tag — **L005** fails a `latest`/untagged base, and a non-existent tag fails `docker
+  build` on the `FROM` pull. (A normal in-fence fill, NOT an escape-hatch case.) To refresh an
+  existing image's pins later, `imagegen bump <name>` re-resolves to the newest date.
 - **supervisor script — `pty` launch driven by an `<APP>_ARGS` env** (fleet convention:
   `VLLM_ARGS`, `SGLANG_ARGS`, `LLAMA_ARGS`, `OOBABOOGA_ARGS`). Every application's launch must
   read `${<NAME_UPPER>_ARGS:-<sensible defaults>}` so a template or user can set runtime

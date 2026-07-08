@@ -146,6 +146,17 @@ for the out-of-box / QA first-run (a §6-style deviation, tracked for migration 
 runtime provisioning — see the `EXCEPTIONS` entry). It is the only current exemption;
 new images must provision, not bake.
 
+### App base FROM is a concrete pin — **GATED (L005)**
+
+A `pytorch-nested` / `derivative` image must pin a **concrete** base `FROM` — a dated tag or a
+digest — never `latest` and never untagged. A floating base lets a rebuild silently land on a
+base image this app was never tested against (ADR 0013). `base-image` / `pytorch` themselves may
+float; app images may not. **L005** resolves the base ref via ARG defaults (like L004) and fires
+on `latest`/untagged; a digest (`@sha256:…`) passes, and a base injected via a defaultless
+build-arg (the CI multi-cuda pattern) is skipped — its concrete tag lives in the CI matrix. The
+scaffold's `CHANGEME` is L040's surface, not L005's. Pins are produced/refreshed by the DockerHub
+resolver (`imagegen resolve-base` / `new --resolve-base` / `bump`, ADR 0013).
+
 ### No credential-shaped secret in a public ADR — **GATED (L060)**
 
 `base-image` is public, and `docs/adr/**` is world-readable. An ADR records the

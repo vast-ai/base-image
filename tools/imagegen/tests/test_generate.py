@@ -20,6 +20,25 @@ def _gen_repo(repo: Path):
              upstream="someupstream/img:1.0")
 
 
+def test_base_tag_pins_concrete_instead_of_changeme(tmp_path):
+    """generate(base_tag=…) writes the resolved pin (deterministic string sub, no network) and
+    the pytorch-nested image is then L005-clean and no longer has a CHANGEME base (ADR 0013)."""
+    for d in ("external", "derivatives/pytorch/derivatives", "derivatives", ".github/workflows"):
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+    pin = "vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-06-15"
+    generate(tmp_path, name="myapp", cls="pytorch-nested", label="My App", port=7861, base_tag=pin)
+    df = (tmp_path / "derivatives/pytorch/derivatives/myapp/Dockerfile").read_text()
+    assert f"ARG PYTORCH_BASE={pin}" in df and "vastai/pytorch:CHANGEME" not in df
+    img = next(i for i in discover(tmp_path) if i.name == "myapp")
+    assert not [f for f in lint_image(img, tmp_path) if f.code == "L005"]
+    # base_tag is pytorch-nested only
+    try:
+        generate(tmp_path, name="x", cls="derivative", label="X", port=8000, base_tag=pin)
+        assert False, "expected ValueError for non-pytorch-nested base_tag"
+    except ValueError:
+        pass
+
+
 def test_generated_images_structurally_valid_but_flagged_skeleton(tmp_path):
     """Generated output passes every STRUCTURAL check, and L040 flags it as an
     incomplete skeleton — so it is never mistaken for a complete image."""

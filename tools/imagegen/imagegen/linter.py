@@ -58,6 +58,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L002", ERROR, "`env-hash > /.env_hash` is the final RUN (executed shell, not heredoc data)"),
     ("L003", ERROR, "A local `COPY ./ROOT /` is present"),
     ("L004", ERROR, "FROM matches the declared class — structural base identity (registry+repo), incl. external stage order"),
+    ("L005", ERROR, "App base FROM is a CONCRETE pin — a dated tag or a digest, not `latest` and not untagged — so a rebuild can't jump to an untested base (pytorch-nested & derivative; ADR 0013). base-image/pytorch may float"),
     ("L010", ERROR, "Each [program:NAME]: PROC_NAME + command=/opt/supervisor-scripts/NAME.sh; file stem is a program"),
     ("L011", ERROR, "Sourced utils appear as an ordered subsequence of the canonical order"),
     ("L020", ERROR, "torch-drift guard: a pre==post comparison wired to an exit on the same statement"),
@@ -161,6 +162,36 @@ def check_from_class(img: Image) -> Iterable[Finding]:
                 yield Finding("L004", ERROR, img.name, "Dockerfile", "external vast_base_image stage must resolve to vastai/base-image")
         if "convert-non-vast-image.sh" not in ct:
             yield Finding("L004", ERROR, img.name, "Dockerfile", "external must graft via convert-non-vast-image.sh")
+
+
+_FLOATING_BASE_TAGS = {None, "latest"}   # a rebuild onto these is not reproducible
+
+
+def check_base_pin(img: Image) -> Iterable[Finding]:
+    """L005 — a pytorch-nested/derivative image must pin a CONCRETE base FROM: a dated tag or a
+    digest, never `latest` and never untagged. A floating base lets a rebuild silently land on a
+    base this image was never tested against (ADR 0013). `base-image`/`pytorch` may float; app
+    images may not. The scaffold's `CHANGEME` is L040's job, not this one. A base injected via a
+    defaultless build-arg (the CI multi-cuda pattern) has no in-Dockerfile tag to check, so it is
+    skipped — its concrete tag lives in the CI matrix. `@vastai-automatic-tag` is a template-tag
+    token, not a valid Dockerfile `FROM`, so it is not this check's surface."""
+    if img.cls not in ("pytorch-nested", "derivative"):
+        return
+    want = "vastai/pytorch" if img.cls == "pytorch-nested" else "vastai/base-image"
+    instrs = parse(img.text)
+    defs = arg_defaults(instrs)
+    for ref, _alias in stages(instrs):
+        resolved = resolve(ref, defs)
+        reg, repo, tag = parse_ref(resolved)
+        if reg in _DOCKER_HUB and repo == want:
+            if "@" in resolved:      # a digest pin (repo@sha256:…) is the strongest concrete pin
+                return
+            if tag in _FLOATING_BASE_TAGS:
+                yield Finding("L005", ERROR, img.name, "Dockerfile",
+                              f"base FROM must be a concrete pin, not {tag or 'untagged'} — pin a "
+                              "dated tag (`imagegen resolve-base` / `imagegen bump`); a floating "
+                              "base rebuilds onto an untested image (ADR 0013)")
+            return   # the base stage is checked; done
 
 
 def check_torch_guard(img: Image) -> Iterable[Finding]:
@@ -582,7 +613,7 @@ def check_external_env(img: Image) -> Iterable[Finding]:
 
 
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
-    check_labels, check_env_hash, check_copy_root, check_from_class,
+    check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
     check_external_env,

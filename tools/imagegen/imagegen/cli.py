@@ -62,9 +62,25 @@ def cmd_lint(args) -> int:
 
 def cmd_new(args) -> int:
     repo = find_repo_root(Path(args.repo) if args.repo else Path.cwd())
+    base_tag = None
+    if args.resolve_base:
+        if args.cls != "pytorch-nested":
+            print("error: --resolve-base is pytorch-nested only (ADR 0013)", file=sys.stderr)
+            return 2
+        if not (args.torch and args.cuda):
+            print("error: --resolve-base needs --torch and --cuda", file=sys.stderr)
+            return 2
+        from . import basetag
+        try:
+            base_tag = basetag.resolve(torch=args.torch, cuda=args.cuda, py=args.py,
+                                       mini=(args.variant == "mini"))
+        except (RuntimeError, LookupError) as e:
+            print(f"error: base resolve failed: {e}", file=sys.stderr)
+            return 2
+        print(f"resolved base: {base_tag}")
     try:
         d = generate(repo, name=args.name, cls=args.cls, label=args.label,
-                     port=args.port, upstream=args.upstream)
+                     port=args.port, upstream=args.upstream, base_tag=base_tag)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -84,6 +100,23 @@ def cmd_new(args) -> int:
     return 0
 
 
+def cmd_resolve_base(args) -> int:
+    from . import basetag
+    try:
+        print(basetag.resolve(torch=args.torch, cuda=args.cuda, py=args.py,
+                              mini=(args.variant == "mini")))
+    except (RuntimeError, LookupError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_bump(args) -> int:
+    from . import bump as _bump
+    repo = find_repo_root(Path(args.repo) if args.repo else Path.cwd())
+    return _bump.bump(args.name, repo=repo)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="imagegen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -101,7 +134,26 @@ def main(argv=None) -> int:
     new.add_argument("--port", type=int, required=True)
     new.add_argument("--upstream", help="upstream image:tag (external only)")
     new.add_argument("--repo", help="repo root (default: autodetect from cwd)")
+    new.add_argument("--resolve-base", action="store_true",
+                     help="resolve+pin PYTORCH_BASE from DockerHub instead of CHANGEME (pytorch-nested; ADR 0013)")
+    new.add_argument("--torch", help="torch version for --resolve-base (e.g. 2.10.0)")
+    new.add_argument("--cuda", help="cuda toolkit for --resolve-base (e.g. 12.9)")
+    new.add_argument("--py", default="312", help="python for --resolve-base (default 312)")
+    new.add_argument("--variant", default="mini", choices=["mini", "full"],
+                     help="base variant for --resolve-base (default mini)")
     new.set_defaults(func=cmd_new)
+
+    rb = sub.add_parser("resolve-base", help="print the newest-dated vastai/pytorch tag for a (torch,cuda,py) tuple (ADR 0013)")
+    rb.add_argument("--torch", required=True, help="torch version, e.g. 2.10.0")
+    rb.add_argument("--cuda", required=True, help="cuda toolkit, e.g. 12.9")
+    rb.add_argument("--py", default="312", help="python (default 312)")
+    rb.add_argument("--variant", default="mini", choices=["mini", "full"], help="base variant (default mini)")
+    rb.set_defaults(func=cmd_resolve_base)
+
+    bmp = sub.add_parser("bump", help="re-resolve a pytorch-nested image's base pin(s) to the newest date (ADR 0013)")
+    bmp.add_argument("name", help="image name")
+    bmp.add_argument("--repo", help="repo root (default: autodetect from cwd)")
+    bmp.set_defaults(func=cmd_bump)
 
     rules = sub.add_parser("rules", help="print the generated lint-rules reference (docs/lint-rules.md)")
     rules.set_defaults(func=lambda a: (print(rules_markdown(), end=""), 0)[1])

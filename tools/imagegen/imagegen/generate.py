@@ -547,10 +547,16 @@ def _render(tmpl: str, **kw: str) -> str:
 
 
 def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
-             upstream: str | None = None) -> Path:
-    """Write the file set for a new image; returns its directory. Human picks `cls`."""
+             upstream: str | None = None, base_tag: str | None = None) -> Path:
+    """Write the file set for a new image; returns its directory. Human picks `cls`.
+
+    `base_tag` (optional, pytorch-nested only) pins a CONCRETE resolved base instead of the
+    `CHANGEME` placeholder — the CLI passes the DockerHub-resolved tag (ADR 0013). Passing it
+    keeps generation deterministic (a pure string substitution); the network call is the CLI's."""
     if cls not in CLASSES:
         raise ValueError(f"unknown class {cls!r}; expected one of {CLASSES}")
+    if base_tag and cls != "pytorch-nested":
+        raise ValueError(f"base_tag resolution is pytorch-nested only, not {cls} (ADR 0013)")
     # class-sanity (ADR cond. #3): the --upstream signal must agree with the class.
     # (Lint-time path<->FROM class consistency is enforced by L004.)
     if cls == "external" and not upstream:
@@ -565,6 +571,8 @@ def generate(repo: Path, *, name: str, cls: str, label: str, port: int,
                LABELS=_render(_LABELS, LABEL=label), SNAP=_SNAP)
     df_tmpl = {"derivative": _DF_DERIVATIVE, "pytorch-nested": _DF_PYTORCH,
                "external": _DF_EXTERNAL}[cls]
+    if base_tag:   # pin the resolved base instead of the CHANGEME placeholder (ADR 0013)
+        df_tmpl = df_tmpl.replace("vastai/pytorch:CHANGEME", base_tag)
 
     d = repo / _CLASS_DIR[cls] / name
     root = d / "ROOT"

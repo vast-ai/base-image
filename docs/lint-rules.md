@@ -10,6 +10,7 @@
 | L002 | ERROR | `env-hash > /.env_hash` is the final RUN (executed shell, not heredoc data) |
 | L003 | ERROR | A local `COPY ./ROOT /` is present |
 | L004 | ERROR | FROM matches the declared class — structural base identity (registry+repo), incl. external stage order |
+| L005 | ERROR | App base FROM is a CONCRETE pin — a dated tag or a digest, not `latest` and not untagged — so a rebuild can't jump to an untested base (pytorch-nested & derivative; ADR 0013). base-image/pytorch may float |
 | L010 | ERROR | Each [program:NAME]: PROC_NAME + command=/opt/supervisor-scripts/NAME.sh; file stem is a program |
 | L011 | ERROR | Sourced utils appear as an ordered subsequence of the canonical order |
 | L020 | ERROR | torch-drift guard: a pre==post comparison wired to an exit on the same statement |

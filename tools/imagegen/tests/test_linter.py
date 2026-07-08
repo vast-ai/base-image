@@ -70,6 +70,30 @@ def test_valid_image_is_clean(tmp_path):
     assert errs(make(tmp_path), tmp_path) == set()
 
 
+def test_L005_floating_base_tag_fires(tmp_path):
+    for bad in ("vastai/pytorch:latest", "vastai/pytorch"):   # latest / untagged
+        df = f"ARG PYTORCH_BASE={bad}\nFROM ${{PYTORCH_BASE}}\nCOPY ./ROOT /\n"
+        assert "L005" in errs(make(tmp_path, cls="pytorch-nested", df=df), tmp_path), bad
+
+
+def test_L005_concrete_pin_is_clean(tmp_path):
+    for good in ("vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-06-15",
+                 "vastai/pytorch@sha256:" + "a" * 64):      # a digest is the strongest pin
+        df = f"ARG PYTORCH_BASE={good}\nFROM ${{PYTORCH_BASE}}\nCOPY ./ROOT /\n"
+        assert "L005" not in errs(make(tmp_path, cls="pytorch-nested", df=df), tmp_path), good
+
+
+def test_L005_changeme_is_l040_not_l005(tmp_path):
+    # the scaffold placeholder is L040's job; L005 must not double-fire on it
+    df = "ARG PYTORCH_BASE=vastai/pytorch:CHANGEME\nFROM ${PYTORCH_BASE}\nCOPY ./ROOT /\n"
+    assert "L005" not in errs(make(tmp_path, cls="pytorch-nested", df=df), tmp_path)
+
+
+def test_L005_not_applied_to_external(tmp_path):
+    df = "FROM someupstream:latest AS vast_base_image\nFROM x\nCOPY ./ROOT /\n"
+    assert "L005" not in errs(make(tmp_path, cls="external", df=df), tmp_path)
+
+
 def test_L001_label_count(tmp_path):
     df = VALID_DF.replace('LABEL maintainer="Vast.ai Inc <contact@vast.ai>"\n', "")
     assert "L001" in errs(make(tmp_path, df=df), tmp_path)
