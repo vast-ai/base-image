@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .discover import discover, find_repo_root, Image
-from .linter import lint_image, ERROR, WARN, EXCEPTIONS, rules_markdown
+from .linter import lint_image, lint_repo, ERROR, WARN, EXCEPTIONS, rules_markdown
 from .generate import generate, CLASSES
 
 
@@ -37,6 +37,18 @@ def cmd_lint(args) -> int:
             print(f"  {mark} [{f.code} {f.severity}] {f.path}: {f.msg}")
         total_err += sum(f.severity == ERROR for f in findings)
         total_warn += sum(f.severity == WARN for f in findings)
+
+    # repo-level checks (not tied to a single image) run once per sweep
+    repo_findings = lint_repo(repo)
+    if not args.warn:
+        repo_findings = [f for f in repo_findings if f.severity == ERROR]
+    if repo_findings:
+        print("\n(repo-level)")
+        for f in sorted(repo_findings, key=lambda f: (f.severity != ERROR, f.code)):
+            mark = "✗" if f.severity == ERROR else "·"
+            print(f"  {mark} [{f.code} {f.severity}] {f.path}: {f.msg}")
+        total_err += sum(f.severity == ERROR for f in repo_findings)
+        total_warn += sum(f.severity == WARN for f in repo_findings)
 
     n_excepted = len(EXCEPTIONS)
     print(f"\n{'='*60}")

@@ -120,9 +120,9 @@ the undeclared `base_image_source` stage (§1), the missing utils
 
 ## 6. Invariants codified from review
 
-The no-baked-weights policy below is now **gated (L053)**. The copyleft policy remains
-review-only for now (statically checkable; should become a lint rule with the ADR-binding +
-`RULES`-catalog pattern of §1).
+The no-baked-weights policy is now **gated (L053)** and the public-ADR-secret policy is
+**gated (L060)**. The copyleft policy remains review-only for now (statically checkable;
+should become a lint rule with the ADR-binding + `RULES`-catalog pattern of §1).
 
 ### No baked model weights — **GATED (L053)**
 
@@ -144,6 +144,20 @@ bundled icons).
 for the out-of-box / QA first-run (a §6-style deviation, tracked for migration to
 runtime provisioning — see the `EXCEPTIONS` entry). It is the only current exemption;
 new images must provision, not bake.
+
+### No credential-shaped secret in a public ADR — **GATED (L060)**
+
+`base-image` is public, and `docs/adr/**` is world-readable. An ADR records the
+decision + rationale + rejected alternatives; a credential, an exploit-map, or
+account/business specifics do not belong in it — they live in the linked Jira issue
+(ADR 0012). **L060** (`check_adr_secrets`, a repo-level check — not per-image) scans
+`docs/adr/*.md` for credential *shapes*: private-key blocks, AWS access-key ids,
+GitHub/Slack tokens, JWTs, and a secret-named field assigned a literal high-entropy
+value. Prose mentions of "token"/"key"/"secret" and env-var references (e.g.
+`VAST_API_KEY`) do **not** fire — only a credential-shaped value does. The
+*exploit-map* half of the ADR-0012 guardrail (which token, which transport, which
+soft endpoint) is not machine-detectable and stays review-enforced. Precedent for
+the excision: ADR 0005 condition 8, moved to CON-1585.
 
 ### Copyleft licence compliance (proposed)
 

@@ -18,7 +18,10 @@ Actions). Orient with [docs/context-map.md](docs/context-map.md).
 - Evaluate the ARTIFACT on its merits only — never my preference or authorship.
 - Before claiming done, critically review the change.
 - Record decisions as ADRs in docs/adr/ (template: docs/adr/0000-template.md).
-  Each ADR should stand on its own, read fresh.
+  Each ADR should stand on its own, read fresh. **This repo is public: an ADR carries
+  the decision + rationale + rejected alternatives, never credentials, an exploit-map,
+  or account/business specifics — those go in the linked Jira issue (ADR 0012, enforced
+  by linter L060).**
 - Surface unresolved disagreement to me RAW; do not pre-resolve it.
 - Keep docs/invariants.md and docs/context-map.md current as the project grows.
 

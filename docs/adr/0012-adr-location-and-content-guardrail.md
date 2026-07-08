@@ -1,8 +1,9 @@
 # ADR 0012 — ADRs stay in-repo; a content guardrail, not a relocation
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-08
 - **Decision owner:** Rob Ballantyne
+- **Tracking:** CON-1585
 
 ## Context
 
@@ -76,15 +77,19 @@ Every ADR carries its `CON-xxxx` link so the sensitive detail has a home.
 ## Binding conditions
 
 1. **Every ADR links a CON ticket** (or states none applies). Without a home for
-   the excised detail, the guardrail just deletes information.
-2. **The guardrail is enforced, not just described.** Candidate enforcing artifact:
-   a linter/CI check that scans `docs/adr/**` for credential-shaped tokens and
-   flags them (in the spirit of the Bug→Invariant protocol). If adopted, add the
-   `RULES` code and regenerate `docs/lint-rules.md`; until then the guardrail is
-   review-enforced and this condition is unmet.
-3. **CLAUDE.md is updated in the same change** that accepts this ADR — the
-   "record decisions as ADRs in `docs/adr/`" instruction gains the content bound,
-   so the convention is codified, not silently amended.
+   the excised detail, the guardrail just deletes information. *Partially met:*
+   0001/0005/0008 and this ADR link CON-1585; 0009/0010/0011 do not yet carry a
+   ticket reference — a follow-up, not a blocker for the guardrail itself.
+2. **The guardrail is enforced, not just described.** *Met:* linter rule **L060**
+   (`check_adr_secrets`, `tools/imagegen/imagegen/linter.py`) scans `docs/adr/**`
+   for credential-shaped values (private-key blocks, AWS/GitHub/Slack tokens, JWTs,
+   secret-named literal assignments) and gates on any hit; prose mentions of
+   "token"/"key"/"secret" and env-var references do not fire. Catalogued in
+   `docs/lint-rules.md`; mutation-tested (`test_L060_*`); baseline CLEAN. The
+   *exploit-map* half of the guardrail (which token, which transport, which soft
+   endpoint) is not machine-detectable and stays review-enforced.
+3. **CLAUDE.md is updated in the same change** that accepts this ADR. *Met:* the
+   "record decisions as ADRs" instruction now carries the content bound.
 
 If any condition is refused, this decision is void.
 

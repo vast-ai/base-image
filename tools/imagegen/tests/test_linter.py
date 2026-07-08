@@ -533,6 +533,38 @@ def test_L055_not_applied_to_non_external(tmp_path):
     assert "L055" not in errs(make(tmp_path, cls="pytorch-nested", df=df), tmp_path)
 
 
+def _write_adr(tmp_path, body):
+    adr = tmp_path / "docs" / "adr"
+    adr.mkdir(parents=True, exist_ok=True)
+    (adr / "0099-x.md").write_text("# ADR 0099 — test\n\n" + body + "\n")
+    return tmp_path
+
+
+def test_L060_private_key_in_adr_fires(tmp_path):
+    repo = _write_adr(tmp_path, "-----BEGIN RSA PRIVATE KEY-----\nMIIEabc...\n-----END RSA PRIVATE KEY-----")
+    assert "L060" in {f.code for f in L.lint_repo(repo)}
+
+
+def test_L060_credential_assignment_fires(tmp_path):
+    # a secret-named field set to a literal high-entropy value (mixed case + digits)
+    repo = _write_adr(tmp_path, "config: api_key=aB3xK9pQ2rT5uV8wY1zC and then more prose")
+    assert "L060" in {f.code for f in L.lint_repo(repo)}
+
+
+def test_L060_prose_and_env_refs_are_clean(tmp_path):
+    # words token/key/secret in prose, an ENV-var reference, and a placeholder must NOT fire
+    repo = _write_adr(tmp_path,
+        "The QA key is never passed via --env; the token is short-lived.\n"
+        "Reference the VAST_API_KEY secret; set password: <REDACTED> and api_key=${SOME_ENV}.")
+    assert "L060" not in {f.code for f in L.lint_repo(repo)}
+
+
+def test_L060_baseline_adrs_are_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    offenders = [f for f in L.lint_repo(repo) if f.code == "L060"]
+    assert not offenders, f"real ADR carries a credential-shaped secret: {[f.path for f in offenders]}"
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))

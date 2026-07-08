@@ -72,6 +72,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
+    ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the linked Jira issue, not the ADR (ADR 0012)"),
 ]
 
 
@@ -585,6 +586,61 @@ IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_conf_triple, check_util_order, check_supervisor_executable,
     check_external_env,
 ]
+
+
+# ---- Repo-level checks (not tied to a single image) -------------------------
+
+# ADR 0012: docs/adr/** is world-readable. Detect high-signal *credential shapes*
+# only — near-zero false positives. The words "token"/"key"/"secret" in prose are
+# NOT flagged; only a credential-shaped VALUE is. Sensitive specifics belong in the
+# linked Jira issue, not the public ADR.
+_ENV_IDENT = re.compile(r"^[A-Z][A-Z0-9_]*$")            # e.g. VAST_API_KEY (a reference, not a value)
+_SECRET_PLACEHOLDER = re.compile(
+    r"^(?:x{3,}|\*{3,}|<.*>|\$\{.*\}|\$[A-Za-z]|change|changeme|redacted|example|"
+    r"placeholder|your[_-]|none|null|true|false)", re.I)
+_SECRET_PATTERNS: list[tuple[str, str]] = [
+    (r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----", "private key block"),
+    (r"\bAKIA[0-9A-Z]{16}\b", "AWS access key id"),
+    (r"\bgh[posru]_[A-Za-z0-9]{36,}\b", "GitHub token"),
+    (r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b", "Slack token"),
+    (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b", "JWT"),
+    # a secret-named field assigned a literal high-entropy value (see value guard below)
+    (r"(?i)\b(?:api[_-]?key|secret|passwd|password|access[_-]?key|auth[_-]?token)\b"
+     r"\s*[:=]\s*[\"']?([A-Za-z0-9+/_\-]{20,})[\"']?", "credential assignment"),
+]
+
+
+def check_adr_secrets(repo: Path) -> Iterable[Finding]:
+    """L060 — no committed credential-shaped secret in docs/adr/** (a public repo). ADR 0012:
+    the ADR carries the decision + rationale; the sensitive specific lives in the linked Jira
+    issue. Prose mentions of 'token'/'key'/'secret' are fine — only a credential-shaped value fires."""
+    adr_dir = repo / "docs" / "adr"
+    if not adr_dir.is_dir():
+        return
+    for md in sorted(adr_dir.glob("*.md")):
+        text = md.read_text(encoding="utf-8", errors="replace")
+        for pat, label in _SECRET_PATTERNS:
+            for m in re.finditer(pat, text):
+                if m.groups():   # generic assignment: exclude env-var references and placeholders
+                    val = m.group(1)
+                    if _ENV_IDENT.match(val) or _SECRET_PLACEHOLDER.match(val):
+                        continue
+                line = text.count("\n", 0, m.start()) + 1
+                yield Finding("L060", ERROR, "(repo)", f"{md.relative_to(repo)}:{line}",
+                              f"credential-shaped secret in a public ADR ({label}) — move the "
+                              "specific to the linked Jira issue (ADR 0012)")
+                break   # one finding per pattern per file is enough signal
+
+
+REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [check_adr_secrets]
+
+
+def lint_repo(repo: Path) -> list[Finding]:
+    """Run repo-level checks (not per-image). Called once by the CLI alongside the image sweep."""
+    out: list[Finding] = []
+    for chk in REPO_CHECKS:
+        out.extend(chk(repo))
+    return out
 
 
 def _suppressed(img_name: str, f: Finding) -> bool:
