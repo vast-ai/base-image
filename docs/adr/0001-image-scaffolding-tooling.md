@@ -125,7 +125,7 @@ confidence — a green check that ships broken infra past a disengaged reviewer)
 
 ## Implementation status (2026-06-22)
 
-Built on `feature/CON-1585-image-linter`, each layer hardened by critical review:
+Built incrementally, each layer hardened by critical review:
 - **Linter** (`tools/imagegen`) — checks per §1–2; mutation-tested; clean baseline over 27 images.
 - **Generator** (`imagegen new`) — templates from real images; L040 gates unfilled skeletons.
 - **Skill** (`.claude/skills/new-image`) — orchestrates the flow with the contract above.

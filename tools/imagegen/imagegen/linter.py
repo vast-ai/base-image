@@ -72,7 +72,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
-    ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the linked Jira issue, not the ADR (ADR 0012)"),
+    ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
+    ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
 
 
@@ -632,7 +633,42 @@ def check_adr_secrets(repo: Path) -> Iterable[Finding]:
                 break   # one finding per pattern per file is enough signal
 
 
-REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [check_adr_secrets]
+# ADR 0012: base-image is public, so an internal Jira ticket id (a Vast-internal
+# project key) must not appear in any repo file — it leaks the tracker's structure and
+# is a dangling reference to a private system for external readers. Explicit prefix set
+# (not a generic `[A-Z]{2,5}-\d+`) to keep false positives at zero — extend as new
+# internal projects appear. The internal issue links to the public ADR/commit; the
+# public repo never names the ticket.
+_INTERNAL_TRACKERS = ("CON", "HOST", "CLN")
+_TICKET_RE = re.compile(r"\b(?:" + "|".join(_INTERNAL_TRACKERS) + r")-[0-9]{1,6}\b")
+_TICKET_SCAN_EXT = {".md", ".yml", ".yaml", ".py", ".sh", ".txt", ".toml", ".cfg", ".ini", ".json"}
+_TICKET_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+                     ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+
+
+def check_internal_ticket_ids(repo: Path) -> Iterable[Finding]:
+    """L061 — no internal tracker ticket id (CON-/HOST-/CLN-…) anywhere in this public repo.
+    Scans the working tree (text files + Dockerfiles), including the first-party external/
+    wrapper images. See ADR 0012."""
+    for path in sorted(repo.rglob("*")):
+        rel = path.relative_to(repo)
+        if any(part in _TICKET_SKIP_DIRS for part in rel.parts):
+            continue
+        if not path.is_file() or (path.suffix not in _TICKET_SCAN_EXT and path.name != "Dockerfile"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = _TICKET_RE.search(text)
+        if m:
+            line = text.count("\n", 0, m.start()) + 1
+            yield Finding("L061", ERROR, "(repo)", f"{rel}:{line}",
+                          f"internal ticket id {m.group(0)!r} in a public file — remove it; the "
+                          "internal tracker links to the ADR/commit, not the reverse (ADR 0012)")
+
+
+REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [check_adr_secrets, check_internal_ticket_ids]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

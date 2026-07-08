@@ -1,4 +1,4 @@
-# Reusable live-GPU QA gate (ADR 0005, CON-1585). Image-agnostic: a build workflow
+# Reusable live-GPU QA gate (ADR 0005). Image-agnostic: a build workflow
 # calls this once per staging artifact, passing the finished image coordinates +
 # the QA template. All per-image variation (tag derivation, matrix shape, the
 # provisioning/model env) stays in the CALLER; this job is just the shared core —

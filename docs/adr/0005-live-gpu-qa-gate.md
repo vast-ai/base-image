@@ -15,7 +15,7 @@ users. We want a second tier — a **FULL pass** that means "the published artif
 actually ran on real hardware" — without manufacturing false confidence or
 runaway GPU spend.
 
-The machinery mostly exists (CON-1585): an in-instance harness
+The machinery mostly exists: an in-instance harness
 (`ROOT/opt/instance-tools/tests/`, SSE on port 10199, base health + the ADR-0006
 exposure gate + per-image `<name>.d` functional tests), a stdlib client
 `tools/template_manager/test_template.py` that launches a Vast instance from a
@@ -229,8 +229,8 @@ surviving review finding.
    throwaway box carries a plaintext exposure, accepted *only* because the box is
    short-lived and disposable, and the QA credential is never passed into the
    instance environment. The exact channel and credential-redaction specifics are
-   internal security detail tracked in CON-1585 — deliberately not restated in this
-   public repo.
+   internal security detail tracked in the internal issue — deliberately not
+   restated in this public repo.
 9. **Prerequisite work shipped first.** Landed: the `cpu_arch == "amd64"` filter and
    the VRAM-primary + bounded `compute_cap`-floor selection (condition 10), with unit
    tests. Still to build before the gate is enabled: `create.py`/`models.py`
@@ -338,6 +338,6 @@ these, or the gate's safety properties invert at scale:
 
 ## Note on ADR numbering
 
-ADRs 0002–0008 are spread across CON-1585 feature branches not yet merged
+ADRs 0002–0008 are spread across feature branches not yet merged
 together (see [ADR 0008](0008-template-publish-tooling.md)); reconcile the
 sequence when they land.

@@ -120,9 +120,10 @@ the undeclared `base_image_source` stage (§1), the missing utils
 
 ## 6. Invariants codified from review
 
-The no-baked-weights policy is now **gated (L053)** and the public-ADR-secret policy is
-**gated (L060)**. The copyleft policy remains review-only for now (statically checkable;
-should become a lint rule with the ADR-binding + `RULES`-catalog pattern of §1).
+The no-baked-weights policy is now **gated (L053)**, the public-ADR-secret policy is
+**gated (L060)**, and the no-internal-ticket-id policy is **gated (L061)**. The copyleft
+policy remains review-only for now (statically checkable; should become a lint rule with
+the ADR-binding + `RULES`-catalog pattern of §1).
 
 ### No baked model weights — **GATED (L053)**
 
@@ -157,7 +158,19 @@ value. Prose mentions of "token"/"key"/"secret" and env-var references (e.g.
 `VAST_API_KEY`) do **not** fire — only a credential-shaped value does. The
 *exploit-map* half of the ADR-0012 guardrail (which token, which transport, which
 soft endpoint) is not machine-detectable and stays review-enforced. Precedent for
-the excision: ADR 0005 condition 8, moved to CON-1585.
+the excision: ADR 0005 condition 8, moved to the internal issue.
+
+### No internal tracker ticket id in a public file — **GATED (L061)**
+
+`base-image` is public. An internal Jira ticket id (a Vast-internal project key such
+as `CON-`/`HOST-`/`CLN-`-####) must not appear in any repo file — it leaks the
+tracker's structure and is a dangling reference to a private system for external
+readers. The linkage runs one way: the internal issue references the public
+ADR/commit, never the reverse. **L061** (`check_internal_ticket_ids`, repo-level)
+scans the working tree (text files + Dockerfiles, incl. the first-party `external/`
+wrappers) for an explicit internal-prefix set — extend `_INTERNAL_TRACKERS` as new
+internal projects appear. Precedent: the CON-/HOST-/CLN- references scrubbed from
+docs, workflows, templates, and tooling when this rule landed (ADR 0012).
 
 ### Copyleft licence compliance (proposed)
 

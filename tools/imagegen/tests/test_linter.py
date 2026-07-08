@@ -565,6 +565,28 @@ def test_L060_baseline_adrs_are_clean():
     assert not offenders, f"real ADR carries a credential-shaped secret: {[f.path for f in offenders]}"
 
 
+def test_L061_internal_ticket_id_fires(tmp_path):
+    # build the ticket token at runtime so THIS test file carries no literal id
+    # (the repo-wide scanner would otherwise flag itself)
+    ticket = "CON" + "-" + "1585"
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text(f"# notes\n\nThis was tracked in {ticket} originally.\n")
+    assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L061_public_refs_are_not_tickets(tmp_path):
+    # CVE-/RFC-/version-style refs are public and must NOT fire — only the internal prefix set does
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text("# notes\n\nCVE-2025-1234 and RFC-2119 are public refs.\n")
+    assert "L061" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L061_baseline_repo_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    offenders = [f for f in L.lint_repo(repo) if f.code == "L061"]
+    assert not offenders, f"internal ticket id in a public file: {[f.path for f in offenders]}"
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))

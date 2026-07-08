@@ -3,7 +3,6 @@
 - **Status:** Accepted
 - **Date:** 2026-07-08
 - **Decision owner:** Rob Ballantyne
-- **Tracking:** CON-1585
 
 ## Context
 
@@ -19,7 +18,7 @@ Three concerns motivate revisiting where they live:
   hypothetical: ADR 0005's condition 8 documented the QA harness's auth channel
   (which token, over which transport) and a named gap in the secret redactor — an
   attacker's map. (Removed and generalized when this ADR was drafted; the specific
-  analysis moved to CON-1585.)
+  analysis moved to the internal tracker.)
 - **Wrong audience / clutter.** Someone cloning the image repo gets internal
   decision docs that are not about the images they consume.
 - **Maintenance / staleness.** Decisions can drift from what the code actually
@@ -64,30 +63,39 @@ sensitive on a public repo. Specifically, an ADR MUST NOT contain:
 - an exploitable weakness map — which auth token, which transport, which redactor
   rule fails to match which value, which endpoint is soft;
 - internal account operations or business posture that an external reader has no
-  need for and an adversary could use.
+  need for and an adversary could use;
+- internal tracker ticket IDs (CON-/HOST-/CLN-… style) or private-repo/issue
+  references — they leak the internal tracker's structure and dangle for external
+  readers.
 
-That material lives in the **linked Jira issue** (the `CON-xxxx` reference already
-present in 0001/0005/0008). The public ADR states *that* a trade-off was made and
-*why*, and points to the ticket for the sensitive specifics. General security
-*design rationale* that is not an exploit map (e.g. "the QA key is capped so blast
-radius = balance") is fine to record — the line is exploit-map vs. design-intent.
-
-Every ADR carries its `CON-xxxx` link so the sensitive detail has a home.
+That sensitive material lives in the **internal tracker**, which links *to* the
+public ADR and commit — never the reverse (so nothing in the public repo needs to
+name an internal ticket). The public ADR states *that* a trade-off was made and
+*why*; the specific stays internal. General security *design rationale* that is not
+an exploit map (e.g. "the QA key is capped so blast radius = balance") is fine to
+record — the line is exploit-map vs. design-intent.
 
 ## Binding conditions
 
-1. **Every ADR links a CON ticket** (or states none applies). Without a home for
-   the excised detail, the guardrail just deletes information. *Partially met:*
-   0001/0005/0008 and this ADR link CON-1585; 0009/0010/0011 do not yet carry a
-   ticket reference — a follow-up, not a blocker for the guardrail itself.
-2. **The guardrail is enforced, not just described.** *Met:* linter rule **L060**
-   (`check_adr_secrets`, `tools/imagegen/imagegen/linter.py`) scans `docs/adr/**`
-   for credential-shaped values (private-key blocks, AWS/GitHub/Slack tokens, JWTs,
-   secret-named literal assignments) and gates on any hit; prose mentions of
-   "token"/"key"/"secret" and env-var references do not fire. Catalogued in
-   `docs/lint-rules.md`; mutation-tested (`test_L060_*`); baseline CLEAN. The
-   *exploit-map* half of the guardrail (which token, which transport, which soft
-   endpoint) is not machine-detectable and stays review-enforced.
+1. **No internal ticket ID in any public-repo file.** *This supersedes the draft's
+   original condition 1*, which had each ADR *cite* its CON ticket — inverted,
+   because a CON-/HOST-/CLN- ID in a world-readable file is itself the leak. The
+   internal tracker references the public ADR/commit; the public repo names neither
+   the ticket nor the private repo/issue. *Met in the working tree:* the
+   CON-/HOST-/CLN- references were scrubbed from docs, workflows, templates, and
+   tooling, and L061 (below) gates their return. *Not yet addressed:* the branch
+   name and already-pushed commit messages still carry the ticket id — a
+   history/branch decision flagged separately, not fixable by a working-tree edit.
+2. **The guardrail is enforced, not just described.** *Met:* two repo-level linter
+   rules in `tools/imagegen/imagegen/linter.py`. **L060** (`check_adr_secrets`)
+   scans `docs/adr/**` for credential-shaped values (private-key blocks,
+   AWS/GitHub/Slack tokens, JWTs, secret-named literal assignments); prose mentions
+   of "token"/"key"/"secret" and env-var references do not fire. **L061**
+   (`check_internal_ticket_ids`) scans the working tree for internal tracker IDs
+   (CON-/HOST-/CLN-). Both are catalogued in `docs/lint-rules.md`, mutation-tested,
+   and baseline CLEAN. The *exploit-map* half of the guardrail (which token, which
+   transport, which soft endpoint) is not machine-detectable and stays
+   review-enforced.
 3. **CLAUDE.md is updated in the same change** that accepts this ADR. *Met:* the
    "record decisions as ADRs" instruction now carries the content bound.
 

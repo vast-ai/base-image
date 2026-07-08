@@ -1,4 +1,4 @@
-# vLLM QA template (ADR 0005 live-GPU QA gate, CON-1585).
+# vLLM QA template (ADR 0005 live-GPU QA gate).
 #
 # Mirrors the production vLLM template's LAUNCH path (vast_landing .../070-vllm):
 # runtype: jupyter, OPEN_BUTTON/JUPYTER env, the vLLM serving path. QA-only deltas
