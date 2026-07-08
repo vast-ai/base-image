@@ -201,8 +201,8 @@ oobabooga). The `new-image` skill + generator encode them.
   loopback bind>}`, so a template or user tunes runtime flags without editing the image
   (`VLLM_ARGS`, `SGLANG_ARGS`, `LLAMA_ARGS`, `OOBABOOGA_ARGS`, …). The default **must**
   carry `--host 127.0.0.1 --port <port>` (Caddy is the sole public edge; never `0.0.0.0`).
-  **Not statically gated** — it is *not* universal by design: config-file apps (chatterbox
-  pins via `config.yaml`, invokeai, fluxgym, …) and infra/helper services (desktop stack,
+  **Not statically gated** — it is *not* universal by design: config-file apps (invokeai,
+  fluxgym, … pin via a config file, not ARGS) and infra/helper services (desktop stack,
   `model-ui`, `api-wrapper`, `ray`) legitimately have no `<APP>_ARGS`, and there is no
   reliable static way to distinguish "primary launch that should have ARGS" from those. It
   is enforced by the skill + scaffold, not the linter.

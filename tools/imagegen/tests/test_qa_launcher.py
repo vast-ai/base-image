@@ -126,7 +126,7 @@ def test_load_dotenv_handles_export_and_comments(tmp_path, monkeypatch):
 def test_launcher_label_is_inside_reaper_scope():
     sys.path.insert(0, str(_TM))
     import reap_orphans
-    assert reap_orphans.in_scope({"label": f"{q._LABEL_PREFIX}-chatterbox"}, "base-image-qa", None) is True
+    assert reap_orphans.in_scope({"label": f"{q._LABEL_PREFIX}-myapp"}, "base-image-qa", None) is True
     assert reap_orphans.in_scope({"label": "someones-dev-box"}, "base-image-qa", None) is False
 
 
@@ -151,19 +151,19 @@ def test_ssh_reachable_reflects_probe(monkeypatch):
 
 
 def test_build_pytorch_nested_passes_ref_and_persists(tmp_path, monkeypatch):
-    tmp_path, img = _fake_repo(tmp_path, "chatterbox")
-    (img / "Dockerfile").write_text("ARG CHATTERBOX_REF\nRUN echo hi\n")
+    tmp_path, img = _fake_repo(tmp_path, "myapp")
+    (img / "Dockerfile").write_text("ARG MYAPP_REF\nRUN echo hi\n")
     monkeypatch.setattr(q, "_REPO", tmp_path)
     monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "ns")
     calls = []
     monkeypatch.setattr(q, "_run", lambda cmd, **k: (calls.append([str(c) for c in cmd]),
                                                      types.SimpleNamespace(returncode=0))[1])
-    q.build("chatterbox", ref="v2.0.0", tag="robatvastai/chatterbox:latest", push=True, log=lambda m: None)
+    q.build("myapp", ref="v2.0.0", tag="robatvastai/myapp:latest", push=True, log=lambda m: None)
     build_cmd = calls[0]
-    assert "CHATTERBOX_REF=v2.0.0" in build_cmd and "robatvastai/chatterbox:latest" in build_cmd
+    assert "MYAPP_REF=v2.0.0" in build_cmd and "robatvastai/myapp:latest" in build_cmd
     assert calls[1][:2] == ["docker", "push"]
     state = json.loads((img / ".qa" / "build.json").read_text())
-    assert state == {"ref": "v2.0.0", "tag": "robatvastai/chatterbox:latest"}
+    assert state == {"ref": "v2.0.0", "tag": "robatvastai/myapp:latest"}
 
 
 def test_build_external_adds_context_and_reuses_persisted(tmp_path, monkeypatch):

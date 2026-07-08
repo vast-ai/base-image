@@ -107,7 +107,7 @@ def main(argv=None) -> int:
     rules.set_defaults(func=lambda a: (print(rules_markdown(), end=""), 0)[1])
 
     qa = sub.add_parser("qa", help="run the live-GPU QA smoke; hold the box on failure for the qa-fix skill (ADR 0009)")
-    qa.add_argument("name", help="image name (e.g. chatterbox)")
+    qa.add_argument("name", help="image name (e.g. comfyui)")
     qa.add_argument("--tag", help="staging image to test: a full repo/name:tag, or a bare tag (default: <STAGING_NS>/<name>:latest)")
     qa.add_argument("--log", dest="logs", action="append", help="in-instance log file to stream (repeatable; default /var/log/portal/<name>.log)")
     qa.add_argument("--max-price", default="0.60", help="max $/hr for the rented GPU")

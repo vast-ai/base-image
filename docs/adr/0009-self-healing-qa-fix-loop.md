@@ -9,7 +9,7 @@
 
 The `imagegen` generator + `new-image` skill scaffold an image and lint it, then **hand
 off** — the skill is explicit that lint is a fast structural gate, NOT the correctness
-gate. Dogfooding a real image (chatterbox) proved the gap has teeth: static lint, a local
+gate. Dogfooding a real image proved the gap has teeth: static lint, a local
 `docker build`, AND a CPU import-smoke all passed an image that then died on a **real GPU
 at model-load time** — three independent defects (a dependency pinned to the wrong upstream
 branch; `setuptools>=81` having removed `pkg_resources`, silently nulling a class; a
@@ -128,7 +128,7 @@ bake-equivalence hold up.
 
 ## Addendum — whole-feature review (2026-07-03)
 
-After the human-gated MVP was built and proven live (chatterbox QA green end-to-end, plus a
+After the human-gated MVP was built and proven live (a real image's QA green end-to-end, plus a
 diagnose→verify cycle run against a deliberately-broken image), the whole feature was put
 through an independent critical review from four perspectives — adversarial-failure,
 code-correctness, security, and design-coherence. The reviews **converged** rather than

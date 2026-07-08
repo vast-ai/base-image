@@ -12,7 +12,7 @@
 The generator scaffolded **two** templates per image: `templates/default/template.yml` (the
 public launch template a user actually runs) and `templates/<name>-qa/template.yml` (the
 live-GPU gate's target). In practice they were **near-duplicate files kept in sync by hand** —
-compare chatterbox's two: identical ports, `PORTAL_CONFIG`, env, runtype, and `compute_cap`
+compare a scaffolded image's two: identical ports, `PORTAL_CONFIG`, env, runtype, and `compute_cap`
 floor; differing only in `image`, the `private`/`readme_visible` flags, and a comment.
 
 The consequence undermines the gate's meaning: the QA gate proves the **`-qa`** template boots

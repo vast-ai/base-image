@@ -38,8 +38,7 @@ launch immediately** to dogfood the freshly-built image.
   design (`template_manager.py` — no update/idempotency, an upstream-API constraint), so each run
   **litters a new public template**; and the referral URL is built from the **QA account**
   key. Net: it ships a staging image under a production-looking public listing from the wrong
-  account and accretes orphans nothing cleans up. `derivatives/pytorch/derivatives/chatterbox/templates/default/template.yml`
-  already shows the anti-pattern (a `private: false` default pointing at `robatvastai/chatterbox`).
+  account and accretes orphans nothing cleans up.
 - **Make base-image `templates/default/` the automated single source, syncing to vast_landing
   (REJECTED for now).** Would make "single source" literally true, but requires building and
   maintaining a base-image→vast_landing sync/generation step across a private repo boundary —
