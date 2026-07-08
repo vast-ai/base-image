@@ -2,7 +2,7 @@
 
 Templates are modelled on the REAL repo images (comfyui, vllm), not invented.
 Emits Dockerfile + ROOT/ overlay + README + CI skeleton per class, with fenced
-fill-markers (`>>> FILL: ... <<<`, `CHANGEME`, `FIXME:`) for the judgment residue.
+fill-markers (`>>> FILL: ... <<<`, `CHANGEME`, `CHANGEPORT`) for the judgment residue.
 A generated image passes the STRUCTURAL linter but L040 flags it as an incomplete
 skeleton until the markers are resolved (so "lint clean" never means "ready" by
 accident). All placeholders use a single marker dialect (`>>> FILL` / `CHANGEME` /

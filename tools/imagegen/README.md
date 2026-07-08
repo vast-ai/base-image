@@ -41,11 +41,11 @@ PYTHONPATH=tools/imagegen python3 -m imagegen.cli lint --all --warn
 PYTHONPATH=tools/imagegen python3 -m imagegen.cli lint comfyui
 ```
 
-Once installed (`pip install -e tools/imagegen`) the `imagegen` console script works
-directly. `new` is pure-stdlib — no venv or deps needed, any Python 3.12. `lint` is
-stdlib too, except that linting a template-bearing image (one with `templates/**/template.yml`)
-reads the YAML and so needs PyYAML (`pip install pyyaml`); linting an image without a
-template needs nothing beyond stdlib.
+Once installed (`pip install -e tools/imagegen`, which pulls the one runtime dependency,
+PyYAML) the `imagegen` console script works directly. `new` is pure-stdlib — no venv or
+deps needed, any Python 3.12. `lint` needs PyYAML in practice: it reads
+`templates/**/template.yml` for any template-bearing image, and every generated image ships
+a `templates/default/template.yml`. Only linting a template-less image is pure-stdlib.
 
 ## Live-GPU QA + fix loop (`imagegen qa`)
 
