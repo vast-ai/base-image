@@ -358,6 +358,13 @@ def test_parser_plain_heredoc_indented_terminator_not_early():
     assert [i.cmd for i in parse(text)] == ["FROM", "RUN", "COPY"]  # `echo real` stayed inside
 
 
+def test_parser_dash_heredoc_space_terminator_not_early():
+    """<<-EOF strips only leading *tabs*; a space-indented EOF must NOT close it early
+    (else `echo real` would be misparsed as a top-level instruction)."""
+    text = "FROM x\nRUN cat <<-EOF >/dev/null\n    EOF\necho real\n\tEOF\nCOPY ./ROOT /\n"
+    assert [i.cmd for i in parse(text)] == ["FROM", "RUN", "COPY"]  # tab-indented EOF closes it
+
+
 _GUARD_IN_DISCARDED_HEREDOC = """\
 ARG PYTORCH_BASE=vastai/pytorch:test
 FROM ${PYTORCH_BASE}
@@ -470,25 +477,6 @@ def test_no_stale_exceptions():
             f"stale exception {name}/{code}: no longer triggers (suppressing nothing)"
 
 
-if __name__ == "__main__":
-    # stdlib fallback runner (this environment has no pytest); CI uses pytest.
-    import inspect, tempfile, traceback
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for fn in tests:
-        try:
-            if inspect.signature(fn).parameters:
-                with tempfile.TemporaryDirectory() as d:
-                    fn(Path(d))
-            else:
-                fn()
-            print("PASS", fn.__name__)
-        except Exception:
-            failed += 1
-            print("FAIL", fn.__name__)
-            traceback.print_exc()
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    raise SystemExit(1 if failed else 0)
 
 
 def test_mut_baked_weights_L053(tmp_path):
@@ -524,6 +512,13 @@ def test_L055_external_with_tcllibpath_is_clean(tmp_path):
     assert "L055" not in errs(make(tmp_path, cls="external", df=_EXT_ENV_GOOD), tmp_path)
 
 
+def test_L055_external_wrong_tcllibpath_value_fires(tmp_path):
+    # a set-but-wrong value still breaks unbuffer/Expect at boot, so it must NOT lint clean
+    df = ("FROM ${VAST_BASE} AS vast_base_image\nFROM ${FOO_BASE} AS foo_build\n"
+          "ENV TCLLIBPATH=/tmp\nCOPY ./ROOT /\n")
+    assert "L055" in errs(make(tmp_path, cls="external", df=df), tmp_path)
+
+
 def test_L055_shim_on_path_is_not_required(tmp_path):
     # vllm-omni case: TCLLIBPATH set but no /opt/sys-venv/shim on PATH (10-prep-env.sh adds it at
     # runtime) -> a working image, must stay clean. The shim is convention, not a gated invariant.
@@ -536,3 +531,8 @@ def test_L055_not_applied_to_non_external(tmp_path):
     # pytorch-nested FROMs our base and inherits its ENV, so the rule does not apply
     df = "FROM ${PYTORCH_BASE}\nENV PATH=/opt/instance-tools/bin:$PATH\nCOPY ./ROOT /\n"
     assert "L055" not in errs(make(tmp_path, cls="pytorch-nested", df=df), tmp_path)
+
+
+if __name__ == "__main__":
+    from _stdlib_runner import run
+    raise SystemExit(run(globals()))

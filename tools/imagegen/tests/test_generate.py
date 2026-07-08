@@ -304,20 +304,5 @@ def test_l051_fires_on_non_executable_supervisor(tmp_path):
 
 
 if __name__ == "__main__":
-    import inspect, tempfile, traceback
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for fn in tests:
-        try:
-            if inspect.signature(fn).parameters:
-                with tempfile.TemporaryDirectory() as d:
-                    fn(Path(d))
-            else:
-                fn()
-            print("PASS", fn.__name__)
-        except Exception:
-            failed += 1
-            print("FAIL", fn.__name__)
-            traceback.print_exc()
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    raise SystemExit(1 if failed else 0)
+    from _stdlib_runner import run
+    raise SystemExit(run(globals()))

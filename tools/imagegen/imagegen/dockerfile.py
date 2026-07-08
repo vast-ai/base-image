@@ -52,7 +52,9 @@ def parse(text: str) -> list[Instruction]:
             i += 1
             buf += "\n" + body
             for idx, (term, dashed) in enumerate(pending):
-                if (body.strip() == term) if dashed else (body.rstrip() == term):
+                # <<-EOF strips only leading *tabs* from the terminator (Docker semantics);
+                # spaces do NOT close it. Plain <<EOF requires a column-0 terminator.
+                if (body.lstrip("\t").rstrip() == term) if dashed else (body.rstrip() == term):
                     pending.pop(idx)
                     break
         m = re.match(r"\s*(\w+)\s*(.*)", buf, re.S)

@@ -570,7 +570,9 @@ def check_external_env(img: Image) -> Iterable[Finding]:
     if img.cls != "external":
         return
     env = " ".join(i.value for i in parse(img.text) if i.cmd == "ENV")
-    if "TCLLIBPATH" not in env:
+    # must be set to the canonical path — a wrong value (e.g. /tmp) still breaks unbuffer/Expect,
+    # so a bare `TCLLIBPATH` substring is not enough to lint clean.
+    if not re.search(r"TCLLIBPATH\s*=\s*/usr/lib/tcltk/default(\b|$)", env):
         yield Finding("L055", ERROR, img.name, "Dockerfile",
                       "external image must set ENV TCLLIBPATH=/usr/lib/tcltk/default — it does not "
                       "inherit the base ENV, and the pty helper's unbuffer/Expect needs it or the "
