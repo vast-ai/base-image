@@ -111,7 +111,7 @@ rm -rf "$_tmpws" "$_tmpenv"
   rm -f "$_t"; exit 0
 ) || fail_later "wiring" "_vast_run did not apply on the no-op path (stale block survived a healthy reboot)"
 
-# ── 3. Live consistency: /etc/environment matches the recomputed decision ──
+# ── 5. Live consistency: /etc/environment matches the recomputed decision ──
 _pm=$(_vast_read_pids_max); _vis=$(nproc 2>/dev/null); _q=$(_vast_read_quota_cores)
 _cap=$(_vast_thread_cap "${_pm:-}" "${_vis:-}" "${_q:-}")
 echo "  live: pids.max=${_pm:-?} nproc=${_vis:-?} quota=${_q:-none} -> cap=${_cap:-<no-op>}"
@@ -121,11 +121,17 @@ if [[ -z "$_cap" ]]; then
         fail_later "healthy-host" "managed block present on a host that should be a no-op"
     fi
 else
-    # Pathological host: block present and each unmanaged var at the cap.
+    # Pathological host: block present.
     grep -qF "VAST_CPU_THREAD_CAPS_BEGIN" /etc/environment 2>/dev/null \
         || fail_later "patho-host" "expected a managed block (cap=${_cap}) but none in /etc/environment"
-    [[ "${OMP_NUM_THREADS:-}" == "$_cap" ]] \
-        || fail_later "patho-omp" "OMP_NUM_THREADS='${OMP_NUM_THREADS:-}' != cap ${_cap}"
+    # OMP equals the cap only when the user has NOT overridden it — the hook
+    # deliberately preserves a user/template/.env value, so gate on _vast_user_set.
+    if _vast_user_set OMP_NUM_THREADS; then
+        echo "  OMP_NUM_THREADS is user-set (${OMP_NUM_THREADS:-}); cap correctly not applied to it"
+    else
+        [[ "${OMP_NUM_THREADS:-}" == "$_cap" ]] \
+            || fail_later "patho-omp" "OMP_NUM_THREADS='${OMP_NUM_THREADS:-}' != cap ${_cap}"
+    fi
 fi
 
 report_failures
