@@ -106,6 +106,15 @@ real `docker build` + smoke test is the correctness gate.**
 - Tag commit-hash-vs-version date suffix (depends on the runtime-resolved ref).
 - `base_image_source` build-context *content*.
 - single shared `/venv/main` assumption (false for aio-studio by design).
+- **Container-aware CPU thread caps** (ADR 0014). On a host that oversubscribes
+  (CPU `cpu.max`/`cfs_quota` ≪ visible `nproc`, e.g. ~46-core quota but 384 cpuset)
+  the boot hook `12-cpu-thread-limits.sh` must cap `OMP_NUM_THREADS` &co to the
+  entitlement so per-process thread pools don't exhaust `pids.max` (`pthread_create`
+  EAGAIN). Whether the cgroup is read correctly, the arithmetic, the oversubscription
+  trigger, and the "leave user overrides alone" rule are all **runtime facts** — a
+  static check could only assert the file exists. Gate: the on-box test
+  `tests/base/NN-cpu-thread-limits.sh` + a harness mutation test (delete the cap write
+  → test fires), per ADR 0014. Deliberately **not** a linter `RULES` code.
 
 **Feasible future cross-file static check:** every `exit_portal.sh "<Label>"` in
 an image should have a matching `:<Label>` entry in that image's `PORTAL_CONFIG`
