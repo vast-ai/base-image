@@ -134,13 +134,22 @@ Every boot it:
    readable quota ⇒ the ceiling), and for `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
    `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `NUMEXPR_MAX_THREADS`,
    `VECLIB_MAXIMUM_THREADS`, `RAYON_NUM_THREADS` writes the cap, plus
-   `HF_HUB_DISABLE_XET=1` — **only for vars the user/template has not set**.
+   `HF_HUB_DISABLE_XET=1` — **only for vars the user/template has not set**, judged
+   from `/etc/environment` (outside the block) **and** `${WORKSPACE}/.env`.
 4. Writes them into a **delimited managed block** in `/etc/environment`, **stripping
    its own prior block first** and recomputing every boot (migration-safe), and
    `export`s them so supervisord (started later in the same boot) inherits them.
+5. **No-op reconciliation** (formerly-capped instance now on a healthy host, e.g. its
+   `pids.max` was corrected): removes the stale block, `unset`s **only the vars that
+   block actually set** (parsed from the block, not a static list — so a user value
+   is never touched and a var dropped from a future managed-set can't leak), then
+   re-sources `/etc/environment` + `${WORKSPACE}/.env` to restore any real user value
+   — because `10-prep-env.sh` (`export_env=true`) has already exported the stale block
+   into the boot shell that later launches supervisord, so stripping the file alone
+   would leave the caps live in-process.
 
 Codified by `ROOT/opt/instance-tools/tests/base/56-cpu-thread-limits.sh` (unit +
-live + mutation-tested), not a linter rule.
+live + wiring + mutation-tested), not a linter rule.
 
 ## Binding conditions
 
@@ -148,12 +157,16 @@ Non-negotiable; if any is refused the decision is void.
 
 1. **Safety valve, not a fleet tuner.** No-op unless `pids.max < nproc × 16`. Healthy
    hosts are untouched — no thread caps, xet stays enabled.
-2. **Recompute every boot via the managed block.** `/etc/environment` persists across
-   stop/start (overlayfs) and instances migrate hosts; strip-own-block-then-recompute
-   is mandatory so a cap from a prior host never lingers.
-3. **Respect explicit overrides.** A value set by the user/template/launch env (it
-   lands in `/etc/environment` via `10-prep-env.sh`) always wins; the hook fills only
-   unset vars.
+2. **Recompute every boot, and shed on a healthy boot.** `/etc/environment` persists
+   across stop/start (overlayfs) and a host's `pids.max` can be corrected; the managed
+   block is stripped-and-recomputed every boot, and on a no-op boot the vars the stale
+   block set are also cleared from the boot shell (not just the file) so supervisord
+   does not inherit them. A cap from a prior boot never lingers, in the file or the
+   process.
+3. **Respect explicit overrides.** A value the user set via `/etc/environment` (incl.
+   launch `-e`, dumped there by `10-prep-env.sh`) **or `${WORKSPACE}/.env`** always
+   wins — the hook fills only unset vars, and the no-op path restores such values
+   rather than clearing them.
 4. **Fail-safe.** Unreadable/ambiguous cgroup state ⇒ no-op; never fall back to
    `nproc` as the cap basis.
 5. **Xet disabled only on the tripped path**, and never relied upon being governed by
@@ -177,6 +190,14 @@ Non-negotiable; if any is refused the decision is void.
   possible `cgroupns=host` layout where the standard cgroup paths could read the host
   root (fail-safe: a nonsensical read ⇒ no-op). If a genuine multi-service pids-sum
   failure ever appears on a *healthy*-budget host, per-service caps are the escalation.
+- **Known limitation of the no-op path.** It can restore a user value that lives in
+  `/etc/environment` or `${WORKSPACE}/.env`, but not one that exists *only* in the
+  process env — e.g. a `-e OMP_NUM_THREADS=…` added via edit-instance *after* first
+  boot, which `10-prep-env.sh` (write-once, identity-gated) never records in the file.
+  On a healthy reboot that var is unset back to the library default rather than the
+  user's number. This is a downstream symptom of `10-prep-env.sh`'s write-once design,
+  not fixable in this hook; the safe direction (default, not a stale cap) is the lesser
+  harm. Setting the override in `.env` avoids it entirely.
 - The real bad host could not be re-rented (it was gone within days, and cgroup
   version/pids budget aren't selectable), so end-to-end validation on a live
   pathological host is opportunistic. The crash-fix itself was already demonstrated on

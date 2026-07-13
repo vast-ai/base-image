@@ -17,10 +17,15 @@
 # the thread pools to the CPU entitlement so pools stay within the pid budget.
 #
 # It is SOURCED by boot_default.sh after 10-prep-env.sh (which creates
-# /etc/environment). It writes a managed block into /etc/environment — recomputed
-# every boot — which every supervisor service re-reads (utils/environment.sh),
-# so a capped service that restarts still sees the caps. User/template values are
-# never overwritten.
+# /etc/environment AND, with export_env=true, sources /etc/environment + the
+# user's ${WORKSPACE}/.env into the boot shell). It writes a managed block into
+# /etc/environment — recomputed every boot — which every supervisor service
+# re-reads (utils/environment.sh), so a capped service that restarts still sees
+# the caps. User/template values are never overwritten. When a formerly-capped
+# instance later boots on a healthy host (e.g. the host's pids.max is fixed), the
+# stale block is removed AND the vars it set are cleared from the boot shell (so
+# supervisord, launched later in this same shell, does not inherit them), while
+# any real user value in /etc/environment or ${WORKSPACE}/.env is preserved.
 
 # ── Pure decision (unit-tested with synthetic inputs) ────────────────
 # Given pids_max, visible cores, and quota cores, echo the cap to apply, or echo
@@ -73,39 +78,56 @@ _vast_read_quota_cores() {
     echo $(( (q + p / 2) / p ))                                    # rounded to whole cores
 }
 
-# Vars this hook manages, and the managed-block markers.
+# ── Managed-block plumbing ────────────────────────────────────────────
 _VAST_TCAP_VARS=(OMP_NUM_THREADS OPENBLAS_NUM_THREADS MKL_NUM_THREADS
                  NUMEXPR_NUM_THREADS NUMEXPR_MAX_THREADS VECLIB_MAXIMUM_THREADS
                  RAYON_NUM_THREADS HF_HUB_DISABLE_XET)
 _VAST_TCAPS_BEGIN="# VAST_CPU_THREAD_CAPS_BEGIN (ADR 0014, managed — do not edit)"
 _VAST_TCAPS_END="# VAST_CPU_THREAD_CAPS_END"
 
-# True if VAR is already set by the user/template/launch env — i.e. present in
-# <file> OUTSIDE this hook's managed block (10-prep-env.sh dumps the launch env
-# into /etc/environment, so `-e VAR=...` at launch lands there).
+# True if VAR is set by the user/template/launch env — i.e. present OUTSIDE this
+# hook's managed block, in /etc/environment (10-prep-env.sh dumps the launch env
+# there, so `-e VAR=...` at first launch lands there) OR in ${WORKSPACE}/.env (the
+# documented per-instance override). Consulting both is what stops the no-op path
+# from clobbering a legitimate user value that never appears in /etc/environment.
 _vast_user_set() {
-    local var="$1" file="${2:-/etc/environment}"
-    [[ -f "$file" ]] || return 1
-    sed "/VAST_CPU_THREAD_CAPS_BEGIN/,/VAST_CPU_THREAD_CAPS_END/d" "$file" \
-        | grep -qE "^[[:space:]]*(export[[:space:]]+)?${var}="
+    local var="$1" file="${2:-/etc/environment}" envf="${WORKSPACE:-/workspace}/.env"
+    if [[ -f "$file" ]] && sed "/VAST_CPU_THREAD_CAPS_BEGIN/,/VAST_CPU_THREAD_CAPS_END/d" "$file" \
+            | grep -qE "^[[:space:]]*(export[[:space:]]+)?${var}="; then return 0; fi
+    [[ -f "$envf" ]] && grep -qE "^[[:space:]]*(export[[:space:]]+)?${var}=" "$envf"
 }
 
-# Write the managed cap block into <file> (default /etc/environment), and export
-# each capped var into the current shell so supervisord (launched later this boot)
-# inherits it. Idempotent and migration-safe: strips any prior managed block first,
-# so a cap computed on a previous host never persists after a stop/start onto
-# different hardware. Never overwrites a user/template value. Testable off-host by
-# passing a temp file.
+# Echo the variable names actually assigned inside the managed block of <file>.
+# (The block records exactly what we set; unsetting by this parsed list — not the
+# static _VAST_TCAP_VARS — keeps strip and unset symmetric across hook versions
+# and can never touch a var the user set outside the block.)
+_vast_block_vars() {
+    local file="${1:-/etc/environment}"
+    [[ -f "$file" ]] || return 0
+    sed -n '/VAST_CPU_THREAD_CAPS_BEGIN/,/VAST_CPU_THREAD_CAPS_END/p' "$file" 2>/dev/null \
+        | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' | tr -d '[:blank:]='
+}
+
+# Remove the managed block from <file> (idempotent). Guarded by a presence check
+# so a clean file is never rewritten.
+_vast_strip_caps() {
+    local file="${1:-/etc/environment}"
+    [[ -f "$file" ]] && grep -qF "VAST_CPU_THREAD_CAPS_BEGIN" "$file" \
+        && sed -i "/VAST_CPU_THREAD_CAPS_BEGIN/,/VAST_CPU_THREAD_CAPS_END/d" "$file"
+    return 0
+}
+
+# Write a fresh managed block to <file>, stripping any prior one first (migration-
+# safe). Exports each capped var into the current shell so supervisord (launched
+# later this boot) inherits it; leaves user/template vars untouched.
 _vast_write_caps() {
-    local cap="$1" file="${2:-/etc/environment}" var
+    local cap="$1" file="${2:-/etc/environment}" var val
     [[ -n "$cap" ]] || return 0
-    if [[ -f "$file" ]] && grep -qF "VAST_CPU_THREAD_CAPS_BEGIN" "$file"; then
-        sed -i "/VAST_CPU_THREAD_CAPS_BEGIN/,/VAST_CPU_THREAD_CAPS_END/d" "$file"
-    fi
+    _vast_strip_caps "$file"
     {
         echo "$_VAST_TCAPS_BEGIN"
         for var in "${_VAST_TCAP_VARS[@]}"; do
-            local val="$cap"
+            val="$cap"
             # hf_xet's Rust pool ignores the thread-count vars, so disable xet on
             # these hosts (its only cost — slower dedup transfer — applies solely
             # where it would otherwise crash). Not relied on being governed by
@@ -122,20 +144,51 @@ _vast_write_caps() {
     } >> "$file"
 }
 
+# The whole side-effecting decision, given the computed cap ("" == no-op host):
+#  - cap set  -> write/refresh the managed block.
+#  - cap empty but a stale block exists (formerly-capped instance now on a healthy
+#    host) -> remove the block, unset ONLY the vars that block set from the boot
+#    shell, then re-source the authoritative files so any real user value
+#    (including one added to .env since the cap was written) is restored.
+_vast_apply_caps() {
+    local cap="$1" file="${2:-/etc/environment}" var
+    if [[ -n "$cap" ]]; then
+        _vast_write_caps "$cap" "$file"
+        return 0
+    fi
+    [[ -f "$file" ]] && grep -qF "VAST_CPU_THREAD_CAPS_BEGIN" "$file" || return 0
+    local stale=(); mapfile -t stale < <(_vast_block_vars "$file")
+    _vast_strip_caps "$file"
+    for var in "${stale[@]}"; do [[ -n "$var" ]] && unset "$var"; done
+    set -a
+    . "$file" 2>/dev/null
+    [[ -f "${WORKSPACE:-/workspace}/.env" ]] && . "${WORKSPACE:-/workspace}/.env" 2>/dev/null
+    set +a
+    return 0
+}
+
+# Read the live cgroup state, decide, and apply to <file>. The whole compute->apply
+# wiring in one testable place: the test stubs the readers/nproc and drives this
+# against a temp file (so the no-op path's strip is covered, not just applied when
+# a cap exists). Always calls _vast_apply_caps — that is what makes a formerly
+# capped instance shed its block on a later healthy boot.
+_vast_run() {
+    local file="${1:-/etc/environment}" pm vis q cap
+    pm=$(_vast_read_pids_max)
+    vis=$(nproc 2>/dev/null)
+    q=$(_vast_read_quota_cores)
+    cap=$(_vast_thread_cap "${pm:-}" "${vis:-}" "${q:-}")
+    [[ -n "$cap" ]] && echo "[cpu-thread-limits] low pids budget (pids.max=${pm}, nproc=${vis}," \
+        "quota=${q:-none}) — capping thread pools to ${cap}"
+    _vast_apply_caps "$cap" "$file"
+}
+
 # Skip the boot action when sourced lib-only (the test loads functions this way).
 [[ -n "${_VAST_THREAD_HOOK_LIB_ONLY:-}" ]] && return 0
 
 # ── Act ───────────────────────────────────────────────────────────────
-{
-    _vast_pids_max=$(_vast_read_pids_max)
-    _vast_visible=$(nproc 2>/dev/null)
-    _vast_quota=$(_vast_read_quota_cores)
-    _vast_cap=$(_vast_thread_cap "${_vast_pids_max:-}" "${_vast_visible:-}" "${_vast_quota:-}")
-
-    if [[ -n "$_vast_cap" ]]; then
-        echo "[cpu-thread-limits] low pids budget (pids.max=${_vast_pids_max}, nproc=${_vast_visible}," \
-             "quota=${_vast_quota:-none}) — capping thread pools to ${_vast_cap}"
-        _vast_write_caps "$_vast_cap" /etc/environment
-    fi
-    unset _vast_pids_max _vast_visible _vast_quota _vast_cap
-} 2>/dev/null || echo "[cpu-thread-limits] skipped (unexpected error reading cgroup state)"
+# MUST remain a brace group, NOT a subshell — the unset/export/re-source inside
+# _vast_apply_caps have to reach this boot shell (which later launches supervisord
+# via 65-supervisor-launch.sh).
+{ _vast_run /etc/environment; } 2>/dev/null \
+    || echo "[cpu-thread-limits] skipped (unexpected error reading cgroup state)"

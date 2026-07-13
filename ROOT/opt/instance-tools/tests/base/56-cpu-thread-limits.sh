@@ -62,6 +62,55 @@ grep -q '^MKL_NUM_THREADS=8$'   "$_tmpenv" || fail_later "recompute" "re-run did
 grep -q '^OMP_NUM_THREADS=99$'  "$_tmpenv" || fail_later "override-persist" "user OMP lost on re-run"
 rm -f "$_tmpenv"
 
+# A user override in ${WORKSPACE}/.env must be honoured by the write path too
+# (not just /etc/environment), so we never cap over a .env value.
+_tmpws=$(mktemp -d); echo "OMP_NUM_THREADS=64" > "$_tmpws/.env"
+_tmpenv=$(mktemp)
+( export WORKSPACE="$_tmpws"; _vast_write_caps 16 "$_tmpenv" )
+grep -q '^OMP_NUM_THREADS=16$' "$_tmpenv" && fail_later "env-override-write" ".env OMP_NUM_THREADS=64 was overwritten by the cap"
+grep -q '^MKL_NUM_THREADS=16$' "$_tmpenv" || fail_later "env-override-others" "non-.env vars still capped"
+rm -rf "$_tmpws" "$_tmpenv"
+
+# ── 3. No-op reconciliation: formerly-capped instance reboots healthy ──
+# A stale block is present and was sourced into the shell by 10-prep-env; a healthy
+# reboot (cap empty) must strip the block, unset ONLY the vars the block set, and
+# restore real user values — a user OMP in the file AND a user HF_HUB_DISABLE_XET
+# in ${WORKSPACE}/.env — while stale MKL/RAYON fall away.
+_tmpws=$(mktemp -d); echo "HF_HUB_DISABLE_XET=1" > "$_tmpws/.env"
+_tmpenv=$(mktemp)
+{ echo "OMP_NUM_THREADS=99"                       # user value, outside the block
+  echo "$_VAST_TCAPS_BEGIN"
+  echo "MKL_NUM_THREADS=16"; echo "RAYON_NUM_THREADS=16"; echo "HF_HUB_DISABLE_XET=1"
+  echo "$_VAST_TCAPS_END"; } > "$_tmpenv"
+_recon=$(
+    export WORKSPACE="$_tmpws"
+    # simulate 10-prep-env having exported the stale block + .env into the shell
+    export OMP_NUM_THREADS=99 MKL_NUM_THREADS=16 RAYON_NUM_THREADS=16 HF_HUB_DISABLE_XET=1
+    _vast_apply_caps "" "$_tmpenv"
+    echo "OMP=${OMP_NUM_THREADS:-UNSET};MKL=${MKL_NUM_THREADS:-UNSET};RAYON=${RAYON_NUM_THREADS:-UNSET};XET=${HF_HUB_DISABLE_XET:-UNSET}"
+)
+grep -qF "VAST_CPU_THREAD_CAPS_BEGIN" "$_tmpenv" && fail_later "noop-strip" "managed block not stripped on no-op reboot"
+grep -q '^OMP_NUM_THREADS=99$' "$_tmpenv" || fail_later "noop-file-user" "user OMP=99 lost from file"
+[[ "$_recon" == *"MKL=UNSET"*   ]] || fail_later "noop-unset-mkl"  "stale MKL not cleared from shell ($_recon)"
+[[ "$_recon" == *"RAYON=UNSET"* ]] || fail_later "noop-unset-rayon" "stale RAYON not cleared from shell ($_recon)"
+[[ "$_recon" == *"OMP=99"*      ]] || fail_later "noop-restore-file" "user OMP=99 not restored to shell ($_recon)"
+[[ "$_recon" == *"XET=1"*       ]] || fail_later "noop-restore-env" "user .env HF_HUB_DISABLE_XET wrongly cleared ($_recon)"
+rm -rf "$_tmpws" "$_tmpenv"
+
+# ── 4. Wiring: _vast_run always applies (no-op host still sheds a stale block) ──
+# Stub the cgroup readers + nproc so we can drive both paths off-host against a
+# temp file. This guards the boot wiring itself, not just _vast_apply_caps.
+( # pathological: low pids -> block written with the cap
+  _vast_read_pids_max() { echo 1024; }; _vast_read_quota_cores() { echo 46; }; nproc() { echo 384; }
+  _t=$(mktemp); _vast_run "$_t" >/dev/null
+  grep -q '^OMP_NUM_THREADS=16$' "$_t" || { echo "WIRE-FAIL patho-write"; exit 1; }
+  # healthy reboot on the SAME file: high pids -> the stale block must be shed
+  _vast_read_pids_max() { echo 99999; }
+  _vast_run "$_t" >/dev/null
+  grep -qF "VAST_CPU_THREAD_CAPS_BEGIN" "$_t" && { echo "WIRE-FAIL noop-shed"; exit 1; }
+  rm -f "$_t"; exit 0
+) || fail_later "wiring" "_vast_run did not apply on the no-op path (stale block survived a healthy reboot)"
+
 # ── 3. Live consistency: /etc/environment matches the recomputed decision ──
 _pm=$(_vast_read_pids_max); _vis=$(nproc 2>/dev/null); _q=$(_vast_read_quota_cores)
 _cap=$(_vast_thread_cap "${_pm:-}" "${_vis:-}" "${_q:-}")
