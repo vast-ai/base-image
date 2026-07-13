@@ -347,3 +347,118 @@ class TestDownloadWget:
             dest="/tmp/models/",
         )
         download_wget(entry, retry=RetrySettings(), civitai_token="tok", dry_run=True)
+
+
+class TestDownloadWgetCommand:
+    """curl (not wget) is used for authenticated CivitAI downloads, since wget
+    forwards --header across cross-host redirects and CivitAI's download
+    endpoint 307s to a presigned CDN URL that 400s on any Authorization
+    header. Every other case keeps using wget."""
+
+    @patch("provisioner.downloaders.wget.run_cmd")
+    @patch("provisioner.downloaders.wget.FileLock")
+    @patch("provisioner.downloaders.wget.os.path.isfile", return_value=False)
+    @patch("provisioner.downloaders.wget.os.makedirs")
+    def test_civitai_download_uses_curl_not_wget(self, mock_makedirs, mock_isfile, mock_lock, mock_run_cmd):
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        mock_run_cmd.return_value = MagicMock(returncode=1)
+
+        entry = DownloadEntry(url="https://civitai.com/api/download/models/123", dest="/tmp/model.bin")
+        with pytest.raises(RuntimeError):
+            download_wget(entry, retry=RetrySettings(max_attempts=1), civitai_token="tok")
+
+        cmd = mock_run_cmd.call_args[0][0]
+        assert cmd[0] == "curl"
+        assert "wget" not in cmd
+        assert "-H" in cmd
+        assert "Authorization: Bearer tok" in cmd
+
+    @patch("provisioner.downloaders.wget.run_cmd")
+    @patch("provisioner.downloaders.wget.FileLock")
+    @patch("provisioner.downloaders.wget.os.path.isfile", return_value=False)
+    @patch("provisioner.downloaders.wget.os.makedirs")
+    def test_non_civitai_download_still_uses_wget(self, mock_makedirs, mock_isfile, mock_lock, mock_run_cmd):
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        mock_run_cmd.return_value = MagicMock(returncode=1)
+
+        entry = DownloadEntry(url="https://example.com/file.bin", dest="/tmp/file.bin")
+        with pytest.raises(RuntimeError):
+            download_wget(entry, retry=RetrySettings(max_attempts=1))
+
+        cmd = mock_run_cmd.call_args[0][0]
+        assert cmd[0] == "wget"
+
+    @patch("provisioner.downloaders.wget.run_cmd")
+    @patch("provisioner.downloaders.wget.FileLock")
+    @patch("provisioner.downloaders.wget.os.path.isfile", return_value=False)
+    @patch("provisioner.downloaders.wget.os.makedirs")
+    def test_civitai_without_token_still_uses_wget(self, mock_makedirs, mock_isfile, mock_lock, mock_run_cmd):
+        """No token means no header to leak, so plain wget is fine."""
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        mock_run_cmd.return_value = MagicMock(returncode=1)
+
+        entry = DownloadEntry(url="https://civitai.com/api/download/models/123", dest="/tmp/model.bin")
+        with pytest.raises(RuntimeError):
+            download_wget(entry, retry=RetrySettings(max_attempts=1))
+
+        cmd = mock_run_cmd.call_args[0][0]
+        assert cmd[0] == "wget"
+
+    @patch("provisioner.downloaders.wget.run_cmd")
+    @patch("provisioner.downloaders.wget.FileLock")
+    @patch("provisioner.downloaders.wget.os.path.isfile", return_value=False)
+    @patch("provisioner.downloaders.wget.os.makedirs")
+    def test_non_civitai_with_auth_header_still_uses_wget(self, mock_makedirs, mock_isfile, mock_lock, mock_run_cmd):
+        """_is_civitai(url) is checked explicitly, not just auth_header."""
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        mock_run_cmd.return_value = MagicMock(returncode=1)
+
+        entry = DownloadEntry(url="https://example.com/file.bin", dest="/tmp/file.bin")
+        with pytest.raises(RuntimeError):
+            download_wget(entry, retry=RetrySettings(max_attempts=1), civitai_token="tok")
+
+        cmd = mock_run_cmd.call_args[0][0]
+        assert cmd[0] == "wget"
+
+
+class TestContentDispositionUsesGetNotHead:
+    """CivitAI mishandles auth on HEAD requests, so it always uses a ranged
+    GET (-r 0-0) instead, auth header or not; every other host keeps HEAD."""
+
+    @patch("provisioner.downloaders.wget.subprocess.run")
+    def test_civitai_with_auth_header_uses_ranged_get_not_head(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="")
+        _get_content_disposition_filename("https://civitai.com/api/download/models/123", "Authorization: Bearer tok")
+        cmd = mock_run.call_args[0][0]
+        assert "-I" not in cmd
+        assert "-r" in cmd
+        assert "0-0" in cmd
+
+    @patch("provisioner.downloaders.wget.subprocess.run")
+    def test_non_civitai_with_auth_header_still_uses_head(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="")
+        _get_content_disposition_filename("https://example.com/dl", "Authorization: Bearer tok")
+        cmd = mock_run.call_args[0][0]
+        assert "-sI" in cmd
+        assert "-r" not in cmd
+
+    @patch("provisioner.downloaders.wget.subprocess.run")
+    def test_non_civitai_without_auth_header_uses_head(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="")
+        _get_content_disposition_filename("https://example.com/dl")
+        cmd = mock_run.call_args[0][0]
+        assert "-sI" in cmd
+        assert "-r" not in cmd
+
+    @patch("provisioner.downloaders.wget.subprocess.run")
+    def test_civitai_without_auth_header_still_uses_ranged_get(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="")
+        _get_content_disposition_filename("https://civitai.com/api/download/models/123")
+        cmd = mock_run.call_args[0][0]
+        assert "-I" not in cmd
+        assert "-r" in cmd
+        assert "0-0" in cmd

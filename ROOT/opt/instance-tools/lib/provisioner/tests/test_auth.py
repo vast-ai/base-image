@@ -62,6 +62,23 @@ class TestValidateHfToken:
         with patch("provisioner.auth.urlopen", return_value=mock_resp):
             assert validate_hf_token("HF_TOKEN") is False
 
+    def test_no_custom_user_agent(self, monkeypatch):
+        """The User-Agent fix is CivitAI-specific; HF's request is untouched."""
+        monkeypatch.setenv("HF_TOKEN", "tok")
+        captured = {}
+
+        def fake_urlopen(req, timeout=15):
+            captured["req"] = req
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("provisioner.auth.urlopen", side_effect=fake_urlopen):
+            assert validate_hf_token("HF_TOKEN") is True
+        assert "User-agent" not in captured["req"].headers
+
 
 class TestValidateCivitaiToken:
     def test_no_token_returns_false(self):
@@ -93,3 +110,20 @@ class TestValidateCivitaiToken:
         monkeypatch.setenv("CIVITAI_TOKEN", "tok")
         with patch("provisioner.auth.urlopen", side_effect=OSError("network")):
             assert validate_civitai_token("CIVITAI_TOKEN") is False
+
+    def test_sets_user_agent(self, monkeypatch):
+        """CivitAI's WAF blocks urllib's default User-Agent, made tokens look invalid."""
+        monkeypatch.setenv("CIVITAI_TOKEN", "tok")
+        captured = {}
+
+        def fake_urlopen(req, timeout=15):
+            captured["req"] = req
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("provisioner.auth.urlopen", side_effect=fake_urlopen):
+            assert validate_civitai_token("CIVITAI_TOKEN") is True
+        assert captured["req"].headers.get("User-agent")  # urllib normalizes the header key case

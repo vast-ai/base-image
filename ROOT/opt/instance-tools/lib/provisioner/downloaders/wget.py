@@ -20,7 +20,13 @@ log = logging.getLogger("provisioner")
 
 def _get_content_disposition_filename(url: str, auth_header: str | None = None) -> str:
     """Fetch the filename from Content-Disposition headers."""
-    cmd = ["curl", "-sI", "-L", "--max-time", "30", url]
+    # CivitAI's download endpoint mishandles auth on HEAD requests, 401ing
+    # even with a token that downloads the same file fine via GET. Use a
+    # ranged GET (-r 0-0, 1 byte) instead, for CivitAI only.
+    if _is_civitai(url):
+        cmd = ["curl", "-sD", "-", "-o", "/dev/null", "-L", "-r", "0-0", "--max-time", "30", url]
+    else:
+        cmd = ["curl", "-sI", "-L", "--max-time", "30", url]
     if auth_header:
         cmd.extend(["-H", auth_header])
 
@@ -85,16 +91,28 @@ def download_wget(
         os.makedirs(os.path.dirname(dest), exist_ok=True)
 
         def _do_download() -> bool:
-            cmd = [
-                "wget", "-q", "--show-progress",
-                "--max-redirect=10",
-                "-O", dest,
-                url,
-            ]
-            if auth_header:
-                cmd.extend(["--header", auth_header])
+            if auth_header and _is_civitai(url):
+                # wget forwards --header to every redirect hop, including
+                # cross-host ones. CivitAI's download endpoint 307-redirects
+                # to a presigned CDN URL that 400s on any Authorization
+                # header; curl drops it automatically once the host changes.
+                cmd = [
+                    "curl", "-fSL", "--max-redirs", "10",
+                    "-H", auth_header,
+                    "-o", dest,
+                    url,
+                ]
+                label = "curl"
+            else:
+                cmd = [
+                    "wget", "-q", "--show-progress",
+                    "--max-redirect=10",
+                    "-O", dest,
+                    url,
+                ]
+                label = "wget"
 
-            result = run_cmd(cmd, label="wget", check=False)
+            result = run_cmd(cmd, label=label, check=False)
             if result.returncode != 0:
                 # Clean up partial downloads
                 try:
