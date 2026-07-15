@@ -1,0 +1,155 @@
+# Release Instance Portal when portal-aio/VERSION changes on main.
+#
+# Mechanism (see ADR 0015 + ROOT/opt/instance-tools/bin/update-portal):
+#   portal-aio/ ships to the fleet as a GitHub *release*, not via the image build.
+#   Instances read /opt/portal-aio/VERSION on first boot, compare it to this repo's
+#   *latest* release tag, and on ANY mismatch (upgrade OR downgrade) download the
+#   latest release's instance-portal.tar.gz. So publishing a release here is what
+#   ships portal changes to running instances.
+#
+# Safety guards (each maps to a red-team finding — do not remove without re-review):
+#   - Strict vX.Y.Z: a malformed/empty VERSION must never publish a garbage tag.
+#   - Monotonic gate: never publish a version <= the current published latest, so a
+#     revert-to-lower VERSION or a back-fill of an older version cannot mark an older
+#     release --latest and downgrade the fleet.
+#   - Published-state idempotency: skip only when a *published* release already
+#     exists; a leftover DRAFT of the same version is deleted and re-published (a
+#     draft is invisible to releases/latest, so treating it as "done" would strand
+#     the release and downgrade fresh images).
+#   - Single resolved SHA: archive, tag, and --target all use one commit; abort if a
+#     pre-existing tag points elsewhere.
+#
+# Auth: default GITHUB_TOKEN with contents: write. No repository secrets required.
+
+name: Release Portal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'portal-aio/VERSION'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref or commit to release from"
+        required: false
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-portal
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - name: Resolve version + commit, validate format
+        id: ver
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          RAW="$(tr -d '[:space:]' < portal-aio/VERSION)"
+          if [[ ! "$RAW" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::portal-aio/VERSION is not a vX.Y.Z version: '$RAW'"
+            exit 1
+          fi
+          VER="$RAW"; [[ "$VER" == v* ]] || VER="v$VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Portal version: $VER @ $SHA"
+
+      - name: Decide action (published / draft / monotonic guards)
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          SHA="${{ steps.ver.outputs.sha }}"
+
+          # Current published latest (excludes drafts/prereleases); empty if none.
+          LATEST="$(gh release view --json tagName -q '.tagName' 2>/dev/null || true)"
+          echo "current published latest: ${LATEST:-<none>}"
+
+          # State of a release for THIS version, if any.
+          STATE="none"
+          if gh release view "$V" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$V" --json isDraft -q '.isDraft')" == "true" ]]; then
+              STATE="draft"; else STATE="published"; fi
+          fi
+          echo "release state for $V: $STATE"
+
+          # Already shipped -> idempotent no-op.
+          if [[ "$STATE" == "published" ]]; then
+            echo "action=skip" >> "$GITHUB_OUTPUT"
+            echo "$V is already published — nothing to do."
+            exit 0
+          fi
+
+          # Monotonic gate: never (re)publish a version <= the current published latest.
+          if [[ -n "$LATEST" ]]; then
+            HIGHEST="$(printf '%s\n%s\n' "$LATEST" "$V" | sort -V | tail -1)"
+            if [[ "$V" == "$LATEST" || "$HIGHEST" != "$V" ]]; then
+              echo "::error::refusing to publish $V — not greater than current latest $LATEST (downgrade/back-fill guard)"
+              exit 1
+            fi
+          fi
+
+          # A pre-existing tag must point at the commit we are releasing.
+          if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
+            TAGSHA="$(git rev-parse "refs/tags/$V^{commit}")"
+            if [[ "$TAGSHA" != "$SHA" ]]; then
+              echo "::error::tag $V exists at $TAGSHA, not the release commit $SHA"
+              exit 1
+            fi
+          fi
+
+          echo "action=publish" >> "$GITHUB_OUTPUT"
+          if [[ "$STATE" == "draft" ]]; then
+            echo "draft_to_replace=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "draft_to_replace=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build instance-portal.tar.gz
+        if: steps.plan.outputs.action == 'publish'
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix=portal-aio/ HEAD:portal-aio \
+            -o instance-portal.tar.gz
+          INTERNAL="$(tar -xzOf instance-portal.tar.gz portal-aio/VERSION | tr -d '[:space:]')"
+          [[ "$INTERNAL" == v* ]] || INTERNAL="v$INTERNAL"
+          if [[ "$INTERNAL" != "${{ steps.ver.outputs.version }}" ]]; then
+            echo "::error::internal VERSION ($INTERNAL) != release tag (${{ steps.ver.outputs.version }})"
+            exit 1
+          fi
+          echo "--- archive top level ---"
+          tar -tzf instance-portal.tar.gz | awk -F/ 'NF>1{print $2}' | sort -u
+
+      - name: Delete stale draft for this version (keeps the tag)
+        if: steps.plan.outputs.action == 'publish' && steps.plan.outputs.draft_to_replace == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "${{ steps.ver.outputs.version }}" --yes
+          echo "Deleted stale draft ${{ steps.ver.outputs.version }}."
+
+      - name: Create tag and publish release as latest
+        if: steps.plan.outputs.action == 'publish'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.version }}" instance-portal.tar.gz \
+            --target "${{ steps.ver.outputs.sha }}" \
+            --title "Instance Portal ${{ steps.ver.outputs.version }}" \
+            --latest \
+            --generate-notes
+          echo "Published ${{ steps.ver.outputs.version }} as latest at ${{ steps.ver.outputs.sha }}."
