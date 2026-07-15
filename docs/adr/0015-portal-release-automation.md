@@ -51,19 +51,33 @@ never diverge for long — a constraint a human-timed cut cannot guarantee.
 
 Add `.github/workflows/release-portal.yml`. Triggers: push to `main` on path
 `portal-aio/VERSION`, plus `workflow_dispatch` (ref input) for back-fill. It reads
-`portal-aio/VERSION`, and if a release for that tag does not already exist, builds
-`instance-portal.tar.gz` = `git archive` of the `portal-aio/` tree (tracked files
-only — matches the historical asset layout, excludes `.claude`/`.pytest_cache`/
-`venv`), asserts the tarball's internal `VERSION` matches, then `gh release create
-<version> --latest` at the triggering commit. Idempotent: an existing release for
-that version is a no-op.
+`portal-aio/VERSION`, validates it, and — unless a **published** release for that
+version already exists — builds `instance-portal.tar.gz` = `git archive` of the
+`portal-aio/` tree (tracked files only — matches the historical asset layout,
+excludes `.claude`/`.pytest_cache`/`venv`), asserts the tarball's internal `VERSION`
+matches, then `gh release create <version> --latest` at the resolved commit.
 
 ## Binding conditions
 
+These guards are non-negotiable — each closes a fleet-downgrade or wrong-ship failure
+mode found in adversarial review; removing one requires a fresh review.
+
 - The asset is a `git archive` of `portal-aio/` with `--prefix=portal-aio/`, so it
   extracts to `/opt/portal-aio/…` exactly as `update-portal` expects.
-- The workflow is **idempotent** — re-running for an existing release must not fail
-  or replace a published asset.
+- **Strict version format** — `portal-aio/VERSION` must match `^v?\d+\.\d+\.\d+$` or
+  the run fails; an empty/malformed VERSION must never publish a tag.
+- **Monotonic gate** — the workflow refuses to publish a version that is not strictly
+  greater than the current *published* latest release. This is what makes `--latest`
+  safe: a revert-to-lower VERSION or a `workflow_dispatch` back-fill of an older
+  version cannot mark an older release latest and downgrade the fleet.
+- **Idempotency keys on _published_ state, not existence** — a matching **draft**
+  release (invisible to `releases/latest`) is treated as *not shipped*: it is deleted
+  and re-published. Only an already-**published** release for the version is a no-op.
+  (Checking mere existence would let a leftover draft strand the release and downgrade
+  freshly-built images — the exact trap this ADR closes.)
+- **Single resolved commit** — archive, tag, and `--target` all use one SHA
+  (`git rev-parse HEAD` after checkout); if a tag for the version already exists at a
+  different commit, the run aborts rather than mis-tag.
 - Only `portal-aio/VERSION` triggers it; editing portal code without bumping
   VERSION does **not** cut a release (matches the source-of-truth model).
 - `contents: write` is the only elevated permission; auth via the default
