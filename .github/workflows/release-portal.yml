@@ -1,0 +1,94 @@
+# Release Instance Portal when portal-aio/VERSION changes on main.
+#
+# Mechanism (see ADR 0015 + ROOT/opt/instance-tools/bin/update-portal):
+#   portal-aio/ ships to the fleet as a GitHub *release*, not via the image build.
+#   Instances read /opt/portal-aio/VERSION on first boot, compare it to this repo's
+#   *latest* release tag, and on mismatch download the release's
+#   instance-portal.tar.gz. So publishing a release here is what ships portal
+#   changes to running instances.
+#
+# This workflow builds instance-portal.tar.gz = `git archive` of the portal-aio/
+# tree (tracked files only) and publishes a release tagged with the VERSION
+# contents, marked --latest. Bumping portal-aio/VERSION on main and publishing the
+# matching release in one CI run keeps main and the release from diverging (which
+# would otherwise downgrade freshly-built images — ADR 0015).
+#
+# Idempotent: if a release for the version already exists, it is a no-op.
+# Auth: default GITHUB_TOKEN with contents: write. No repository secrets required.
+
+name: Release Portal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'portal-aio/VERSION'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref or commit to release from"
+        required: false
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-portal
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - name: Read portal version
+        id: ver
+        run: |
+          VER="$(tr -d '[:space:]' < portal-aio/VERSION)"
+          [[ "$VER" == v* ]] || VER="v$VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Portal version: $VER"
+
+      - name: Check whether the release already exists
+        id: exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.ver.outputs.version }} already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build instance-portal.tar.gz
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          git archive --format=tar.gz --prefix=portal-aio/ HEAD:portal-aio \
+            -o instance-portal.tar.gz
+          echo "--- archive top level ---"
+          tar -tzf instance-portal.tar.gz | awk -F/ 'NF>1{print $2}' | sort -u
+          # Sanity: the tarball's own VERSION must match the tag we are cutting.
+          INTERNAL="$(tar -xzOf instance-portal.tar.gz portal-aio/VERSION | tr -d '[:space:]')"
+          [[ "$INTERNAL" == v* ]] || INTERNAL="v$INTERNAL"
+          if [[ "$INTERNAL" != "${{ steps.ver.outputs.version }}" ]]; then
+            echo "::error::internal VERSION ($INTERNAL) != release tag (${{ steps.ver.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Create tag and publish release
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.version }}" instance-portal.tar.gz \
+            --target "${{ github.sha }}" \
+            --title "Instance Portal ${{ steps.ver.outputs.version }}" \
+            --latest \
+            --generate-notes
+          echo "Published ${{ steps.ver.outputs.version }} as latest."
