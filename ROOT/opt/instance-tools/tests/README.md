@@ -154,6 +154,49 @@ tests/
 
 The runner discovers `*.d/` directories automatically. Tests within each directory are sorted and run after all `base/` tests. Derivative tests have access to everything in `lib.sh` including `instance_field`.
 
+## Exposure allowlist (`exposure-allowlist.d/`)
+
+`base/28-inadvertent-exposure.sh` is a **fail-closed** security scan (ADR 0006): every
+public (`0.0.0.0`/`::`/`*`) TCP listener must be either Caddy (the HTTP auth gate) or
+explicitly declared in `exposure-allowlist.d/`, or it is flagged as an inadvertent
+exposure. Raw UDP and unattributable (no-owning-process / platform) listeners are
+WARNed, not failed. It is **advisory** (reports but passes) until promoted via
+`EXPOSURE_ENFORCE=true`.
+
+The allowlist is **layered**, like `vast_boot.d`/`conf.d`: base ships the platform floor
+(`00-base.conf` — sshd, Vast-injected Jupyter, the test harness, syncthing); a
+**derivative or external image declares its own legitimately-public non-Caddy ports** by
+dropping a fragment in its `ROOT/` overlay:
+
+```
+# ROOT/opt/instance-tools/tests/exposure-allowlist.d/50-linux-desktop.conf
+# port/proto   class   note
+5900/tcp       raw     VNC (no global auth gate; template/operator's responsibility)
+```
+
+`class` ∈ `raw` | `self-auth-http` | `harness` | `platform`. Only declare a port you
+intend to be publicly reachable without Caddy in front; if it speaks HTTP, prefer putting
+it behind Caddy instead (bind the backend to `127.0.0.1`).
+
+### Caddy-fronted ports are NOT (and must not be) in the allowlist
+
+A port served by Caddy — Instance Portal `1111`, Tensorboard `6006`, the WebUI/API
+fronts, etc. — is intentionally **absent** from the allowlist. The test passes any
+listener whose **owning process is `caddy`**, so every PORTAL_CONFIG-proxied front is
+handled by that rule automatically. (The test does *not* parse PORTAL_CONFIG; it reasons
+from the live owning process. Caddy builds its front sites from PORTAL_CONFIG at runtime,
+so the net effect is automatic — but the mechanism is "is the listener `caddy`," and the
+proxied backends bind `127.0.0.1` so they aren't public at all.)
+
+**Do not "fix" a missing front port by allowlisting it.** The allowlist passes a port
+*regardless of what is listening on it*, so allowlisting e.g. `6006` would let an app
+that binds Tensorboard directly on `0.0.0.0:6006` (bypassing Caddy, no auth) pass — which
+is exactly the unauthenticated exposure this gate exists to catch. The check's whole value
+is confirming that **Caddy**, not the raw app, owns those HTTP ports; if a Caddy-fronted
+service is instead bound directly and publicly, the gate correctly flags it as a violation.
+The allowlist is only for ports that *legitimately bypass* Caddy (raw TCP/UDP, and
+self-auth HTTP that Vast injects and the image cannot move behind Caddy, e.g. Jupyter).
+
 ## Environment variables
 
 ### Runner configuration
