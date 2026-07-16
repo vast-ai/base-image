@@ -71,7 +71,11 @@ jobs:
         run: |
           echo "is-nightly=true" >> $GITHUB_OUTPUT
           echo "version=nightly-$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
-          echo 'matrix=[{"tag":"nightly","cuda":"12.9"}]' >> $GITHUB_OUTPUT
+          # Upstream flipped the default CUDA on nightlies: the bare "nightly"
+          # tag is now the CUDA 13.0 image, and the 12.9 variant moved to the
+          # "cu129-nightly" PREFIX tag (unlike releases, which suffix -cu129).
+          # Build both so nightly matches the release matrix's CUDA coverage.
+          echo 'matrix=[{"tag":"nightly","cuda":"13.0"},{"tag":"cu129-nightly","cuda":"12.9"}]' >> $GITHUB_OUTPUT
           echo "Nightly build requested - skipping version matching"
 
       - name: Check release and resolve version

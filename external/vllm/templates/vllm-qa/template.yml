@@ -14,7 +14,8 @@
 #    service we omit: it's optional and skipping it avoids a port check on a service the
 #    serving smoke doesn't exercise. A portal entry whose port isn't listening fails the
 #    harness's port check, so we list only entries that actually bind.
-#  - Selection floors tuned for the tiny model, not production's 24GB.
+#  - Selection floors tuned for serving-path headroom (below production's 24GB floor —
+#    see the gpu_total_ram note for why the floor is NOT sized to the tiny model).
 # CI overrides image/tag with the freshly-built staging tag via create.py --tag.
 name: "vLLM QA — tiny-model smoke"
 image: vastai/vllm
@@ -53,6 +54,13 @@ extra_filters:
     gte: 800                      # sm_80 — matches the production vLLM floor (vLLM kernels)
   cuda_max_good:
     gte: 13.0                     # host driver must satisfy the newest matrix variant (cuda-13.0)
+  # Headroom floor, not model size (ADR 0005: "floors carry headroom, not the
+  # model's resting size"). vLLM fills gpu_memory_utilization (0.92 on current
+  # nightlies) with KV cache during sizing, then allocates AFTER sizing during
+  # kernel warmup (FlashInfer sampling workspace, ~150 MiB). On an 8 GB card the
+  # post-budget margin is ~30 MiB and the engine OOMs on startup even with a
+  # 0.5B model; 16 GB leaves >1 GiB above the budget. Small-card viability of
+  # upstream defaults is upstream's concern, not what this smoke certifies.
   gpu_total_ram:
-    gte: 8192                     # 8 GB — ample for a 0.5B model + KV cache
+    gte: 16384                    # 16 GB (3x selector bound: 16-48 GB)
 recommended_disk_space: 32.0      # vLLM image + small model + workspace
