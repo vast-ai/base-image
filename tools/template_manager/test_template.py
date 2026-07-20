@@ -29,6 +29,13 @@ POLL_TIMEOUT = 2400              # 40 min — max wait for instance to reach "ru
                                  # Bounded well under the GitHub 6h job cap — see
                                  # the runtime budget in ADR 0005.
 POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
+# Abandon an offer if it makes no visible boot progress (status_msg /
+# actual_status unchanged) for this long while still pre-"running".  A host
+# stuck mid image-pull shows a frozen status and never hits a terminal state,
+# so without this it sits until POLL_TIMEOUT before the retry loop moves on.
+# Generous by default (a single large layer can sit unchanged a while);
+# override with $INSTANCE_LOADING_STALL_TIMEOUT, 0 disables.
+LOADING_STALL_TIMEOUT = int(os.environ.get("INSTANCE_LOADING_STALL_TIMEOUT") or 900)
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
 TIMEOUT_HEADROOM = 600           # 10 min headroom added to computed minimum timeout
@@ -501,7 +508,8 @@ def _bad_status_reason(status_msg):
     return None
 
 
-def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
+def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
+                       stall_timeout=LOADING_STALL_TIMEOUT):
     """Poll instance until running with ports available.
 
     Returns (test_url, auth_token) tuple. auth_token is the instance's
@@ -513,9 +521,16 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     the shared account. The heavy list call (``get_instance``, the only source of
     Docker-style port mappings) is made just once, when the instance actually
     reaches "running".
+
+    ``stall_timeout`` bounds the pre-"running" phase independently of ``timeout``:
+    if the instance makes no visible progress (``status_msg`` / ``actual_status``
+    unchanged) for that long while still not running, the offer is abandoned so
+    the retry loop tries another host.  A host stuck mid image-pull never reaches
+    a terminal state, so it would otherwise sit until ``timeout``.  ``0`` disables.
     """
     deadline = time.time() + timeout
     last_status = ""
+    last_progress = time.time()
     while time.time() < deadline:
         # Cheap O(1) status poll — this runs every tick for the whole boot.
         inst = api.get_instance_status(instance_id, safe=True)
@@ -534,10 +549,13 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
         status = inst.get("actual_status", "")
         status_msg = inst.get("status_msg", "")
 
-        # Update status line in-place when it changes
+        # Update status line in-place when it changes.  Any change (new
+        # status_msg or a state transition) is forward progress → reset the
+        # stall clock.
         current = status_msg.strip() if status_msg else status
         if current and current != last_status:
             last_status = current
+            last_progress = time.time()
             # Clear line and overwrite
             print(f"\r\033[K  Status: {current}", end="", flush=True, file=sys.stderr)
 
@@ -578,6 +596,16 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
                     return f"http://{host}:{test_port}", token
             # running but ports/IP not published yet (or a transient list blip) —
             # keep polling; ticks stay cheap (by-id) until the mapping appears.
+
+        # Stalled pre-"running": no visible progress for stall_timeout.  A host
+        # stuck mid image-pull never reaches a terminal state, so abandon the
+        # offer rather than waiting out the full deadline.
+        if stall_timeout and (time.time() - last_progress) > stall_timeout:
+            print(f"\r\033[KInstance {instance_id} stalled in "
+                  f"'{status or 'loading'}' — no progress for {stall_timeout}s "
+                  f"(last: {last_status or 'n/a'}); abandoning offer",
+                  file=sys.stderr)
+            return None, None
 
         time.sleep(POLL_INTERVAL)
 
@@ -760,6 +788,29 @@ def _base_offer_score(o):
     return (inet / price) / (1 + dl_cost * 5000)
 
 
+def _download_cost(o, disk_gb):
+    """Estimated $ to get ~``disk_gb`` of model onto this offer: idle GPU-time
+    during the download (weighted by the box's hourly rate) plus metered egress.
+    Lower is better; ``inf`` for offers with unknown/zero bandwidth.
+
+    Used as the offer tie-breaker for equal (VRAM, compute_cap, num_gpus) offers.
+    ``_base_offer_score``'s fixed ``dl_cost * 5000`` penalty was calibrated for
+    10-50 GB image pulls and badly mis-ranks large (100 GB-1 TB) model downloads:
+    it prefers a cheap slow-bandwidth host, but idle time on a $30/hr box dwarfs a
+    few cents of bandwidth.  Weighting download *time* by the hourly rate fixes
+    that — a slow host is penalised in proportion to how expensive its idle GPUs
+    are, so big models land on fast/unmetered boxes.
+    """
+    inet_mbps = o.get("inet_down", 0) or 0
+    if inet_mbps <= 0:
+        return float("inf")
+    dph = max(o.get("dph_total", 0) or 0, 0.0)
+    dl_cost_per_gb = o.get("inet_down_cost", 0) or 0
+    gb_per_hour = inet_mbps / 8000.0 * 3600.0        # Mbps → GB/s → GB/hr
+    idle_gpu_cost = (disk_gb / gb_per_hour) * dph      # $ of GPU time while pulling
+    return idle_gpu_cost + disk_gb * dl_cost_per_gb
+
+
 def apply_vram_ceiling(filters, multiplier):
     """Bound the VRAM search above the declared floor (ADR 0005).
 
@@ -778,7 +829,8 @@ def apply_vram_ceiling(filters, multiplier):
     return filters
 
 
-def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute_cap=None):
+def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute_cap=None,
+                        disk_gb=None):
     """Build an ascending sort key for offers (ADR 0005: test the smallest viable box).
 
     VRAM is primary: a pass at the (headroom-adjusted) VRAM floor generalises up to
@@ -797,8 +849,12 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
          890 = sm_89/FP8, 900 = H100); the floor (from ``extra_filters``) must
          encode the image's feature target.
       4. num_gpus ascending — smallest fanout that satisfies VRAM.
-      5. ``-_base_offer_score(o)`` — inet/price score, negated; tie-breaker, and
-         the dominant key when no floor is specified.
+      5. tie-breaker among otherwise-equal offers:
+         - with ``disk_gb`` (known model size): ``_download_cost`` ascending, so a
+           large model lands on a fast/unmetered box instead of an 800 Mbps one
+           where the pull burns expensive GPU-hours.
+         - without it: ``-_base_offer_score(o)`` (legacy inet/price), preserving
+           behaviour for callers that pass no disk size.
     """
     def key(o):
         compute_cap = o.get("compute_cap") or 0
@@ -824,7 +880,8 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
         else:
             cap_overshoot = 0.0
 
-        return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus, -_base_offer_score(o))
+        tie = _download_cost(o, disk_gb) if disk_gb else -_base_offer_score(o)
+        return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus, tie)
     return key
 
 
@@ -1255,7 +1312,8 @@ def main():
         required_total_mb = _required_floor(extra_filters, "gpu_total_ram")
         required_per_gpu_mb = _required_floor(extra_filters, "gpu_ram")
         offers.sort(key=make_offer_sort_key(
-            required_total_mb, required_per_gpu_mb, required_compute_cap))
+            required_total_mb, required_per_gpu_mb, required_compute_cap,
+            disk_gb=disk))
         candidate_offers = offers[:OFFER_CANDIDATE_POOL]
         max_attempts = MAX_LAUNCH_ATTEMPTS
 
