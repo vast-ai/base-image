@@ -192,3 +192,31 @@ def test_tie_break_deterministic_when_all_inf():
     key = make_offer_sort_key(1100000, None, 900, disk_gb=750)
     assert [o["id"] for o in sorted([a, b], key=key)] == [1, 2]
     assert [o["id"] for o in sorted([b, a], key=key)] == [1, 2]
+
+
+# ── robustness: bad template/env values must not crash the sort ─────────────
+
+from test_template import _env_float
+
+
+def test_invalid_disk_gb_falls_back_to_legacy():
+    """A missing/non-numeric/<=0 disk_gb (bad recommended_disk_space) must not
+    crash the sort — it disables the run-cost tie-break and uses legacy."""
+    a = _net(1, inet_down=1000, dph=1.0, dl_cost=0.0)
+    b = _net(2, inet_down=9000, dph=1.0, dl_cost=0.0)
+    legacy = [o["id"] for o in sorted([a, b], key=make_offer_sort_key(1100000, None, 900))]
+    for bad in ("not-a-number", 0, -5, float("nan") and None):
+        got = [o["id"] for o in
+               sorted([a, b], key=make_offer_sort_key(1100000, None, 900, disk_gb=bad))]
+        assert got == legacy
+
+
+def test_env_float_defensive(monkeypatch):
+    monkeypatch.delenv("QA_TEST_X", raising=False)
+    assert _env_float("QA_TEST_X", 1.0) == 1.0     # unset → default
+    monkeypatch.setenv("QA_TEST_X", "abc")
+    assert _env_float("QA_TEST_X", 1.0) == 1.0     # non-numeric → default (no crash)
+    monkeypatch.setenv("QA_TEST_X", "-3")
+    assert _env_float("QA_TEST_X", 1.0) == 0.0     # clamped to >= 0
+    monkeypatch.setenv("QA_TEST_X", "2.5")
+    assert _env_float("QA_TEST_X", 1.0) == 2.5

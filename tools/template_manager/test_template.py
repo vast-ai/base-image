@@ -779,7 +779,16 @@ def _base_offer_score(o):
 # reliability (a slow pull risks the POLL/health timeouts) over marginal cost, so
 # we still prefer a fast box unless another is disproportionately expensive.
 # Override with $QA_RATE_BACKSTOP_HOURS.
-RATE_BACKSTOP_HOURS = float(os.environ.get("QA_RATE_BACKSTOP_HOURS") or 1.0)
+def _env_float(name, default):
+    """Parse a float env var defensively — a bad value falls back to the default
+    (and clamps to >= 0) rather than crashing the script at import."""
+    try:
+        return max(0.0, float(os.environ.get(name) or default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+RATE_BACKSTOP_HOURS = _env_float("QA_RATE_BACKSTOP_HOURS", 1.0)
 
 
 def _offer_run_cost(o, disk_gb, test_hours=RATE_BACKSTOP_HOURS):
@@ -859,6 +868,16 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
          when the tie-break collapses (e.g. every offer scores ``inf`` because
          none report ``inet_down``).
     """
+    # disk_gb is template-controlled (recommended_disk_space); coerce once so a
+    # missing/non-numeric/<=0 value safely disables the run-cost tie-break
+    # (falls back to legacy) instead of raising mid-sort.
+    try:
+        disk_gb = float(disk_gb) if disk_gb is not None else None
+    except (TypeError, ValueError):
+        disk_gb = None
+    if disk_gb is not None and disk_gb <= 0:
+        disk_gb = None
+
     def key(o):
         compute_cap = o.get("compute_cap") or 0
         total_ram = o.get("gpu_total_ram") or 0
