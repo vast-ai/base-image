@@ -29,19 +29,13 @@ POLL_TIMEOUT = 2400              # 40 min — max wait for instance to reach "ru
                                  # Bounded well under the GitHub 6h job cap — see
                                  # the runtime budget in ADR 0005.
 POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
-# Abandon an offer if it makes no visible boot progress for this long while
-# still pre-"running".  A host stuck mid image-pull shows a *frozen, non-empty*
-# status_msg and never hits a terminal state, so without this it sits until
-# POLL_TIMEOUT before the retry loop moves on.
-#
-# Only a frozen *non-empty* status_msg arms this: if a provider emits no
-# status_msg at all we have no progress signal, so we fall back to the full
-# POLL_TIMEOUT rather than guess (a healthy-but-slow pull must not be dropped).
-# The window is deliberately generous — a single large layer can sit on one
-# status line a while — and remains provisional pending a captured pull-cadence
-# trace on the low-bandwidth host tier (see ADR 0005).  Override with
-# $INSTANCE_LOADING_STALL_TIMEOUT; 0 disables.
-LOADING_STALL_TIMEOUT = int(os.environ.get("INSTANCE_LOADING_STALL_TIMEOUT") or 1200)
+# NOTE: a loading-phase stall heuristic (abandon an offer whose status_msg stays
+# frozen pre-"running") was evaluated and DROPPED — a captured cadence trace
+# showed Vast's status_msg is not a reliable liveness signal (no byte-level
+# progress; a healthy slow host freezes it 10+ min during extraction).  There is
+# no in-band progress field to key on (disk_usage is -1 until running), so the
+# loading phase is bounded by POLL_TIMEOUT alone.  See ADR 0005 and
+# docs/redteam/2026-07-20-pr220-stall-offer-scoring/cadence-trace-findings.md.
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
 TIMEOUT_HEADROOM = 600           # 10 min headroom added to computed minimum timeout
@@ -514,8 +508,7 @@ def _bad_status_reason(status_msg):
     return None
 
 
-def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
-                       stall_timeout=LOADING_STALL_TIMEOUT):
+def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     """Poll instance until running with ports available.
 
     Returns (test_url, auth_token) tuple. auth_token is the instance's
@@ -528,18 +521,11 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
     Docker-style port mappings) is made just once, when the instance actually
     reaches "running".
 
-    ``stall_timeout`` bounds the pre-"running" phase independently of ``timeout``:
-    if the instance's *non-empty* ``status_msg`` stays frozen for that long while
-    still not running, the offer is abandoned so the retry loop tries another host.
-    A host stuck mid image-pull never reaches a terminal state, so it would
-    otherwise sit until ``timeout``.  It only arms on a real, non-empty status
-    signal — a provider that emits no ``status_msg`` gets the full ``timeout``
-    rather than a guess — and never fires once ``running``.  ``0`` disables.
+    The loading phase is bounded by ``timeout`` (POLL_TIMEOUT) alone — see the
+    note by that constant on why there is no faster stall heuristic.
     """
     deadline = time.time() + timeout
     last_status = ""
-    last_msg = ""                 # last non-empty status_msg seen (stall signal)
-    last_progress = time.time()   # when last_msg last changed
     while time.time() < deadline:
         # Cheap O(1) status poll — this runs every tick for the whole boot.
         inst = api.get_instance_status(instance_id, safe=True)
@@ -564,15 +550,6 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
             last_status = current
             # Clear line and overwrite
             print(f"\r\033[K  Status: {current}", end="", flush=True, file=sys.stderr)
-
-        # Stall signal: a *non-empty* status_msg changing is forward progress and
-        # resets the clock.  An empty/absent status_msg is treated as "no signal"
-        # (last_msg stays "") so the stall check below never arms — a provider
-        # that doesn't report progress gets the full timeout instead of a guess.
-        msg = status_msg.strip() if status_msg else ""
-        if msg and msg != last_msg:
-            last_msg = msg
-            last_progress = time.time()
 
         # Detect terminal failure states during startup
         if status in TERMINAL_STATES:
@@ -611,18 +588,6 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
                     return f"http://{host}:{test_port}", token
             # running but ports/IP not published yet (or a transient list blip) —
             # keep polling; ticks stay cheap (by-id) until the mapping appears.
-
-        # Stalled pre-"running": a real, non-empty status_msg frozen for
-        # stall_timeout.  A host stuck mid image-pull never reaches a terminal
-        # state, so abandon the offer rather than waiting out the full deadline.
-        # Gated on: a signal exists (last_msg), we're not already running (ports
-        # can lag), and the stall check is enabled.
-        if (stall_timeout and last_msg and status != "running"
-                and (time.time() - last_progress) > stall_timeout):
-            print(f"\r\033[KInstance {instance_id} stalled in "
-                  f"'{status or 'loading'}' — status frozen at '{last_msg}' for "
-                  f"{stall_timeout}s; abandoning offer", file=sys.stderr)
-            return None, None
 
         time.sleep(POLL_INTERVAL)
 
@@ -805,18 +770,33 @@ def _base_offer_score(o):
     return (inet / price) / (1 + dl_cost * 5000)
 
 
-def _download_cost(o, disk_gb):
-    """Estimated $ to get ~``disk_gb`` of model onto this offer: idle GPU-time
-    during the download (weighted by the box's hourly rate) plus metered egress.
-    Lower is better; ``inf`` for offers with unknown/zero bandwidth.
+# A dph-weighting term for the offer cost estimate, in hours.  The instance also
+# bills its hourly rate for the test phase (ADR 0005 budgets ~130 min), so adding
+# some of it makes the rate a first-class cost — the backstop the download-only
+# estimate lacked: with --max-price unset, a much-pricier "fast" box can't win on
+# download speed alone, because it's charged its rate for this time too.  Kept
+# deliberately *under* the true ~2 h test phase: the ADR prioritises runtime and
+# reliability (a slow pull risks the POLL/health timeouts) over marginal cost, so
+# we still prefer a fast box unless another is disproportionately expensive.
+# Override with $QA_RATE_BACKSTOP_HOURS.
+RATE_BACKSTOP_HOURS = float(os.environ.get("QA_RATE_BACKSTOP_HOURS") or 1.0)
 
-    Used as the offer tie-breaker for equal (VRAM, compute_cap, num_gpus) offers.
+
+def _offer_run_cost(o, disk_gb, test_hours=RATE_BACKSTOP_HOURS):
+    """Estimated $ this offer bills to download ~``disk_gb`` of model (at the box's
+    bandwidth) plus ``test_hours`` of runtime, both at its hourly rate, plus
+    metered egress.  Lower is better; ``inf`` for offers with unknown/zero
+    bandwidth.
+
+    Offer tie-breaker among equal (VRAM, compute_cap, num_gpus) offers.
     ``_base_offer_score``'s fixed ``dl_cost * 5000`` penalty was calibrated for
-    10-50 GB image pulls and badly mis-ranks large (100 GB-1 TB) model downloads:
-    it prefers a cheap slow-bandwidth host, but idle time on a $30/hr box dwarfs a
-    few cents of bandwidth.  Weighting download *time* by the hourly rate fixes
-    that — a slow host is penalised in proportion to how expensive its idle GPUs
-    are, so big models land on fast/unmetered boxes.
+    10-50 GB image pulls and mis-ranks large (100 GB-1 TB) model downloads: it
+    prefers a cheap slow-bandwidth host, but the GPU-hours a slow pull burns on a
+    $30/hr box dwarf a few cents of bandwidth.  Costing download *time* by the
+    hourly rate fixes that, so big models land on fast/unmetered boxes.  The
+    ``test_hours`` term is the rate backstop (see ``RATE_BACKSTOP_HOURS``): it
+    bounds overpaying for a much-pricier box when ``--max-price`` is unset, while
+    staying small enough to keep preferring fast download over marginal savings.
     """
     inet_mbps = o.get("inet_down", 0) or 0
     if inet_mbps <= 0:
@@ -824,8 +804,8 @@ def _download_cost(o, disk_gb):
     dph = max(o.get("dph_total", 0) or 0, 0.0)
     dl_cost_per_gb = o.get("inet_down_cost", 0) or 0
     gb_per_hour = inet_mbps / 8000.0 * 3600.0        # Mbps → GB/s → GB/hr
-    idle_gpu_cost = (disk_gb / gb_per_hour) * dph      # $ of GPU time while pulling
-    return idle_gpu_cost + disk_gb * dl_cost_per_gb
+    run_hours = disk_gb / gb_per_hour + test_hours     # download + backstop, both billed
+    return run_hours * dph + disk_gb * dl_cost_per_gb
 
 
 def apply_vram_ceiling(filters, multiplier):
@@ -867,9 +847,10 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
          encode the image's feature target.
       4. num_gpus ascending — smallest fanout that satisfies VRAM.
       5. tie-breaker among otherwise-equal offers:
-         - with ``disk_gb`` (known model size): ``_download_cost`` ascending, so a
-           large model lands on a fast/unmetered box instead of an 800 Mbps one
-           where the pull burns expensive GPU-hours.
+         - with ``disk_gb`` (known model size): ``_offer_run_cost`` ascending, so a
+           large model lands on the box with the lowest estimated total run cost —
+           a fast/unmetered one over an 800 Mbps host that burns GPU-hours pulling,
+           without overpaying for a much-pricier box (the test phase is billed too).
          - without it: ``-_base_offer_score(o)`` (legacy inet/price), preserving
            behaviour for callers that pass no disk size.
       6. offer id — final deterministic key so ordering stays reproducible even
@@ -903,7 +884,7 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
         # Tie-break, then offer id as a final deterministic key so the ordering
         # is reproducible even when the primary tie collapses (e.g. every offer
         # scores inf because none report inet_down).
-        tie = _download_cost(o, disk_gb) if disk_gb else -_base_offer_score(o)
+        tie = _offer_run_cost(o, disk_gb) if disk_gb else -_base_offer_score(o)
         return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus,
                 tie, o.get("id") or 0)
     return key

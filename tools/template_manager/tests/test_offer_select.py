@@ -127,12 +127,12 @@ def test_coerce_extra_filters_falsy_non_dict_raises():
             _coerce_extra_filters(bad)
 
 
-# ── download-aware tie-break for big models ────────────────────────────────
-# Among offers that are otherwise equal (VRAM, compute_cap, num_gpus), rank by
-# estimated download cost when a model size is known, so a big pull doesn't
-# land on a slow-bandwidth box.
+# ── run-cost tie-break for big models ──────────────────────────────────────
+# Among offers otherwise equal (VRAM, compute_cap, num_gpus), rank by estimated
+# total run cost when a model size is known, so a big pull avoids slow-bandwidth
+# boxes without overpaying for a much-pricier fast one.
 
-from test_template import _download_cost
+from test_template import _offer_run_cost
 
 
 def _net(offer_id, inet_down, dph, dl_cost):
@@ -141,43 +141,54 @@ def _net(offer_id, inet_down, dph, dl_cost):
     return o
 
 
-def test_disk_aware_prefers_fast_host_for_big_model():
-    """The 8xH200 case we hit: fast host is metered, slow host is cheap+near-
-    unmetered.  Legacy score picks the slow one (penalised on egress); the
-    disk-aware tie-break picks the fast one (idle GPU-time dominates)."""
-    slow = _net(1, inet_down=826, dph=31.0, dl_cost=0.0026)
-    fast = _net(2, inet_down=8441, dph=53.0, dl_cost=0.019)
-    disk_aware = sorted([slow, fast],
-                        key=make_offer_sort_key(1100000, None, 900, disk_gb=750))
-    assert disk_aware[0]["id"] == 2          # fast host for a 750 GB pull
-    legacy = sorted([slow, fast], key=make_offer_sort_key(1100000, None, 900))
-    assert legacy[0]["id"] == 1              # the bug: legacy picks the slow host
+def test_run_cost_prefers_fast_cheap_not_fast_pricey():
+    """8xH200, 750 GB model. A fast *unmetered* box wins; a slow-cheap box loses
+    (GPU-hours burned pulling); and a much-pricier fast box ALSO loses — the rate
+    backstop (it's billed its rate for the whole run, not just the fast pull)."""
+    slow_cheap = _net(1, inet_down=826, dph=31.0, dl_cost=0.0026)   # ~$127 (2h pull)
+    fast_cheap = _net(2, inet_down=6470, dph=33.7, dl_cost=0.0)     # ~$76 unmetered
+    fast_pricey = _net(3, inet_down=8441, dph=53.0, dl_cost=0.019)  # ~$131
+    key = make_offer_sort_key(1100000, None, 900, disk_gb=750)
+    assert sorted([slow_cheap, fast_cheap, fast_pricey], key=key)[0]["id"] == 2
+    # the fastest box (pricey) must NOT win over the cheaper fast one — the risk
+    # the red-team flagged when --max-price is unset.
+    assert sorted([fast_cheap, fast_pricey], key=key)[0]["id"] == 2
 
 
-def test_download_cost_weights_idle_gpu_time():
-    # 3600 GB/hr link, 3600 GB pull → 1.0 h idle at $10/hr = $10, egress free.
-    assert _download_cost(_net(1, inet_down=8000, dph=10.0, dl_cost=0.0),
-                          disk_gb=3600) == pytest.approx(10.0)
+def test_run_cost_fixes_the_slow_host_bug():
+    """The exact session bug: legacy over-penalises a fast host's egress cost and
+    picks the slow one; the run-cost tie-break picks the fast one (its shorter
+    download outweighs its rate over the backstop window)."""
+    slow = _net(1, inet_down=826, dph=31.0, dl_cost=0.0026)     # legacy favourite
+    fast = _net(2, inet_down=8441, dph=53.0, dl_cost=0.019)     # metered+pricey
+    assert sorted([slow, fast],
+                  key=make_offer_sort_key(1100000, None, 900, disk_gb=750))[0]["id"] == 2
+    assert sorted([slow, fast],
+                  key=make_offer_sort_key(1100000, None, 900))[0]["id"] == 1  # legacy bug
+
+
+def test_offer_run_cost_counts_download_plus_backstop():
+    # 3600 GB/hr link, 3600 GB pull → 1.0 h download; + 2.0 h backstop = 3.0 h at
+    # $10/hr = $30, egress free.
+    assert _offer_run_cost(_net(1, inet_down=8000, dph=10.0, dl_cost=0.0),
+                           disk_gb=3600, test_hours=2.0) == pytest.approx(30.0)
     # Unknown/zero bandwidth sorts last.
-    assert _download_cost(_net(2, inet_down=0, dph=1.0, dl_cost=0.0),
-                          disk_gb=100) == float("inf")
+    assert _offer_run_cost(_net(2, inet_down=0, dph=1.0, dl_cost=0.0),
+                           disk_gb=100) == float("inf")
 
 
 def test_disk_aware_is_opt_in():
     """No disk_gb → legacy inet/price tie-break (unchanged behaviour)."""
     a = _net(1, inet_down=1000, dph=1.0, dl_cost=0.0)
     b = _net(2, inet_down=9000, dph=1.0, dl_cost=0.0)
-    # legacy: higher inet wins the tie-break
     assert sorted([a, b], key=make_offer_sort_key(1100000, None, 900))[0]["id"] == 2
 
 
 def test_tie_break_deterministic_when_all_inf():
-    """If no offer reports inet_down, every _download_cost is inf; the offer-id
-    final key keeps the ordering deterministic instead of raw API order."""
-    a = _net(2, inet_down=0, dph=1.0, dl_cost=0.0)   # id=2, no bandwidth → inf
-    b = _net(1, inet_down=0, dph=1.0, dl_cost=0.0)   # id=1, no bandwidth → inf
-    ordered = sorted([a, b], key=make_offer_sort_key(1100000, None, 900, disk_gb=750))
-    assert [o["id"] for o in ordered] == [1, 2]      # by id, reproducibly
-    # input order reversed → same result (proves it's not just stable-sort luck)
-    ordered2 = sorted([b, a], key=make_offer_sort_key(1100000, None, 900, disk_gb=750))
-    assert [o["id"] for o in ordered2] == [1, 2]
+    """No offer reports inet_down → every _offer_run_cost is inf; the offer-id
+    final key keeps ordering deterministic instead of raw API order."""
+    a = _net(2, inet_down=0, dph=1.0, dl_cost=0.0)
+    b = _net(1, inet_down=0, dph=1.0, dl_cost=0.0)
+    key = make_offer_sort_key(1100000, None, 900, disk_gb=750)
+    assert [o["id"] for o in sorted([a, b], key=key)] == [1, 2]
+    assert [o["id"] for o in sorted([b, a], key=key)] == [1, 2]
