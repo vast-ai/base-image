@@ -205,7 +205,8 @@ def test_invalid_disk_gb_falls_back_to_legacy():
     a = _net(1, inet_down=1000, dph=1.0, dl_cost=0.0)
     b = _net(2, inet_down=9000, dph=1.0, dl_cost=0.0)
     legacy = [o["id"] for o in sorted([a, b], key=make_offer_sort_key(1100000, None, 900))]
-    for bad in ("not-a-number", 0, -5, float("nan") and None):
+    for bad in ("not-a-number", 0, -5, None,
+                float("nan"), float("inf"), float("-inf")):
         got = [o["id"] for o in
                sorted([a, b], key=make_offer_sort_key(1100000, None, 900, disk_gb=bad))]
         assert got == legacy

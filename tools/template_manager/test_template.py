@@ -875,7 +875,9 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
         disk_gb = float(disk_gb) if disk_gb is not None else None
     except (TypeError, ValueError):
         disk_gb = None
-    if disk_gb is not None and disk_gb <= 0:
+    # Reject non-positive AND non-finite (NaN/inf slip past ``<= 0`` and a NaN
+    # tie would break deterministic ordering).
+    if disk_gb is not None and not (0 < disk_gb < float("inf")):
         disk_gb = None
 
     def key(o):
