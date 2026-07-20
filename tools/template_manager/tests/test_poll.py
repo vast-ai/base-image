@@ -129,3 +129,45 @@ def test_poll_stall_disabled_with_zero(monkeypatch):
     url, _ = tt.poll_until_running(_FrozenAPI(), 1, timeout=50, stall_timeout=0)
     assert url is None                       # gave up on the deadline, not the stall
     assert clock.t >= 50
+
+
+def test_poll_empty_status_msg_not_abandoned(monkeypatch):
+    """No status_msg = no progress signal → fall back to the full timeout, not a
+    stall-abandon.  A healthy-but-slow pull on a provider that doesn't populate
+    status_msg must not be dropped (red-team: the strongest false-positive path)."""
+    clock = _StallClock()
+    monkeypatch.setattr(tt.time, "time", clock.time)
+    monkeypatch.setattr(tt.time, "sleep", clock.sleep)
+
+    class _NoMsg:
+        list_calls = 0
+
+        def get_instance_status(self, instance_id, safe=False):
+            return {"actual_status": "loading"}        # never any status_msg
+
+        def get_instance(self, instance_id, safe=False):
+            type(self).list_calls += 1
+            return {}
+
+    url, _ = tt.poll_until_running(_NoMsg(), 1, timeout=300, stall_timeout=60)
+    assert url is None            # gave up on the deadline...
+    assert clock.t >= 300         # ...not on the 60s stall window (never armed)
+
+
+def test_poll_running_without_ports_not_stalled(monkeypatch):
+    """A box that reaches 'running' but is slow to publish ports must not be
+    abandoned by the stall check — it only applies pre-'running'."""
+    clock = _StallClock()
+    monkeypatch.setattr(tt.time, "time", clock.time)
+    monkeypatch.setattr(tt.time, "sleep", clock.sleep)
+
+    class _RunningNoPorts:
+        def get_instance_status(self, instance_id, safe=False):
+            return {"actual_status": "running", "status_msg": "up"}
+
+        def get_instance(self, instance_id, safe=False):
+            return {"public_ipaddr": "1.2.3.4"}        # no ports mapping yet
+
+    url, _ = tt.poll_until_running(_RunningNoPorts(), 1, timeout=200, stall_timeout=30)
+    assert url is None            # never got ports → deadline, not a stall-abandon
+    assert clock.t >= 200

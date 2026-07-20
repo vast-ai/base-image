@@ -29,13 +29,19 @@ POLL_TIMEOUT = 2400              # 40 min — max wait for instance to reach "ru
                                  # Bounded well under the GitHub 6h job cap — see
                                  # the runtime budget in ADR 0005.
 POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
-# Abandon an offer if it makes no visible boot progress (status_msg /
-# actual_status unchanged) for this long while still pre-"running".  A host
-# stuck mid image-pull shows a frozen status and never hits a terminal state,
-# so without this it sits until POLL_TIMEOUT before the retry loop moves on.
-# Generous by default (a single large layer can sit unchanged a while);
-# override with $INSTANCE_LOADING_STALL_TIMEOUT, 0 disables.
-LOADING_STALL_TIMEOUT = int(os.environ.get("INSTANCE_LOADING_STALL_TIMEOUT") or 900)
+# Abandon an offer if it makes no visible boot progress for this long while
+# still pre-"running".  A host stuck mid image-pull shows a *frozen, non-empty*
+# status_msg and never hits a terminal state, so without this it sits until
+# POLL_TIMEOUT before the retry loop moves on.
+#
+# Only a frozen *non-empty* status_msg arms this: if a provider emits no
+# status_msg at all we have no progress signal, so we fall back to the full
+# POLL_TIMEOUT rather than guess (a healthy-but-slow pull must not be dropped).
+# The window is deliberately generous — a single large layer can sit on one
+# status line a while — and remains provisional pending a captured pull-cadence
+# trace on the low-bandwidth host tier (see ADR 0005).  Override with
+# $INSTANCE_LOADING_STALL_TIMEOUT; 0 disables.
+LOADING_STALL_TIMEOUT = int(os.environ.get("INSTANCE_LOADING_STALL_TIMEOUT") or 1200)
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
 TIMEOUT_HEADROOM = 600           # 10 min headroom added to computed minimum timeout
@@ -523,14 +529,17 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
     reaches "running".
 
     ``stall_timeout`` bounds the pre-"running" phase independently of ``timeout``:
-    if the instance makes no visible progress (``status_msg`` / ``actual_status``
-    unchanged) for that long while still not running, the offer is abandoned so
-    the retry loop tries another host.  A host stuck mid image-pull never reaches
-    a terminal state, so it would otherwise sit until ``timeout``.  ``0`` disables.
+    if the instance's *non-empty* ``status_msg`` stays frozen for that long while
+    still not running, the offer is abandoned so the retry loop tries another host.
+    A host stuck mid image-pull never reaches a terminal state, so it would
+    otherwise sit until ``timeout``.  It only arms on a real, non-empty status
+    signal — a provider that emits no ``status_msg`` gets the full ``timeout``
+    rather than a guess — and never fires once ``running``.  ``0`` disables.
     """
     deadline = time.time() + timeout
     last_status = ""
-    last_progress = time.time()
+    last_msg = ""                 # last non-empty status_msg seen (stall signal)
+    last_progress = time.time()   # when last_msg last changed
     while time.time() < deadline:
         # Cheap O(1) status poll — this runs every tick for the whole boot.
         inst = api.get_instance_status(instance_id, safe=True)
@@ -549,15 +558,21 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
         status = inst.get("actual_status", "")
         status_msg = inst.get("status_msg", "")
 
-        # Update status line in-place when it changes.  Any change (new
-        # status_msg or a state transition) is forward progress → reset the
-        # stall clock.
+        # Update status line in-place when it changes.
         current = status_msg.strip() if status_msg else status
         if current and current != last_status:
             last_status = current
-            last_progress = time.time()
             # Clear line and overwrite
             print(f"\r\033[K  Status: {current}", end="", flush=True, file=sys.stderr)
+
+        # Stall signal: a *non-empty* status_msg changing is forward progress and
+        # resets the clock.  An empty/absent status_msg is treated as "no signal"
+        # (last_msg stays "") so the stall check below never arms — a provider
+        # that doesn't report progress gets the full timeout instead of a guess.
+        msg = status_msg.strip() if status_msg else ""
+        if msg and msg != last_msg:
+            last_msg = msg
+            last_progress = time.time()
 
         # Detect terminal failure states during startup
         if status in TERMINAL_STATES:
@@ -597,14 +612,16 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT,
             # running but ports/IP not published yet (or a transient list blip) —
             # keep polling; ticks stay cheap (by-id) until the mapping appears.
 
-        # Stalled pre-"running": no visible progress for stall_timeout.  A host
-        # stuck mid image-pull never reaches a terminal state, so abandon the
-        # offer rather than waiting out the full deadline.
-        if stall_timeout and (time.time() - last_progress) > stall_timeout:
+        # Stalled pre-"running": a real, non-empty status_msg frozen for
+        # stall_timeout.  A host stuck mid image-pull never reaches a terminal
+        # state, so abandon the offer rather than waiting out the full deadline.
+        # Gated on: a signal exists (last_msg), we're not already running (ports
+        # can lag), and the stall check is enabled.
+        if (stall_timeout and last_msg and status != "running"
+                and (time.time() - last_progress) > stall_timeout):
             print(f"\r\033[KInstance {instance_id} stalled in "
-                  f"'{status or 'loading'}' — no progress for {stall_timeout}s "
-                  f"(last: {last_status or 'n/a'}); abandoning offer",
-                  file=sys.stderr)
+                  f"'{status or 'loading'}' — status frozen at '{last_msg}' for "
+                  f"{stall_timeout}s; abandoning offer", file=sys.stderr)
             return None, None
 
         time.sleep(POLL_INTERVAL)
@@ -855,6 +872,9 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
            where the pull burns expensive GPU-hours.
          - without it: ``-_base_offer_score(o)`` (legacy inet/price), preserving
            behaviour for callers that pass no disk size.
+      6. offer id — final deterministic key so ordering stays reproducible even
+         when the tie-break collapses (e.g. every offer scores ``inf`` because
+         none report ``inet_down``).
     """
     def key(o):
         compute_cap = o.get("compute_cap") or 0
@@ -880,8 +900,12 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
         else:
             cap_overshoot = 0.0
 
+        # Tie-break, then offer id as a final deterministic key so the ordering
+        # is reproducible even when the primary tie collapses (e.g. every offer
+        # scores inf because none report inet_down).
         tie = _download_cost(o, disk_gb) if disk_gb else -_base_offer_score(o)
-        return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus, tie)
+        return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus,
+                tie, o.get("id") or 0)
     return key
 
 

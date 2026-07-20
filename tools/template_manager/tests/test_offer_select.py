@@ -169,3 +169,15 @@ def test_disk_aware_is_opt_in():
     b = _net(2, inet_down=9000, dph=1.0, dl_cost=0.0)
     # legacy: higher inet wins the tie-break
     assert sorted([a, b], key=make_offer_sort_key(1100000, None, 900))[0]["id"] == 2
+
+
+def test_tie_break_deterministic_when_all_inf():
+    """If no offer reports inet_down, every _download_cost is inf; the offer-id
+    final key keeps the ordering deterministic instead of raw API order."""
+    a = _net(2, inet_down=0, dph=1.0, dl_cost=0.0)   # id=2, no bandwidth → inf
+    b = _net(1, inet_down=0, dph=1.0, dl_cost=0.0)   # id=1, no bandwidth → inf
+    ordered = sorted([a, b], key=make_offer_sort_key(1100000, None, 900, disk_gb=750))
+    assert [o["id"] for o in ordered] == [1, 2]      # by id, reproducibly
+    # input order reversed → same result (proves it's not just stable-sort luck)
+    ordered2 = sorted([b, a], key=make_offer_sort_key(1100000, None, 900, disk_gb=750))
+    assert [o["id"] for o in ordered2] == [1, 2]
