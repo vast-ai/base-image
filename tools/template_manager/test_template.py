@@ -847,12 +847,14 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
          encode the image's feature target.
       4. num_gpus ascending — smallest fanout that satisfies VRAM.
       5. tie-breaker among otherwise-equal offers:
-         - with ``disk_gb`` (known model size): ``_offer_run_cost`` ascending, so a
-           large model lands on the box with the lowest estimated total run cost —
-           a fast/unmetered one over an 800 Mbps host that burns GPU-hours pulling,
+         - with ``disk_gb`` (a declared model/disk size — ``main`` passes the
+           template's ``recommended_disk_space`` / ``--disk``, and only then, not
+           the bare 40 GB fallback): ``_offer_run_cost`` ascending, so a large
+           model lands on the box with the lowest estimated total run cost — a
+           fast/unmetered one over an 800 Mbps host that burns GPU-hours pulling,
            without overpaying for a much-pricier box (the test phase is billed too).
-         - without it: ``-_base_offer_score(o)`` (legacy inet/price), preserving
-           behaviour for callers that pass no disk size.
+         - ``disk_gb`` falsy (template declares no size; or a direct caller/test
+           omits it): ``-_base_offer_score(o)`` (legacy inet/price).
       6. offer id — final deterministic key so ordering stays reproducible even
          when the tie-break collapses (e.g. every offer scores ``inf`` because
          none report ``inet_down``).
@@ -1316,9 +1318,13 @@ def main():
 
         required_total_mb = _required_floor(extra_filters, "gpu_total_ram")
         required_per_gpu_mb = _required_floor(extra_filters, "gpu_ram")
+        # Use the run-cost tie-break only when a real model/disk size is declared
+        # (--disk or the template's recommended_disk_space) — not the bare 40 GB
+        # fallback, for which the legacy inet/price tie-break is left in place.
+        known_disk = args.disk or template.get("recommended_disk_space")
         offers.sort(key=make_offer_sort_key(
             required_total_mb, required_per_gpu_mb, required_compute_cap,
-            disk_gb=disk))
+            disk_gb=known_disk))
         candidate_offers = offers[:OFFER_CANDIDATE_POOL]
         max_attempts = MAX_LAUNCH_ATTEMPTS
 
