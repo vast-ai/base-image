@@ -220,8 +220,17 @@ surviving review finding.
      must sum to well under a job backstop, itself under 6h: `POLL_TIMEOUT` 40m
      (boot+pull; a box not `running` by then is bad) + test phase ~130m
      (auto-lifted from the template's provisioning/health budget) + ≤12 launch
-     attempts + setup ≈ **~3h worst case**. The `qa` job sets **`timeout-minutes:
-     240`** (4h) as a hard backstop above that and below 6h — so test_template
+     attempts + setup ≈ **~3h worst case** (a stuck-loading host is bounded by
+     `POLL_TIMEOUT` per attempt). A faster per-attempt **loading-stall abandon**
+     was evaluated and **dropped**: a captured cadence trace
+     (`docs/redteam/2026-07-20-pr220-stall-offer-scoring/cadence-trace-findings.md`)
+     showed Vast's `status_msg` is not a reliable liveness signal — no byte-level
+     progress, and a *healthy* slow host freezes it 10+ min during extraction — and
+     no other instance field moves pre-`running` (`disk_usage` is `-1` until then),
+     so any window short enough to beat `POLL_TIMEOUT` false-abandons healthy hosts.
+     Fixing this properly needs a backend change (surface Docker pull/extract
+     progress on the instance record). The `qa` job
+     sets **`timeout-minutes: 240`** (4h) as a hard backstop above that and below 6h — so test_template
      self-terminates and tears down its instance first, and a true hang is killed
      at 4h, not 6h. Rate-limit retries (`MAX_API_RETRIES`) are bounded by these
      phase caps, so a 429 storm can't run the clock to the cap.

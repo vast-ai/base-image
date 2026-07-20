@@ -125,3 +125,99 @@ def test_coerce_extra_filters_falsy_non_dict_raises():
     for bad in ([], 0, False):
         with pytest.raises(ValueError):
             _coerce_extra_filters(bad)
+
+
+# ── run-cost tie-break for big models ──────────────────────────────────────
+# Among offers otherwise equal (VRAM, compute_cap, num_gpus), rank by estimated
+# total run cost when a model size is known, so a big pull avoids slow-bandwidth
+# boxes without overpaying for a much-pricier fast one.
+
+from test_template import _offer_run_cost
+
+
+def _net(offer_id, inet_down, dph, dl_cost):
+    o = _o(cc=900, total_mb=1123000, per_gpu_mb=140000, num_gpus=8, dph=dph)
+    o.update(id=offer_id, inet_down=inet_down, inet_up=1000, inet_down_cost=dl_cost)
+    return o
+
+
+def test_run_cost_prefers_fast_cheap_not_fast_pricey():
+    """8xH200, 750 GB model. A fast *unmetered* box wins; a slow-cheap box loses
+    (GPU-hours burned pulling); and a much-pricier fast box ALSO loses — the rate
+    backstop (it's billed its rate for the whole run, not just the fast pull)."""
+    slow_cheap = _net(1, inet_down=826, dph=31.0, dl_cost=0.0026)   # ~$127 (2h pull)
+    fast_cheap = _net(2, inet_down=6470, dph=33.7, dl_cost=0.0)     # ~$76 unmetered
+    fast_pricey = _net(3, inet_down=8441, dph=53.0, dl_cost=0.019)  # ~$131
+    key = make_offer_sort_key(1100000, None, 900, disk_gb=750)
+    assert sorted([slow_cheap, fast_cheap, fast_pricey], key=key)[0]["id"] == 2
+    # the fastest box (pricey) must NOT win over the cheaper fast one — the risk
+    # the red-team flagged when --max-price is unset.
+    assert sorted([fast_cheap, fast_pricey], key=key)[0]["id"] == 2
+
+
+def test_run_cost_fixes_the_slow_host_bug():
+    """The exact session bug: legacy over-penalises a fast host's egress cost and
+    picks the slow one; the run-cost tie-break picks the fast one (its shorter
+    download outweighs its rate over the backstop window)."""
+    slow = _net(1, inet_down=826, dph=31.0, dl_cost=0.0026)     # legacy favourite
+    fast = _net(2, inet_down=8441, dph=53.0, dl_cost=0.019)     # metered+pricey
+    assert sorted([slow, fast],
+                  key=make_offer_sort_key(1100000, None, 900, disk_gb=750))[0]["id"] == 2
+    assert sorted([slow, fast],
+                  key=make_offer_sort_key(1100000, None, 900))[0]["id"] == 1  # legacy bug
+
+
+def test_offer_run_cost_counts_download_plus_backstop():
+    # 3600 GB/hr link, 3600 GB pull → 1.0 h download; + 2.0 h backstop = 3.0 h at
+    # $10/hr = $30, egress free.
+    assert _offer_run_cost(_net(1, inet_down=8000, dph=10.0, dl_cost=0.0),
+                           disk_gb=3600, test_hours=2.0) == pytest.approx(30.0)
+    # Unknown/zero bandwidth sorts last.
+    assert _offer_run_cost(_net(2, inet_down=0, dph=1.0, dl_cost=0.0),
+                           disk_gb=100) == float("inf")
+
+
+def test_disk_aware_is_opt_in():
+    """No disk_gb → legacy inet/price tie-break (unchanged behaviour)."""
+    a = _net(1, inet_down=1000, dph=1.0, dl_cost=0.0)
+    b = _net(2, inet_down=9000, dph=1.0, dl_cost=0.0)
+    assert sorted([a, b], key=make_offer_sort_key(1100000, None, 900))[0]["id"] == 2
+
+
+def test_tie_break_deterministic_when_all_inf():
+    """No offer reports inet_down → every _offer_run_cost is inf; the offer-id
+    final key keeps ordering deterministic instead of raw API order."""
+    a = _net(2, inet_down=0, dph=1.0, dl_cost=0.0)
+    b = _net(1, inet_down=0, dph=1.0, dl_cost=0.0)
+    key = make_offer_sort_key(1100000, None, 900, disk_gb=750)
+    assert [o["id"] for o in sorted([a, b], key=key)] == [1, 2]
+    assert [o["id"] for o in sorted([b, a], key=key)] == [1, 2]
+
+
+# ── robustness: bad template/env values must not crash the sort ─────────────
+
+from test_template import _env_float
+
+
+def test_invalid_disk_gb_falls_back_to_legacy():
+    """A missing/non-numeric/<=0 disk_gb (bad recommended_disk_space) must not
+    crash the sort — it disables the run-cost tie-break and uses legacy."""
+    a = _net(1, inet_down=1000, dph=1.0, dl_cost=0.0)
+    b = _net(2, inet_down=9000, dph=1.0, dl_cost=0.0)
+    legacy = [o["id"] for o in sorted([a, b], key=make_offer_sort_key(1100000, None, 900))]
+    for bad in ("not-a-number", 0, -5, None,
+                float("nan"), float("inf"), float("-inf")):
+        got = [o["id"] for o in
+               sorted([a, b], key=make_offer_sort_key(1100000, None, 900, disk_gb=bad))]
+        assert got == legacy
+
+
+def test_env_float_defensive(monkeypatch):
+    monkeypatch.delenv("QA_TEST_X", raising=False)
+    assert _env_float("QA_TEST_X", 1.0) == 1.0     # unset → default
+    monkeypatch.setenv("QA_TEST_X", "abc")
+    assert _env_float("QA_TEST_X", 1.0) == 1.0     # non-numeric → default (no crash)
+    monkeypatch.setenv("QA_TEST_X", "-3")
+    assert _env_float("QA_TEST_X", 1.0) == 0.0     # clamped to >= 0
+    monkeypatch.setenv("QA_TEST_X", "2.5")
+    assert _env_float("QA_TEST_X", 1.0) == 2.5

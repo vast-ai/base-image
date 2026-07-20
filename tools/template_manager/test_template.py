@@ -29,6 +29,13 @@ POLL_TIMEOUT = 2400              # 40 min — max wait for instance to reach "ru
                                  # Bounded well under the GitHub 6h job cap — see
                                  # the runtime budget in ADR 0005.
 POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
+# NOTE: a loading-phase stall heuristic (abandon an offer whose status_msg stays
+# frozen pre-"running") was evaluated and DROPPED — a captured cadence trace
+# showed Vast's status_msg is not a reliable liveness signal (no byte-level
+# progress; a healthy slow host freezes it 10+ min during extraction).  There is
+# no in-band progress field to key on (disk_usage is -1 until running), so the
+# loading phase is bounded by POLL_TIMEOUT alone.  See ADR 0005 and
+# docs/redteam/2026-07-20-pr220-stall-offer-scoring/cadence-trace-findings.md.
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
 TIMEOUT_HEADROOM = 600           # 10 min headroom added to computed minimum timeout
@@ -513,6 +520,9 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     the shared account. The heavy list call (``get_instance``, the only source of
     Docker-style port mappings) is made just once, when the instance actually
     reaches "running".
+
+    The loading phase is bounded by ``timeout`` (POLL_TIMEOUT) alone — see the
+    note by that constant on why there is no faster stall heuristic.
     """
     deadline = time.time() + timeout
     last_status = ""
@@ -534,7 +544,7 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
         status = inst.get("actual_status", "")
         status_msg = inst.get("status_msg", "")
 
-        # Update status line in-place when it changes
+        # Update status line in-place when it changes.
         current = status_msg.strip() if status_msg else status
         if current and current != last_status:
             last_status = current
@@ -760,6 +770,53 @@ def _base_offer_score(o):
     return (inet / price) / (1 + dl_cost * 5000)
 
 
+# A dph-weighting term for the offer cost estimate, in hours.  The instance also
+# bills its hourly rate for the test phase (ADR 0005 budgets ~130 min), so adding
+# some of it makes the rate a first-class cost — the backstop the download-only
+# estimate lacked: with --max-price unset, a much-pricier "fast" box can't win on
+# download speed alone, because it's charged its rate for this time too.  Kept
+# deliberately *under* the true ~2 h test phase: the ADR prioritises runtime and
+# reliability (a slow pull risks the POLL/health timeouts) over marginal cost, so
+# we still prefer a fast box unless another is disproportionately expensive.
+# Override with $QA_RATE_BACKSTOP_HOURS.
+def _env_float(name, default):
+    """Parse a float env var defensively — a bad value falls back to the default
+    (and clamps to >= 0) rather than crashing the script at import."""
+    try:
+        return max(0.0, float(os.environ.get(name) or default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+RATE_BACKSTOP_HOURS = _env_float("QA_RATE_BACKSTOP_HOURS", 1.0)
+
+
+def _offer_run_cost(o, disk_gb, test_hours=RATE_BACKSTOP_HOURS):
+    """Estimated $ this offer bills to download ~``disk_gb`` of model (at the box's
+    bandwidth) plus ``test_hours`` of runtime, both at its hourly rate, plus
+    metered egress.  Lower is better; ``inf`` for offers with unknown/zero
+    bandwidth.
+
+    Offer tie-breaker among equal (VRAM, compute_cap, num_gpus) offers.
+    ``_base_offer_score``'s fixed ``dl_cost * 5000`` penalty was calibrated for
+    10-50 GB image pulls and mis-ranks large (100 GB-1 TB) model downloads: it
+    prefers a cheap slow-bandwidth host, but the GPU-hours a slow pull burns on a
+    $30/hr box dwarf a few cents of bandwidth.  Costing download *time* by the
+    hourly rate fixes that, so big models land on fast/unmetered boxes.  The
+    ``test_hours`` term is the rate backstop (see ``RATE_BACKSTOP_HOURS``): it
+    bounds overpaying for a much-pricier box when ``--max-price`` is unset, while
+    staying small enough to keep preferring fast download over marginal savings.
+    """
+    inet_mbps = o.get("inet_down", 0) or 0
+    if inet_mbps <= 0:
+        return float("inf")
+    dph = max(o.get("dph_total", 0) or 0, 0.0)
+    dl_cost_per_gb = o.get("inet_down_cost", 0) or 0
+    gb_per_hour = inet_mbps / 8000.0 * 3600.0        # Mbps → GB/s → GB/hr
+    run_hours = disk_gb / gb_per_hour + test_hours     # download + backstop, both billed
+    return run_hours * dph + disk_gb * dl_cost_per_gb
+
+
 def apply_vram_ceiling(filters, multiplier):
     """Bound the VRAM search above the declared floor (ADR 0005).
 
@@ -778,7 +835,8 @@ def apply_vram_ceiling(filters, multiplier):
     return filters
 
 
-def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute_cap=None):
+def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute_cap=None,
+                        disk_gb=None):
     """Build an ascending sort key for offers (ADR 0005: test the smallest viable box).
 
     VRAM is primary: a pass at the (headroom-adjusted) VRAM floor generalises up to
@@ -797,9 +855,31 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
          890 = sm_89/FP8, 900 = H100); the floor (from ``extra_filters``) must
          encode the image's feature target.
       4. num_gpus ascending — smallest fanout that satisfies VRAM.
-      5. ``-_base_offer_score(o)`` — inet/price score, negated; tie-breaker, and
-         the dominant key when no floor is specified.
+      5. tie-breaker among otherwise-equal offers:
+         - with ``disk_gb`` (a declared model/disk size — ``main`` passes the
+           template's ``recommended_disk_space`` / ``--disk``, and only then, not
+           the bare 40 GB fallback): ``_offer_run_cost`` ascending, so a large
+           model lands on the box with the lowest estimated total run cost — a
+           fast/unmetered one over an 800 Mbps host that burns GPU-hours pulling,
+           without overpaying for a much-pricier box (the test phase is billed too).
+         - ``disk_gb`` falsy (template declares no size; or a direct caller/test
+           omits it): ``-_base_offer_score(o)`` (legacy inet/price).
+      6. offer id — final deterministic key so ordering stays reproducible even
+         when the tie-break collapses (e.g. every offer scores ``inf`` because
+         none report ``inet_down``).
     """
+    # disk_gb is template-controlled (recommended_disk_space); coerce once so a
+    # missing/non-numeric/<=0 value safely disables the run-cost tie-break
+    # (falls back to legacy) instead of raising mid-sort.
+    try:
+        disk_gb = float(disk_gb) if disk_gb is not None else None
+    except (TypeError, ValueError):
+        disk_gb = None
+    # Reject non-positive AND non-finite (NaN/inf slip past ``<= 0`` and a NaN
+    # tie would break deterministic ordering).
+    if disk_gb is not None and not (0 < disk_gb < float("inf")):
+        disk_gb = None
+
     def key(o):
         compute_cap = o.get("compute_cap") or 0
         total_ram = o.get("gpu_total_ram") or 0
@@ -824,7 +904,12 @@ def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute
         else:
             cap_overshoot = 0.0
 
-        return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus, -_base_offer_score(o))
+        # Tie-break, then offer id as a final deterministic key so the ordering
+        # is reproducible even when the primary tie collapses (e.g. every offer
+        # scores inf because none report inet_down).
+        tie = _offer_run_cost(o, disk_gb) if disk_gb else -_base_offer_score(o)
+        return (total_overshoot, per_gpu_overshoot, cap_overshoot, num_gpus,
+                tie, o.get("id") or 0)
     return key
 
 
@@ -1254,8 +1339,13 @@ def main():
 
         required_total_mb = _required_floor(extra_filters, "gpu_total_ram")
         required_per_gpu_mb = _required_floor(extra_filters, "gpu_ram")
+        # Use the run-cost tie-break only when a real model/disk size is declared
+        # (--disk or the template's recommended_disk_space) — not the bare 40 GB
+        # fallback, for which the legacy inet/price tie-break is left in place.
+        known_disk = args.disk or template.get("recommended_disk_space")
         offers.sort(key=make_offer_sort_key(
-            required_total_mb, required_per_gpu_mb, required_compute_cap))
+            required_total_mb, required_per_gpu_mb, required_compute_cap,
+            disk_gb=known_disk))
         candidate_offers = offers[:OFFER_CANDIDATE_POOL]
         max_attempts = MAX_LAUNCH_ATTEMPTS
 
