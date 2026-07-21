@@ -1,4 +1,4 @@
-# ADR 0004 — oobabooga: accel-wheel/torch reconciliation, ADR-0002 convention backfill, and CI
+# ADR 0004 — oobabooga: accel-wheel/torch reconciliation and CI
 
 - **Status:** Accepted (conditional — see Binding conditions). **Amended 2026-06-25
   — see Amendment below.**
@@ -69,12 +69,12 @@ Verified reality that shaped the decision:
   `--listen`**, and upstream binds `127.0.0.1` for both the UI (`server.py`) and the
   API (`modules/api/script.py` binds `0.0.0.0` only when `--listen` is set). The
   baked default is therefore safe.
-- [ADR 0002](0002-portal-config-and-expose-conventions.md) governs the convention
-  half: bake a default `PORTAL_CONFIG` + `EXPOSE` the Caddy-front ports. oobabooga is
-  one of "the 24" awaiting backfill (ADR 0002 migration step 3). **Binding
-  condition 1 of ADR 0002 requires a runtime `ss -ltnp` 0.0.0.0-bind smoke gate for
-  any EXPOSE-ing image** and states that deferring it "voids the decision." This ADR
-  addresses that head-on (see Binding conditions / partial amendment of ADR 0002).
+- oobabooga bakes a default `PORTAL_CONFIG` (the established `05-<name>-env.sh`
+  fallback), but does **not** `EXPOSE` its Caddy-front ports: ports are opened by the
+  Vast template's `ports:` config, and the EXPOSE-from-images convention (ADR 0002) is
+  **deferred pending a platform decision** — the portal-EXPOSE lint work is out of scope
+  here. What this ADR keeps is the runtime bind-safety principle (apps bind loopback
+  behind Caddy, never `0.0.0.0`), which holds regardless of how ports are opened.
 
 The owner's two product/governance calls: **install exllamav3 anyway** (2.9.0 vs
 2.9.1 is a patch diff and PyTorch keeps patch ABI compat — the base family's own
@@ -162,15 +162,15 @@ HARD gate (fail RED, no degrade).**
      This invariant is itself linted: **L053** (ERROR) fires if an image ships
      `ROOT/opt/accel-wheels.txt` without both the `--no-deps` install and this import
      gate, with mutation tests proving it bites.
-2. **Convention (ADR 0002 backfill):** new guarded
+2. **Baked portal default:** new guarded
    `ROOT/etc/vast_boot.d/05-oobabooga-env.sh` baking `PORTAL_CONFIG` with entries
    Instance Portal `1111:11111`, Jupyter `8080:18080`, Jupyter Terminal `8080:8080`
-   (equal-port tab), **Text Generation WebUI `<UI_EXT>:17860`**, **Oobabooga API
-   `<API_EXT>:15000`**; Dockerfile `EXPOSE 1111 8080 <UI_EXT> <API_EXT>`.
-   `<UI_EXT>`/`<API_EXT>` are set to the **live published Vast template's external
-   port values** (pending from the owner) — must be real distinct integers before
-   merge (`portal.py:74` `int()` rejects placeholders and breaks `lint --all`).
-   Satisfies L050/L051/L052 by the ADR 0002 set-model.
+   (equal-port tab), Text Generation WebUI `7860:17860`, Oobabooga API `5000:15000`
+   — the established `05-<name>-env.sh` fallback (the launch template's `PORTAL_CONFIG`
+   still wins). NOTE: the image does **not** `EXPOSE` these ports — they are opened by
+   the Vast template's `ports:` config. The EXPOSE-from-images convention (ADR 0002)
+   is deferred pending a platform decision, so the portal-EXPOSE lint work is not part
+   of this change.
 3. **CI:** new `.github/workflows/build-oobabooga.yml`, **amd64-only single arch**
    (`ubuntu-latest`), single base
    `vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-06-15`, `OOBABOOGA_REF`
@@ -209,10 +209,8 @@ is void.
    regression," two compensating controls are required now: (a) **make
    `oobabooga.sh`'s default additive-safe** so a launch template cannot *drop* the
    loopback `--listen-port/--api-port` default (closing the
-   `${OOBABOOGA_ARGS:-…}` full-replacement → `--listen` → `0.0.0.0` escape hatch on
-   the EXPOSEd ports); (b) the QA-gate checklist explicitly includes the in-container
-   `ss -ltnp` bind check for ports 17860/15000 before publish. Static `L051` +
-   the verified loopback default remain the fast layer.
+   `${OOBABOOGA_ARGS:-…}` full-replacement → `--listen` → `0.0.0.0` escape hatch); (b) the QA-gate checklist explicitly includes the in-container
+   `ss -ltnp` bind check for ports 17860/15000 before publish. The verified loopback default remains the fast layer.
 5. **Pre-decided fail-RED runbook.** When upstream and the base torch fall out of ABI
    lockstep (a *when*, given the exact-patch wheel pin), the gate fails the whole
    build. The reviewed escape is the **manifest**: drop the offending wheel line to
@@ -242,5 +240,5 @@ is void.
   "install anyway" premise is void → invoke the condition-5 runbook.
 - If GPU-class runners arrive, condition 4's deferral ends: wire ADR 0002's bind
   gate into `build-oobabooga.yml` and drop the QA-gate ownership.
-- If Vast's EXPOSE auto-map behaviour changes, revisit the convention half per
-  ADR 0002.
+- If the EXPOSE-from-images convention (ADR 0002) is adopted later, revisit whether
+  oobabooga should EXPOSE its Caddy-front ports instead of relying on template `ports:`.

@@ -86,13 +86,5 @@ RUN \
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     { [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }; }
 
-# EXPOSE the Caddy-front (external) ports this image's baked PORTAL_CONFIG
-# declares: Instance Portal (1111), Jupyter (8080), Text Generation WebUI (7860),
-# Oobabooga API (5000). EXPOSE drives Vast's port auto-map so Caddy proxies them;
-# the base overlays via a COPY (not FROM), so its ports are NOT inherited and a
-# derivative that bakes a default must declare the full front set itself
-# (ADR 0002). Never EXPOSE the loopback internals (11111 / 18080 / 17860 / 15000).
-EXPOSE 1111 8080 7860 5000
-
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

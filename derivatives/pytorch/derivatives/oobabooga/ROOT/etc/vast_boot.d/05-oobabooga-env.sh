@@ -7,7 +7,7 @@
 # parsed by portal-aio/caddy_manager/caddy_config_manager.py). Caddy stands up
 # an authed proxy site only when external != internal, so each app binds its
 # INTERNAL port on loopback (server.py without --listen; see oobabooga.sh) and
-# users reach it via the EXTERNAL port (which the Dockerfile EXPOSEs).
+# users reach it via the EXTERNAL port (opened by the Vast template's `ports:` config).
 #   Text Generation WebUI: external 7860  -> internal 17860
 #   Oobabooga API (OpenAI-compatible): external 5000 -> internal 15000
 if [[ -z $PORTAL_CONFIG ]]; then
