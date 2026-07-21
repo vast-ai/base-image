@@ -106,9 +106,14 @@ jobs:
               continue
             fi
 
-            # Query GitHub API for latest commit SHA and date
-            RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/${repo}/commits/${branch}")
+            # Query GitHub API for latest commit SHA and date. --retry rides out
+            # transient 5xx/connection blips; timeouts bound each attempt.
+            # `|| RESPONSE='{}'` catches a connection-level curl failure (after
+            # retries) so bash -e doesn't kill the job: an empty JSON object makes
+            # COMMIT_SHA resolve to "null" and hit the warn + continue guard below.
+            RESPONSE=$(curl -sS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${repo}/commits/${branch}") || RESPONSE='{}'
 
             COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
             COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')

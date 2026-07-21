@@ -75,12 +75,12 @@ runs:
           fi
 
           if [[ -n "$AUTH_HEADER" ]]; then
-            RESPONSE=$(curl -sfS \
+            RESPONSE=$(curl -sfS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
               -H "Accept: application/vnd.github+json" \
               -H "$AUTH_HEADER" \
               "https://api.github.com/orgs/${{ inputs.owner }}/packages/container/${{ inputs.package }}/versions?per_page=100&page=${page}" 2>/dev/null || echo "")
           else
-            RESPONSE=$(curl -sfS \
+            RESPONSE=$(curl -sfS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/orgs/${{ inputs.owner }}/packages/container/${{ inputs.package }}/versions?per_page=100&page=${page}" 2>/dev/null || echo "")
           fi

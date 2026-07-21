@@ -67,16 +67,23 @@ runs:
           AUTH_HEADER="Authorization: Bearer $GH_TOKEN"
         fi
         
-        HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+        # --retry rides out transient 5xx/connection blips; the timeouts bound
+        # each attempt so a stalled endpoint cannot hang the job.
+        HTTP_RESPONSE=$(curl -sS --retry 5 --retry-max-time 60 \
+          --connect-timeout 10 --max-time 30 -w "\n%{http_code}" \
           -H "Accept: application/vnd.github+json" \
           ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-          "https://api.github.com/repos/${{ inputs.repository }}/releases?per_page=10")
+          "https://api.github.com/repos/${{ inputs.repository }}/releases?per_page=10") || HTTP_RESPONSE=$'\n000'
+        # A connection-level failure (curl non-zero, no HTTP response) is caught
+        # above so bash -e does not kill the step: HTTP_CODE parses as 000 and we
+        # fall through to the non-200 warning + graceful-skip path below.
         
         HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
         BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
         
         if [[ "$HTTP_CODE" != "200" ]]; then
           echo "::warning::GitHub API returned $HTTP_CODE"
+          echo "Response (truncated): $(echo "$BODY" | head -c 500)"
           echo "new-release=${{ inputs.trigger != 'schedule' }}" >> $GITHUB_OUTPUT
           exit 0
         fi
@@ -139,13 +146,23 @@ runs:
         # Optionally resolve master/main to commit hash
         if [[ "${{ inputs.resolve-master-to-commit }}" == "true" && ("$REF" == "master" || "$REF" == "main") ]]; then
           echo "Resolving $REF → HEAD commit"
-          COMMIT=$(git ls-remote "https://github.com/${{ inputs.repository }}.git" "refs/heads/$REF" | cut -f1 | cut -c1-7)
+          COMMIT=""
+          for attempt in 1 2 3; do
+            COMMIT=$(git ls-remote "https://github.com/${{ inputs.repository }}.git" "refs/heads/$REF" 2>/dev/null | cut -f1 | cut -c1-7) || COMMIT=""
+            [[ -n "$COMMIT" ]] && break
+            if (( attempt < 3 )); then
+              echo "Attempt $attempt/3: could not resolve $REF via ls-remote, retrying in 3s..."
+              sleep 3
+            fi
+          done
           if [[ -n "$COMMIT" ]]; then
             REF="$COMMIT"
             echo "Resolved to: $REF"
           else
-            echo "::warning::Could not resolve HEAD, using fallback"
-            REF="$(date -u +%Y%m%d-%H%M)"
+            # Never fall back to a synthetic value: a timestamp is not a valid git
+            # ref and only defers the failure to a confusing checkout error later.
+            echo "::error::Could not resolve HEAD of $REF for ${{ inputs.repository }} after 3 attempts"
+            exit 1
           fi
         fi
         
