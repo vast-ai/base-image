@@ -84,7 +84,8 @@ runs:
         fi
 
         RESPONSE_FILE=$(mktemp)
-        HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
+        HTTP_CODE=$(curl -sS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
+          -o "$RESPONSE_FILE" -w "%{http_code}" \
           -H "Accept: application/json" \
           "https://pypi.org/pypi/${PKG}/json" || echo "000")
 
