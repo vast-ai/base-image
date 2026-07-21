@@ -1,18 +1,32 @@
-# STUB (default-branch enabler) — NOT the real build.
+# Build Oobabooga (Text Generation WebUI) image - works on main repo (scheduled +
+# manual) and forks (manual).
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
+# Optional: SLACK_WEBHOOK_URL
 #
-# A `workflow_dispatch` workflow is only triggerable once it exists on the default
-# branch. This stub registers the trigger so the real Build Oobabooga workflow can be
-# manually dispatched FROM the feature branch (feature/oobabooga-adr0004-ci), where the
-# full workflow + the oobabooga image live. When dispatched against that branch, GitHub
-# runs THAT branch's version of this file (the real build), not this stub.
+# Release detection: resolves HEAD of the upstream main branch (like the sibling
+# derivative workflows). The Dockerfile derives its accelerator-wheel handling from
+# the resolved ref's requirements at build time, so CI always tracks latest. A
+# scheduled run skips if the latest upstream commit is older than COMMIT_AGE_THRESHOLD;
+# a manual OOBABOOGA_REF input overrides. There is an accepted risk a new ref breaks
+# the build (a missing cp312 accel wheel, a new torch minor) — it fails LOUDLY and
+# the planned live-GPU QA gate (ADR 0005, not yet built) is the intended runtime
+# net (ADR 0004).
 #
-# Intentionally NO `schedule:` here — main must not auto-run a build it cannot satisfy
-# (the oobabooga image files are not on main yet). Running this stub from main is a no-op.
-# This file is replaced by the real workflow when the feature PR (#207) merges.
+# Currently amd64-only: oobabooga's accelerator wheels (exllamav3, flash_attn,
+# xformers, llama_cpp_binaries) publish x86_64-only wheels. Re-enable arm64 when
+# those gain aarch64 CUDA wheels (and update merge-manifests `arches` below).
 
 name: Build Oobabooga Image
 
 on:
+  schedule:
+    # Run every 12 hours (staggered from sibling derivatives)
+    - cron: '50 5,17 * * *'
+
   workflow_dispatch:
     inputs:
       OOBABOOGA_REF:
@@ -26,14 +40,263 @@ on:
         description: "Custom tag (Auto default)"
         required: false
 
+env:
+  DEFAULT_DOCKERHUB_REPO: "oobabooga"
+  OOBABOOGA_GITHUB_REPO: "oobabooga/text-generation-webui"
+  OOBABOOGA_BRANCH: "main"
+  # 12 hours (matches the schedule cron) — scheduled runs skip if the latest
+  # upstream commit is older than this.
+  COMMIT_AGE_THRESHOLD: 43200
+
 jobs:
-  stub:
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      oobabooga-ref: ${{ steps.resolve-ref.outputs.ref }}
     steps:
-      - name: Explain
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
         run: |
-          echo "This is the main-branch STUB for 'Build Oobabooga Image'."
-          echo "It exists only to enable workflow_dispatch."
-          echo "To run the real build, dispatch this workflow against the branch"
-          echo "feature/oobabooga-adr0004-ci (Run workflow -> Use workflow from -> that branch)."
-          echo "That branch carries the full build + the oobabooga image."
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
+          fi
+
+      - name: Resolve Oobabooga git ref
+        id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MANUAL_REF="${{ inputs.OOBABOOGA_REF }}"
+
+          if [[ -n "$MANUAL_REF" ]]; then
+            echo "Using manual ref: $MANUAL_REF"
+            echo "ref=$MANUAL_REF" >> $GITHUB_OUTPUT
+            echo "commit-age=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Resolving HEAD of ${{ env.OOBABOOGA_BRANCH }} branch via GitHub API..."
+          # -L: the upstream repo path 301-redirects; follow it.
+          RESPONSE=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.OOBABOOGA_GITHUB_REPO }}/commits/${{ env.OOBABOOGA_BRANCH }}")
+          COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
+          COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')
+
+          if [[ "$COMMIT_SHA" == "null" || -z "$COMMIT_SHA" ]]; then
+            echo "::error::Could not resolve HEAD of ${{ env.OOBABOOGA_BRANCH }} branch"
+            exit 1
+          fi
+
+          COMMIT_EPOCH=$(date -d "$COMMIT_DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - COMMIT_EPOCH))
+
+          echo "Resolved ${{ env.OOBABOOGA_BRANCH }} -> $COMMIT_SHA (${AGE}s old)"
+          echo "ref=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit-age=$AGE" >> $GITHUB_OUTPUT
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          SECRETS="${{ steps.secrets.outputs.available }}"
+          TRIGGER="${{ github.event_name }}"
+          RESOLVED_REF="${{ steps.resolve-ref.outputs.ref }}"
+          COMMIT_AGE="${{ steps.resolve-ref.outputs.commit-age }}"
+
+          if [[ "$SECRETS" != "true" ]]; then
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - Required secrets not configured"
+          elif [[ "$TRIGGER" == "workflow_dispatch" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Manual build for ref: $RESOLVED_REF"
+          elif [[ "$COMMIT_AGE" -le "${{ env.COMMIT_AGE_THRESHOLD }}" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Scheduled build for ref: $RESOLVED_REF (${COMMIT_AGE}s old <= ${{ env.COMMIT_AGE_THRESHOLD }}s threshold)"
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping scheduled build - latest upstream commit is ${COMMIT_AGE}s old (threshold ${{ env.COMMIT_AGE_THRESHOLD }}s)"
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ${{ matrix.arch.runs_on }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-06-15
+        # arm64 is intentionally absent: oobabooga's accelerator wheels
+        # (exllamav3, flash_attn, xformers, llama_cpp_binaries) are x86_64-only.
+        # Re-add the arm64 entry once those gain aarch64 CUDA wheels (and update
+        # merge-manifests `arches` below).
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          if [[ -z "$CUDA_VERSION" ]]; then
+            echo "::error::Failed to parse base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          OOBABOOGA_REF="${{ needs.preflight.outputs.oobabooga-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${OOBABOOGA_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/oobabooga
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ matrix.base_image }}
+            OOBABOOGA_REF=${{ needs.preflight.outputs.oobabooga-ref }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-06-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+
+          OOBABOOGA_REF="${{ needs.preflight.outputs.oobabooga-ref }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [[ -z "$IMAGE_TAG_BASE" ]]; then
+            IMAGE_TAG_BASE="${OOBABOOGA_REF}-${BUILD_DATE}-cuda-${CUDA_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
+          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # amd64-only until the accelerator wheels gain aarch64 CUDA wheels
+          # (see build matrix comment above). Add `arm64` back here when the
+          # build matrix gains arm64.
+          arches: amd64
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload manifest tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build, merge-manifests]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, merge-manifests, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.merge-manifests.result }}
+      image-name: "Oobabooga"
+      image-ref: ${{ needs.preflight.outputs.oobabooga-ref }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
