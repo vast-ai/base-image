@@ -73,7 +73,10 @@ runs:
           --connect-timeout 10 --max-time 30 -w "\n%{http_code}" \
           -H "Accept: application/vnd.github+json" \
           ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-          "https://api.github.com/repos/${{ inputs.repository }}/releases?per_page=10")
+          "https://api.github.com/repos/${{ inputs.repository }}/releases?per_page=10") || HTTP_RESPONSE=$'\n000'
+        # A connection-level failure (curl non-zero, no HTTP response) is caught
+        # above so bash -e does not kill the step: HTTP_CODE parses as 000 and we
+        # fall through to the non-200 warning + graceful-skip path below.
         
         HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
         BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
