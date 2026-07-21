@@ -17,6 +17,11 @@ from typing import Callable, Iterable
 
 from .discover import Image
 from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve, parse_ref
+from .portal import (
+    extract_baked_default, parse_portal_config,
+    proxied_externals, forbidden_expose_ports,
+)
+from .portal_smoke import exposed_ports
 
 _DOCKER_HUB = (None, "docker.io", "index.docker.io", "registry-1.docker.io")
 
@@ -73,6 +78,9 @@ RULES: list[tuple[str, str, str]] = [
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
+    ("L056", ERROR, "Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports — fires only once an image declares its own EXPOSE (ADR 0002)"),
+    ("L057", ERROR, "EXPOSE never includes a port no PORTAL_CONFIG entry proxies (loopback/internal or equal-port-only) — never expose a port without a Caddy auth front (ADR 0002)"),
+    ("L058", WARN, "Image bakes a default PORTAL_CONFIG (else it relies on the launch template) — advisory during the ADR 0002 migration"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -612,11 +620,115 @@ def check_external_env(img: Image) -> Iterable[Finding]:
                       "app launch dies at boot")
 
 
+# ---- Portal / EXPOSE conventions (ADR 0002) — ships dormant until an image adds its own EXPOSE
+
+def _baked_portal(img: Image):
+    """Find the image's baked default PORTAL_CONFIG (the `if [[ -z ]]`-guarded
+    literal in a vast_boot.d env script) and parse it. Returns (raw, entries, rel)
+    where raw is None if the image bakes no default. Note: this is the AT-REST
+    baked default — the runtime bind smoke gate (smoke/bind-check.sh) validates the
+    rendered, post-mutation config; this static check is its fast advisory layer."""
+    if not img.root:
+        return None, [], None
+    bootd = img.root / "etc" / "vast_boot.d"
+    if not bootd.is_dir():
+        return None, [], None
+    for sh in sorted(bootd.glob("*.sh")):
+        raw = extract_baked_default(sh.read_text(encoding="utf-8", errors="replace"))
+        if raw is not None:
+            rel = str(sh.relative_to(img.dir))
+            try:
+                return raw, parse_portal_config(raw), rel
+            except ValueError:
+                return raw, None, rel  # malformed — signalled by entries is None
+    return None, [], None
+
+
+def _ancestor_dockerfiles(img: Image, repo: Path) -> list[Path]:
+    """In-repo Dockerfiles whose EXPOSE this image inherits via FROM.
+
+    EXPOSE is cumulative through `FROM` (but NOT through `COPY`). derivative ←
+    base; pytorch-nested ← pytorch ← base. external is `FROM <upstream>` and grafts
+    the base via COPY, so it inherits NO base EXPOSE — it must declare its own
+    Caddy-front ports in full (incl. the Instance Portal). base has no in-repo parent."""
+    if img.cls == "pytorch-nested":
+        return [repo / "derivatives" / "pytorch" / "Dockerfile", repo / "Dockerfile"]
+    if img.cls == "derivative":
+        return [repo / "Dockerfile"]
+    return []  # external, base
+
+
+def _inherited_exposed(img: Image, repo: Path) -> set[int]:
+    ports: set[int] = set()
+    for df in _ancestor_dockerfiles(img, repo):
+        if df.is_file():
+            ports |= exposed_ports(df.read_text(encoding="utf-8", errors="replace"))
+    return ports
+
+
+def check_expose_portal(img: Image, repo: Path) -> Iterable[Finding]:
+    """L056/L057 — the EFFECTIVE exposed set (this image's own EXPOSE plus what it
+    inherits via FROM) must cover exactly the baked PORTAL_CONFIG's Caddy-front
+    ports, and the image must not itself EXPOSE a port nothing proxies. Fires only
+    once an image declares its OWN EXPOSE, so it ships dormant until migration
+    (ADR 0002). L057 is the fast advisory layer over the real bind smoke gate."""
+    if img.cls == "base":
+        return
+    own = exposed_ports(img.text)
+    if not own:
+        return  # dormant: image hasn't opted in by adding its own EXPOSE yet
+    raw, entries, rel = _baked_portal(img)
+    if raw is None:
+        yield Finding("L056", ERROR, img.name, "Dockerfile",
+                      f"EXPOSE {sorted(own)} but no baked PORTAL_CONFIG default to validate "
+                      "against (add a vast_boot.d env script with the `if [[ -z ]]` guarded default)")
+        return
+    if entries is None:
+        yield Finding("L056", ERROR, img.name, rel, "baked PORTAL_CONFIG default is malformed (cannot parse)")
+        return
+
+    required = proxied_externals(entries)          # full Caddy-front set (no hardcoded allowlist)
+    forbidden = forbidden_expose_ports(entries)
+    effective = own | _inherited_exposed(img, repo)
+
+    # completeness: every Caddy-front port must end up exposed (own or inherited) so
+    # Vast maps it. Missing ones the base would provide hint "migrate the base first".
+    missing = sorted(required - effective)
+    if missing:
+        yield Finding("L056", ERROR, img.name, "Dockerfile",
+                      f"Caddy-front port(s) {missing} are in PORTAL_CONFIG but not exposed "
+                      "(declare them here, or ensure an ancestor image EXPOSEs them)")
+    # this image must not itself EXPOSE a non-front port. forbidden ones are the
+    # security case (L057); other strays have no proxied entry at all (L056).
+    bad = sorted(own & forbidden)
+    if bad:
+        yield Finding("L057", ERROR, img.name, "Dockerfile",
+                      f"EXPOSE includes port(s) {bad} that no entry proxies (loopback/internal or "
+                      "equal-port-only) — never EXPOSE a port without a Caddy auth front")
+    stray = sorted(own - required - forbidden)
+    if stray:
+        yield Finding("L056", ERROR, img.name, "Dockerfile",
+                      f"EXPOSE port(s) {stray} have no proxied PORTAL_CONFIG entry — Caddy would "
+                      "not front them (remove, or add a proxied entry)")
+
+
+def check_baked_portal_default(img: Image) -> Iterable[Finding]:
+    """L058 (WARN) — image bakes no default PORTAL_CONFIG (relies on the launch
+    template). Advisory during the ADR 0002 migration; flips to ERROR once every
+    image self-describes."""
+    if img.cls == "base":
+        return
+    raw, _, _ = _baked_portal(img)
+    if raw is None:
+        yield Finding("L058", WARN, img.name, "ROOT/etc/vast_boot.d",
+                      "no baked PORTAL_CONFIG default (relies on the launch template)")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
-    check_external_env,
+    check_external_env, check_baked_portal_default,
 ]
 
 
@@ -726,6 +838,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_vram(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))
+    out.extend(check_expose_portal(img, repo))
     if apply_exceptions:
         out = [f for f in out if not _suppressed(img.name, f)]
     return out

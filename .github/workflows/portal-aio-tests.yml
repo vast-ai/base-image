@@ -1,0 +1,33 @@
+# Unit-test gate for the portal-aio stack (the Instance Portal / Caddy config
+# manager). Runs against portal-aio/requirements.txt — the same deps the image
+# installs (Dockerfile: `uv pip install -r /opt/portal-aio/requirements.txt`) —
+# so the test environment matches production. See ADR 0002.
+name: portal-aio tests
+
+on:
+  pull_request:
+    paths:
+      - "portal-aio/**"
+      - ".github/workflows/portal-aio-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "portal-aio/**"
+      - ".github/workflows/portal-aio-tests.yml"
+
+jobs:
+  portal-aio-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (the same set the image installs)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -r portal-aio/requirements.txt
+      - name: Run portal-aio tests
+        working-directory: portal-aio
+        run: python -m pytest tests -q

@@ -25,5 +25,8 @@
 | L053 | ERROR | No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6) |
 | L054 | ERROR | A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it) |
 | L055 | ERROR | External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot |
+| L056 | ERROR | Effective EXPOSE (own + inherited via FROM) covers exactly the baked PORTAL_CONFIG Caddy-front ports — fires only once an image declares its own EXPOSE (ADR 0002) |
+| L057 | ERROR | EXPOSE never includes a port no PORTAL_CONFIG entry proxies (loopback/internal or equal-port-only) — never expose a port without a Caddy auth front (ADR 0002) |
+| L058 | WARN | Image bakes a default PORTAL_CONFIG (else it relies on the launch template) — advisory during the ADR 0002 migration |
 | L060 | ERROR | No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012) |
 | L061 | ERROR | No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012) |

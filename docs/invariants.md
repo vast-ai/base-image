@@ -192,6 +192,32 @@ wrappers) for an explicit internal-prefix set — extend `_INTERNAL_TRACKERS` as
 internal projects appear. Precedent: the CON-/HOST-/CLN- references scrubbed from
 docs, workflows, templates, and tooling when this rule landed (ADR 0012).
 
+### EXPOSE matches the baked PORTAL_CONFIG; nothing exposed without a Caddy front — **GATED (L056 / L057; L058 WARN)**
+
+The relationship between a Dockerfile's `EXPOSE` set and the image's baked default
+`PORTAL_CONFIG` is statically checkable (ADR 0002). A `PORTAL_CONFIG` entry is
+`localhost:external:internal:path:Label` — Caddy fronts the *external* port (TLS +
+auth) and proxies to the app's *internal* loopback port. Two obligations follow:
+every Caddy-front (external) port the config declares must actually be exposed (own
+`EXPOSE` or inherited via `FROM`, which is cumulative), and the image must never
+`EXPOSE` a port no entry proxies — that port would be mapped publicly with **no auth
+in front**.
+
+- **L056** — the effective exposed set (own + inherited) covers exactly the baked
+  PORTAL_CONFIG Caddy-front ports.
+- **L057** — `EXPOSE` never includes a port no entry proxies (a loopback/internal
+  port, or an equal-port entry Caddy deliberately serves direct) — the security case.
+- **L058** (WARN) — the image bakes a default `PORTAL_CONFIG` at all (else it relies
+  on the launch template); advisory during the migration.
+
+L056/L057 **ship dormant** — they fire only once an image declares its *own*
+`EXPOSE`, so they gate the ADR-0002 migration as images opt in, rather than failing
+the whole fleet at once. The static checks are the fast advisory layer over the real
+runtime gate, `imagegen bindcheck` (`smoke/bind-check.sh`), which inspects `ss -ltnp`
+on a live box. This is the *constructive* counterpart to §3's finding that
+`external == internal + 10000` is **not** a real convention: the rule is the
+external→internal *proxy* relationship, not an arithmetic offset.
+
 ### Copyleft licence compliance (proposed)
 
 An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in

@@ -11,12 +11,17 @@ KEY_PATH = "/etc/instance.key"
 MAX_RETRIES = 5
 
 
-def load_config():
-    yaml_path = '/etc/portal.yaml'
+def load_config(yaml_path='/etc/portal.yaml'):
     if os.path.exists(yaml_path):
         with open(yaml_path, 'r') as file:
-            return yaml.safe_load(file)['applications']
-    
+            data = yaml.safe_load(file)
+        # A present-but-empty/malformed cache (e.g. caddy.sh `touch`es /etc/portal.yaml
+        # before any PORTAL_CONFIG is set) must be treated as ABSENT — fall through and
+        # regenerate from PORTAL_CONFIG, never crash on a missing 'applications' key.
+        # `yaml.safe_load('')` is None; an empty/odd doc has no usable applications map.
+        if isinstance(data, dict) and data.get('applications'):
+            return data['applications']
+
     apps_string = os.environ.get('PORTAL_CONFIG', '')
     if not apps_string:
         raise ValueError("No configuration found in YAML or environment variable")

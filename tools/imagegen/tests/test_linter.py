@@ -649,3 +649,119 @@ def test_L061_baseline_repo_is_clean():
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))
+
+
+# ---- L056/L057/L058 EXPOSE <-> PORTAL_CONFIG (ADR 0002) ---------------------
+
+def _make_portal(tmp: Path, *, expose: str | None, cfg: str | None,
+                 cls: str = "pytorch-nested") -> Image:
+    """An image with an optional `EXPOSE <expose>` line and an optional baked
+    PORTAL_CONFIG default in ROOT/etc/vast_boot.d/05-img-env.sh."""
+    df = VALID_DF
+    if expose is not None:
+        df = df.replace("RUN env-hash > /.env_hash\n",
+                        f"EXPOSE {expose}\nRUN env-hash > /.env_hash\n")
+    img = make(tmp, cls=cls, df=df)
+    if cfg is not None:
+        bootd = img.dir / "ROOT/etc/vast_boot.d"
+        bootd.mkdir(parents=True, exist_ok=True)
+        (bootd / "05-img-env.sh").write_text(
+            "#!/bin/bash\n"
+            "if [[ -z $PORTAL_CONFIG ]]; then\n"
+            f'    export PORTAL_CONFIG="{cfg}"\n'
+            "fi\n")
+    return img
+
+
+def _seed_ancestors(tmp: Path, *, base_expose: str | None = None, pytorch_expose: str | None = None):
+    """Write in-repo ancestor Dockerfiles so _inherited_exposed resolves the FROM
+    chain (base = tmp/Dockerfile, pytorch = tmp/derivatives/pytorch/Dockerfile)."""
+    if base_expose is not None:
+        (tmp / "Dockerfile").write_text(f"FROM x\nEXPOSE {base_expose}\nRUN env-hash > /.env_hash\n")
+    if pytorch_expose is not None:
+        d = tmp / "derivatives" / "pytorch"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "Dockerfile").write_text(f"FROM x\nEXPOSE {pytorch_expose}\nRUN env-hash > /.env_hash\n")
+
+
+_CFG_APP = "localhost:7860:17860:/:App UI"  # one proxied front: {7860}
+# Portal + app + Jupyter — the shape a baked default copies from the base.
+_CFG_FULL = ("localhost:1111:11111:/:Instance Portal"
+             "|localhost:7860:17860:/:App UI"
+             "|localhost:8080:18080:/:Jupyter")
+
+
+def test_L050_clean_when_effective_covers_fronts(tmp_path):
+    img = _make_portal(tmp_path, expose="7860", cfg=_CFG_APP)  # no inherited; front == own
+    assert "L056" not in errs(img, tmp_path) and "L057" not in errs(img, tmp_path)
+
+
+def test_L050_fires_on_mismatch(tmp_path):
+    img = _make_portal(tmp_path, expose="8000", cfg=_CFG_APP)  # 7860 missing, 8000 stray
+    assert has(img, tmp_path, "L056")
+
+
+def test_L050_dormant_without_own_expose(tmp_path):
+    # bakes a default but declares no OWN EXPOSE → checks stay dormant (migration shape).
+    img = _make_portal(tmp_path, expose=None, cfg=_CFG_FULL)
+    assert "L056" not in errs(img, tmp_path) and "L057" not in errs(img, tmp_path)
+
+
+def test_L050_expose_without_baked_default_fires(tmp_path):
+    img = _make_portal(tmp_path, expose="7860", cfg=None)
+    assert has(img, tmp_path, "L056", "no baked PORTAL_CONFIG")
+
+
+def test_L050_inheritance_fills_base_ports(tmp_path):
+    # base EXPOSEs 1111+8080; the derivative only declares its own 7860 and is clean
+    # because the Caddy-front set is covered by own ∪ inherited (the user's point).
+    _seed_ancestors(tmp_path, base_expose="1111 8080", pytorch_expose="")
+    img = _make_portal(tmp_path, expose="7860", cfg=_CFG_FULL)
+    assert "L056" not in errs(img, tmp_path) and "L057" not in errs(img, tmp_path)
+
+
+def test_L050_missing_when_ancestors_do_not_expose_fronts(tmp_path):
+    # same derivative, but nothing inherited → 1111/8080 are uncovered fronts.
+    img = _make_portal(tmp_path, expose="7860", cfg=_CFG_FULL)
+    assert has(img, tmp_path, "L056", "1111")
+
+
+def test_external_must_declare_portal_ports_itself(tmp_path):
+    # external is FROM upstream (grafts base via COPY) → inherits NO base EXPOSE, so
+    # it must EXPOSE the Instance Portal itself. Declaring only 7860 leaves 1111 uncovered.
+    img = _make_portal(tmp_path, expose="7860",
+                       cfg="localhost:1111:11111:/:Instance Portal|localhost:7860:17860:/:App UI",
+                       cls="external")
+    assert has(img, tmp_path, "L056", "1111")
+
+
+def test_L051_internal_port_exposed_fails(tmp_path):
+    img = _make_portal(tmp_path, expose="17860", cfg=_CFG_APP)
+    assert has(img, tmp_path, "L057")
+
+
+def test_L051_equal_port_only_fails(tmp_path):
+    cfg = "localhost:1111:11111:/:Instance Portal|localhost:7861:7861:/:Wan2GP"
+    img = _make_portal(tmp_path, expose="7861", cfg=cfg)
+    assert has(img, tmp_path, "L057")
+
+
+def test_L050_L051_clean_for_proxied_plus_equal_sibling(tmp_path):
+    cfg = ("localhost:9000:19000:/:App"
+           "|localhost:9000:9000:/tools:App Tools")
+    img = _make_portal(tmp_path, expose="9000", cfg=cfg)
+    assert "L056" not in errs(img, tmp_path) and "L057" not in errs(img, tmp_path)
+
+
+def test_L052_warns_when_no_baked_default(tmp_path):
+    img = _make_portal(tmp_path, expose=None, cfg=None)
+    warns = {f.code for f in lint_image(img, tmp_path) if f.severity == L.WARN}
+    assert "L058" in warns
+
+
+def test_L052_silent_when_default_present(tmp_path):
+    img = _make_portal(tmp_path, expose=None, cfg=_CFG_FULL)
+    warns = {f.code for f in lint_image(img, tmp_path) if f.severity == L.WARN}
+    assert "L058" not in warns
+
+

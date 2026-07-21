@@ -419,18 +419,26 @@ The Instance Portal provides tabbed browser access to services. It is configured
 ### Format
 
 ```
-PORTAL_CONFIG="localhost:internal:external:path:Label|localhost:internal:external:path:Label|..."
+PORTAL_CONFIG="localhost:external:internal:path:Label|localhost:external:internal:path:Label|..."
 ```
 
-Fields are colon-separated, entries are pipe-separated:
+Fields are colon-separated, entries are pipe-separated. Field order matches the
+runtime parser (`portal-aio/caddy_manager/caddy_config_manager.py`):
 
 | Field | Example | Description |
 |-------|---------|-------------|
 | Host | `localhost` | Always `localhost` |
-| Internal port | `7860` | Port the app listens on inside the container |
-| External port | `17860` | Port exposed to the user (convention: internal + 10000) |
+| External port | `7860` | The Caddy-front port — what the user reaches; Caddy terminates TLS + auth here |
+| Internal port | `17860` | The port the app listens on inside the container (bind loopback) |
 | Path | `/` | URL path for the tab link |
 | Label | `My App` | Tab label shown in the portal |
+
+External and internal ports are **arbitrary per image** — there is no
+`internal + 10000` rule (see [docs/invariants.md](docs/invariants.md) §3). When
+`external == internal`, Caddy **skips proxying** and the port is served directly
+and **unauthenticated** — used deliberately for tab-only entries (e.g. the Jupyter
+Terminal `8080:8080`); never point an equal-port entry at a service that must be
+authenticated.
 
 ### Example
 
