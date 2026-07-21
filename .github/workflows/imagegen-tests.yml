@@ -15,6 +15,7 @@ on:
     paths:
       - "tools/imagegen/**"
       - "tools/template_manager/**"
+      - ".github/workflows/imagegen-tests.yml"
 
 jobs:
   imagegen-tests:

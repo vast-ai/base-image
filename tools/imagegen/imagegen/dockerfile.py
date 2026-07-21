@@ -8,9 +8,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_HEREDOC = re.compile(r"<<(-?)\s*([\"']?)(\w+)\2")
-# commands that execute their stdin, so a heredoc fed to them IS executed shell
-_SHELL_INTERPRETERS = {"bash", "sh", "dash", "ash", "ksh", "zsh", ".", "source"}
+# `(?<!<)` so a `<<< word` here-string is NOT mistaken for a `<<word` heredoc
+# (which would open a phantom heredoc that swallows every following line).
+_HEREDOC = re.compile(r"(?<!<)<<(-?)\s*([\"']?)(\w+)\2")
+# commands that EXECUTE their stdin, so a heredoc fed to them IS executed code
+# (not data) — shells plus script interpreters (python patch/model-download blocks).
+_STDIN_INTERPRETERS = {
+    "bash", "sh", "dash", "ash", "ksh", "zsh", ".", "source",
+    "python", "python3", "perl", "node", "ruby",
+}
 
 
 @dataclass
@@ -72,7 +78,7 @@ def parse(text: str) -> list[Instruction]:
             lead = rem.strip().split()[0].rsplit("/", 1)[-1] if rem.strip() else ""
             # a command before the heredoc => body is its stdin (data), UNLESS that
             # command is a shell interpreter that EXECUTES its stdin (bash/sh/. /source).
-            if rem.strip() and lead not in _SHELL_INTERPRETERS:
+            if rem.strip() and lead not in _STDIN_INTERPRETERS:
                 cl = re.match(r"\s*\w+\s*(.*)", cmd_line, re.S)
                 exec_text = cl.group(1) if cl else cmd_line
         out.append(Instruction(cmd, value, start, exec_text))
@@ -86,6 +92,10 @@ def stages(instrs: list[Instruction]) -> list[tuple[str, str | None]]:
         if ins.cmd != "FROM":
             continue
         parts = ins.value.split()
+        # FROM may carry leading flags (e.g. `--platform=$BUILDPLATFORM`); drop them
+        # so the image ref and AS-alias are read from the right positions.
+        while parts and parts[0].startswith("--"):
+            parts = parts[1:]
         if not parts:
             continue
         alias = parts[2] if len(parts) >= 3 and parts[1].upper() == "AS" else None

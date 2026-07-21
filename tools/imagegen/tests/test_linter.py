@@ -9,7 +9,7 @@ from pathlib import Path
 
 import imagegen.linter as L
 from imagegen.discover import Image, discover, find_repo_root
-from imagegen.dockerfile import parse
+from imagegen.dockerfile import parse, stages
 from imagegen.linter import lint_image, ERROR, EXCEPTIONS
 
 VALID_DF = """\
@@ -387,6 +387,41 @@ def test_parser_dash_heredoc_space_terminator_not_early():
     (else `echo real` would be misparsed as a top-level instruction)."""
     text = "FROM x\nRUN cat <<-EOF >/dev/null\n    EOF\necho real\n\tEOF\nCOPY ./ROOT /\n"
     assert [i.cmd for i in parse(text)] == ["FROM", "RUN", "COPY"]  # tab-indented EOF closes it
+
+
+def test_parser_herestring_not_mistaken_for_heredoc():
+    """A `<<<` here-string must NOT open a phantom heredoc that swallows following lines
+    (regression: `<<word` matched inside `<<< word`, consuming the rest of the Dockerfile)."""
+    text = "FROM x\nRUN read v <<< foo\nCOPY ./ROOT /\nRUN env-hash > /.env_hash\n"
+    assert [i.cmd for i in parse(text)] == ["FROM", "RUN", "COPY", "RUN"]
+
+
+def test_parser_from_platform_flag_skipped_in_stages():
+    """`FROM --platform=... img AS alias` must yield (img, alias); the flag is skipped
+    (regression: the flag was read as the ref and the alias lost, blinding L004/L005)."""
+    assert stages(parse("FROM --platform=$BUILDPLATFORM vastai/pytorch:2026-06-10 AS base\n")) \
+        == [("vastai/pytorch:2026-06-10", "base")]
+    assert stages(parse("FROM --platform=linux/amd64 golang:1.23 AS b\nFROM alpine\n")) \
+        == [("golang:1.23", "b"), ("alpine", None)]
+
+
+def test_parser_python_heredoc_body_is_executed_code_L053(tmp_path):
+    """A model download inside `RUN python <<EOF ... EOF` IS executed code, so L053 must
+    scan the body (regression: `python` was absent from the stdin-exec interpreter set, so
+    a `snapshot_download(...)` there baked weights past the gate)."""
+    baked = VALID_DF.replace("RUN env-hash > /.env_hash\n",
+        'RUN python3 <<PYEOF\nfrom huggingface_hub import snapshot_download\n'
+        'snapshot_download("org/model")\nPYEOF\nRUN env-hash > /.env_hash\n')
+    assert has(make(tmp_path, df=baked), tmp_path, "L053", "baked model weights")
+
+
+def test_parser_data_heredoc_body_not_executed_code_L053(tmp_path):
+    """Contrast: a heredoc fed to a NON-interpreter (`cat`) is data, not code — a
+    model-download string there must NOT trip L053."""
+    df = VALID_DF.replace("RUN env-hash > /.env_hash\n",
+        'RUN cat <<DATA >/opt/note.txt\nsnapshot_download("org/model")\nDATA\n'
+        'RUN env-hash > /.env_hash\n')
+    assert not has(make(tmp_path, df=df), tmp_path, "L053")
 
 
 _GUARD_IN_DISCARDED_HEREDOC = """\
