@@ -250,10 +250,9 @@ class TemplateManager:
     ) -> Optional[Dict[str, Any]]:
         """Create a template via API, or preview the payload in dry-run mode.
 
-        Always creates new templates via POST. Updates are disabled due to:
-        - HOST-2493: PUT changes hash_id, breaking existing links
-        - CLN-927: hash_id excludes creator_id, making hash-based matching
-          unreliable across creators
+        Always creates new templates via POST. Updates are disabled because the
+        upstream API's PUT changes hash_id (breaking existing links) and hash_id
+        excludes creator_id (making hash-based matching unreliable across creators).
 
         Args:
             template: Template to create

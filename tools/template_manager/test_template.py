@@ -595,6 +595,27 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     return None, None
 
 
+def ssh_endpoint(api, instance_id):
+    """SSH coords for a held (--keep) instance, so the QA-fix loop can log in and diagnose.
+
+    Prefer DIRECT ssh — the public IP + the 22/tcp mapped port — because Vast injects the
+    operator's key into the instance's authorized_keys, so direct works. The ssh_host/ssh_port
+    PROXY needs the key registered on the Vast ACCOUNT, which an API-launched QA box does not
+    have, so it's only a fallback. Returns {"host", "port"} or {} if not resolvable."""
+    full = api.get_instance(instance_id, safe=True) or {}
+    host, port = full.get("public_ipaddr"), None
+    for key, mappings in (full.get("ports") or {}).items():
+        if key.startswith("22/") and isinstance(mappings, list) and mappings:
+            port = mappings[0].get("HostPort")
+            break
+    if not (host and port):                       # fall back to the proxy
+        host, port = full.get("ssh_host"), full.get("ssh_port")
+    try:
+        return {"host": host, "port": int(port)} if host and port else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 def _parse_sse_event(data_lines, event_type):
     """Parse SSE data lines into an event dict."""
     raw_data = "\n".join(data_lines)
@@ -1387,6 +1408,11 @@ def main():
 
     def _track_instance(new_id):
         ctx.instance_id = new_id
+        # Machine marker: a box now exists and is BILLING, before any verdict. `imagegen qa`
+        # streams stderr and writes a provisional teardown ledger the instant it sees this,
+        # so a crash / early-exit (config_error-after-launch, etc.) can never strand an
+        # unrecorded box — the recovery no longer depends on instance_id reaching --raw.
+        print(f"QA-INSTANCE-CREATED {new_id}", file=sys.stderr, flush=True)
 
     launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
                                max_attempts, _track_instance, log,
@@ -1563,6 +1589,12 @@ def main():
         raw_output["got_result_event"] = got_result_event
         raw_output["exit_code"] = exit_code
         raw_output["stream_counts"] = stream_counts
+        # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
+        # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
+        if instance_id:
+            raw_output["instance_id"] = instance_id
+            if args.keep:
+                raw_output["ssh"] = ssh_endpoint(api, instance_id)
         print(json.dumps(raw_output))
 
     # 7. Cleanup — destroy if instance died or connection was lost

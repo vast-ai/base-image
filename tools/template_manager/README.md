@@ -1,7 +1,7 @@
 # template_manager
 
 Vast.ai template publish + live-test tooling — the QA/publish tail of the new-image
-pipeline (CON-1585). Copied from `vast_landing/scripts/template_manager` and trimmed to
+pipeline. Copied from the private `template_manager` tooling and trimmed to
 two tools; the model-library generator and recommended/autoscaler pipelines were left
 behind. Scope, the duplicate-source split, and the port-10199 test contract are pinned in
 [ADR 0008](../../docs/adr/0008-template-publish-tooling.md). **Not** part of the image

@@ -152,7 +152,7 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  # Live-GPU QA gate (ADR 0005, CON-1585) — calls the reusable qa-gate.yml once per
+  # Live-GPU QA gate (ADR 0005) — calls the reusable qa-gate.yml once per
   # promoted CUDA variant (amd64). All per-image specifics (tag, label, the
   # SHA-pinned provisioning URL) are here; the shared create -> test -> destroy ->
   # delete -> verdict core + the account concurrency group live in qa-gate.yml.

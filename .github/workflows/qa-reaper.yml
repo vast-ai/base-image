@@ -65,3 +65,19 @@ jobs:
           if [ -n "${{ inputs.max_age_min }}" ]; then AGE="--max-age-min ${{ inputs.max_age_min }}"; fi
           python tools/template_manager/reap_orphans.py \
             --label "${QA_LABEL}" $AGE $PREFIX $DESTROY
+
+      - name: Reap orphaned imagegen QA instances (label-only)
+        if: steps.guard.outputs.run == 'true'
+        env:
+          # `imagegen qa` (ADR 0009) can test a NON-staging image (--tag repo/name:tag), so
+          # the staging image-prefix must NOT be ANDed here — those boxes would escape the
+          # primary sweep. The base-image-qa-imagegen-* label is created ONLY by imagegen qa,
+          # so a label-only scope is safe; the age threshold still protects healthy in-flight boxes.
+          IMAGEGEN_LABEL: base-image-qa-imagegen
+        run: |
+          DESTROY="--destroy"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DESTROY=""; fi
+          AGE=""
+          if [ -n "${{ inputs.max_age_min }}" ]; then AGE="--max-age-min ${{ inputs.max_age_min }}"; fi
+          python tools/template_manager/reap_orphans.py \
+            --label "${IMAGEGEN_LABEL}" $AGE $DESTROY

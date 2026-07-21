@@ -1,0 +1,38 @@
+# Unit-test gate for the imagegen tooling (invariant linter + generator + QA
+# launcher) and the template_manager helpers it shells out to. This is the fast
+# CI that keeps the linter/generator honest — the live-GPU QA gate (qa-gate.yml,
+# ADR 0005) is a separate, per-image correctness gate. See docs/adr/0001.
+name: imagegen tests
+
+on:
+  pull_request:
+    paths:
+      - "tools/imagegen/**"
+      - "tools/template_manager/**"
+      - ".github/workflows/imagegen-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/imagegen/**"
+      - "tools/template_manager/**"
+      - ".github/workflows/imagegen-tests.yml"
+
+jobs:
+  imagegen-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          # imagegen's own runtime dep (pyyaml) + pytest; plus the template_manager
+          # deps the qa-launcher tests exercise (dotenv/pydantic), so _check_deps
+          # takes its clean path rather than the missing-deps branch.
+          pip install pytest pyyaml
+          pip install -r tools/template_manager/requirements.txt
+      - name: Run imagegen test suite
+        working-directory: tools/imagegen
+        run: python -m pytest -q

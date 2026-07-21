@@ -1,5 +1,8 @@
 __pycache__
-.env
+.env*
+!.env.example
 
 # template_manager run logs (may reference account ids; never commit)
 tools/template_manager/output/
+.qa/
+.venv/

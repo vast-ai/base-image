@@ -7,7 +7,7 @@
 
 ## Context
 
-CON-1585 builds the new-image pipeline. The last mile of that pipeline is
+This line of work builds the new-image pipeline. The last mile of that pipeline is
 *publishing* a built image as a Vast.ai template and *testing* it on real
 hardware. Both already existed in the private `vast_landing` repo's
 `scripts/template_manager`, which is a larger suite (model-library generator,
@@ -44,7 +44,7 @@ whether that coupling belongs here, and on what terms.
 ## Decision
 
 Host the two tools in `tools/template_manager/`, as the QA/publish layer of
-CON-1585, under these terms:
+the new-image pipeline, under these terms:
 
 1. **Scope boundary.** `tools/template_manager/` is publish/QA tooling. It is
    **not** part of the image build or any CI correctness path, and must never be
@@ -108,6 +108,6 @@ If any condition is refused, this decision is void.
 
 ## Note on ADR numbering
 
-ADRs 0002–0007 are committed on sibling CON-1585 feature branches (oobabooga,
+ADRs 0002–0007 are committed on sibling feature branches (oobabooga,
 exposure-gate, agent-guides) not yet merged here. This took the next free number
 (0008); reconcile the sequence when the branches land together.

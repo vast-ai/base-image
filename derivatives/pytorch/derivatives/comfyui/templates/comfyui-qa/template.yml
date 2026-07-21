@@ -1,4 +1,4 @@
-# ComfyUI QA template (ADR 0005 live-GPU QA gate, CON-1585).
+# ComfyUI QA template (ADR 0005 live-GPU QA gate).
 #
 # Mirrors the PRODUCTION ComfyUI template (vast_landing .../recommended_templates/
 # 160-comfyui) so QA exercises the real launch path — `runtype: jupyter` (Jupyter

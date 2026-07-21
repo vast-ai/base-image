@@ -1,6 +1,6 @@
 """Guard: the QA gate's compute_cap-floor enforcement must stay enabled by default.
 
-CON-1585 split the live-GPU QA gate (this tool) from the invariant linter into a
+This work split the live-GPU QA gate (this tool) from the invariant linter into a
 separate PR that can land first. That makes the gate's *runtime* ``--require-floor``
 the sole pre-merge guard that a QA template declares a usable ``compute_cap`` floor
 (linter rule L050 is the earlier *static* catch and may merge later). If
