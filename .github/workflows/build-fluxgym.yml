@@ -95,8 +95,10 @@ jobs:
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ env.FLUXGYM_GITHUB_REPO }}/commits/${{ env.FLUXGYM_BRANCH }}") || HTTP_CODE="000"
+            # Capture the body every attempt so the failure diagnostic below shows
+            # the last error payload rather than an empty string.
+            RESPONSE=$(cat "$RUNNER_TEMP/upstream-commit.json" 2>/dev/null || true)
             if [[ "$HTTP_CODE" == "200" ]]; then
-              RESPONSE=$(cat "$RUNNER_TEMP/upstream-commit.json")
               break
             fi
             if (( attempt < 5 )); then
