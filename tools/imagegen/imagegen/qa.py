@@ -279,13 +279,16 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     qa_dir = img_dir / ".qa"
     qa_dir.mkdir(parents=True, exist_ok=True)
     py = sys.executable
+    # `template_dir` stays the source-of-truth (what the qa-fix skill should edit); the box is
+    # booted from `launch_template_dir`, which is a throwaway VRAM-injected copy under --min-vram.
+    launch_template_dir = template_dir
     if min_vram:                         # ADR 0010: qa supplies the VRAM floor (host template leaves it unset)
-        template_dir = _inject_vram_floor(template_dir, qa_dir, min_vram, log)
+        launch_template_dir = _inject_vram_floor(template_dir, qa_dir, min_vram, log)
 
     # 1. publish the throwaway QA copy of the launch template, pointed at the staging image
     created_json = qa_dir / "create.json"
-    log(f"imagegen qa: {name} → {image_ref}:{tag_ref}  (template {template_dir.relative_to(_REPO)})")
-    cp = _run([py, _TM / "create.py", template_dir, "--image", image_ref, "--tag", tag_ref,
+    log(f"imagegen qa: {name} → {image_ref}:{tag_ref}  (template {launch_template_dir.relative_to(_REPO)})")
+    cp = _run([py, _TM / "create.py", launch_template_dir, "--image", image_ref, "--tag", tag_ref,
                "--emit-result", created_json])
     if cp.returncode != 0:
         raise SystemExit(f"imagegen qa: template publish failed (exit {cp.returncode})")
@@ -358,10 +361,12 @@ def run(name: str, *, tag: str | None = None, logs: list | None = None,
     if disagreed:
         log(f"\nQA verdict AMBIGUOUS — payload exit {raw_code} vs process {returncode} (likely a "
             f"harness glitch, not an image bug). Box torn down; re-run.")
-        return exit_code
+        return exit_code or 1          # only the got_result_event PASS gate above returns 0
     log(f"\nQA not run to a pass (exit {exit_code}, state={verdict.get('state')}): "
         + _EXPLAIN.get(exit_code, "see the verdict above."))
-    return exit_code
+    # exit_code 0 here == "passed poll but no result event" (inconclusive) — NOT a pass; never
+    # report success on this path, else automation keying on the exit status sees a false green.
+    return exit_code or 1
 
 
 def _dockerhub_creds():

@@ -88,6 +88,32 @@ def test_config_error_after_launch_recovers_box_id_from_marker(tmp_path, monkeyp
     assert torn == ["555"], "box id must be recovered from the marker and torn down"
 
 
+def test_inconclusive_pass_no_result_event_never_returns_zero(tmp_path, monkeypatch):
+    """A 'passed' poll with no result event (exit_code 0, got_result_event False) is INCONCLUSIVE,
+    not a pass — run() must return nonzero (else automation keying on exit status sees false green)
+    and tear the box down (no bundle, since it isn't a diagnosable functional failure)."""
+    tmp_path, img = _fake_repo(tmp_path); torn = []
+    v = {"state": "passed", "exit_code": 0, "got_result_event": False, "instance_id": 8}
+    _fakes(monkeypatch, tmp_path, v, "8", torn)
+    assert q.run("myimg", log=lambda m: None) != 0, "inconclusive (no result event) must not report success"
+    assert torn == [8]
+    assert not (img / ".qa" / "bundle.json").exists()
+
+
+def test_min_vram_fix_surface_points_at_source_template_not_throwaway(tmp_path, monkeypatch):
+    """Under --min-vram the box boots from a throwaway VRAM-injected copy, but bundle.json's
+    fix_surface.template must point at the SOURCE template (what the qa-fix skill edits), not the
+    transient .qa/template-vram/ copy that is regenerated every run."""
+    tmp_path, img = _fake_repo(tmp_path); torn = []
+    v = {"state": "failed", "exit_code": 1, "got_result_event": True, "instance_id": 43}
+    _fakes(monkeypatch, tmp_path, v, "43", torn)
+    assert q.run("myimg", log=lambda m: None, min_vram=24) == 1
+    bundle = json.loads((img / ".qa" / "bundle.json").read_text())
+    tmpl = bundle["fix_surface"]["template"]
+    assert tmpl.endswith("templates/myimg-qa/template.yml"), tmpl
+    assert "template-vram" not in tmpl, "fix_surface must not point at the throwaway VRAM copy"
+
+
 def test_exit_code_disagreement_never_passes(tmp_path, monkeypatch):
     tmp_path, img = _fake_repo(tmp_path); torn = []
     v = {"state": "passed", "exit_code": 0, "got_result_event": True, "instance_id": 9}
