@@ -80,6 +80,7 @@ runs:
         
         if [[ "$HTTP_CODE" != "200" ]]; then
           echo "::warning::GitHub API returned $HTTP_CODE"
+          echo "Response (truncated): $(echo "$BODY" | head -c 500)"
           echo "new-release=${{ inputs.trigger != 'schedule' }}" >> $GITHUB_OUTPUT
           exit 0
         fi

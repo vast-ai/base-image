@@ -91,6 +91,7 @@ runs:
 
         if [[ "$HTTP_CODE" != "200" ]]; then
           echo "::warning::PyPI API returned $HTTP_CODE for ${PKG}"
+          echo "Response (truncated): $(head -c 500 "$RESPONSE_FILE" 2>/dev/null)"
           if [[ "$TRIGGER" != "schedule" ]]; then
             # Manual trigger: proceed with whatever fallback the caller gave us.
             # No fallback means the caller asked for "latest" but we can't
