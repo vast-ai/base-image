@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runtime bind-address smoke gate — ADR 0002 binding condition 1.
 #
-# This is the REAL safety gate the static L051 check defers to: a static linter
+# This is the REAL safety gate the static L057 check defers to: a static linter
 # cannot see where a process actually binds, and both prior loopback-exposure
 # incidents were apps binding 0.0.0.0 instead of 127.0.0.1. So we boot the image
 # and assert nothing reachable is bound public without Caddy in front.

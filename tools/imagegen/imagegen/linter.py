@@ -19,7 +19,7 @@ from .discover import Image
 from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve, parse_ref
 from .portal import (
     extract_baked_default, parse_portal_config,
-    proxied_externals, forbidden_expose_ports,
+    proxied_externals, required_expose_ports, forbidden_expose_ports,
 )
 from .portal_smoke import exposed_ports
 
@@ -667,9 +667,10 @@ def _inherited_exposed(img: Image, repo: Path) -> set[int]:
 
 
 def check_expose_portal(img: Image, repo: Path) -> Iterable[Finding]:
-    """L056/L057 — the EFFECTIVE exposed set (this image's own EXPOSE plus what it
-    inherits via FROM) must cover exactly the baked PORTAL_CONFIG's Caddy-front
-    ports, and the image must not itself EXPOSE a port nothing proxies. Fires only
+    """L056/L057 — the effective exposed set (own EXPOSE + inherited via FROM) must
+    cover every baked PORTAL_CONFIG Caddy-front port EXCEPT the base-owned ports
+    (1111/8080), which the template's `ports:` list opens; and the image must not
+    itself EXPOSE a port nothing proxies. Fires only
     once an image declares its OWN EXPOSE, so it ships dormant until migration
     (ADR 0002). L057 is the fast advisory layer over the real bind smoke gate."""
     if img.cls == "base":
@@ -687,12 +688,15 @@ def check_expose_portal(img: Image, repo: Path) -> Iterable[Finding]:
         yield Finding("L056", ERROR, img.name, rel, "baked PORTAL_CONFIG default is malformed (cannot parse)")
         return
 
-    required = proxied_externals(entries)          # full Caddy-front set (no hardcoded allowlist)
+    proxied = proxied_externals(entries)           # all Caddy-front externals (incl base-owned 1111/8080)
+    required = required_expose_ports(entries)      # ...minus BASE_ALLOWLIST: the base portal/Jupyter
+                                                   # ports are opened by the template's `ports:` list,
+                                                   # not the image's EXPOSE, so no image must declare them
     forbidden = forbidden_expose_ports(entries)
     effective = own | _inherited_exposed(img, repo)
 
-    # completeness: every Caddy-front port must end up exposed (own or inherited) so
-    # Vast maps it. Missing ones the base would provide hint "migrate the base first".
+    # completeness: every non-base Caddy-front port must end up exposed (own or inherited)
+    # so Vast maps it. Base-owned fronts (1111/8080) are template-provided, hence exempt.
     missing = sorted(required - effective)
     if missing:
         yield Finding("L056", ERROR, img.name, "Dockerfile",
@@ -705,7 +709,7 @@ def check_expose_portal(img: Image, repo: Path) -> Iterable[Finding]:
         yield Finding("L057", ERROR, img.name, "Dockerfile",
                       f"EXPOSE includes port(s) {bad} that no entry proxies (loopback/internal or "
                       "equal-port-only) — never EXPOSE a port without a Caddy auth front")
-    stray = sorted(own - required - forbidden)
+    stray = sorted(own - proxied - forbidden)   # a base front (e.g. 1111) the image also EXPOSEs is legitimate, not stray
     if stray:
         yield Finding("L056", ERROR, img.name, "Dockerfile",
                       f"EXPOSE port(s) {stray} have no proxied PORTAL_CONFIG entry — Caddy would "

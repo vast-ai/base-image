@@ -1,6 +1,6 @@
 """Runtime bind-address smoke gate (ADR 0002 binding condition 1).
 
-This is the REAL safety gate that the static L051 check defers to. The static
+This is the REAL safety gate that the static L057 check defers to. The static
 linter can prove "EXPOSE only ports some entry proxies", but it cannot see where a
 process actually binds — and app bind ports here are routinely opaque (`npm run
 start`, `--port` flags, env overrides). Both prior loopback-exposure incidents were

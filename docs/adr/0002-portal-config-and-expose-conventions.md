@@ -96,23 +96,23 @@ scaffold.
     one entry stays EXPOSE-safe even if it is equal-port in another entry (the
     multi-URL convention).
 - **Linter checks** (codes in RULES so `docs/lint-rules.md` regenerates):
-  - **L050 (ERROR):** `set(EXPOSE) == required`.
-  - **L051 (ERROR, security, advisory-over-the-real-gate):** `set(EXPOSE) ∩ forbidden == ∅`
+  - **L056 (ERROR):** `set(EXPOSE) == required`.
+  - **L057 (ERROR, security, advisory-over-the-real-gate):** `set(EXPOSE) ∩ forbidden == ∅`
     — "never EXPOSE a port that no entry proxies." Per Binding condition 1, this static
     pass is explicitly *advisory*; the bind smoke-check is the gate.
-  - **L052 (WARN→ERROR after migration):** image bakes no default.
+  - **L058 (WARN→ERROR after migration):** image bakes no default.
   - Mutant tests: proxied+equal-port-tab on the same external must PASS EXPOSE of that
     port; equal-port-only must FAIL; pure internal must FAIL; plus the aio-studio
     selkies-strip mutation case.
 - **Generator:** scaffolds a matched `EXPOSE` + `PORTAL_CONFIG` pair with `CHANGEPORT`
   markers and a required explicit declaration for any equal-port/direct entry.
 - **Migration (monotonic; per-image/family; never base-inherited-to-all-33-at-once):**
-  (1) land parser + L050/L051 dormant + L052 WARN;
+  (1) land parser + L056/L057 dormant + L058 WARN;
   (2) backfill `EXPOSE` on the 9 baked images, auditing each entry against the app's
   actual launch `--port`/`HOST`;
   (3) backfill default + `EXPOSE` on the 24, batched by build family, each with a
   `docker build` + boot smoke test;
-  (4) flip L052→ERROR once all bake a default; add the regression-net assertion.
+  (4) flip L058→ERROR once all bake a default; add the regression-net assertion.
 
 ## Binding conditions
 
@@ -123,7 +123,7 @@ it claims to prevent):
 1. **The `0.0.0.0` bind check is a MANDATORY smoke gate, not "static-where-visible."**
    For every image the boot smoke test runs an in-container `ss -ltnp` and FAILS if any
    `EXPOSE`d port — *including equal-port siblings sharing that external* — has a
-   `0.0.0.0`/`::` listener. L051's static pass is downgraded to advisory; this is the
+   `0.0.0.0`/`::` listener. L057's static pass is downgraded to advisory; this is the
    real gate. (Binds are routinely not statically visible: `npm run start`,
    `acestep-api --port 8001`, `${WAN2GP_PORT}`.)
 2. **`portal.py` extracts `PORTAL_CONFIG` including the env script's post-assignment
@@ -141,8 +141,8 @@ it claims to prevent):
    the platform guarantees those maps. Otherwise a host that does not auto-open 1111
    leaves the Instance Portal unreachable while EXPOSE of 1111 is forbidden.
 
-Additionally documented (not gates, but must be stated so a green L051 is not
-misread): **L051 proves "proxied," not "authenticated"** — a runtime `AUTH_EXCLUDE`
+Additionally documented (not gates, but must be stated so a green L057 is not
+misread): **L057 proves "proxied," not "authenticated"** — a runtime `AUTH_EXCLUDE`
 can mark a proxied port no-auth, outside the linter's view; and the linter validates
 the baked default, not the post-`10-prep-env.sh`-mutation runtime string. The smoke
 test must `rm /etc/portal.yaml` first (the runtime prefers that cache over
@@ -155,7 +155,7 @@ test must `rm /etc/portal.yaml` first (the runtime prefers that cache over
   is a regression net over all images; fits the existing linter discipline with minimal
   new machinery; both encodings stay greppable.
 - **Negative / accepted:** two encodings persist, so drift is *detected* not impossible
-  (mitigated by L050 in CI); a second `PORTAL_CONFIG` parser must track the runtime one
+  (mitigated by L056 in CI); a second `PORTAL_CONFIG` parser must track the runtime one
   (mitigated by a pinned test); the real safety gate is a per-image GPU-class smoke test
   asserting loopback binds, which is heavier than a static check; `AUTH_EXCLUDE` and the
   64-port ceiling remain unmodeled (documented, not gated).
@@ -165,7 +165,7 @@ test must `rm /etc/portal.yaml` first (the runtime prefers that cache over
 - If `portal.py` cannot reliably extract the effective `PORTAL_CONFIG` (condition 2
   infeasible) AND dumping a rendered runtime config in smoke proves impractical → the
   static cross-check is unsound; ship only the bind smoke-gate (condition 1) and drop
-  L050/L051.
+  L056/L057.
 - If the mandatory `0.0.0.0` bind smoke-gate (condition 1) cannot be made to run for
   every family → do not add `EXPOSE`; EXPOSE without that gate is in direct tension with
   the loopback invariant and manufactures false confidence.

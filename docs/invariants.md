@@ -203,8 +203,10 @@ every Caddy-front (external) port the config declares must actually be exposed (
 `EXPOSE` a port no entry proxies — that port would be mapped publicly with **no auth
 in front**.
 
-- **L056** — the effective exposed set (own + inherited) covers exactly the baked
-  PORTAL_CONFIG Caddy-front ports.
+- **L056** — the effective exposed set (own EXPOSE + inherited via FROM) covers every
+  baked PORTAL_CONFIG Caddy-front port *except* the base-owned ports (1111 Instance
+  Portal, 8080 Jupyter), which the template's `ports:` list opens rather than the image
+  (the `BASE_ALLOWLIST`; ADR 0002 `required = proxied_ext − base_allowlist`).
 - **L057** — `EXPOSE` never includes a port no entry proxies (a loopback/internal
   port, or an equal-port entry Caddy deliberately serves direct) — the security case.
 - **L058** (WARN) — the image bakes a default `PORTAL_CONFIG` at all (else it relies
