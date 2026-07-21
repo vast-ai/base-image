@@ -84,10 +84,13 @@ runs:
         fi
 
         RESPONSE_FILE=$(mktemp)
+        # Guard the `|| HTTP_CODE=000` OUTSIDE the substitution: on a connection
+        # failure curl still prints `000` via -w, so a `|| echo "000"` inside the
+        # $() would append a second `000` and yield HTTP_CODE=000000.
         HTTP_CODE=$(curl -sS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
           -o "$RESPONSE_FILE" -w "%{http_code}" \
           -H "Accept: application/json" \
-          "https://pypi.org/pypi/${PKG}/json" || echo "000")
+          "https://pypi.org/pypi/${PKG}/json") || HTTP_CODE="000"
 
         if [[ "$HTTP_CODE" != "200" ]]; then
           echo "::warning::PyPI API returned $HTTP_CODE for ${PKG}"
