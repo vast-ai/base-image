@@ -92,13 +92,37 @@ jobs:
           fi
 
           echo "Resolving HEAD of ${{ env.WAN2GP_BRANCH }} branch via GitHub API..."
-          RESPONSE=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/${{ env.WAN2GP_GITHUB_REPO }}/commits/${{ env.WAN2GP_BRANCH }}")
-          COMMIT_SHA=$(echo "$RESPONSE" | jq -r '.sha' | cut -c1-7)
-          COMMIT_DATE=$(echo "$RESPONSE" | jq -r '.commit.committer.date')
+          # Retry a few times so a brief 5xx / connection blip on this one API call
+          # does not fail the scheduled build (see run 29711096409). Each attempt is
+          # time-bounded so a stalled endpoint cannot hang the job, and the jq
+          # extraction is written to not depend on `set -o pipefail` being off.
+          RESPONSE=""
+          HTTP_CODE="000"
+          for attempt in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -sS --connect-timeout 10 --max-time 30 \
+              -w '%{http_code}' -o "$RUNNER_TEMP/upstream-commit.json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ env.WAN2GP_GITHUB_REPO }}/commits/${{ env.WAN2GP_BRANCH }}") || HTTP_CODE="000"
+            # Capture the body every attempt so the failure diagnostic below shows
+            # the last error payload rather than an empty string.
+            RESPONSE=$(cat "$RUNNER_TEMP/upstream-commit.json" 2>/dev/null || true)
+            if [[ "$HTTP_CODE" == "200" ]]; then
+              break
+            fi
+            if (( attempt < 5 )); then
+              echo "Attempt $attempt/5: GitHub API returned HTTP $HTTP_CODE, retrying in 5s..."
+              sleep 5
+            fi
+          done
+          COMMIT_SHA_FULL=$(jq -r '.sha // empty' <<< "$RESPONSE" 2>/dev/null || true)
+          COMMIT_SHA="${COMMIT_SHA_FULL:0:7}"
+          COMMIT_DATE=$(jq -r '.commit.committer.date // empty' <<< "$RESPONSE" 2>/dev/null || true)
 
-          if [[ "$COMMIT_SHA" == "null" || -z "$COMMIT_SHA" ]]; then
-            echo "::error::Could not resolve HEAD of ${{ env.WAN2GP_BRANCH }} branch"
+          if [[ -z "$COMMIT_SHA" ]]; then
+            echo "::error::Could not resolve HEAD of ${{ env.WAN2GP_BRANCH }} branch after 5 attempts (last HTTP $HTTP_CODE)"
+            echo "Last API response (truncated):"
+            echo "$RESPONSE" | head -c 2000
             exit 1
           fi
 
