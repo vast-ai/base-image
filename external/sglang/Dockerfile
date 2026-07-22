@@ -66,6 +66,15 @@ RUN \
     ln -s /sgl-workspace /opt/workspace-internal/sgl-workspace-link
 
 
+# Serverless (autoscaler) openai-PyWorker defaults, overridable by the launch template
+# (docker -e / template env: wins over image ENV). No-op on-demand and on any image or
+# worker that predates this: pyworker.sh runs the worker only when SERVERLESS=true, and a
+# worker without READINESS support (or with READINESS unset) defaults to log-gated readiness.
+ENV BACKEND=openai
+ENV MODEL_LOG=/var/log/portal/sglang.log
+ENV MODEL_HEALTH_ENDPOINT=http://127.0.0.1:18000/health
+ENV READINESS=healthcheck
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 
