@@ -67,6 +67,15 @@ RUN \
 # vllm pick them up.  Also enables volume sync of the environment.
 RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
 
+# Serverless (autoscaler) openai-PyWorker defaults, overridable by the launch template
+# (docker -e / template env: wins over image ENV). No-op on-demand and on any image or
+# worker that predates this: pyworker.sh runs the worker only when SERVERLESS=true, and a
+# worker without READINESS support (or with READINESS unset) defaults to log-gated readiness.
+ENV BACKEND=openai
+ENV MODEL_LOG=/var/log/portal/vllm.log
+ENV MODEL_HEALTH_ENDPOINT=http://127.0.0.1:18000/health
+ENV READINESS=healthcheck
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 
