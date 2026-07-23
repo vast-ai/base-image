@@ -69,11 +69,18 @@ runs:
         
         # --retry rides out transient 5xx/connection blips; the timeouts bound
         # each attempt so a stalled endpoint cannot hang the job.
+        # per_page must be large enough that the genuinely-newest release is in
+        # the response: some upstreams (e.g. ai-dock/llama.cpp-cuda) report an
+        # identical created_at on every release (a bulk migration), so GitHub's
+        # created_at-desc list order stops reflecting recency and the newest tag
+        # can land deep in the list (b10091 was at index ~54 while a per_page=10
+        # window only ever saw the stale b9993). We fetch a wide window and let
+        # the client-side sort_by(.updated_at) below pick the true latest.
         HTTP_RESPONSE=$(curl -sS --retry 5 --retry-max-time 60 \
           --connect-timeout 10 --max-time 30 -w "\n%{http_code}" \
           -H "Accept: application/vnd.github+json" \
           ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-          "https://api.github.com/repos/${{ inputs.repository }}/releases?per_page=10") || HTTP_RESPONSE=$'\n000'
+          "https://api.github.com/repos/${{ inputs.repository }}/releases?per_page=100") || HTTP_RESPONSE=$'\n000'
         # A connection-level failure (curl non-zero, no HTTP response) is caught
         # above so bash -e does not kill the step: HTTP_CODE parses as 000 and we
         # fall through to the non-200 warning + graceful-skip path below.
