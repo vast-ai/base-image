@@ -225,8 +225,12 @@ RUN \
     # wrong arch set (would crash at runtime on an admitted GPU). Checked before the copy.
     test -f /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so || \
         { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent)"; exit 1; } && \
+    # Capture the cubin list ONCE, then match in-shell. Do NOT pipe into `grep -q`:
+    # under `set -o pipefail` grep's early exit SIGPIPEs cuobjdump (rc 141) and the
+    # pipeline reports failure even on a match.
+    _elf="$(cuobjdump --list-elf /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so)" && \
     for _a in sm_80 sm_120; do \
-        cuobjdump --list-elf /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so | grep -q "$_a" || \
+        [[ "$_elf" == *"$_a"* ]] || \
             { echo "FATAL: libggml-cuda.so has no $_a SASS — the CUDA arch list did not take effect"; exit 1; }; \
     done && \
     # Copy llama.cpp binaries to a fixed path outside workspace sync
