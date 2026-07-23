@@ -667,6 +667,17 @@ def test_L056_no_unsloth_setup_is_clean(tmp_path):
     assert "L056" not in errs(make(tmp_path), tmp_path)
 
 
+def test_mut_llama_cuda_substring_backdoor_does_not_hide():
+    """A bare mention of the filename (e.g. `echo libggml-cuda.so`) must NOT satisfy
+    L056 — only a real `-f` existence assertion counts. Downgrade the real assertion
+    to an echo and confirm the rule still fires."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=re.sub(
+        r"(?:test|\[\[?)\s+-f\s+\S*libggml-cuda\.so",
+        "echo libggml-cuda.so", img.text))
+    assert "L056" in errs(mut, repo)
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))
