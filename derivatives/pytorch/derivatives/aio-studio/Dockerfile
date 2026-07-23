@@ -175,6 +175,13 @@ RUN \
 ARG UNSLOTH_VERSION=0.1.35-Beta
 RUN \
     set -euo pipefail && \
+    # Ensure the CUDA math/runtime libs the llama.cpp CUDA build links against are
+    # present, so a libggml-cuda.so that builds also LOADS at runtime (the base ships
+    # the toolkit + dev headers, but pin the runtime libs explicitly; if the base
+    # lacks the CUDA apt repo this fails loudly rather than shipping a broken backend).
+    apt-get update && \
+    apt-get install -y --no-install-recommends libcublas-dev-12-9 cuda-cudart-dev-12-9 && \
+    rm -rf /var/lib/apt/lists/* && ldconfig && \
     . /opt/nvm/nvm.sh && \
     create_app_venv unsloth main && \
     . /venv/unsloth/bin/activate && \
@@ -196,23 +203,31 @@ RUN \
     # (nvidia-smi -L / /proc/driver/nvidia/gpus) absent inside `docker build`, so it silently
     # falls through to a CPU-only binary (no libggml-cuda.so) and every inference runs on CPU.
     # Provide a build-only stub nvidia-smi so the probe passes, put nvcc on PATH, and pin the
-    # CUDA arch list (the studio's UNSLOTH_LLAMA_CUDA_ARCHS override wins verbatim). The base
-    # already ships the CUDA 12.9 toolkit + cublas/cudart dev headers, so no apt install is
-    # needed. The stub is removed before the layer ends so it never shadows the real runtime one.
-    printf '%s\n' '#!/bin/sh' 'case "$*" in' '  *-L*) echo "GPU 0: build-stub (UUID: GPU-00000000)";;' '  *compute_cap*) echo "9.0";;' '  *) exit 0;;' 'esac' > /usr/local/bin/nvidia-smi && \
+    # CUDA arch list (the studio's UNSLOTH_LLAMA_CUDA_ARCHS override wins verbatim). The stub
+    # answers ONLY `-L` and returns no compute_cap, so if a studio release ignores the arch
+    # env var the build finds no capability and goes CPU-only -> the assertion below fails the
+    # build (fail closed) rather than baking a narrow single-arch binary. Removed before the
+    # layer ends so it never shadows the real runtime nvidia-smi.
+    printf '%s\n' '#!/bin/sh' 'case "$*" in' '  *-L*) echo "GPU 0: build-stub (UUID: GPU-00000000)";;' '  *) exit 0;;' 'esac' > /usr/local/bin/nvidia-smi && \
     chmod +x /usr/local/bin/nvidia-smi && \
     export PATH="/usr/local/cuda/bin:${PATH}" && \
     export CUDA_HOME="/usr/local/cuda" && \
-    export UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;120" && \
+    # Ampere(80) .. Blackwell-cons(120); 100 = datacenter Blackwell, admitted by an sm_80
+    # floor (100<120) and would crash (no-kernel-image, SASS-only) if omitted.
+    export UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;100;120" && \
     # Build llama.cpp from source (Unsloth pins its own tested version)
     export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
     export SKIP_STUDIO_BASE=1 && \
     unsloth studio setup && \
     rm -f /usr/local/bin/nvidia-smi && \
-    # Fail the build if the CUDA backend is missing: makes a silent CPU-only regression
-    # un-shippable (llama-server would offload to CPU). Checked before the copy below.
+    # Fail the build if the CUDA backend is missing (CPU-only fallback) or built for the
+    # wrong arch set (would crash at runtime on an admitted GPU). Checked before the copy.
     test -f /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so || \
-        { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent); GPU offload would fall back to CPU"; exit 1; } && \
+        { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent)"; exit 1; } && \
+    for _a in sm_80 sm_120; do \
+        cuobjdump --list-elf /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so | grep -q "$_a" || \
+            { echo "FATAL: libggml-cuda.so has no $_a SASS — the CUDA arch list did not take effect"; exit 1; }; \
+    done && \
     # Copy llama.cpp binaries to a fixed path outside workspace sync
     cp -a /opt/workspace-internal/unsloth/llama.cpp/build/bin /opt/llama-cpp-gpu && \
     echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \

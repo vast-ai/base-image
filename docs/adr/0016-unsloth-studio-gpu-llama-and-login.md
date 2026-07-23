@@ -70,10 +70,18 @@ linter (see Consequences). Relevant invariants: services bind loopback behind Ca
   so the studio seeds a known first-login credential with forced rotation. It never clobbers an
   instance whose user has already set a password.
 - **GPU:** the Dockerfile forces the studio's CUDA llama.cpp build (stub `nvidia-smi` + `nvcc`
-  on PATH + `UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;120"` + the required CUDA dev headers) and
-  **asserts `libggml-cuda.so` exists** after the build, failing the build otherwise.
-- **Codify:** linter rule **L056** requires any image that runs `unsloth studio setup` to carry
-  that CUDA-backend assertion, with a mutation test proving it bites.
+  on PATH + `UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;100;120"` + the required CUDA dev headers) and,
+  after the build, **asserts `libggml-cuda.so` exists AND embeds SASS for the min/max target arch**
+  (`cuobjdump --list-elf`), failing the build otherwise. The build emits SASS only (no PTX), so an
+  admitted GPU whose arch is absent would **crash at runtime** (`cudaErrorNoKernelImageForDevice`,
+  because the studio launches with `-ngl -1`), NOT offload to CPU — hence both the arch list and the
+  matching template floor (below) must admit only archs the binary covers.
+- **GPU floor:** both launch templates set `compute_cap gte 800` so admitted == supported (no GPU
+  below sm_80 can rent). `sm_100` (datacenter Blackwell) is in the arch list because an sm_80 floor
+  necessarily admits it (`100 < 120`, and it cannot be floored out while admitting sm_120).
+- **Codify:** linter rule **L056** requires any image that runs `unsloth studio setup` to carry a
+  real `test -f …libggml-cuda.so` assertion (a bare mention of the filename does not satisfy it),
+  with a mutation test proving it bites.
 
 ## Binding conditions
 
@@ -83,20 +91,26 @@ linter (see Consequences). Relevant invariants: services bind loopback behind Ca
   fix in this change — build steering + the `libggml-cuda.so` assertion — plus the CPU-dispatch
   patch (`GGML_CPU_ALL_VARIANTS`) it was also missing. Both images must pass a real build.
 - The GPU fix is verified by a real `docker build` + live-GPU check that `llama-server` offloads
-  to the GPU (the linter is a shape gate, not a correctness gate — ADR 0001).
+  to the GPU (the linter is a shape gate, not a correctness gate — ADR 0001). The build assertion
+  proves the CUDA backend exists and covers the arch range; it does NOT prove runtime offload.
 
 ## Consequences
 
-- GGUF inference/export in the studio runs on the GPU across Ampere→Blackwell (sm 80/86/89/90/120).
-  A future GPU generation outside that list would offload to CPU until the arch list is extended —
-  the build assertion still passes (the backend exists), so this is a coverage limit, not a silent
-  CPU regression of the previous kind.
+- GGUF inference/export runs on the GPU across Ampere→Blackwell (sm 80/86/89/90/100/120), which is
+  exactly the range the `compute_cap gte 800` template floor admits — so no rentable GPU crashes for
+  lack of a kernel. Because the binary is SASS-only, a GPU outside that range would **crash**
+  (no-kernel-image), not fall back to CPU; the template floor is what keeps such a GPU from being
+  rentable, so the arch list and the floor must be changed together.
 - The CUDA build is larger and slower than a CPU-only build; the multi-arch list widens it further.
+- Raising the floor to sm_80 excludes pre-Ampere cards (T4/V100/Pascal) that could previously rent
+  these images and run llama.cpp on CPU. That capability is dropped deliberately: with a CUDA build
+  they would crash, and supporting them would mean building (and JIT-testing) older archs.
 - First login is `unsloth` / `password`, forced to change immediately; safe only because the UI is
   behind Caddy token auth. The weak default exists only pre-rotation, on the loopback side of the
   proxy. Documented in the image README and agent guide.
-- A regression to a CPU-only llama.cpp is now un-shippable for any `unsloth studio setup` image
-  (build assertion + L056).
+- A **build** that ships a CPU-only or wrong-arch llama.cpp is now caught for any `unsloth studio
+  setup` image (existence + `cuobjdump` arch assertion; L056 gates the assertion's presence). This
+  is a build-time guarantee — runtime offload is still confirmed by live-GPU QA, not by the linter.
 
 ## What would reverse this
 

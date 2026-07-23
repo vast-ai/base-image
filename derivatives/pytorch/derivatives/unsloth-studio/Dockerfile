@@ -55,21 +55,35 @@ RUN \
     # stub nvidia-smi so the probe passes, put nvcc on PATH, and pin the CUDA arch
     # list (the studio's UNSLOTH_LLAMA_CUDA_ARCHS override wins verbatim, so arch
     # selection does not depend on a real GPU). The stub is removed before the layer
-    # ends so it never shadows the real runtime nvidia-smi.
-    printf '%s\n' '#!/bin/sh' 'case "$*" in' '  *-L*) echo "GPU 0: build-stub (UUID: GPU-00000000)";;' '  *compute_cap*) echo "9.0";;' '  *) exit 0;;' 'esac' > /usr/local/bin/nvidia-smi && \
+    # ends so it never shadows the real runtime nvidia-smi. The stub answers ONLY
+    # `-L` (the probe gate) and deliberately returns no compute_cap: if a future
+    # studio release ignores UNSLOTH_LLAMA_CUDA_ARCHS, arch detection then finds no
+    # capability and builds CPU-only, so the assertion below fails the build (fail
+    # closed) instead of silently baking a narrow single-arch binary.
+    printf '%s\n' '#!/bin/sh' 'case "$*" in' '  *-L*) echo "GPU 0: build-stub (UUID: GPU-00000000)";;' '  *) exit 0;;' 'esac' > /usr/local/bin/nvidia-smi && \
     chmod +x /usr/local/bin/nvidia-smi && \
     export PATH="/usr/local/cuda/bin:${PATH}" && \
     export CUDA_HOME="/usr/local/cuda" && \
-    export UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;120" && \
+    # Arches: Ampere(80) Ampere-cons(86) Ada(89) Hopper(90) Blackwell-dc(100) Blackwell-cons(120).
+    # 100 is included because an sm_80 template floor also admits datacenter Blackwell
+    # (sm_100 < sm_120), and the build emits SASS-only (no PTX) so an uncovered admitted
+    # arch would crash at runtime (no-kernel-image), not offload to CPU.
+    export UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;100;120" && \
     # Skip prebuilt llama.cpp (needs nvidia-smi), go straight to source build
     export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
     export SKIP_STUDIO_BASE=1 && \
     unsloth studio setup && \
     rm -f /usr/local/bin/nvidia-smi && \
-    # Fail the build if the CUDA backend is missing: this is the invariant that makes
-    # a silent CPU-only regression un-shippable (llama-server would offload to CPU).
+    # Fail the build if the CUDA backend is missing (CPU-only fallback) OR was built
+    # for the wrong arch set. The existence test guards the CPU-only regression; the
+    # cuobjdump arch check guards a silent narrow/wrong-arch build that would crash at
+    # runtime on an admitted GPU. Bracket the range: min (sm_80) and max (sm_120).
     test -f /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so || \
-        { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent); GPU offload would fall back to CPU"; exit 1; } && \
+        { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent)"; exit 1; } && \
+    for _a in sm_80 sm_120; do \
+        cuobjdump --list-elf /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so | grep -q "$_a" || \
+            { echo "FATAL: libggml-cuda.so has no $_a SASS — the CUDA arch list did not take effect"; exit 1; }; \
+    done && \
     # Add llama.cpp shared libs to linker search path
     echo "/opt/workspace-internal/unsloth/llama.cpp/build/bin" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig && \
