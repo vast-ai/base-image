@@ -13,7 +13,11 @@ curl -s http://localhost:11111/capabilities/services   # the service, with direc
 ### The app — web UI (service "unsloth-studio")
 
 Supervisor service **`unsloth-studio`** (`unsloth studio`, flags in **`UNSLOTH_STUDIO_ARGS`**,
-default `--host 127.0.0.1 --port 18888`), internal `127.0.0.1:18888`. It is **click-driven**:
+default `--host 127.0.0.1 --port 18888`), internal `127.0.0.1:18888`. The studio has its **own
+login** behind the Caddy gateway: on a fresh instance it is `unsloth` / **`password`**, and the
+studio forces a password change on first login (a boot hook pre-seeds that known credential so
+users need not read a random one off disk; safe because the gateway already gates access). Once a
+user sets their own password it persists across stop/start and is never reset. It is **click-driven**:
 pick a base model, upload/import a dataset, design a data recipe, set hyperparameters, hit Start
 Training, watch loss curves / GPU usage, then export (incl. **GGUF** — a `llama.cpp` build is
 bundled for conversion/inference). There is no training API to call.

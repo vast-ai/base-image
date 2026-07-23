@@ -256,3 +256,12 @@ oobabooga). The `new-image` skill + generator encode them.
   PATH entry most externals also carry is **NOT gated**: `vast_boot.d/10-prep-env.sh` adds it at
   runtime, so `vllm-omni` omits it from the Dockerfile and works fine. Root cause was a generator
   bug (`_DF_EXTERNAL` set neither); fixed + gated.
+
+- **A source-built Unsloth Studio llama.cpp asserts its CUDA backend (GATED, L056).** Unsloth
+  Studio's `setup.sh` gates `-DGGML_CUDA=ON` on a **runtime GPU probe** (`nvidia-smi -L`, then
+  `/proc/driver/nvidia/gpus`) that is absent inside `docker build`, so it silently builds a
+  CPU-only llama.cpp (only `libggml-cpu-*.so`, no `libggml-cuda.so`) and every runtime inference
+  offloads to CPU. Any image running `unsloth studio setup` must force the CUDA build (a build-only
+  stub `nvidia-smi` + `nvcc` on PATH + `UNSLOTH_LLAMA_CUDA_ARCHS`) **and** carry a post-build
+  `test -f …/libggml-cuda.so` assertion so the CPU-only regression fails the build instead of
+  shipping. **L056** gates the assertion. Both `unsloth-studio` and `aio-studio` are fixed (ADR 0016).
