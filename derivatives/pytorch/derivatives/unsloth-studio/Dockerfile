@@ -10,12 +10,13 @@ COPY ./ROOT /
 # Install CUDA dev libraries required by the llama.cpp CUDA build. The -mini base
 # strips the CUDA math dev headers, so GGML_CUDA needs cuBLAS (cublas/cublasLt) and
 # the CUDA runtime headers (cuda_runtime.h) back before nvcc can compile the .cu files.
+# cuobjdump (not in -mini) is needed by the post-build arch-coverage assertion below.
 ENV UV_TORCH_BACKEND=cu128
 ARG PYTORCH_BASE
 RUN \
     set -euo pipefail && \
     apt-get update && \
-    apt-get install -y --no-install-recommends "libcublas-dev-12-9" "cuda-cudart-dev-12-9" && \
+    apt-get install -y --no-install-recommends "libcublas-dev-12-9" "cuda-cudart-dev-12-9" "cuda-cuobjdump-12-9" && \
     ldconfig && \
     rm -rf /var/lib/apt/lists/* && \
     # Make CUDA driver stubs available for linking at build time (no GPU in Docker build)

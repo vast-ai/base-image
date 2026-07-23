@@ -179,8 +179,9 @@ RUN \
     # present, so a libggml-cuda.so that builds also LOADS at runtime (the base ships
     # the toolkit + dev headers, but pin the runtime libs explicitly; if the base
     # lacks the CUDA apt repo this fails loudly rather than shipping a broken backend).
+    # cuda-cuobjdump is needed by the post-build arch-coverage assertion.
     apt-get update && \
-    apt-get install -y --no-install-recommends libcublas-dev-12-9 cuda-cudart-dev-12-9 && \
+    apt-get install -y --no-install-recommends libcublas-dev-12-9 cuda-cudart-dev-12-9 cuda-cuobjdump-12-9 && \
     rm -rf /var/lib/apt/lists/* && ldconfig && \
     . /opt/nvm/nvm.sh && \
     create_app_venv unsloth main && \
