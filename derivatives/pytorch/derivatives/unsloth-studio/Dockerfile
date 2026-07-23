@@ -7,13 +7,15 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 COPY ./ROOT /
 
-# Install CUDA runtime libraries required by llama.cpp build
+# Install CUDA dev libraries required by the llama.cpp CUDA build. The -mini base
+# strips the CUDA math dev headers, so GGML_CUDA needs cuBLAS (cublas/cublasLt) and
+# the CUDA runtime headers (cuda_runtime.h) back before nvcc can compile the .cu files.
 ENV UV_TORCH_BACKEND=cu128
 ARG PYTORCH_BASE
 RUN \
     set -euo pipefail && \
     apt-get update && \
-    apt-get install -y --no-install-recommends "libcublas-dev-12-9" && \
+    apt-get install -y --no-install-recommends "libcublas-dev-12-9" "cuda-cudart-dev-12-9" && \
     ldconfig && \
     rm -rf /var/lib/apt/lists/* && \
     # Make CUDA driver stubs available for linking at build time (no GPU in Docker build)
@@ -46,10 +48,28 @@ RUN \
     # per-microarch backends selected at runtime.
     find /venv/main/lib -name 'setup.sh' -path '*/studio/*' \
         -exec sed -i 's|-DGGML_NATIVE=ON|-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON|' {} + && \
+    # Force the CUDA llama.cpp build. setup.sh gates -DGGML_CUDA=ON on a RUNTIME GPU
+    # probe (nvidia-smi -L / /proc/driver/nvidia/gpus) which is absent inside
+    # `docker build`, so it silently falls through to a CPU-only binary (no
+    # libggml-cuda.so) and every runtime inference runs on CPU. Provide a build-only
+    # stub nvidia-smi so the probe passes, put nvcc on PATH, and pin the CUDA arch
+    # list (the studio's UNSLOTH_LLAMA_CUDA_ARCHS override wins verbatim, so arch
+    # selection does not depend on a real GPU). The stub is removed before the layer
+    # ends so it never shadows the real runtime nvidia-smi.
+    printf '%s\n' '#!/bin/sh' 'case "$*" in' '  *-L*) echo "GPU 0: build-stub (UUID: GPU-00000000)";;' '  *compute_cap*) echo "9.0";;' '  *) exit 0;;' 'esac' > /usr/local/bin/nvidia-smi && \
+    chmod +x /usr/local/bin/nvidia-smi && \
+    export PATH="/usr/local/cuda/bin:${PATH}" && \
+    export CUDA_HOME="/usr/local/cuda" && \
+    export UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;120" && \
     # Skip prebuilt llama.cpp (needs nvidia-smi), go straight to source build
     export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
     export SKIP_STUDIO_BASE=1 && \
     unsloth studio setup && \
+    rm -f /usr/local/bin/nvidia-smi && \
+    # Fail the build if the CUDA backend is missing: this is the invariant that makes
+    # a silent CPU-only regression un-shippable (llama-server would offload to CPU).
+    test -f /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so || \
+        { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent); GPU offload would fall back to CPU"; exit 1; } && \
     # Add llama.cpp shared libs to linker search path
     echo "/opt/workspace-internal/unsloth/llama.cpp/build/bin" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig && \

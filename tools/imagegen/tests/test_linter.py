@@ -646,6 +646,27 @@ def test_L061_baseline_repo_is_clean():
     assert not offenders, f"internal ticket id in a public file: {[f.path for f in offenders]}"
 
 
+def test_L056_real_unsloth_studio_asserts_cuda_backend():
+    """The shipping unsloth-studio image force-builds CUDA llama.cpp and asserts the
+    backend artifact, so L056 must NOT fire on it."""
+    repo, img = _real("unsloth-studio")
+    assert "unsloth studio setup" in img.text and "libggml-cuda.so" in img.text
+    assert "L056" not in errs(img, repo)
+
+
+def test_mut_llama_cuda_assert_removed():
+    """Drop the CUDA-backend assertion from the real unsloth-studio Dockerfile: the
+    GPU-less build would silently ship a CPU-only binary, so L056 must fire."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=img.text.replace("libggml-cuda.so", "libggml-cpu.so"))
+    assert "L056" in errs(mut, repo)
+
+
+def test_L056_no_unsloth_setup_is_clean(tmp_path):
+    """An image that never runs `unsloth studio setup` is out of scope for L056."""
+    assert "L056" not in errs(make(tmp_path), tmp_path)
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))

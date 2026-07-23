@@ -73,6 +73,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
+    ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST assert the CUDA backend artifact (`libggml-cuda.so`) after the build — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -612,11 +613,37 @@ def check_external_env(img: Image) -> Iterable[Finding]:
                       "app launch dies at boot")
 
 
+def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
+    """L056 — an image that source-builds Unsloth Studio's bundled llama.cpp via
+    `unsloth studio setup` MUST also assert the CUDA backend artifact exists.
+
+    The studio's setup.sh gates `-DGGML_CUDA=ON` on a RUNTIME GPU probe
+    (`nvidia-smi -L` / `/proc/driver/nvidia/gpus`). Inside `docker build` there is
+    no GPU, so the probe fails and the build silently falls through to a CPU-only
+    llama.cpp (only `libggml-cpu-*.so`, no `libggml-cuda.so`). Nothing fails, so the
+    image ships and every runtime inference offloads to CPU. The fix forces the CUDA
+    build; the durable guard is a post-build `test -f …/libggml-cuda.so` that fails
+    the build when the backend is missing. Detected instruction-aware on `code_text`,
+    so a commented-out example does not satisfy the requirement.
+
+    Trigger: a real RUN invokes `unsloth studio setup`. Requirement: the token
+    `libggml-cuda.so` also appears in executed build code (the existence assertion)."""
+    code = code_text(parse(img.text))
+    if not re.search(r"\bunsloth\s+studio\s+setup\b", code):
+        return
+    if "libggml-cuda.so" not in code:
+        yield Finding("L056", ERROR, img.name, "Dockerfile",
+                      "source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) but never "
+                      "asserts the CUDA backend (`libggml-cuda.so`) after the build — the GPU-less "
+                      "docker build silently produces a CPU-only binary; add a post-build "
+                      "`test -f …/libggml-cuda.so || exit 1` guard (ADR 0016)")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
-    check_external_env,
+    check_external_env, check_llama_cuda_assert,
 ]
 
 
