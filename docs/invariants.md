@@ -210,6 +210,30 @@ Applies to GPL-3.0 too (e.g. ComfyUI), not only AGPL. Reference implementation o
 the obligations themselves: the `fix/agpl-license-compliance` change (unsloth-studio,
 aio-studio, a1111, sd-forge, oobabooga).
 
+### Portal "not ready" interstitial is CDN-safe (200 for Cloudflare only) — **enforced by portal-aio tests (ADR 0017)**
+
+When a proxied backing service has not started yet, Caddy's `handle_errors 502 503
+504` serves the `502.html` loading page. It **must** be served as **200 only for
+requests that arrive over a Cloudflare tunnel** (they carry `Cf-Ray`) and keep the
+real **5xx for every other path** (direct access, Vast's proxy, uptime probes),
+because a CDN tunnel replaces an origin **5xx body** with its own "Host is down"
+page — so a raw 502 loader never reaches a tunnelled user, and the poll, hitting
+the same tunnel, would loop on Cloudflare's page forever. Both paths carry an
+`X-Portal-Placeholder` marker (plus `Cache-Control: no-store`); the proxy blocks
+strip any upstream copy so only Caddy sets it. `502.html`'s poll **must** reload
+only when the marker is **absent AND status < 500**, never on the 502 status code.
+Because request matchers do not discriminate inside `handle_errors` on the shipped
+Caddy build, the Cloudflare decision is made at site scope via a request var read
+back as the `status` placeholder. Enforced by
+`portal-aio/tests/test_caddy_config_manager.py` (contract predicate + generator↔poll
+round-trip + a regex that pins the poll's reload condition) and a `caddy validate`
+step in `.github/workflows/portal-aio-tests.yml` (the portal-aio analogue of the
+imagegen linter — which only lints image definitions, not the portal Caddy
+generator; hence not an `L0xx` code). **Scope:** direct-bind apps
+(`external_port == internal_port`, e.g. launch-mode Jupyter) are not fronted by
+Caddy and are not covered — cloudflared hits connection-refused there (error 1033),
+a different failure with no origin 5xx to convert.
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

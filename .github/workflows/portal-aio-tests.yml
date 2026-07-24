@@ -1,0 +1,79 @@
+# Unit-test gate for the portal-aio overlay (capability manifest + Caddy config
+# generator). Fast static gate that mirrors imagegen-tests.yml. The live-service
+# behaviour it protects — the real Caddy build honouring the not-ready placeholder
+# and a Cloudflare tunnel passing it through (ADR 0017) — is validated out of band
+# on a live instance; this job keeps the generator + its invariants honest on every
+# change so a regression is caught before it ships to the fleet via release-portal.
+name: portal-aio tests
+
+on:
+  pull_request:
+    paths:
+      - "portal-aio/**"
+      - ".github/workflows/portal-aio-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "portal-aio/**"
+      - ".github/workflows/portal-aio-tests.yml"
+
+jobs:
+  portal-aio-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          # Only what the tests import: pytest + the generator/manifest runtime deps
+          # (pyyaml + shortuuid for caddy_config_manager, pydantic for capabilities).
+          pip install pytest pyyaml shortuuid pydantic
+      - name: Run portal-aio test suite
+        working-directory: portal-aio
+        run: python -m pytest -q
+
+      # The unit tests assert the generator emits the right STRINGS; they cannot
+      # catch a block that is syntactically illegal Caddy (ADR 0017 finding 4).
+      # Install upstream Caddy and actually load a generated config through it.
+      - name: Install Caddy (for config validation)
+        run: |
+          CADDY_VERSION=2.8.4
+          for i in 1 2 3; do
+            curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" -o /tmp/caddy.tgz && break
+            echo "caddy download retry ${i}"; sleep 5
+          done
+          tar -xzf /tmp/caddy.tgz -C /tmp caddy
+          sudo install /tmp/caddy /usr/local/bin/caddy
+          caddy version
+
+      - name: Validate generated Caddyfile through real Caddy
+        working-directory: portal-aio/caddy_manager
+        env:
+          VAST_CONTAINERLABEL: ci
+          VAST_TCP_PORT_6006: "1"
+          ENABLE_HTTPS: "false"
+        run: |
+          python - <<'PY'
+          import caddy_config_manager as m
+          # The auth path shells out to `<CADDY_BIN> hash-password`; point it at the
+          # CI-installed caddy instead of the in-image /opt path.
+          m.CADDY_BIN = "caddy"
+          apps = {
+              "Instance Portal": {"external_port": 1111, "internal_port": 11111,
+                                  "hostname": "localhost", "open_path": "/", "name": "Instance Portal"},
+              "TB": {"external_port": 6006, "internal_port": 16006,
+                     "hostname": "localhost", "open_path": "/", "name": "TB"},
+          }
+          header = "{\n\tadmin off\n\tauto_https off\n}\n"
+          for auth in ("true", "false"):
+              import os
+              os.environ["ENABLE_AUTH"] = auth
+              cf, *_ = m.generate_caddyfile(apps)
+              open(f"/tmp/gen-{auth}.caddy", "w").write(header + cf)
+              print(f"generated ENABLE_AUTH={auth}")
+          PY
+          caddy validate --adapter caddyfile --config /tmp/gen-true.caddy
+          caddy validate --adapter caddyfile --config /tmp/gen-false.caddy
