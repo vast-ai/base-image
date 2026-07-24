@@ -68,4 +68,14 @@ extra_filters:
   # a single ~9-10 GB card — observed live on the cu13.0 cell (GPU 0 = 9.64 GiB).
   gpu_ram:
     gte: 16384                    # 16 GB PER GPU (single-GPU smoke — not the sum)
+  # Host-reliability floor. The QA account kept drawing the cheapest boxes, and
+  # cheap unreliable hosts fail in host-specific ways the image can't fix: a
+  # truncated image pull ("unexpected eof"), and a host with no outbound egress
+  # ('[Errno 101] Network is unreachable' fetching the model from HuggingFace) —
+  # both observed live on cu13.0. reliability2 is Vast's aggregate host score
+  # (good hosts ~0.92-0.99); 0.95 excludes the flaky tail with margin while
+  # keeping a healthy offer pool at this VRAM band. Tunable: lower if the pool
+  # thins, raise toward `verified` if flakes persist.
+  reliability2:
+    gte: 0.95
 recommended_disk_space: 32.0      # vLLM image + small model + workspace
