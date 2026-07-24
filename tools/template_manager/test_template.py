@@ -495,6 +495,10 @@ BAD_STATUS_PATTERNS = (
     "no space left on device",
     "manifest unknown",
     "unauthorized",
+    "unexpected eof",                  # truncated container pull on a broken host
+                                       # (e.g. "...unexpected EOF while reading") — never
+                                       # recovers, so fail fast to blacklist + retry the
+                                       # next offer rather than waiting out POLL_TIMEOUT.
 )
 
 
