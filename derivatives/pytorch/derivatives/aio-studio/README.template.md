@@ -112,6 +112,8 @@ ComfyUI and SD Forge share the same model directories. Download a checkpoint in 
 ```
 
 ### **Unsloth Studio: Train and Serve**
+> **Studio login:** Unsloth Studio has its own login screen behind the gateway. On a fresh instance sign in with username **`unsloth`** and password **`password`** — you'll be prompted to set a new password immediately on first login. This default is intentionally simple because the Studio already sits behind the instance's token-authenticated gateway; the weak password only ever exists until you change it (and any password you set persists across stop/start).
+
 Unsloth Studio isn't just for fine-tuning — it can also **serve your models** directly. Use the **Chat tab** in Studio to interact with any loaded model, or connect external tools via the built-in OpenAI-compatible API:
 - **Chat UI:** Built into the Studio web interface
 - **API endpoint:** `POST http://<host>:8888/v1/chat/completions`

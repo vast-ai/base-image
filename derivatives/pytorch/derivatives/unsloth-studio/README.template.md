@@ -51,7 +51,9 @@ Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Unsl
 Unsloth Studio will be ready automatically with llama.cpp pre-built for GGUF inference
 
 ### **Step 4: Access Your Instance**
-**Easy access:** Just click the **"Open"** button - authentication is handled automatically!
+**Easy access:** Just click the **"Open"** button - the Caddy gateway handles the token automatically!
+
+> **Studio login:** Unsloth Studio has its own login screen behind the gateway. On a fresh instance sign in with username **`unsloth`** and password **`password`** - you'll be prompted to set a new password immediately on first login. This default is intentionally simple because the Studio already sits behind the instance's token-authenticated gateway; the weak password only ever exists until you change it. If you've already set your own password, that one stands (it persists across stop/start).
 
 **For direct access:** If you want to connect from outside, you'll need:
 - **Unsloth Studio URL:** Your instance IP with the mapped external port (e.g., `http://123.45.67.89:45678` or `https://` if enabled)
