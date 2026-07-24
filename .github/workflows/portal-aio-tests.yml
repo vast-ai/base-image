@@ -30,7 +30,9 @@ jobs:
           python -m pip install --upgrade pip
           # Only what the tests import: pytest + the generator/manifest runtime deps
           # (pyyaml + shortuuid for caddy_config_manager, pydantic for capabilities).
-          pip install pytest pyyaml shortuuid pydantic
+          # Runtime deps are pinned to the versions in portal-aio/requirements.txt so
+          # the gate is deterministic (e.g. a future pydantic 3.x can't silently break it).
+          pip install pytest pydantic==2.9.2 PyYAML==6.0.2 shortuuid==1.0.13
       - name: Run portal-aio test suite
         working-directory: portal-aio
         run: python -m pytest -q

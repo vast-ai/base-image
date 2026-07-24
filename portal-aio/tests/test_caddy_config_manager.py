@@ -57,6 +57,11 @@ def _marker_name(block):
     return m.group(1) if m else None
 
 
+def _read_502():
+    with open(PUBLIC_502, encoding="utf-8") as fh:
+        return fh.read()
+
+
 # --- the helper block itself ------------------------------------------------ #
 
 def test_not_ready_block_matches_option_b_contract():
@@ -124,7 +129,7 @@ def test_marker_name_roundtrips_to_poll():
     rename on either side breaks this (ADR 0017 finding 1)."""
     name = _marker_name(ccm.get_not_ready_handler_block())
     assert name, "generator must emit an X-* marker header"
-    html = open(PUBLIC_502, encoding="utf-8").read()
+    html = _read_502()
     assert f"headers.get('{name}')" in html or f'headers.get("{name}")' in html, \
         f"502.html poll must read the same marker name ({name}) the generator emits"
 
@@ -132,12 +137,12 @@ def test_marker_name_roundtrips_to_poll():
 def test_poll_reload_condition_is_pinned():
     """Pin the poll's exact semantics so a boolean inversion, a removed status
     guard, or a deleted reload turns CI red (ADR 0017 finding 1)."""
-    html = open(PUBLIC_502, encoding="utf-8").read()
+    html = _read_502()
     assert re.search(r"if\s*\(\s*!\s*\w+\s*&&\s*response\.status\s*<\s*500\s*\)", html), \
         "poll must reload only when the marker is ABSENT and status < 500"
     assert "window.location.reload()" in html, "poll must actually reload"
-    stripped = html.replace(" ", "")
-    assert "status!=502" not in stripped and "status==502" not in stripped, \
+    # Must not gate on the 502 status in any (strict-)equality form: == === != !==
+    assert not re.search(r"status\s*(?:===?|!==?)\s*502", html), \
         "poll must not gate on the 502 status code (a CDN tunnel replaces it)"
 
 

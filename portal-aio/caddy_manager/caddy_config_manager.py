@@ -248,8 +248,8 @@ def get_not_ready_handler_block():
     signal is misled (ADR 0017, option B).
 
     The ``X-Portal-Placeholder`` marker is emitted on both paths; 502.html's poll
-    reloads only when that marker is absent (i.e. the backend is answering for
-    real). Request matchers do not discriminate inside ``handle_errors`` on this
+    reloads only when that marker is absent *and* the status is not a 5xx (i.e. the
+    backend is answering for real). Request matchers do not discriminate inside ``handle_errors`` on this
     Caddy build, so the CF decision is made at site scope via a request var and
     read back as the ``status`` placeholder. The matcher covers 502 (connection
     refused), 503 (no upstream) and 504 (bound but not answering yet, e.g. during
