@@ -15,7 +15,7 @@
 #    serving smoke doesn't exercise. A portal entry whose port isn't listening fails the
 #    harness's port check, so we list only entries that actually bind.
 #  - Selection floors tuned for serving-path headroom (below production's 24GB floor —
-#    see the gpu_total_ram note for why the floor is NOT sized to the tiny model).
+#    see the gpu_ram note for why the floor is per-GPU and NOT sized to the tiny model).
 # CI overrides image/tag with the freshly-built staging tag via create.py --tag.
 name: "vLLM QA — tiny-model smoke"
 image: vastai/vllm
@@ -61,6 +61,11 @@ extra_filters:
   # post-budget margin is ~30 MiB and the engine OOMs on startup even with a
   # 0.5B model; 16 GB leaves >1 GiB above the budget. Small-card viability of
   # upstream defaults is upstream's concern, not what this smoke certifies.
-  gpu_total_ram:
-    gte: 16384                    # 16 GB (3x selector bound: 16-48 GB)
+  #
+  # Floor the PER-GPU VRAM (gpu_ram), NOT the sum (gpu_total_ram): this is a
+  # single-GPU smoke (AUTO_PARALLEL off), so the model loads on ONE card. A
+  # multi-GPU box with small cards clears a 16 GB *total* floor and then OOMs on
+  # a single ~9-10 GB card — observed live on the cu13.0 cell (GPU 0 = 9.64 GiB).
+  gpu_ram:
+    gte: 16384                    # 16 GB PER GPU (single-GPU smoke — not the sum)
 recommended_disk_space: 32.0      # vLLM image + small model + workspace
