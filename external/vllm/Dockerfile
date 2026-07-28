@@ -67,6 +67,21 @@ RUN \
 # vllm pick them up.  Also enables volume sync of the environment.
 RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
 
+# Pin NCCL below the 2.30.4 NVLS regression (NVIDIA/nccl#2167).  NCCL >= 2.30.4's
+# NVSwitch-multicast (NVLS) code path deadlocks during high-expert-count MoE weight
+# loading on Blackwell: reproduced bare on 8x B300 with Kimi-K3 (896 routed experts)
+# — every rank freezes at "NVLS tuning" and Init COMPLETE is never reached, so no
+# weights ever download.  The upstream vllm/vllm-openai:kimi-k3 image ships NCCL
+# 2.30.7; 2.28.9 (the version the working lmsysorg/sglang:kimi-k3 image runs) predates
+# the regression and retains Blackwell sm_100/sm_103 support.  Override via
+# --build-arg NCCL_PIN=... (e.g. 2.30.3, the last good 2.30.x per nccl#2167).
+# NOTE: nvidia-nccl-cu13 targets the CUDA-13 builds; use -cu12 for CUDA-12 tags.
+ARG NCCL_PIN=2.28.9
+RUN \
+    set -euo pipefail && \
+    uv pip install --system --no-cache-dir "nvidia-nccl-cu13==${NCCL_PIN}" && \
+    /venv/main/bin/python -c "import torch; print('pinned torch.cuda.nccl:', torch.cuda.nccl.version())"
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 
