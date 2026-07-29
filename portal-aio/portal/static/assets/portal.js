@@ -1160,7 +1160,7 @@ window.InstancePortal = (function() {
                     const err = await response.json().catch(() => ({}));
                     throw new Error(err.detail || `Failed to ${action} ${name}`);
                 }
-                // If restarting the portal itself, refresh so the 503 handler shows the placeholder
+                // If restarting the portal itself, refresh so the error handler shows the placeholder
                 if (name === 'instance_portal' && action === 'restart') {
                     setTimeout(() => window.location.reload(), 1000);
                     return;

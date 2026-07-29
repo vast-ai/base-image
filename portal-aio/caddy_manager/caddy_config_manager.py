@@ -225,10 +225,7 @@ def generate_caddyfile(config):
             caddyfile += '    import compression\n'
         
         caddyfile += '    root * /opt/portal-aio/caddy_manager/public\n\n'
-        caddyfile += '    handle_errors 502 {\n'
-        caddyfile += '        rewrite * /502.html\n'
-        caddyfile += '        file_server\n'
-        caddyfile += '    }\n\n'
+        caddyfile += '    ' + get_not_ready_handler_block() + '\n\n'
 
         if enable_auth and not is_port_auth_excluded(external_port):
             caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, open_button_token, hostname, internal_port, flush_interval)
@@ -238,6 +235,40 @@ def generate_caddyfile(config):
         caddyfile += "}\n\n"
 
     return caddyfile, web_username, web_password, open_button_token
+
+def get_not_ready_handler_block():
+    """Placeholder shown while the backing service is still starting up.
+
+    A CDN tunnel in front of the instance (Cloudflare) replaces an origin 5xx
+    *body* with its own "Host is down" page, so a 502 loader never reaches a
+    tunnelled user. We therefore serve the loader as HTTP 200 **only for requests
+    that arrive over a Cloudflare tunnel** (they carry a ``Cf-Ray`` header); every
+    other path — direct port access, Vast's own proxy, an uptime probe — keeps the
+    real 502, so nothing that reads the status as a machine-readable "not ready"
+    signal is misled (ADR 0017, option B).
+
+    The ``X-Portal-Placeholder`` marker is emitted on both paths; 502.html's poll
+    reloads only when that marker is absent *and* the status is not a 5xx (i.e. the
+    backend is answering for real). Request matchers do not discriminate inside ``handle_errors`` on this
+    Caddy build, so the CF decision is made at site scope via a request var and
+    read back as the ``status`` placeholder. The matcher covers 502 (connection
+    refused), 503 (no upstream) and 504 (bound but not answering yet, e.g. during
+    model load); a backend's own 5xx *response* is passed through untouched, not
+    swallowed here. The proxy blocks strip any upstream ``X-Portal-Placeholder`` so
+    only Caddy can set it.
+    """
+    return '''@cf_tunnel header Cf-Ray *
+    vars not_ready_status 502
+    vars @cf_tunnel not_ready_status 200
+
+    handle_errors 502 503 504 {
+        rewrite * /502.html
+        header X-Portal-Placeholder true
+        header Cache-Control "no-store"
+        file_server {
+            status {vars.not_ready_status}
+        }
+    }'''
 
 def get_cors_block():
     """
@@ -286,6 +317,7 @@ def get_reverse_proxy_block(hostname, internal_port, flush_interval):
             {host_header}
             header_up X-Forwarded-Proto {{forwarded_protocol}}
             header_up X-Real-IP {{real_ip}}
+            header_down -X-Portal-Placeholder
             flush_interval {flush_interval}
         }}'''
 

@@ -40,10 +40,17 @@
     <script>
         // Function to check if the current page is up
         function checkService() {
-            fetch(window.location.href, { method: 'HEAD' })
+            fetch(window.location.href, { method: 'HEAD', cache: 'no-store' })
                 .then(response => {
-                    // Reload if the response status is not a 502 Bad Gateway error
-                    if (response.status != 502) {
+                    // While the backend is still down, Caddy serves THIS placeholder
+                    // with the X-Portal-Placeholder marker (see ADR 0017). The real
+                    // backend never sets it, so its absence means the app is now
+                    // answering — reload into it. The status < 500 guard keeps us
+                    // waiting (rather than reload-storming) if a down-state page ever
+                    // arrives without the marker: over a Cloudflare tunnel it is a
+                    // 200, but on any direct/proxy path it stays a 5xx.
+                    var placeholder = response.headers.get('X-Portal-Placeholder');
+                    if (!placeholder && response.status < 500) {
                         // Reload the page
                         window.location.reload();
                     }
