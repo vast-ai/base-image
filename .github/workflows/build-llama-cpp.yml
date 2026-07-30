@@ -120,9 +120,12 @@ jobs:
       matrix:
         base_image:
           - vastai/base-image:cuda-12.9-mini-py312-2026-06-15
+        # ONE-OFF: amd64 only. The Unsloth fork this build sources from publishes no
+        # arm64 CUDA 12 bundle (its only arm64 artifact is CUDA 13 / sm_90+), so the
+        # arm64 entry is dropped for the duration of this branch. Restore it when the
+        # image goes back to ai-dock, which covers both arches from one arch list.
         arch:
           - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
-          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
 
     steps:
       - name: Checkout
@@ -159,6 +162,17 @@ jobs:
 
           echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
 
+      # ONE-OFF: resolve the Unsloth fork bundle this build ships instead of ai-dock.
+      # Selection lives here so the Dockerfile fetches one known URL and verifies one
+      # known hash. cuda-major is fixed at 12 to match this image's CUDA 12 line.
+      - name: Resolve llama.cpp prebuilt bundle
+        id: llama
+        uses: ./.github/actions/resolve-llama-bundle
+        with:
+          cuda-major: "12"
+          install-kind: linux-cuda
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build and push arch image to staging
         uses: ./.github/actions/build-arch-image
         with:
@@ -167,7 +181,9 @@ jobs:
           tag-base: ${{ env.STAGING_TAG_BASE }}
           build-args: |
             BASE_IMAGE=${{ matrix.base_image }}
-            LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }}
+            LLAMA_RELEASE=${{ steps.llama.outputs.release-tag }}
+            LLAMA_ASSET=${{ steps.llama.outputs.asset-name }}
+            LLAMA_SHA256=${{ steps.llama.outputs.sha256 }}
             CUDA_VERSION=${{ env.CUDA_BIN_VERSION }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -214,6 +230,9 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # ONE-OFF: amd64 only (see the build matrix comment). Without this the merge
+          # looks for an -arm64 staging tag that this branch never builds.
+          arches: amd64
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
