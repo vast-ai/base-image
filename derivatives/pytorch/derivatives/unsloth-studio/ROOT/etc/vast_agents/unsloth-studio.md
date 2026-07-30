@@ -30,6 +30,18 @@ An agent can't click the UI, but the full **`unsloth` Python library is in the s
 **Jupyter** service on this image (separate portal entry). No example notebooks/scripts ship here;
 the supported turnkey path is the Studio UI, and headless is the usual library code.
 
+### llama.cpp (GGUF)
+
+The bundled `llama.cpp` is a **prebuilt CUDA binary** from the Unsloth fork, baked into the image
+at **`/opt/llama-cpp`** (the studio's `~/.unsloth/llama.cpp` is a symlink to it). Which release is
+baked in is readable from **`$LLAMA_CPP_RELEASE`**, and in full detail from
+`/opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json` (upstream tag + source commit). It deliberately lives
+outside `${WORKSPACE}`, so it is image content and is repointed at the image's copy on every boot —
+do not expect edits there to survive, and do not report a stale llama.cpp from a reused volume as a
+bug without checking `$LLAMA_CPP_RELEASE` first. If GGUF inference looks slow, check that the CUDA
+backend loaded (`ldd -r /opt/llama-cpp/build/bin/libggml-cuda.so` should report nothing missing
+except the driver `libcuda.so.1`) — llama.cpp skips an unloadable backend and runs on CPU silently.
+
 ### Data, models, outputs
 
 Studio state — datasets, runs, and **outputs (LoRA adapters / merged models / GGUF exports)** —

@@ -11,6 +11,7 @@ NOT silently suppressed (tested by test_no_stale_exceptions).
 from __future__ import annotations
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -73,7 +74,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L053", ERROR, "No baked model weights in a Dockerfile RUN — models arrive at runtime via provisioning / <APP>_MODEL (invariants §6)"),
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
-    ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
+    ("L056", ERROR, "An image that installs Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST assert the CUDA backend both EXISTS (`test -f …libggml-cuda.so`) and RESOLVES (`ldd -r …libggml-cuda.so` checked for `not found`) — a bare mention of either does not count. Existence alone is satisfied by `tar x` and cannot see an unloadable backend: llama.cpp is built with GGML_BACKEND_DL, so a backend whose CUDA runtime libs are missing is skipped at load time and every inference silently runs on CPU (ADR 0016, ADR 0018)"),
+    ("L057", ERROR, "An image that installs Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST assert the SASS arch coverage of the shipped `libggml-cuda.so` with `cuobjdump --list-elf` against literal `sm_NN` targets — upstream-declared coverage (a prebuilt bundle's manifest / BUILD_INFO) is the vendor's claim about a file we can inspect ourselves, and it has been observed to overstate the arch set. An admitted GPU with no kernel image crashes at runtime (ADR 0016, ADR 0018)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -614,40 +616,96 @@ def check_external_env(img: Image) -> Iterable[Finding]:
 
 
 def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
-    """L056 — an image that source-builds Unsloth Studio's bundled llama.cpp via
-    `unsloth studio setup` MUST also assert the CUDA backend artifact exists.
+    """L056 — an image that installs Unsloth Studio's bundled llama.cpp via
+    `unsloth studio setup` MUST assert the CUDA backend both EXISTS and RESOLVES.
 
-    The studio's setup.sh gates `-DGGML_CUDA=ON` on a RUNTIME GPU probe
+    Existence: the studio's setup.sh gates `-DGGML_CUDA=ON` on a RUNTIME GPU probe
     (`nvidia-smi -L` / `/proc/driver/nvidia/gpus`). Inside `docker build` there is
-    no GPU, so the probe fails and the build silently falls through to a CPU-only
-    llama.cpp (only `libggml-cpu-*.so`, no `libggml-cuda.so`). Nothing fails, so the
-    image ships and every runtime inference offloads to CPU. The fix forces the CUDA
-    build; the durable guard is a post-build `test -f …/libggml-cuda.so` that fails
-    the build when the backend is missing. Detected instruction-aware on `code_text`,
-    so a commented-out example does not satisfy the requirement.
+    no GPU, so the probe fails and a source build silently falls through to a
+    CPU-only llama.cpp (only `libggml-cpu-*.so`, no `libggml-cuda.so`). Nothing
+    fails, so the image ships and every runtime inference offloads to CPU.
 
-    Trigger: a real RUN invokes `unsloth studio setup`. Requirement: a real
-    file-existence assertion on the artifact — `test -f …libggml-cuda.so` or a
-    `[ -f …libggml-cuda.so ]` / `[[ -f …libggml-cuda.so ]]` test. A bare mention
-    of the filename (e.g. `echo libggml-cuda.so`) does NOT satisfy it: it would
-    leave a CPU-only build lint-clean, defeating the rule's purpose."""
+    Resolution: llama.cpp is built with `GGML_BACKEND_DL=ON`, so the CUDA backend is
+    `dlopen`ed at run time and a backend whose `NEEDED` libs (libcudart, libcublas)
+    are absent from the image is SKIPPED — llama.cpp then runs on CPU with a log
+    line and no error. That is the same defect as the CPU-only build, moved to run
+    time where an existence check cannot see it. It matters most when the backend is
+    installed as a prebuilt bundle (ADR 0018): `test -f` is then satisfied by `tar x`
+    and proves nothing at all, because the file's presence is no longer evidence of a
+    successful CUDA compile+link against libs the image actually carries.
+
+    Detected instruction-aware on `code_text`, so a commented-out example does not
+    satisfy either requirement.
+
+    Trigger: a real RUN invokes `unsloth studio setup`. Requirements: (1) a real
+    file-existence assertion — `test -f …libggml-cuda.so` or `[ -f … ]` / `[[ -f … ]]`;
+    (2) a real link-resolution assertion — `ldd -r …libggml-cuda.so` whose output is
+    checked for `not found`. A bare mention of the filename or of `ldd` does NOT
+    satisfy them: that would leave an unusable backend lint-clean, defeating the
+    rule's purpose. This is a shape gate (ADR 0001) — that the assertions actually
+    bite is proven by the mutation tests, and that the GPU is actually used is proven
+    by live-GPU QA."""
     code = code_text(parse(img.text))
     if not re.search(r"\bunsloth\s+studio\s+setup\b", code):
         return
     # Require an actual `-f` existence test on the artifact, not just the substring.
     if not re.search(r"(?:\btest|\[\[?)\s+-f\s+\S*libggml-cuda\.so", code):
         yield Finding("L056", ERROR, img.name, "Dockerfile",
-                      "source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) but has no "
+                      "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but has no "
                       "post-build existence assertion for the CUDA backend — the GPU-less docker build "
                       "silently produces a CPU-only binary; add a `test -f …/libggml-cuda.so || exit 1` "
                       "guard (a bare mention of the filename does not count) (ADR 0016)")
+    # Require the backend to be proven loadable, not merely present.
+    if not (re.search(r"\bldd\s+-r\s+\S*libggml-cuda\.so", code) and "not found" in code):
+        yield Finding("L056", ERROR, img.name, "Dockerfile",
+                      "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but never proves the "
+                      "CUDA backend RESOLVES — with GGML_BACKEND_DL a backend missing libcudart/libcublas "
+                      "is skipped at load time and inference silently runs on CPU; add an "
+                      "`ldd -r …/libggml-cuda.so` assertion that fails the build on `not found` "
+                      "(a bare mention of `ldd` does not count) (ADR 0018)")
+
+
+def check_llama_cuda_arch_assert(img: Image) -> Iterable[Finding]:
+    """L057 — an image that installs Unsloth Studio's bundled llama.cpp MUST assert
+    the arch coverage of the SHIPPED `libggml-cuda.so`, read out of the artifact.
+
+    llama.cpp is offloaded with `-ngl -1`, so a GPU whose compute capability has no
+    kernel image in the binary does not degrade to CPU — it crashes
+    (`cudaErrorNoKernelImageForDevice`). The launch template's `compute_cap` floor is
+    what keeps such a GPU from being rentable, so the floor and the binary's arch set
+    are a single coupled decision (ADR 0016) and the binary's half has to be checked
+    rather than assumed.
+
+    The check must read the artifact. When llama.cpp arrives as a prebuilt bundle
+    (ADR 0018) the vendor also ships a declared arch set in its manifest/BUILD_INFO —
+    that is the vendor's claim about a file we can inspect ourselves, and it has been
+    observed to overstate coverage (a bundle declaring `sm_103` support shipped no
+    `sm_103` SASS). Trusting the declaration would make the assertion a restatement
+    of the thing it is supposed to verify.
+
+    Trigger: a real RUN invokes `unsloth studio setup`. Requirement: a real
+    `cuobjdump --list-elf` on `libggml-cuda.so`, plus at least one literal `sm_NN`
+    target to compare against. Shape gate (ADR 0001): the mutation tests prove it
+    bites, and a live-GPU run on the floor arch proves the kernels actually load."""
+    code = code_text(parse(img.text))
+    if not re.search(r"\bunsloth\s+studio\s+setup\b", code):
+        return
+    has_cuobjdump = re.search(r"\bcuobjdump\s+--list-elf\b[^\n]*libggml-cuda\.so", code)
+    if not (has_cuobjdump and re.search(r"\bsm_\d+\b", code)):
+        yield Finding("L057", ERROR, img.name, "Dockerfile",
+                      "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but never asserts the "
+                      "shipped CUDA backend's SASS arch coverage — an admitted GPU with no kernel image "
+                      "crashes at runtime rather than falling back to CPU; add a "
+                      "`cuobjdump --list-elf …/libggml-cuda.so` check against literal `sm_NN` targets "
+                      "bracketing the template's compute_cap floor (an upstream-declared arch set does "
+                      "not count) (ADR 0016, ADR 0018)")
 
 
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
-    check_external_env, check_llama_cuda_assert,
+    check_external_env, check_llama_cuda_assert, check_llama_cuda_arch_assert,
 ]
 
 
@@ -708,15 +766,43 @@ _TICKET_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "di
                      ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 
 
+def _git_ignored(repo: Path, paths: list[Path]) -> set[Path]:
+    """The subset of `paths` git will never publish.
+
+    L060/L061 exist because this repo is PUBLIC. A git-ignored path (local scratch, a
+    working note, an untracked design record) is not published by definition, so it is
+    out of their scope — otherwise the baseline can never be clean while anyone keeps
+    local notes in the tree, and a permanently-dirty baseline is one nobody reads.
+
+    Fails OPEN: if git is missing or errors, the set is empty and everything is scanned,
+    so the check can never be weakened by a broken git."""
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", "--stdin"],
+            input="\n".join(str(p) for p in paths),
+            text=True, capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {Path(line) for line in proc.stdout.splitlines() if line}
+
+
 def check_internal_ticket_ids(repo: Path) -> Iterable[Finding]:
     """L061 — no internal tracker ticket id (CON-/HOST-/CLN-…) anywhere in this public repo.
     Scans the working tree (text files + Dockerfiles), including the first-party external/
-    wrapper images. See ADR 0012."""
-    for path in sorted(repo.rglob("*")):
+    wrapper images. Git-ignored paths are skipped: they are never published, so they are not
+    "public files" (see `_git_ignored`). See ADR 0012."""
+    candidates = [
+        path for path in sorted(repo.rglob("*"))
+        if not any(part in _TICKET_SKIP_DIRS for part in path.relative_to(repo).parts)
+        and path.is_file()
+        and (path.suffix in _TICKET_SCAN_EXT or path.name == "Dockerfile")
+    ]
+    ignored = _git_ignored(repo, candidates)
+    for path in candidates:
         rel = path.relative_to(repo)
-        if any(part in _TICKET_SKIP_DIRS for part in rel.parts):
-            continue
-        if not path.is_file() or (path.suffix not in _TICKET_SCAN_EXT and path.name != "Dockerfile"):
+        if path in ignored:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

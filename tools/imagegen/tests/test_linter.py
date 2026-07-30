@@ -640,6 +640,23 @@ def test_L061_public_refs_are_not_tickets(tmp_path):
     assert "L061" not in {f.code for f in L.lint_repo(tmp_path)}
 
 
+def test_L061_gitignored_scratch_file_is_out_of_scope(tmp_path):
+    """A git-ignored path is never published, so it is not a "public file". Without this
+    the baseline is permanently dirty for anyone keeping local notes in the tree — and a
+    baseline nobody can get clean is a baseline nobody reads."""
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("scratch/\n")
+    (tmp_path / "scratch").mkdir()
+    ticket = "CON" + "-" + "1585"
+    (tmp_path / "scratch" / "notes.md").write_text(f"# local notes\n\ntracked in {ticket}\n")
+    assert "L061" not in {f.code for f in L.lint_repo(tmp_path)}
+    # ... and the same content in a tracked path still fires
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text(f"# notes\n\ntracked in {ticket}\n")
+    assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
+
+
 def test_L061_baseline_repo_is_clean():
     repo = find_repo_root(Path(__file__).resolve().parent)
     offenders = [f for f in L.lint_repo(repo) if f.code == "L061"]
@@ -676,6 +693,63 @@ def test_mut_llama_cuda_substring_backdoor_does_not_hide():
         r"(?:test|\[\[?)\s+-f\s+\S*libggml-cuda\.so",
         "echo libggml-cuda.so", img.text))
     assert "L056" in errs(mut, repo)
+
+
+def test_L056_real_images_assert_backend_resolves():
+    """Both images that install the studio's llama.cpp must prove the CUDA backend
+    RESOLVES, not merely that the file exists — with GGML_BACKEND_DL an unloadable
+    backend is skipped and inference silently runs on CPU (ADR 0018)."""
+    for name in ("unsloth-studio", "aio-studio"):
+        repo, img = _real(name)
+        assert "unsloth studio setup" in img.text
+        assert "L056" not in errs(img, repo), f"{name} does not assert the backend resolves"
+
+
+def test_mut_llama_cuda_ldd_assert_removed():
+    """Drop the link-resolution assertion from the real unsloth-studio Dockerfile:
+    a backend that cannot dlopen would ship and offload to CPU in silence, so L056
+    must fire."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=re.sub(r"\bldd\s+-r\s+", "echo ", img.text))
+    assert "L056" in errs(mut, repo)
+
+
+def test_mut_llama_cuda_ldd_output_unchecked_does_not_hide():
+    """Running `ldd -r` but never inspecting its output is not an assertion. Strip the
+    `not found` match and confirm L056 still fires — otherwise a no-op ldd call would
+    leave an unloadable backend lint-clean."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=img.text.replace("not found", "not checked"))
+    assert "L056" in errs(mut, repo)
+
+
+def test_L057_real_images_assert_arch_coverage():
+    """Both images must assert the shipped binary's SASS arch set from the artifact."""
+    for name in ("unsloth-studio", "aio-studio"):
+        repo, img = _real(name)
+        assert "L057" not in errs(img, repo), f"{name} does not assert llama.cpp arch coverage"
+
+
+def test_mut_llama_cuda_arch_assert_removed():
+    """Drop the `cuobjdump --list-elf` check: a binary with no kernel image for an
+    admitted GPU would ship and crash at runtime, so L057 must fire."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=img.text.replace("cuobjdump --list-elf", "echo skip"))
+    assert "L057" in errs(mut, repo)
+
+
+def test_mut_llama_cuda_arch_assert_without_sm_targets_does_not_hide():
+    """`cuobjdump --list-elf` with nothing to compare against asserts nothing. Remove
+    the literal sm_NN targets and confirm L057 still fires — a vendor-declared arch
+    set is not a substitute for reading the artifact."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=re.sub(r"\bsm_\d+\b", "ARCH", img.text))
+    assert "L057" in errs(mut, repo)
+
+
+def test_L057_no_unsloth_setup_is_clean(tmp_path):
+    """An image that never runs `unsloth studio setup` is out of scope for L057."""
+    assert "L057" not in errs(make(tmp_path), tmp_path)
 
 
 if __name__ == "__main__":

@@ -236,7 +236,19 @@ RUN \
     # Copy llama.cpp binaries to a fixed path outside workspace sync
     cp -a /opt/workspace-internal/unsloth/llama.cpp/build/bin /opt/llama-cpp-gpu && \
     echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \
-    ldconfig
+    ldconfig && \
+    # Existence is not usability: llama.cpp is built with GGML_BACKEND_DL, so a CUDA
+    # backend whose NEEDED libs are missing is SKIPPED at dlopen and inference silently
+    # runs on CPU — the same defect as a CPU-only build, moved to runtime where the
+    # assertions above cannot see it. Assert on the SHIPPED copy, after ldconfig, so
+    # this proves what the runtime linker will actually resolve. libcuda.so.1 is the
+    # driver stub, injected by the container runtime on a real host, so it is expected
+    # to be absent here and is the only permitted miss. Capture then match in-shell for
+    # the same pipefail/SIGPIPE reason as the cuobjdump check above.
+    _ldd="$(ldd -r /opt/llama-cpp-gpu/libggml-cuda.so 2>&1 || true)" && \
+    _missing="$(printf '%s\n' "$_ldd" | grep 'not found' | grep -v 'libcuda\.so\.1' || true)" && \
+    [[ -z "$_missing" ]] || \
+        { echo "FATAL: libggml-cuda.so has unresolved libraries: $_missing"; exit 1; }
 
 # ---------- Whisper WebUI (base: torch-2.7.1) ----------
 ARG WHISPER_REPO=https://github.com/jhj0517/Whisper-WebUI

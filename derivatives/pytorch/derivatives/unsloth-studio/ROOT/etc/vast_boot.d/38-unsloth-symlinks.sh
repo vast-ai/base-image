@@ -12,3 +12,17 @@ if [[ -d "${WORKSPACE}/unsloth" ]]; then
     ln -sfn "${WORKSPACE}/unsloth" /opt/workspace-internal/unsloth
     ln -sfn "${WORKSPACE}/unsloth" /root/.unsloth
 fi
+
+# llama.cpp is IMAGE content, not user data (ADR 0018).  The workspace sync only copies
+# when the target is absent, so an instance started against a volume that already has a
+# $WORKSPACE/unsloth from an older image would otherwise keep running that image's
+# llama.cpp — including a build predating the CUDA fix — no matter what this image
+# contains, and the version marker would describe the wrong binary.  Repoint the studio's
+# install path at the copy baked into THIS image on every boot.  Only the build tree is
+# replaced; datasets, runs and exports elsewhere under $WORKSPACE/unsloth are untouched.
+if [[ -d /opt/llama-cpp && -d "${WORKSPACE}/unsloth" ]]; then
+    if [[ "$(readlink -f "${WORKSPACE}/unsloth/llama.cpp" 2>/dev/null)" != "/opt/llama-cpp" ]]; then
+        rm -rf "${WORKSPACE}/unsloth/llama.cpp"
+        ln -sfn /opt/llama-cpp "${WORKSPACE}/unsloth/llama.cpp"
+    fi
+fi

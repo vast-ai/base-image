@@ -1,7 +1,21 @@
+# NOT AUTHORITATIVE — the Dockerfile is hand-maintained; do not regenerate from this spec.
+#
+# This scaffold predates ADR 0016 (forcing the CUDA llama.cpp build + the login
+# bootstrap) and ADR 0018 (installing llama.cpp from an upstream prebuilt bundle,
+# with the release/asset/sha256 resolved in CI and asserted at build time). None of
+# that steering, and none of the build-time assertions the linter now requires
+# (L056 existence + link resolution, L057 arch coverage), is expressible here.
+# Regenerating this image from this spec would silently ship a CPU-only llama.cpp —
+# the exact defect ADR 0016 was written to fix. Kept for the service/portal
+# definition below, which is still accurate.
 version: 1
 
 apt_packages:
-  - libcublas-dev-12-9
+  # Runtime CUDA libs the prebuilt llama.cpp links against (ADR 0018 dropped the
+  # -dev packages with the source build); cuobjdump powers the L057 arch assertion.
+  - libcublas-12-9
+  - cuda-cudart-12-9
+  - cuda-cuobjdump-12-9
 
 downloads:
   - url: https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh
