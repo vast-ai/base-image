@@ -137,8 +137,22 @@ jobs:
           STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          # The llama.cpp bundle's runtime line must match the base's CUDA major.
+          echo "CUDA_MAJOR=${CUDA_VERSION%%.*}" >> $GITHUB_ENV
 
           echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      # ADR 0018: llama.cpp ships as an upstream prebuilt bundle, and the choice of bundle
+      # is made HERE, not in the Dockerfile — the build then fetches one known URL and
+      # verifies one known hash. Resolved per (base_image, arch) because the runtime line
+      # follows the base's CUDA major. A missing or unusable bundle fails the build.
+      - name: Resolve llama.cpp prebuilt bundle
+        id: llama
+        uses: ./.github/actions/resolve-llama-bundle
+        with:
+          cuda-major: ${{ env.CUDA_MAJOR }}
+          install-kind: ${{ matrix.arch.suffix == 'arm64' && 'linux-arm64-cuda' || 'linux-cuda' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push arch image to staging
         uses: ./.github/actions/build-arch-image
@@ -149,6 +163,9 @@ jobs:
           build-args: |
             PYTORCH_BASE=${{ matrix.base_image }}
             UNSLOTH_VERSION=${{ needs.preflight.outputs.unsloth-version }}
+            LLAMA_RELEASE=${{ steps.llama.outputs.release-tag }}
+            LLAMA_ASSET=${{ steps.llama.outputs.asset-name }}
+            LLAMA_SHA256=${{ steps.llama.outputs.sha256 }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 

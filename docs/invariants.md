@@ -281,11 +281,32 @@ oobabooga). The `new-image` skill + generator encode them.
   runtime, so `vllm-omni` omits it from the Dockerfile and works fine. Root cause was a generator
   bug (`_DF_EXTERNAL` set neither); fixed + gated.
 
-- **A source-built Unsloth Studio llama.cpp asserts its CUDA backend (GATED, L056).** Unsloth
-  Studio's `setup.sh` gates `-DGGML_CUDA=ON` on a **runtime GPU probe** (`nvidia-smi -L`, then
-  `/proc/driver/nvidia/gpus`) that is absent inside `docker build`, so it silently builds a
-  CPU-only llama.cpp (only `libggml-cpu-*.so`, no `libggml-cuda.so`) and every runtime inference
-  offloads to CPU. Any image running `unsloth studio setup` must force the CUDA build (a build-only
-  stub `nvidia-smi` + `nvcc` on PATH + `UNSLOTH_LLAMA_CUDA_ARCHS`) **and** carry a post-build
-  `test -f …/libggml-cuda.so` assertion so the CPU-only regression fails the build instead of
-  shipping. **L056** gates the assertion. Both `unsloth-studio` and `aio-studio` are fixed (ADR 0016).
+- **An Unsloth Studio llama.cpp proves its CUDA backend EXISTS, RESOLVES and COVERS the arch
+  range (GATED, L056 + L057).** Three distinct ways this ships broken, each silent:
+  1. *Absent.* Unsloth Studio's `setup.sh` gates `-DGGML_CUDA=ON` on a **runtime GPU probe**
+     (`nvidia-smi -L`, then `/proc/driver/nvidia/gpus`) that is absent inside `docker build`, so a
+     source build silently produces a CPU-only llama.cpp (only `libggml-cpu-*.so`, no
+     `libggml-cuda.so`) and every inference offloads to CPU. Guard: `test -f …/libggml-cuda.so`.
+  2. *Present but unloadable.* llama.cpp is built with `GGML_BACKEND_DL=ON`, so the CUDA backend is
+     `dlopen`ed at run time and one whose `NEEDED` libs (libcudart, libcublas) are missing from the
+     image is **skipped** — CPU inference again, with only a log line. Existence cannot see this,
+     and where llama.cpp arrives as a prebuilt bundle (ADR 0018) `test -f` is satisfied by `tar x`
+     and proves nothing at all. Guard: `ldd -r …/libggml-cuda.so` checked for `not found`
+     (`libcuda.so.1` excepted — the driver is injected by the container runtime).
+  3. *Present, loadable, wrong arch.* llama.cpp is launched with `-ngl -1`, so a GPU with no kernel
+     image **crashes** (`cudaErrorNoKernelImageForDevice`) rather than falling back. Guard:
+     `cuobjdump --list-elf` on the shipped binary against literal `sm_NN` targets bracketing the
+     launch template's `compute_cap` floor. Read the **artifact**, never a vendor-declared arch
+     set: a bundle declaring `sm_103` support was observed to ship no `sm_103` SASS.
+
+  The `ldd -r` check runs under the BUILD-time linker configuration. It carries over to
+  runtime only because `05-configure-cuda.sh` deletes every `/etc/ld.so.conf.d/*cuda*.conf`
+  at boot and re-adds `/usr/local/cuda/lib64`, which resolves to where the CUDA runtime
+  packages install. That coupling is load-bearing: a CUDA library landing anywhere else
+  would satisfy the build assertion and fail on the instance.
+
+  **L056** gates (1) and (2), **L057** gates (3), for any image running `unsloth studio setup`.
+  `unsloth-studio` installs the upstream prebuilt bundle (ADR 0018); `aio-studio` still source-builds
+  (ADR 0016) and carries the same three assertions. The floor and the binary's arch set are a single
+  coupled decision — neither moves alone. These are build-time shape gates: that the GPU is actually
+  used is proven only by live-GPU QA (ADR 0001).
