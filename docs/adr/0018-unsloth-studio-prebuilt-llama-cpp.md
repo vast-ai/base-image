@@ -147,9 +147,13 @@ Recorded here so a future reader knows it was weighed.
 5. **Assertions replace, not inherit, the ADR 0016 guard.** `test -f …libggml-cuda.so` is
    satisfied by extraction and proves nothing once we stop compiling, so the build must
    additionally prove that every `NEEDED` of `libggml-cuda.so` resolves inside the image
-   (`ldd -r`) and that the shipped binary carries SASS for the floor's minimum arch and the
-   highest admitted arch (`cuobjdump --list-elf` on the artifact, never the manifest's
-   declared arch set). `cuda-cuobjdump` is retained for this; it needs no nvcc or dev headers.
+   (`ldd -r`), that `llama-server` actually executes (the fork links it against OpenSSL,
+   which the source build never needed, so a binary can be present and unloadable), and
+   that the shipped binary carries SASS for **every** admitted arch — enumerated, not
+   bracketed: nothing guarantees that covering the ends covers the middle, and this bundle
+   itself proves the vendor's declared set can be wrong. Read from the artifact
+   (`cuobjdump --list-elf`), never from the manifest. `cuda-cuobjdump` is retained for
+   this; it needs no nvcc or dev headers.
 6. **GPU floor moves to `compute_cap gte 750` for `unsloth-studio` as a sequenced
    follow-up**, after an image with verified `sm_75` coverage is published and passes a
    live-GPU run on Turing. Image first, floor second: the reverse order puts renters on a
@@ -160,17 +164,23 @@ Recorded here so a future reader knows it was weighed.
    module being importable, so an arm64 build would install cleanly and lack kernels
    silently. Independently, the fork's only arm64 bundle is a CUDA 13 build covering
    `sm 90+`, which does not fit this image line.
-8. **Record what shipped.** The bundle's install marker (upstream tag, source commit,
-   declared arch set) is surfaced as an image label so the llama.cpp version is readable
-   without booting an instance.
+8. **Record what shipped.** The release is surfaced as the `LLAMA_CPP_RELEASE` **ENV**
+   (not a label: linter rule L001 pins the Dockerfile to exactly three LABEL keys), and
+   the bundle's full install marker — upstream tag, source commit, declared arch set —
+   ships at `/opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json`. Both are readable from
+   `docker inspect` or from inside the instance, without running the binary.
 
 ## Binding conditions
 
 If any of these is refused, the decision is void and the source build stands.
 
-- **Hardened extraction.** Reject absolute paths, `..` traversal, symlink and non-regular
-  members; extract without preserving owner or setuid bits; cross-check the checksum
-  asset's self-reported release tag against the resolved tag. This is the price of not
+- **Hardened extraction.** Reject absolute paths, `..` traversal, links pointing OUTSIDE
+  the destination, device nodes and setuid bits, and do not preserve owner. Note that
+  links *within* the destination must be allowed — the bundle ships internal soname
+  symlinks, so a blanket symlink refusal would reject every bundle. Python's `tarfile`
+  `data` filter is exactly this policy. Cross-check the checksum asset's self-reported
+  release tag against the resolved tag, and refuse an asset name, tag or digest whose
+  shape could inject a line into the CI output it flows through. This is the price of not
   using upstream's installer, and the recorded dissent above depends on it.
 - **Both new assertions present and proven to bite**: `ldd -r` clean, and the `cuobjdump`
   SASS bracket taken from the artifact. With `ggml_backend_dl: ON` an unresolvable
@@ -214,6 +224,13 @@ If any of these is refused, the decision is void and the source build stands.
   `master` HEAD, the freshest possible tree; the fork's releases trail upstream by roughly
   hours to two days. Cutting the other way, the fork's builds merge model-support pull
   requests ahead of upstream master, which is the case this image most needs.
+- **Accepted negative — downgrade trap on a reused volume.** Once the boot hook has
+  replaced `$WORKSPACE/unsloth/llama.cpp` with a symlink to `/opt/llama-cpp`, an **older**
+  image tag reusing that same volume finds a dangling symlink: it has no such hook, and
+  the workspace sync only copies when the target is absent, so it will not restore a real
+  tree. GGUF inference and export stay broken on that instance until
+  `$WORKSPACE/unsloth/llama.cpp` is removed. Rolling the image tag back is therefore not
+  sufficient on volumes that have already booted this image or later.
 - **Accepted negative — supply chain.** We stop compiling readable source and start
   executing a third-party binary as root in every tenant container. The sha256 comes from
   the same release as the artifact, so it protects transit, not trust; the fork publishes no

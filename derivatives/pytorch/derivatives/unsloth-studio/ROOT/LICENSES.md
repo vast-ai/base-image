@@ -44,7 +44,9 @@ as the canonical source for the license text.
   merges model-support pull requests ahead of upstream; the exact source commit
   is recorded in `/opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json` and the release is
   recorded in the `LLAMA_CPP_RELEASE` environment variable.
-- **License file in image:** `/opt/llama-cpp/LICENSE`, alongside
-  `/opt/llama-cpp/THIRD_PARTY_LICENSES.txt` as shipped in the bundle. MIT
-  requires the notice to accompany binary redistribution, so these are kept at
-  the install root rather than discarded with the rest of the archive metadata.
+- **License file in image:** `/opt/llama-cpp/THIRD_PARTY_LICENSES.txt`, as shipped
+  in the bundle — the MIT text appears there under `=== llama.cpp LICENSE ===`
+  (the bundle carries no separate `LICENSE` file). MIT requires the notice to
+  accompany binary redistribution, so that file is kept at the install root
+  rather than discarded with the rest of the archive metadata, and the build
+  asserts its presence.

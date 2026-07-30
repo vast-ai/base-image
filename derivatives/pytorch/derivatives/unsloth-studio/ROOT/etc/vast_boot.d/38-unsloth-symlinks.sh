@@ -22,6 +22,11 @@ fi
 # replaced; datasets, runs and exports elsewhere under $WORKSPACE/unsloth are untouched.
 if [[ -d /opt/llama-cpp && -d "${WORKSPACE}/unsloth" ]]; then
     if [[ "$(readlink -f "${WORKSPACE}/unsloth/llama.cpp" 2>/dev/null)" != "/opt/llama-cpp" ]]; then
+        # Say so in the boot log: this removes a multi-GB directory on a persistent
+        # volume, and it is the one action here a support question would ask about.
+        if [[ -e "${WORKSPACE}/unsloth/llama.cpp" ]]; then
+            echo "38-unsloth-symlinks: replacing stale ${WORKSPACE}/unsloth/llama.cpp with the llama.cpp baked into this image (${LLAMA_CPP_RELEASE:-unknown})"
+        fi
         rm -rf "${WORKSPACE}/unsloth/llama.cpp"
         ln -sfn /opt/llama-cpp "${WORKSPACE}/unsloth/llama.cpp"
     fi

@@ -299,6 +299,12 @@ oobabooga). The `new-image` skill + generator encode them.
      launch template's `compute_cap` floor. Read the **artifact**, never a vendor-declared arch
      set: a bundle declaring `sm_103` support was observed to ship no `sm_103` SASS.
 
+  The `ldd -r` check runs under the BUILD-time linker configuration. It carries over to
+  runtime only because `05-configure-cuda.sh` deletes every `/etc/ld.so.conf.d/*cuda*.conf`
+  at boot and re-adds `/usr/local/cuda/lib64`, which resolves to where the CUDA runtime
+  packages install. That coupling is load-bearing: a CUDA library landing anywhere else
+  would satisfy the build assertion and fail on the instance.
+
   **L056** gates (1) and (2), **L057** gates (3), for any image running `unsloth studio setup`.
   `unsloth-studio` installs the upstream prebuilt bundle (ADR 0018); `aio-studio` still source-builds
   (ADR 0016) and carries the same three assertions. The floor and the binary's arch set are a single

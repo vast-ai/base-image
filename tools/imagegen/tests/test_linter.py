@@ -775,6 +775,35 @@ def test_mut_llama_asserts_quoted_inside_echo_do_not_satisfy():
     assert "L057" in errs(replace(img, text=quoted_cuobjdump), repo)
 
 
+def test_L056_L057_accept_assertions_as_the_first_command_of_a_RUN():
+    """`code_text` prefixes each instruction with `RUN `, which is not a shell separator,
+    so anchoring to a command position must still accept a guard written as the first
+    command of its own RUN — otherwise the rules reject a legitimate style."""
+    df = VALID_DF + (
+        "RUN unsloth studio setup\n"
+        "RUN test -f /opt/llama-cpp/build/bin/libggml-cuda.so || exit 1\n"
+        "RUN ldd -r /opt/llama-cpp/build/bin/libggml-cuda.so | grep 'not found' && exit 1\n"
+        "RUN cuobjdump --list-elf /opt/llama-cpp/build/bin/libggml-cuda.so > /tmp/e && "
+        "for a in sm_80 sm_120; do grep -q $a /tmp/e || exit 1; done\n"
+    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        img = make(p, df=df)
+        found = errs(img, p)
+    assert "L056" not in found, "L056 rejected a guard written as the first command of a RUN"
+    assert "L057" not in found, "L057 rejected a guard written as the first command of a RUN"
+
+
+def test_mut_llama_arch_targets_only_mentioned_do_not_satisfy():
+    """The sm_NN targets must sit in something that compares. Turn the for-loop that
+    feeds the comparison into a bare `echo` of the same tokens: the text still contains
+    `sm_75` etc., but nothing is checked against the cuobjdump output, so L057 must fire."""
+    repo, img = _real("unsloth-studio")
+    mut = re.sub(r"for\s+_a\s+in\s+(sm_\d+(?:\s+sm_\d+)*)", r"echo \1", img.text, count=1)
+    assert "L057" in errs(replace(img, text=mut), repo)
+
+
 def test_mut_llama_ldd_output_never_inspected_does_not_satisfy():
     """Running `ldd -r` and merely printing the words is not an inspection: the check
     must see the output actually matched (grep/case/test), not the bare substring."""

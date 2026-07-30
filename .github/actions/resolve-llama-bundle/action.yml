@@ -65,7 +65,7 @@ runs:
         MAX_RELEASES: ${{ inputs.max-releases }}
       run: |
         python3 - <<'PY' >> "$GITHUB_OUTPUT"
-        import json, os, sys, urllib.error, urllib.request
+        import json, os, re, sys, urllib.error, urllib.request
 
         REPO = os.environ["REPOSITORY"]
         RUNTIME_LINE = f"cuda{os.environ['CUDA_MAJOR'].split('.')[0]}"
@@ -113,10 +113,13 @@ runs:
 
             # Cross-check the checksum asset's self-reported release against the release
             # we actually read it from, so a stale or swapped file cannot authorise an
-            # asset from a different build.
+            # asset from a different build. REQUIRED, not best-effort: a missing field
+            # means the cross-check ADR 0018 binds us to cannot be performed at all.
             claimed = checksums.get("release_tag")
-            if claimed and claimed != tag:
-                problems.append(f"{tag}: checksum manifest claims release {claimed}")
+            if claimed != tag:
+                problems.append(
+                    f"{tag}: checksum manifest claims release {claimed!r}"
+                    if claimed else f"{tag}: checksum manifest has no release_tag to cross-check")
                 continue
 
             match = next((a for a in manifest.get("artifacts", [])
@@ -136,6 +139,17 @@ runs:
             if not asset_url(rel, name):
                 problems.append(f"{tag}: {name} listed but not published")
                 continue
+
+            # Everything below is upstream-controlled text on its way into $GITHUB_OUTPUT,
+            # then into a multi-line `build-args:` block, then into a shell `curl -o`.
+            # A newline in any of it would inject extra key=value lines. Constrain the
+            # shapes before they leave this action.
+            for label, value, shape in (("asset name", name, r"[A-Za-z0-9._+-]+"),
+                                        ("release tag", tag, r"[A-Za-z0-9._+-]+"),
+                                        ("sha256", digest, r"[0-9a-f]{64}")):
+                if not re.fullmatch(shape, value or ""):
+                    sys.stderr.write(f"refusing unsafe {label} from upstream: {value!r}\n")
+                    sys.exit(1)
 
             print(f"release-tag={tag}")
             print(f"asset-name={name}")

@@ -616,14 +616,16 @@ def check_external_env(img: Image) -> Iterable[Finding]:
 
 
 # A command POSITION: start of text, or immediately after a shell separator/opener
-# (`;`, `&&`, `||`, `|`, `(`, `$(`, `{`, `}`, newline, backtick). Anchoring the
-# llama.cpp assertion patterns here is what stops a *mention* from satisfying a rule
-# that demands an assertion: in `echo "test -f …libggml-cuda.so"` the `test` token
-# follows a quote character, which is not a command position, so it no longer matches.
-# Not a shell parser — a token after an unbalanced quote could still slip through —
-# but it closes the accidental-and-plausible case, and every rule using it is a shape
-# gate whose real proof is its mutation test (ADR 0001).
-_CMD_POS = r"(?:^|[;&|(){}`\n])\s*"
+# (`;`, `&&`, `||`, `|`, `(`, `$(`, `{`, `}`, newline, backtick), optionally followed by
+# the `RUN ` token that `code_text` prefixes each instruction with — so an assertion
+# written as the FIRST command of its own RUN still counts. Anchoring the llama.cpp
+# assertion patterns here is what stops a *mention* from satisfying a rule that demands
+# an assertion: in `echo "test -f …libggml-cuda.so"` the `test` token follows a quote
+# character, which is not a command position, so it no longer matches.
+# Not a shell parser — a token after an unbalanced quote could still slip through — but
+# it closes the accidental-and-plausible case, and every rule using it is a shape gate
+# whose real proof is its mutation test (ADR 0001).
+_CMD_POS = r"(?:^|[;&|(){}`\n])\s*(?:RUN\s+)?"
 
 
 def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
@@ -670,8 +672,11 @@ def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
     # Require the backend to be proven loadable, not merely present: a real `ldd -r`
     # invocation at a command position, AND its output actually inspected for the
     # missing-library marker (a bare `echo "not found"` is not an inspection).
+    # The inspection must itself be executed (command position), not a quoted mention.
+    # It is matched line-wise rather than tied to the ldd invocation — good enough for a
+    # shape gate; the mutation tests are what prove the assertion actually bites.
     if not (re.search(_CMD_POS + r"ldd\s+-r\s+\S*libggml-cuda\.so", code)
-            and re.search(r"(?:grep|case|\[\[|==|=~)[^\n]*not found", code)):
+            and re.search(_CMD_POS + r"(?:grep|case|\[\[|test)[^\n]*not found", code)):
         yield Finding("L056", ERROR, img.name, "Dockerfile",
                       "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but never proves the "
                       "CUDA backend RESOLVES — with GGML_BACKEND_DL a backend missing libcudart/libcublas "
@@ -706,7 +711,10 @@ def check_llama_cuda_arch_assert(img: Image) -> Iterable[Finding]:
     if not re.search(r"\bunsloth\s+studio\s+setup\b", code):
         return
     has_cuobjdump = re.search(_CMD_POS + r"(?:\S*/)?cuobjdump\s+--list-elf\b[^\n]*libggml-cuda\.so", code)
-    if not (has_cuobjdump and re.search(r"\bsm_\d+\b", code)):
+    # The arch targets must sit in something that COMPARES (a for-list feeding a test, a
+    # case, or an inline test) — a bare `echo sm_75` asserts nothing.
+    has_targets = re.search(r"(?:for\s+\w+\s+in|case|\[\[|test|==|=~)[^\n]*\bsm_\d+\b", code)
+    if not (has_cuobjdump and has_targets):
         yield Finding("L057", ERROR, img.name, "Dockerfile",
                       "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but never asserts the "
                       "shipped CUDA backend's SASS arch coverage — an admitted GPU with no kernel image "
@@ -789,8 +797,8 @@ def _git_ignored(repo: Path, paths: list[Path]) -> set[Path]:
     out of their scope — otherwise the baseline can never be clean while anyone keeps
     local notes in the tree, and a permanently-dirty baseline is one nobody reads.
 
-    Fails OPEN: if git is missing or errors, the set is empty and everything is scanned,
-    so the check can never be weakened by a broken git."""
+    Degrades CONSERVATIVELY: if git is missing or errors, the set is empty and everything
+    is scanned, so a broken git can only make the check stricter, never weaker."""
     if not paths:
         return set()
     try:

@@ -43,10 +43,10 @@ ARG LLAMA_SHA256=
 RUN \
     set -euo pipefail && \
     for _v in LLAMA_RELEASE LLAMA_ASSET LLAMA_SHA256; do \
-        [[ -n "${!_v}" ]] || { echo "FATAL: build arg ${_v} is required (resolved by the CI preflight job)"; exit 1; }; \
+        [[ -n "${!_v:-}" ]] || { echo "FATAL: build arg ${_v} is required (resolved by the CI preflight job)"; exit 1; }; \
     done && \
     _tmp="$(mktemp -d)" && \
-    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --max-time 900 \
         -o "${_tmp}/${LLAMA_ASSET}" \
         "https://github.com/unslothai/llama.cpp/releases/download/${LLAMA_RELEASE}/${LLAMA_ASSET}" && \
     echo "${LLAMA_SHA256}  ${_tmp}/${LLAMA_ASSET}" | sha256sum -c - && \
@@ -62,12 +62,23 @@ tarfile.open(src).extractall(dest, filter='data')" "${_tmp}/${LLAMA_ASSET}" /opt
     rm -rf "${_tmp}" && \
     # Metadata belongs at the install root, where the studio looks for it; the binaries
     # stay under build/bin, which is the layout both the studio's installer and its
-    # source build produce.
-    for _m in UNSLOTH_PREBUILT_INFO.json BUILD_INFO.txt THIRD_PARTY_LICENSES.txt LICENSE; do \
-        [[ -f "/opt/llama-cpp/build/bin/${_m}" ]] && mv "/opt/llama-cpp/build/bin/${_m}" /opt/llama-cpp/ || true; \
+    # source build produce. `if/then` rather than `&& mv || true`: the latter swallows a
+    # failed mv, because the `|| true` makes the whole loop body succeed regardless.
+    for _m in UNSLOTH_PREBUILT_INFO.json BUILD_INFO.txt THIRD_PARTY_LICENSES.txt; do \
+        if [[ -f "/opt/llama-cpp/build/bin/${_m}" ]]; then mv "/opt/llama-cpp/build/bin/${_m}" /opt/llama-cpp/; fi; \
     done && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
-        { echo "FATAL: bundle ${LLAMA_ASSET} contains no build/bin/llama-server"; exit 1; }
+        { echo "FATAL: bundle ${LLAMA_ASSET} contains no build/bin/llama-server"; exit 1; } && \
+    # MIT requires the notice to accompany binary redistribution. The bundle carries it
+    # inside THIRD_PARTY_LICENSES.txt (there is no separate LICENSE file), so assert the
+    # notice we actually ship rather than trusting a future bundle to keep it.
+    test -f /opt/llama-cpp/THIRD_PARTY_LICENSES.txt || \
+        { echo "FATAL: bundle ${LLAMA_ASSET} ships no third-party licence notice"; exit 1; } && \
+    # Fingerprint the binary we just verified by hash, so the post-setup check can prove
+    # the tree was REUSED rather than replaced. `unsloth studio setup` writes an
+    # identically-named marker on its own prebuilt path, so the marker's presence alone
+    # cannot distinguish our verified artifact from one it downloaded itself.
+    sha256sum /opt/llama-cpp/build/bin/llama-server > /opt/llama-cpp.server.sha256
 
 # Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
 # everything into our existing venv (avoids a duplicate torch install), then run studio
@@ -101,13 +112,25 @@ RUN \
     export UNSLOTH_LOCAL_LLAMA_CPP_DIR=/opt/llama-cpp && \
     export SKIP_STUDIO_BASE=1 && \
     unsloth studio setup && \
-    # Prove the reuse branch actually fired — do not infer it. The canonical install path
-    # must resolve to the bundle we verified, and the bundle's own marker must still be
-    # the one we extracted (a rebuild or re-download would have replaced the tree).
+    # Prove the reuse branch actually fired — do not infer it. Two independent facts:
+    # the canonical install path resolves to our tree, AND the binary is byte-identical
+    # to the one whose sha256 we verified before setup ran. The marker file alone proves
+    # nothing here: the studio's own installer writes an identically-named marker, and
+    # because the canonical path is a symlink INTO our tree, a re-download would land on
+    # top of it and still satisfy both the readlink and the marker checks.
     [[ "$(readlink -f /opt/workspace-internal/unsloth/llama.cpp)" == "/opt/llama-cpp" ]] || \
         { echo "FATAL: studio setup did not reuse /opt/llama-cpp — it built or downloaded its own llama.cpp"; exit 1; } && \
+    sha256sum -c /opt/llama-cpp.server.sha256 >/dev/null || \
+        { echo "FATAL: llama-server changed during studio setup — the verified bundle was replaced"; exit 1; } && \
+    rm -f /opt/llama-cpp.server.sha256 && \
     test -f /opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json || \
         { echo "FATAL: prebuilt marker missing from /opt/llama-cpp"; exit 1; } && \
+    # The binary must actually execute. The fork links llama-server against OpenSSL
+    # (libssl/libcrypto), which the source build never needed, so `test -x` above can
+    # pass on a binary that dies at load time with an unresolved library. This also puts
+    # the real build number in the build log.
+    /opt/llama-cpp/build/bin/llama-server --version || \
+        { echo "FATAL: llama-server does not execute — its link closure is incomplete"; exit 1; } && \
     # The -mini base ships the CUDA toolchain OFF PATH, so cuobjdump (installed above)
     # is not resolvable by name without this. It was previously on PATH only as a side
     # effect of the nvcc export the source build needed.
@@ -121,6 +144,12 @@ RUN \
     # is SKIPPED at dlopen and every inference silently runs on CPU. libcuda.so.1 is the
     # driver, injected by the container runtime on a real host, so it is the only
     # permitted miss here.
+    # NOTE: this resolves under the BUILD-time linker config. At boot,
+    # 05-configure-cuda.sh deletes /etc/ld.so.conf.d/*cuda*.conf and re-adds only
+    # /usr/local/cuda/lib64 — so this assertion holds at runtime because the CUDA runtime
+    # packages install under /usr/local/cuda-12.9/lib64, which that path resolves to.
+    # That coupling is load-bearing: a CUDA lib landing elsewhere would pass here and
+    # fail on the instance.
     _ldd="$(ldd -r /opt/llama-cpp/build/bin/libggml-cuda.so 2>&1 || true)" && \
     _missing="$(printf '%s\n' "$_ldd" | grep 'not found' | grep -v 'libcuda\.so\.1' || true)" && \
     [[ -z "$_missing" ]] || \
@@ -130,11 +159,14 @@ RUN \
     # sm_103, which ships no SASS). Capture the cubin list ONCE then match in-shell — do
     # NOT pipe into `grep -q`: under `set -o pipefail` grep's early exit SIGPIPEs
     # cuobjdump (rc 141) and the pipeline reports failure even on a match.
-    # Bracket: sm_75 (Turing, the planned floor), sm_80 (today's floor) and sm_120 (top).
-    # sm_75 is asserted ahead of the floor move so that moving the template floor to 750
-    # is a template-only step, and so a bundle that silently drops Turing fails here.
+    # ENUMERATE every admitted arch, do not bracket: nothing upstream guarantees that
+    # covering the ends covers the middle, and this very bundle proves the declared set
+    # can be wrong. A bundle silently dropping sm_90 would otherwise ship green and give
+    # H100 renters a no-kernel-image crash. sm_75 is asserted ahead of the floor move to
+    # 750, so that change is a template-only step; sm_103 is deliberately absent (the
+    # bundle ships no sm_103 SASS and reaches it by JIT from PTX).
     _elf="$(cuobjdump --list-elf /opt/llama-cpp/build/bin/libggml-cuda.so)" && \
-    for _a in sm_75 sm_80 sm_120; do \
+    for _a in sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120; do \
         [[ "$_elf" == *"$_a"* ]] || \
             { echo "FATAL: libggml-cuda.so has no $_a SASS — bundle ${LLAMA_ASSET} does not cover the admitted GPU range"; exit 1; }; \
     done && \

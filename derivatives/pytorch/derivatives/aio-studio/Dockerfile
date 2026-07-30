@@ -245,6 +245,10 @@ RUN \
     # driver stub, injected by the container runtime on a real host, so it is expected
     # to be absent here and is the only permitted miss. Capture then match in-shell for
     # the same pipefail/SIGPIPE reason as the cuobjdump check above.
+    # NOTE: this is the BUILD-time linker config. At boot, 05-configure-cuda.sh deletes
+    # /etc/ld.so.conf.d/*cuda*.conf and re-adds only /usr/local/cuda/lib64; the assertion
+    # carries over because the CUDA libs install under /usr/local/cuda-12.9/lib64, which
+    # that path resolves to. A CUDA lib landing elsewhere would pass here and fail live.
     _ldd="$(ldd -r /opt/llama-cpp-gpu/libggml-cuda.so 2>&1 || true)" && \
     _missing="$(printf '%s\n' "$_ldd" | grep 'not found' | grep -v 'libcuda\.so\.1' || true)" && \
     [[ -z "$_missing" ]] || \

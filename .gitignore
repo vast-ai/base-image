@@ -4,10 +4,5 @@ __pycache__
 
 # template_manager run logs (may reference account ids; never commit)
 tools/template_manager/output/
-
-# Local design-review records. Working notes only: they quote internal context and
-# are not part of the published repo — decisions belong in docs/adr/.
-docs/panels/
-docs/redteam/
 .qa/
 .venv/
