@@ -108,6 +108,10 @@ RUN \
         { echo "FATAL: studio setup did not reuse /opt/llama-cpp — it built or downloaded its own llama.cpp"; exit 1; } && \
     test -f /opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json || \
         { echo "FATAL: prebuilt marker missing from /opt/llama-cpp"; exit 1; } && \
+    # The -mini base ships the CUDA toolchain OFF PATH, so cuobjdump (installed above)
+    # is not resolvable by name without this. It was previously on PATH only as a side
+    # effect of the nvcc export the source build needed.
+    export PATH="/usr/local/cuda/bin:${PATH}" && \
     # Fail the build unless the CUDA backend EXISTS, RESOLVES and COVERS the arch range.
     # Existence alone is satisfied by `tar x` and proves nothing now that the binary is
     # not compiled here (L056/ADR 0018).
@@ -138,9 +142,12 @@ RUN \
     # JIT instead of crashing, so it belongs in the build log for the floor discussion.
     echo "llama.cpp PTX coverage: $(cuobjdump --list-ptx /opt/llama-cpp/build/bin/libggml-cuda.so 2>/dev/null | grep -oE 'sm_[0-9]+' | sort -u | tr '\n' ' ')" && \
     # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec)
-    # versions are unchanged.
+    # versions are unchanged. The comparison is BRACED so its `||` binds only to the
+    # test: unbraced, it catches a failure anywhere earlier in this `&&` chain and
+    # reports it as "torch drift" — which is exactly how a missing cuobjdump once
+    # masqueraded as a version drift, complete with an unbound-variable error.
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
-    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
+    { [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }; }
 
 # Record which llama.cpp release was baked in, so the shipped version is answerable from
 # `docker inspect` (and from inside the instance) without booting and running the binary.
