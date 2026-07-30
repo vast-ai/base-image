@@ -615,6 +615,17 @@ def check_external_env(img: Image) -> Iterable[Finding]:
                       "app launch dies at boot")
 
 
+# A command POSITION: start of text, or immediately after a shell separator/opener
+# (`;`, `&&`, `||`, `|`, `(`, `$(`, `{`, `}`, newline, backtick). Anchoring the
+# llama.cpp assertion patterns here is what stops a *mention* from satisfying a rule
+# that demands an assertion: in `echo "test -f …libggml-cuda.so"` the `test` token
+# follows a quote character, which is not a command position, so it no longer matches.
+# Not a shell parser — a token after an unbalanced quote could still slip through —
+# but it closes the accidental-and-plausible case, and every rule using it is a shape
+# gate whose real proof is its mutation test (ADR 0001).
+_CMD_POS = r"(?:^|[;&|(){}`\n])\s*"
+
+
 def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
     """L056 — an image that installs Unsloth Studio's bundled llama.cpp via
     `unsloth studio setup` MUST assert the CUDA backend both EXISTS and RESOLVES.
@@ -648,15 +659,19 @@ def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
     code = code_text(parse(img.text))
     if not re.search(r"\bunsloth\s+studio\s+setup\b", code):
         return
-    # Require an actual `-f` existence test on the artifact, not just the substring.
-    if not re.search(r"(?:\btest|\[\[?)\s+-f\s+\S*libggml-cuda\.so", code):
+    # Require an actual `-f` existence test on the artifact, at a COMMAND position —
+    # not just the substring, and not inside a quoted string (see _CMD_POS).
+    if not re.search(_CMD_POS + r"(?:test|\[\[?)\s+-f\s+\S*libggml-cuda\.so", code):
         yield Finding("L056", ERROR, img.name, "Dockerfile",
                       "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but has no "
                       "post-build existence assertion for the CUDA backend — the GPU-less docker build "
                       "silently produces a CPU-only binary; add a `test -f …/libggml-cuda.so || exit 1` "
                       "guard (a bare mention of the filename does not count) (ADR 0016)")
-    # Require the backend to be proven loadable, not merely present.
-    if not (re.search(r"\bldd\s+-r\s+\S*libggml-cuda\.so", code) and "not found" in code):
+    # Require the backend to be proven loadable, not merely present: a real `ldd -r`
+    # invocation at a command position, AND its output actually inspected for the
+    # missing-library marker (a bare `echo "not found"` is not an inspection).
+    if not (re.search(_CMD_POS + r"ldd\s+-r\s+\S*libggml-cuda\.so", code)
+            and re.search(r"(?:grep|case|\[\[|==|=~)[^\n]*not found", code)):
         yield Finding("L056", ERROR, img.name, "Dockerfile",
                       "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but never proves the "
                       "CUDA backend RESOLVES — with GGML_BACKEND_DL a backend missing libcudart/libcublas "
@@ -690,7 +705,7 @@ def check_llama_cuda_arch_assert(img: Image) -> Iterable[Finding]:
     code = code_text(parse(img.text))
     if not re.search(r"\bunsloth\s+studio\s+setup\b", code):
         return
-    has_cuobjdump = re.search(r"\bcuobjdump\s+--list-elf\b[^\n]*libggml-cuda\.so", code)
+    has_cuobjdump = re.search(_CMD_POS + r"(?:\S*/)?cuobjdump\s+--list-elf\b[^\n]*libggml-cuda\.so", code)
     if not (has_cuobjdump and re.search(r"\bsm_\d+\b", code)):
         yield Finding("L057", ERROR, img.name, "Dockerfile",
                       "installs Unsloth Studio's llama.cpp (`unsloth studio setup`) but never asserts the "

@@ -752,6 +752,37 @@ def test_L057_no_unsloth_setup_is_clean(tmp_path):
     assert "L057" not in errs(make(tmp_path), tmp_path)
 
 
+def test_mut_llama_asserts_quoted_inside_echo_do_not_satisfy():
+    """A *mention* of an assertion is not an assertion. Wrap each real guard in an
+    `echo "…"` so the text still contains it but nothing is executed; every rule that
+    demands that guard must still fire. Without a command-position anchor the regexes
+    match inside the quoted string and the image lints clean with no guard at all."""
+    repo, img = _real("unsloth-studio")
+
+    quoted_existence = re.sub(
+        r"(?:test|\[\[?)\s+-f\s+(\S*libggml-cuda\.so)",
+        r'echo "test -f \1"', img.text, count=1)
+    assert "L056" in errs(replace(img, text=quoted_existence), repo)
+
+    quoted_ldd = re.sub(
+        r"ldd\s+-r\s+(\S*libggml-cuda\.so)",
+        r'echo "ldd -r \1"', img.text, count=1)
+    assert "L056" in errs(replace(img, text=quoted_ldd), repo)
+
+    quoted_cuobjdump = re.sub(
+        r"cuobjdump\s+--list-elf\s+(\S*libggml-cuda\.so)",
+        r'echo "cuobjdump --list-elf \1"', img.text, count=1)
+    assert "L057" in errs(replace(img, text=quoted_cuobjdump), repo)
+
+
+def test_mut_llama_ldd_output_never_inspected_does_not_satisfy():
+    """Running `ldd -r` and merely printing the words is not an inspection: the check
+    must see the output actually matched (grep/case/test), not the bare substring."""
+    repo, img = _real("unsloth-studio")
+    mut = re.sub(r"grep\s+'not found'", 'echo "not found"', img.text, count=1)
+    assert "L056" in errs(replace(img, text=mut), repo)
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))
