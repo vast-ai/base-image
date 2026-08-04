@@ -66,6 +66,22 @@ RUN \
     ln -s /sgl-workspace /opt/workspace-internal/sgl-workspace-link
 
 
+# Serverless (autoscaler) PyWorker defaults, overridable by the launch template
+# (docker -e / template env: wins over image ENV). No-op on-demand: pyworker.sh runs the
+# worker only when SERVERLESS=true. BACKEND=sglang selects the SGLang PyWorker
+# (workers/sglang, a thin adapter over the shared OpenAI-compatible core). MODEL_LOAD_LOG_MSG
+# is the log line the worker waits for to mark the model loaded: it is version-specific to
+# this SGLang build (the engine can change its startup line between releases), so the image
+# — the only layer version-locked to the engine — owns it.
+ENV BACKEND=sglang
+ENV MODEL_LOAD_LOG_MSG="The server is fired up and ready to roll!"
+
+# Reserve the serverless worker port (WORKER_PORT default 3000). EXPOSE makes Vast map
+# it, so VAST_TCP_PORT_3000 is set for the worker's self-report with NO template
+# port entry. Only on these serverless images (not base-inherited); unbound and harmless
+# on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
+EXPOSE 3000
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 
