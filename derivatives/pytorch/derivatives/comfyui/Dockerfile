@@ -135,6 +135,16 @@ RUN \
     rm -rf /opt/model_store/.cache && \
     rm -rf /root/.cache/huggingface
 
+# Serverless (autoscaler) comfyui-json PyWorker defaults, overridable by the launch
+# template. Baking BACKEND selects the worker; EXPOSE reserves the worker port so Vast
+# maps it (VAST_TCP_PORT_3000) — a single on-demand template flips to serverless with
+# just SERVERLESS=true, no template port entry. No-op on-demand: pyworker.sh runs the
+# worker only under SERVERLESS=true. The comfyui-json worker is log-gated (BACKENDS_READY)
+# and hardcodes its own MODEL_LOG/health, so no readiness/log ENV is needed here. The
+# model-specific benchmark comes from PROVISIONING_COMFYUI_WORKFLOWS via convert-workflows.sh.
+ENV BACKEND=comfyui-json
+EXPOSE 3000
+
 # Defend against environment clashes when syncing to volume
 RUN \
     set -euo pipefail && \
