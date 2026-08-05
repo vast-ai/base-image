@@ -1,6 +1,8 @@
-"""Generic wget download handler.
+"""Generic download handler.
 
-Handles CivitAI (with token) and plain HTTP downloads.
+Handles plain HTTP downloads with wget, and authenticated CivitAI downloads with
+curl — CivitAI 307s to a presigned CDN host, and wget re-sends --header across that
+host change (leaking the token) while curl drops it.
 Supports content-disposition filename extraction when dest ends with '/'.
 """
 
@@ -9,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from urllib.parse import urlparse
 
 from ..concurrency import FileLock
 from ..subprocess_runner import run_cmd
@@ -43,7 +46,20 @@ def _get_content_disposition_filename(url: str, auth_header: str | None = None) 
 
 
 def _is_civitai(url: str) -> bool:
-    return "civitai.com" in url
+    """True only for real CivitAI hosts over HTTPS.
+
+    This decides whether the user's CivitAI token is attached, so a substring
+    test is not good enough: manifests are third-party data (PROVISIONING_SCRIPT
+    fetches one by URL, PROVISIONING_DOWNLOADS accepts url|path pairs), and
+    "civitai.com" appears in a path, a subdomain suffix or a query string of a
+    URL an attacker controls — e.g. https://evil.example/civitai.com/x or
+    https://civitai.com.evil.example/x — each of which would hand over the token.
+    Matching on the parsed host also rules out http://, which would put the
+    bearer token on the wire in cleartext.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (host == "civitai.com" or host.endswith(".civitai.com"))
 
 
 def download_wget(
