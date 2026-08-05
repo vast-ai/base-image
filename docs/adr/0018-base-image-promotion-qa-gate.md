@@ -81,7 +81,9 @@ existing detection primitive cannot even see 11 of the 12 tracked minors.
   a one-checkbox QA bypass (`QA=skip`) and an "INERT" pass-on-no-offers verdict whose
   premise is false (QA's `no_offers` reflects QA's own cost/reliability filters, not
   customer serveability — customers face none of those filters), i.e. two designed-in
-  ways to flip an auto tag to untested bits; and its hand-maintained auto-version field
+  ways to flip an auto tag to untested bits (a guarded variant of its skip flag was
+  later adopted by owner decision — see condition 3's amendment); and its
+  hand-maintained auto-version field
   was shown to rename the customer-facing auto tag undetectably (its own worked example
   would have stranded `cuda-13.3.1-auto`'s audience).
 - **CPU-container harness only (no live GPU).** Only 3 of the 24 base tests strictly
@@ -130,7 +132,8 @@ Shape:
   re-pushes them unchanged, preserving ordering) and are named loudly — verdict class
   and held-digest age — in the approval summary and Slack. Dated-tag copies proceed for
   all configs (dated tags are opt-in by explicit reference; the gate's claim is the
-  `-auto` surface). There is no `EXCLUDE` input and no `SKIP_QA` input.
+  `-auto` surface). There is no `EXCLUDE` input; a loud, reasoned, human-approved
+  `SKIP_QA` bypass exists under condition 3's guardrails (2026-08-05 amendment).
 - **Fail-not-skip:** the in-instance runner gains a required-pass gate
   (`INSTANCE_TEST_REQUIRE_PASS`: a named test that is skipped, **missing**, or
   unreached marks the suite failed), and CI independently re-asserts the per-cell
@@ -181,12 +184,30 @@ refused, this decision is void.
    digest-matching QA evidence record produced in the same workflow run. Artifact:
    `verify-evidence` unit tests including the mutation case (evidence at digest D,
    promote about to flip to D′ → refuse).
-3. **(extends 0005 as cond 13) No bypass, no schedule, fail-closed.** The promote path
-   has no soft-pass, no bypass input, and no `schedule:` trigger; a missing
-   `VAST_API_KEY` fails the run before any spend. The only un-QA'd prod write is the
-   rollback workflow, which can only repoint to already-promoted bits and shares the
-   promote concurrency group. Artifacts: dispatch-inputs, trigger, needs-edge,
-   concurrency-group and `require_key` guard tests.
+3. **(extends 0005 as cond 13) No silent or automated bypass; fail-closed.** The
+   promote path has no soft-pass and no `schedule:` trigger; when QA is not skipped, a
+   missing `VAST_API_KEY` fails the run before any spend.
+   *(Amended 2026-08-05, owner decision. This condition originally read "no bypass
+   input"; the final critical review rated a skip input the single most likely
+   gate-erosion path — "used the first time the gate is inconvenient, then every time
+   after" — and that finding stands recorded, not overturned. The owner accepts the
+   risk because some promotions are preceded by hands-on manual testing.)*
+   A `SKIP_QA` dispatch input exists, under four non-negotiable guardrails:
+   - `SKIP_REASON` is mandatory — an empty reason fails pre-flight;
+   - it is loud at the moment of decision: the approval summary renders a prominent
+     warning naming every auto tag that will flip **without automated evidence**, with
+     the reason verbatim, and the Slack notification carries a distinct
+     "promoted WITHOUT automated QA" headline;
+   - the skip waives only the flip⇒evidence requirement — digest pinning,
+     copy-by-digest, the concurrent-promotion abort and the staging-drift checks all
+     still run (the bypass skips the test, never the integrity chain);
+   - **usage tripwire:** if more than 1 of any 4 consecutive promotions is skipped,
+     the flag's premise is void — either the gate is too painful (fix the gate) or
+     skipping is becoming the default path (remove the flag); resolved by ADR
+     amendment, with the run history as the record.
+   The rollback workflow remains the only other un-QA'd prod write and can only
+   repoint to already-promoted bits. Artifacts: dispatch-inputs, trigger, needs-edge,
+   concurrency-group, `require_key`, mandatory-reason and warning-banner guard tests.
 4. **(extends 0005 as cond 14) Pre-committed de-scoping fallback.** If more than 1 in 3
    promotions hold on infrastructure (not real image defects), the gating set is cut to
    a representative 4 (oldest CUDA, newest CUDA, each ubuntu base) and the rest labeled
@@ -244,6 +265,11 @@ refused, this decision is void.
   four `qa-gate.yml` inputs (defaults preserve the existing consumers byte-for-byte),
   two linter rules + two exemption removals, one config file, one rollback workflow,
   and guard tests — all of it only trustworthy because of condition 1.
+- An owner-accepted bypass exists (condition 3, 2026-08-05 amendment): a promotion
+  preceded by manual testing may skip the automated sweep. This is recorded against
+  the final review's top-ranked erosion finding; the mandatory reason, the
+  warning banner at approval, the distinct notification and the usage tripwire are
+  the mitigations, and the tripwire is the tripcord.
 - The approval reviewers' environment protection is the load-bearing human gate and
   lives in GitHub settings, observed by no repo artifact. Owner decision (2026-08-05):
   prevent-self-review stays off (a dispatcher may approve their own promotion — the
@@ -252,6 +278,9 @@ refused, this decision is void.
 
 ## What would reverse this
 
+- **The `SKIP_QA` tripwire firing** (more than 1 of any 4 consecutive promotions
+  skipped): the flag is removed or the gate's pain point is fixed — either way by ADR
+  amendment, never by letting skips quietly become the norm.
 - Promoting older, already-QA'd staging dates becoming routine (not exceptional) — the
   same-run topology then taxes every re-promotion with a fresh sweep, and option B's
   digest-keyed attestation carrier becomes the right evolution; this ADR records it as
