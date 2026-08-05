@@ -13,14 +13,28 @@ MAX_RETRIES = 5
 
 def load_config(yaml_path='/etc/portal.yaml'):
     if os.path.exists(yaml_path):
-        with open(yaml_path, 'r') as file:
-            data = yaml.safe_load(file)
-        # A present-but-empty/malformed cache (e.g. caddy.sh `touch`es /etc/portal.yaml
-        # before any PORTAL_CONFIG is set) must be treated as ABSENT — fall through and
-        # regenerate from PORTAL_CONFIG, never crash on a missing 'applications' key.
-        # `yaml.safe_load('')` is None; an empty/odd doc has no usable applications map.
-        if isinstance(data, dict) and data.get('applications'):
+        # A present-but-unusable cache must be treated as ABSENT — fall through and
+        # regenerate from PORTAL_CONFIG rather than crashing Caddy's whole startup.
+        # Three ways it gets that way: caddy.sh `touch`es the file before any
+        # PORTAL_CONFIG exists (`yaml.safe_load('')` is None); the doc parses but has
+        # no usable applications map; or the file is truncated/corrupt — this function
+        # writes it non-atomically below, so a container killed mid-write leaves
+        # exactly that. Say so in the log: silently discarding an operator's file is
+        # how "my portal.yaml edit vanished" becomes an unanswerable question.
+        try:
+            with open(yaml_path, 'r') as file:
+                data = yaml.safe_load(file)
+        except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
+            print(f"Ignoring unusable {yaml_path} ({type(e).__name__}: {e}); "
+                  f"regenerating from PORTAL_CONFIG")
+            data = None
+        if isinstance(data, dict) and isinstance(data.get('applications'), dict):
+            # An empty applications map is a legitimate operator choice (exit_portal.sh
+            # documents pruning entries), so honour it rather than regenerating over it.
             return data['applications']
+        if data is not None:
+            print(f"Ignoring {yaml_path}: no usable 'applications' map; "
+                  f"regenerating from PORTAL_CONFIG")
 
     apps_string = os.environ.get('PORTAL_CONFIG', '')
     if not apps_string:
@@ -38,10 +52,17 @@ def load_config(yaml_path='/etc/portal.yaml'):
             'name': name
         }
     
+    # Persisting the cache is best-effort: we already have a usable config in hand, so
+    # a read-only /etc or an unwritable file must not stop Caddy from starting. (The
+    # same condition that makes the file unreadable above usually makes it unwritable.)
     yaml_data = {"applications": apps}
-    with open(yaml_path, "w") as file:
-        yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
-    
+    try:
+        with open(yaml_path, "w") as file:
+            yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
+    except OSError as e:
+        print(f"Could not write {yaml_path} ({type(e).__name__}: {e}); "
+              f"continuing with the config from PORTAL_CONFIG")
+
     return apps
 
 

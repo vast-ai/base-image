@@ -153,3 +153,91 @@ def test_reverse_proxy_strips_upstream_marker():
     the proxy block must strip it so only Caddy can set it (ADR 0017 finding 2)."""
     block = ccm.get_reverse_proxy_block("localhost", 18080, "-1")
     assert "header_down -X-Portal-Placeholder" in block
+
+
+# --- load_config: a present-but-unusable /etc/portal.yaml is ABSENT, never a crash ---
+#
+# caddy.sh `touch`es /etc/portal.yaml when PORTAL_CONFIG is unset, leaving a zero-byte
+# file that persists in overlayfs. On a later boot — 10-prep-env.sh rewrites
+# PORTAL_CONFIG from VAST_TCP_PORT_8080, which changes across stop/start — load_config
+# saw the file exists and did yaml.safe_load('')['applications'] → TypeError. main()
+# swallows it, so the visible symptom is no Caddyfile: no proxy, and every WebUI gated
+# on portal.yaml skips startup. The invariant: fall through to PORTAL_CONFIG instead.
+
+import pytest  # noqa: E402
+import yaml as _yaml  # noqa: E402
+
+_CFG = "localhost:1111:11111:/:Instance Portal|localhost:7860:17860:/:App UI"
+
+
+@pytest.mark.parametrize("content,label", [
+    ("", "zero-byte file left by caddy.sh"),
+    ("something_else: true\n", "valid YAML, no applications key"),
+    ("just a bare string\n", "YAML scalar, not a mapping"),
+    ("applications: [unclosed\n", "truncated/corrupt doc (non-atomic write + kill)"),
+    ("applications:\n  - a\n  - b\n", "applications is a list, not a map"),
+])
+def test_unusable_cache_falls_through_to_env(tmp_path, monkeypatch, content, label):
+    p = tmp_path / "portal.yaml"
+    p.write_text(content)
+    monkeypatch.setenv("PORTAL_CONFIG", _CFG)
+    apps = ccm.load_config(str(p))
+    assert set(apps) == {"Instance Portal", "App UI"}, label
+    assert apps["App UI"]["external_port"] == 7860
+
+
+def test_unreadable_cache_falls_through(tmp_path, monkeypatch):
+    """An unreadable file is an OSError, not a YAML error — same fall-through."""
+    p = tmp_path / "portal.yaml"
+    p.write_text("applications: {}\n")
+    p.chmod(0o000)
+    if os.access(str(p), os.R_OK):  # running as root: chmod does not deny us
+        pytest.skip("running as root; cannot make a file unreadable")
+    monkeypatch.setenv("PORTAL_CONFIG", _CFG)
+    assert set(ccm.load_config(str(p))) == {"Instance Portal", "App UI"}
+
+
+def test_no_cache_and_no_env_raises_valueerror(tmp_path, monkeypatch):
+    """No config anywhere stays the graceful ValueError, not a TypeError crash."""
+    p = tmp_path / "portal.yaml"
+    p.write_text("")
+    monkeypatch.delenv("PORTAL_CONFIG", raising=False)
+    with pytest.raises(ValueError):
+        ccm.load_config(str(p))
+
+
+def test_valid_cache_wins_over_env(tmp_path, monkeypatch):
+    """A populated cache is authoritative; the env is ignored (cache-preferred)."""
+    p = tmp_path / "portal.yaml"
+    p.write_text(
+        "applications:\n"
+        "  Cached App:\n"
+        "    hostname: localhost\n"
+        "    external_port: 9000\n"
+        "    internal_port: 19000\n"
+        "    open_path: /\n"
+        "    name: Cached App\n"
+    )
+    monkeypatch.setenv("PORTAL_CONFIG", _CFG)  # must be ignored
+    assert set(ccm.load_config(str(p))) == {"Cached App"}
+
+
+def test_empty_applications_map_is_honoured_not_clobbered(tmp_path, monkeypatch):
+    """An empty applications map is a documented operator action (exit_portal.sh says
+    entries may be pruned), so it must be honoured — not silently regenerated over."""
+    p = tmp_path / "portal.yaml"
+    p.write_text("applications: {}\n")
+    monkeypatch.setenv("PORTAL_CONFIG", _CFG)
+    assert ccm.load_config(str(p)) == {}
+    assert p.read_text() == "applications: {}\n", "the operator's file was rewritten"
+
+
+def test_regenerated_cache_is_well_formed(tmp_path, monkeypatch):
+    """The file written on fall-through must read back without falling through again."""
+    p = tmp_path / "portal.yaml"
+    p.write_text("")
+    monkeypatch.setenv("PORTAL_CONFIG", _CFG)
+    ccm.load_config(str(p))
+    doc = _yaml.safe_load(p.read_text())
+    assert isinstance(doc, dict)
+    assert set(doc["applications"]) == {"Instance Portal", "App UI"}
