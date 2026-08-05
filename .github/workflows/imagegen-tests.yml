@@ -39,6 +39,6 @@ jobs:
       # Collection is rooted at working-directory, so the template_manager suite
       # needs its own invocation — without it, these tests (including
       # test_qa_gate_floor_guard.py, the pre-merge guard ADR 0005 relies on)
-      # never ran in CI despite the paths filter above (ADR 0018 condition 1).
+      # never ran in CI despite the paths filter above (ADR 0019 condition 1).
       - name: Run template_manager test suite
         run: python -m pytest -q tools/template_manager

@@ -1,4 +1,4 @@
-# ADR 0018 — QA-gated, human-approved base-image `-auto` promotion
+# ADR 0019 — QA-gated, human-approved base-image `-auto` promotion
 
 - **Status:** Accepted (conditional — see Binding conditions; build sequenced from condition 1)
 - **Date:** 2026-08-05
@@ -232,8 +232,11 @@ refused, this decision is void.
    onboarding.
 10. **Known carried defect recorded:** the dance's Phase A points each auto tag at
     another config's (QA-passed) image for a seconds-long window — pre-existing,
-    unchanged in v1 to keep the dance byte-identical. Named follow-up: prefer the same
-    config's previous digest as the Phase A anchor, foreign anchor only as fallback.
+    unchanged in v1 to keep the dance byte-identical. Named follow-up with a **proven
+    in-repo donor**: `promote-pytorch.yml`'s dance already fixes this exact hole
+    (changed target → single direct copy, no hop; unchanged target → bump via the
+    py310 sibling of the SAME image, so a mid-hop reader never sees wrong-CUDA bits).
+    Port that pattern to the base dance as its own change after v1 lands.
 11. **ADR 0010 exemption is explicit.** Base cannot satisfy 0010's one-template rule:
     its customer launch templates live on the Vast side, outside this repo.
     `templates/base-qa/` is an approximation of a customer launch; its drift from the

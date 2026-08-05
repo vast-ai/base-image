@@ -318,7 +318,7 @@ these, or the gate's safety properties invert at scale:
   `merge-manifests`.)* Onboarding images must instead bound their own matrix
   (`max-parallel`), stagger their crons away from other gates' schedules, and rely
   on the client's 429/5xx backoff; the account-aware semaphore remains the planned
-  proper fix. See [ADR 0018](0018-base-image-promotion-qa-gate.md) condition 9 for
+  proper fix. See [ADR 0019](0019-base-image-promotion-qa-gate.md) condition 9 for
   the base image's posture.
 - **Smoke model ≠ production model.** Mirror the production template's *launch path*
   (runtype, ports, PORTAL_CONFIG, args) but **not** its model/floors: production
