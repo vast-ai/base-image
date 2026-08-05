@@ -154,11 +154,11 @@ tests/
 
 The runner discovers `*.d/` directories automatically. Tests within each directory are sorted and run after all `base/` tests. Derivative tests have access to everything in `lib.sh` including `instance_field`.
 
-## Exposure allowlist (`exposure-allowlist.d/`)
+## Exposure allowlist (`exposure-allowlist/`)
 
 `base/28-inadvertent-exposure.sh` is a **fail-closed** security scan (ADR 0006): every
 public (`0.0.0.0`/`::`/`*`) TCP listener must be either Caddy (the HTTP auth gate) or
-explicitly declared in `exposure-allowlist.d/`, or it is flagged as an inadvertent
+explicitly declared in `exposure-allowlist/`, or it is flagged as an inadvertent
 exposure. Raw UDP and unattributable (no-owning-process / platform) listeners are
 WARNed, not failed. It is **advisory** (reports but passes) until promoted via
 `EXPOSURE_ENFORCE=true`.
@@ -169,14 +169,25 @@ The allowlist is **layered**, like `vast_boot.d`/`conf.d`: base ships the platfo
 dropping a fragment in its `ROOT/` overlay:
 
 ```
-# ROOT/opt/instance-tools/tests/exposure-allowlist.d/50-linux-desktop.conf
-# port/proto   class   note
-5900/tcp       raw     VNC (no global auth gate; template/operator's responsibility)
+# ROOT/opt/instance-tools/tests/exposure-allowlist/50-linux-desktop.conf
+# <port|env:VAR>/proto   class   note
+5900/tcp                 raw     VNC (no global auth gate; template/operator's responsibility)
 ```
 
 `class` ∈ `raw` | `self-auth-http` | `harness` | `platform`. Only declare a port you
 intend to be publicly reachable without Caddy in front; if it speaks HTTP, prefer putting
 it behind Caddy instead (bind the backend to `127.0.0.1`).
+
+**Ports Vast assigns at runtime** — where the container port is fixed but the public one
+is per-instance — are declared as `env:VAR/proto`, resolved from the environment at scan
+time. The base floor uses this for syncthing's sync listener
+(`env:VAST_TCP_PORT_72299/tcp`), which binds `0.0.0.0` on a Vast-assigned port that no
+literal key could match. An unset or non-numeric variable allowlists nothing, so the
+fail-closed direction is preserved.
+
+The scan **requires root** (`ss -p` cannot attribute other users' sockets); a non-root
+run — e.g. `runner.sh --manual` over SSH as a normal user — skips rather than reporting a
+pass it did not actually decide.
 
 ### Caddy-fronted ports are NOT (and must not be) in the allowlist
 
@@ -209,6 +220,7 @@ self-auth HTTP that Vast injects and the image cannot move behind Caddy, e.g. Ju
 | `INSTANCE_TEST_DEFAULT_TIMEOUT` | `3600` | Per-test timeout in seconds (overridable per-test via `# TEST_TIMEOUT=N`) |
 | `INSTANCE_TEST_SYSTEM_LOG` | — | Comma-separated log file paths to stream to client (e.g. `/var/log/portal/vllm.log`) |
 | `INSTANCE_TEST_WEBHOOK` | — | URL to POST results JSON to on completion |
+| `EXPOSURE_ENFORCE` | `false` | `true` makes `base/28-inadvertent-exposure.sh` FAIL on a violation instead of reporting it advisory (ADR 0006 cond 2). A scan that could not run fails either way. |
 
 ### Provisioning test configuration
 | Variable | Default | Description |

@@ -9,6 +9,14 @@
 
 ## Context
 
+> **Note on references.** ADR 0002 (PORTAL_CONFIG / EXPOSE conventions) and the CI smoke
+> tooling cited below are on a separate, not-yet-merged branch, so they are absent from
+> `main` at the time this ADR lands — the numbering convention of [ADR 0008](0008-template-publish-tooling.md)
+> (take the next free number; reconcile when the others merge) applies. So this ADR stands
+> alone, the condition it realizes is restated here in full: *a service must not be
+> reachable on a public interface without Caddy's auth gate in front, and that must be
+> checked at runtime rather than asserted in review.*
+
 ADR 0002 binding condition 1 mandated a runtime `ss -ltnp` smoke gate that fails if a
 service is reachable on a public interface without Caddy's auth in front — but it was
 never built, and is enforced nowhere today. The existing CI tool
@@ -86,7 +94,24 @@ Surviving conditions from the critical review. If any is refused, the decision i
 4. **Honest about scope.** Green means "no un-allowlisted public listener observed at scan
    time." It is a QA-time best-effort point-in-time scan (runner runs post-provisioning
    but a late-binding service can still escape), not a runtime guarantee; the message and
-   docs say so.
+   docs say so. Corollary, added after review: the summary line must never read as clean
+   when violations were reported — advisory mode passes the *test*, it does not get to
+   relabel the *finding*.
+5. **The allowlist must be able to express every legitimate public listener, or the
+   gate can never be promoted.** Some services bind a port Vast assigns per-instance
+   (syncthing's sync listener), which no literal `port/proto` key can match — leaving a
+   permanent false violation on the base floor and making condition 2's "clean baseline"
+   unreachable. The format therefore supports `env:VAR/proto`, resolved at scan time,
+   with an unset/non-numeric variable allowlisting nothing (fail-closed). Because the
+   allowlist format and directory name are the contract every derivative writes fragments
+   against, both were settled *before* rollout: fragments live in `exposure-allowlist/`
+   (not `…​.d/`, which the runner globs as a derivative **test** directory — any `.sh`
+   dropped there would be executed as a test).
+6. **A scan that cannot run is not a pass.** If a scanner binary is missing the check
+   exits 2 and FAILS regardless of `EXPOSURE_ENFORCE` — "the tool is absent" must never be
+   indistinguishable from "nothing is listening." Likewise a non-root run skips loudly
+   rather than reporting green, because `ss -p` cannot attribute other users' sockets and
+   would silently degrade every root-owned listener to an unattributable warning.
 
 ## Consequences
 
