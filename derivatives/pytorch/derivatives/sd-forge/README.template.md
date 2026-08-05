@@ -1,6 +1,6 @@
 # Stable Diffusion WebUI Forge
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=SD%20Forge)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=SD%20Forge)**
 
 ## What is this template?
 
@@ -69,7 +69,7 @@ Set your preferred configuration via environment variables:
 > **Template Customization:** Want to modify this setup? Click **edit**, make your changes, and save as your own template. Find it later in **"My Templates"**. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=SD%20Forge)"** when you've found a suitable GPU instance
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=SD%20Forge)"** when you've found a suitable GPU instance
 
 ### **Step 3: Wait for Setup**
 Forge will be ready automatically *(initial model downloads may take additional time)*
@@ -184,6 +184,7 @@ Images tagged `cu130` or above automatically enable CUDA forward compatibility. 
 - **Forge Documentation:** [Official Repository](https://github.com/lllyasviel/stable-diffusion-webui-forge)
 - **A1111 Wiki:** [Features and Usage](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki)
 - **Base Image Features:** [GitHub Repository](https://github.com/vast-ai/base-image/)
+- **License:** SD WebUI Forge is AGPL-3.0. Full license text and modification notes ship in the image at `/LICENSES.md` and `/licenses/`.
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 
 ### **Community & Support**

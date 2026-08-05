@@ -17,6 +17,11 @@ as the canonical source for the license text.
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/lllyasviel/stable-diffusion-webui-forge
-- **License file in image:** `$WORKSPACE/stable-diffusion-webui-forge/LICENSE.txt`
+- **License file in image:** `/opt/workspace-internal/stable-diffusion-webui-forge/LICENSE.txt`
+- **Modifications:** This image (AGPL §5a) comments out `launch_utils.verify_version()`
+  in `launch.py` (bypassed for the Docker build) and strips the torch pins from the
+  Forge requirements so the app inherits the base image's torch build. Complete
+  corresponding source, including these changes, is public at
+  https://github.com/vast-ai/base-image (see the image's Dockerfile).
 - **Notes:** This image supports multiple Forge variants. The upstream URL and
   license may differ depending on the `FORGE_REPO` build argument used.

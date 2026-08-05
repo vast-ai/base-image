@@ -1,6 +1,6 @@
 # Whisper (API + UI)
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Whisper)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Whisper)**
 
 ## What is this template?
 
@@ -34,7 +34,7 @@ This is **perfect** if you:
 ## Quick Start Guide
 
 ### **Step 1: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Whisper)"** when you've found a suitable GPU instance.
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Whisper)"** when you've found a suitable GPU instance.
 
 ### **Step 2: Access Your Instance**
 Click the **"Open"** button to reach the Whisper WebUI, or use the API endpoint directly (see port reference below).

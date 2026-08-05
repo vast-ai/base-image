@@ -17,13 +17,17 @@ as the canonical source for the license text.
 
 - **License:** GPL-3.0
 - **Upstream:** https://github.com/Comfy-Org/ComfyUI
-- **License file in image:** `$WORKSPACE/ComfyUI/LICENSE`
+- **License file in image:** `/opt/workspace-internal/ComfyUI/LICENSE`
 
 ## SD Forge (Classic)
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/Haoming02/sd-webui-forge-classic
-- **License file in image:** `$WORKSPACE/stable-diffusion-webui-forge/LICENSE.txt`
+- **License file in image:** `/opt/workspace-internal/stable-diffusion-webui-forge/LICENSE.txt`
+- **Modifications:** This image (AGPL §5a) comments out `launch_utils.verify_version()`
+  in `launch.py` (bypassed for the Docker build) and strips the torch pins from the
+  Forge requirements so it inherits the base image's torch build. Complete
+  corresponding source is public at https://github.com/vast-ai/base-image.
 
 ## Voicebox
 
@@ -41,7 +45,7 @@ as the canonical source for the license text.
 
 - **License:** WanGP Community License 2.0 (custom)
 - **Upstream:** https://github.com/deepbeepmeep/Wan2GP
-- **License file in image:** `$WORKSPACE/Wan2GP/LICENSE`
+- **License file in image:** `/opt/workspace-internal/Wan2GP/LICENSE.txt`
 - **Notes:** Free for personal and company use. Commercial redistribution,
   SaaS, and paid API hosting require a separate commercial license. See the
   license file for full terms.
@@ -50,9 +54,14 @@ as the canonical source for the license text.
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/unslothai/unsloth
-- **License file in image:** See `studio/LICENSE.AGPL-3.0` in the upstream
-  repository. The pip-installed `unsloth` package carries the Apache-2.0
-  license for the core library.
+- **License file in image:** `/licenses/AGPL-3.0.txt` — the canonical AGPL-3.0
+  text, vendored so a copy ships *with the program* (AGPL §4), since the
+  pip-installed `unsloth` package does not reliably carry the Studio LICENSE (its
+  `dist-info` carries the Apache-2.0 license for the core library).
+- **Modifications:** This image patches the AGPL-3.0 Studio component (AGPL §5a):
+  `studio/install_python_stack.py` is patched to pin the CUDA torch backend
+  (`--torch-backend=cu128`). Complete corresponding source, including this change,
+  is public at https://github.com/vast-ai/base-image (see the image's Dockerfile).
 - **Notes:** The Unsloth core library is Apache-2.0. The Studio component
   (frontend and related tooling under `studio/`) is separately licensed under
   AGPL-3.0.

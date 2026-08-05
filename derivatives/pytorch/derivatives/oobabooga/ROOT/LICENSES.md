@@ -17,4 +17,8 @@ as the canonical source for the license text.
 
 - **License:** AGPL-3.0
 - **Upstream:** https://github.com/oobabooga/text-generation-webui
-- **License file in image:** `$WORKSPACE/text-generation-webui/LICENSE`
+- **License file in image:** `/opt/workspace-internal/text-generation-webui/LICENSE`
+- **Modifications:** This image (AGPL §5a) retargets the requirements from CPython
+  3.13 to 3.12 (`cp313`→`cp312`) and strips the torch pins so the app inherits the
+  base image's torch build. Complete corresponding source, including these changes,
+  is public at https://github.com/vast-ai/base-image (see the image's Dockerfile).

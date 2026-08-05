@@ -1,6 +1,6 @@
 # ACE-Step 1.5
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=ACE-Step+1.5)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=ACE-Step+1.5)**
 
 ## What is this template?
 
@@ -48,7 +48,7 @@ Set your preferred configuration via environment variables:
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=ACE-Step+1.5)"** when you've found a suitable GPU instance
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=ACE-Step+1.5)"** when you've found a suitable GPU instance
 
 ### **Step 3: Wait for Startup**
 The API server starts first, followed by the UI once the API is ready. Models are downloaded on first generation.

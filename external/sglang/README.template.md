@@ -1,5 +1,5 @@
 # SGLang Inference Engine
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=SGLang)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=SGLang)**
 
 ## What is this template?
 
@@ -49,7 +49,7 @@ Set the `SGLANG_MODEL` environment variable with your desired model:
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=SGLang)"** when you've found an instance that works for you
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=SGLang)"** when you've found an instance that works for you
 
 ### **Step 3: Wait for Setup**
 SGLang and your chosen model will download and start automatically *(this might take a few minutes depending on model size)*

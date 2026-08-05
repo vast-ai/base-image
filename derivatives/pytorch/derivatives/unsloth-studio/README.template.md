@@ -1,6 +1,6 @@
 # Unsloth Studio
 
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Unsloth+Studio)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Unsloth+Studio)**
 
 ## What is this template?
 
@@ -45,13 +45,15 @@ Set your preferred configuration via environment variables:
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
 ### **Step 2: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Unsloth+Studio)"** when you've found a suitable GPU instance
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Unsloth+Studio)"** when you've found a suitable GPU instance
 
 ### **Step 3: Wait for Setup**
 Unsloth Studio will be ready automatically with llama.cpp pre-built for GGUF inference
 
 ### **Step 4: Access Your Instance**
-**Easy access:** Just click the **"Open"** button - authentication is handled automatically!
+**Easy access:** Just click the **"Open"** button - the Caddy gateway handles the token automatically!
+
+> **Studio login:** Unsloth Studio has its own login screen behind the gateway. On a fresh instance sign in with username **`unsloth`** and password **`password`** - you'll be prompted to set a new password immediately on first login. This default is intentionally simple because the Studio already sits behind the instance's token-authenticated gateway; the weak password only ever exists until you change it. If you've already set your own password, that one stands (it persists across stop/start).
 
 **For direct access:** If you want to connect from outside, you'll need:
 - **Unsloth Studio URL:** Your instance IP with the mapped external port (e.g., `http://123.45.67.89:45678` or `https://` if enabled)
@@ -188,6 +190,7 @@ Want to save your perfect setup? Templates can't be changed directly, but you ca
 - **Unsloth Documentation:** [Official Repository](https://github.com/unslothai/unsloth)
 - **Unsloth Studio Announcement:** [GitHub Discussion](https://github.com/unslothai/unsloth/discussions/4370)
 - **Image Source & Features:** [GitHub Repository](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/unsloth-studio)
+- **License:** Unsloth Studio is AGPL-3.0 (the Unsloth core library is Apache-2.0). Full license text and modification notes ship in the image at `/LICENSES.md` and `/licenses/`.
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 - **SSH Setup Guide:** [Vast.ai SSH Documentation](https://docs.vast.ai/instances/sshscp)
 - **Template Configuration:** [Vast.ai Template Guide](https://docs.vast.ai/templates)

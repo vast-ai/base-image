@@ -287,7 +287,7 @@ Call it like the OpenAI API (`POST {base_url}/chat/completions`; models at
 ## 10. Install more dependencies (provisioning)
 
 ```
-curl -XPOST http://localhost:11111/capabilities/provision -d '{"pip":["<pkg>"]}'
+curl -XPOST http://localhost:11111/capabilities/provision -H 'Content-Type: application/json' -d '{"pip":["<pkg>"]}'
 # or, declaratively:
 provisioner <manifest.yaml>
 ```

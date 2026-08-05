@@ -1,0 +1,19 @@
+[project]
+name = "imagegen"
+version = "0.1.0"
+description = "Static invariant-linter + deterministic image generator for base-image Docker images. See docs/adr/0001 + docs/invariants.md."
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+imagegen = "imagegen.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["imagegen"]

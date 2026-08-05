@@ -46,7 +46,8 @@ runs:
       run: |
         echo "Fetching tags from DockerHub for ${{ inputs.repository }}..."
         
-        RESPONSE=$(curl -sfS "https://hub.docker.com/v2/repositories/${{ inputs.repository }}/tags?page_size=100&ordering=last_updated" || echo "")
+        RESPONSE=$(curl -sfS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
+          "https://hub.docker.com/v2/repositories/${{ inputs.repository }}/tags?page_size=100&ordering=last_updated" || echo "")
         
         if [[ -z "$RESPONSE" ]]; then
           echo "::warning::Failed to fetch tags from DockerHub"

@@ -137,7 +137,16 @@ jobs:
           if [[ -n "${{ inputs.FORGE_REF }}" ]]; then
             echo "ref=${{ inputs.FORGE_REF }}" >> $GITHUB_OUTPUT
           else
-            REF=$(git ls-remote https://github.com/Haoming02/sd-webui-forge-classic.git HEAD | cut -f1 | cut -c1-7)
+            REF=""
+            for attempt in 1 2 3; do
+              REF=$(git ls-remote https://github.com/Haoming02/sd-webui-forge-classic.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
+              if [[ -n "$REF" ]]; then break; fi
+              if (( attempt < 3 )); then echo "Attempt $attempt/3: ls-remote failed, retrying in 3s..."; sleep 3; fi
+            done
+            if [[ -z "$REF" ]]; then
+              echo "::error::Could not resolve HEAD of Haoming02/sd-webui-forge-classic after 3 attempts"
+              exit 1
+            fi
             echo "ref=${REF}" >> $GITHUB_OUTPUT
           fi
 
@@ -148,7 +157,16 @@ jobs:
           if [[ -n "${{ inputs.AI_TOOLKIT_REF }}" ]]; then
             echo "ref=${{ inputs.AI_TOOLKIT_REF }}" >> $GITHUB_OUTPUT
           else
-            REF=$(git ls-remote https://github.com/ostris/ai-toolkit.git HEAD | cut -f1 | cut -c1-7)
+            REF=""
+            for attempt in 1 2 3; do
+              REF=$(git ls-remote https://github.com/ostris/ai-toolkit.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
+              if [[ -n "$REF" ]]; then break; fi
+              if (( attempt < 3 )); then echo "Attempt $attempt/3: ls-remote failed, retrying in 3s..."; sleep 3; fi
+            done
+            if [[ -z "$REF" ]]; then
+              echo "::error::Could not resolve HEAD of ostris/ai-toolkit after 3 attempts"
+              exit 1
+            fi
             echo "ref=${REF}" >> $GITHUB_OUTPUT
           fi
 
@@ -159,7 +177,16 @@ jobs:
           if [[ -n "${{ inputs.WAN2GP_REF }}" ]]; then
             echo "ref=${{ inputs.WAN2GP_REF }}" >> $GITHUB_OUTPUT
           else
-            REF=$(git ls-remote https://github.com/deepbeepmeep/Wan2GP.git HEAD | cut -f1 | cut -c1-7)
+            REF=""
+            for attempt in 1 2 3; do
+              REF=$(git ls-remote https://github.com/deepbeepmeep/Wan2GP.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
+              if [[ -n "$REF" ]]; then break; fi
+              if (( attempt < 3 )); then echo "Attempt $attempt/3: ls-remote failed, retrying in 3s..."; sleep 3; fi
+            done
+            if [[ -z "$REF" ]]; then
+              echo "::error::Could not resolve HEAD of deepbeepmeep/Wan2GP after 3 attempts"
+              exit 1
+            fi
             echo "ref=${REF}" >> $GITHUB_OUTPUT
           fi
 
@@ -167,7 +194,16 @@ jobs:
         id: ace-step-ui
         shell: bash
         run: |
-          REF=$(git ls-remote https://github.com/fspecii/ace-step-ui.git HEAD | cut -f1 | cut -c1-7)
+          REF=""
+          for attempt in 1 2 3; do
+            REF=$(git ls-remote https://github.com/fspecii/ace-step-ui.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
+            if [[ -n "$REF" ]]; then break; fi
+            if (( attempt < 3 )); then echo "Attempt $attempt/3: ls-remote failed, retrying in 3s..."; sleep 3; fi
+          done
+          if [[ -z "$REF" ]]; then
+            echo "::error::Could not resolve HEAD of fspecii/ace-step-ui after 3 attempts"
+            exit 1
+          fi
           echo "ref=${REF}" >> $GITHUB_OUTPUT
 
       - name: Generate image tag

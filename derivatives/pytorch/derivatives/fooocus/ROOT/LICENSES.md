@@ -17,4 +17,8 @@ as the canonical source for the license text.
 
 - **License:** GPL-3.0
 - **Upstream:** https://github.com/lllyasviel/Fooocus
-- **License file in image:** `$WORKSPACE/Fooocus/LICENSE`
+- **License file in image:** `/opt/workspace-internal/Fooocus/LICENSE`
+- **Modifications:** This image (GPL-3.0 §5a) strips the torch/torchvision/torchaudio/
+  torchcodec pins from `requirements_versions.txt` so the app inherits the base image's
+  torch build. Complete corresponding source, including this change, is public at
+  https://github.com/vast-ai/base-image (see the image's Dockerfile).

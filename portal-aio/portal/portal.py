@@ -635,8 +635,7 @@ async def read_root(request: Request, token: Optional[str] = None) -> HTMLRespon
         return RedirectResponse(url="/", status_code=302)
 
     await set_external_ip(request.headers.get("X-Forwarded-Host"))
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "index.html", {
         "instance": get_instance_properties(),
         "extra_links": get_extra_links(),  # {"before": [...], "after": [...]}
         })

@@ -1,5 +1,5 @@
 # Linux Desktop
-> **[Create an Instance](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Linux%20Desktop)**
+> **[Create an Instance](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Linux%20Desktop)**
 
 ## What is this template?
 
@@ -36,7 +36,7 @@ This is **perfect** if you:
 ## Quick Start Guide
 
 ### **Step 1: Launch Instance**
-Click **"[Rent](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Linux%20Desktop)"** when you've found an instance that works for you
+Click **"[Rent](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Linux%20Desktop)"** when you've found an instance that works for you
 
 ### **Step 2: Wait for Setup**
 The desktop environment will initialize automatically *(this takes a couple of minutes on first boot)*
@@ -195,7 +195,7 @@ This desktop runs inside a Docker container, which provides excellent performanc
 
 ### Need Full VM Capabilities?
 
-If your workflow requires features that don't work in a container, try the **[Ubuntu Desktop (VM)](https://cloud.vast.ai/?ref_id=62897&creator_id=62897&name=Ubuntu%20Desktop%20(VM))** template instead. The VM template provides a full virtual machine with complete isolation and no container restrictions.
+If your workflow requires features that don't work in a container, try the **[Ubuntu Desktop (VM)](https://cloud.vast.ai/?ref_id=525202&creator_id=525202&name=Ubuntu%20Desktop%20(VM))** template instead. The VM template provides a full virtual machine with complete isolation and no container restrictions.
 
 ---
 
