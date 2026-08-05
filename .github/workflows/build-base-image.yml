@@ -78,7 +78,7 @@ jobs:
             "cuda-13.0-24|nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04|cuda-13.0.3-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
             "cuda-13.1-24|nvidia/cuda:13.1.2-cudnn-devel-ubuntu24.04|cuda-13.1.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
             "cuda-13.2-24|nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04|cuda-13.2.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.3-24|nvidia/cuda:13.3.0-cudnn-devel-ubuntu24.04|cuda-13.3.0-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
+            "cuda-13.3-24|nvidia/cuda:13.3.1-cudnn-devel-ubuntu24.04|cuda-13.3.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
           )
 
           BUILD_MATRIX="[]"
