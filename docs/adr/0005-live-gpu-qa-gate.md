@@ -310,12 +310,16 @@ these, or the gate's safety properties invert at scale:
   ever candidates). The default (30) is sized above full-rollout concurrency
   (images × matrix cells × in-flight); raise it as images are gated. A ceiling sized
   for one image fail-closes into a leak once concurrency exceeds it.
-- **One QA account → serialize launches.** All qa jobs share the
-  `concurrency: qa-vast-account` group so concurrent builds can't 429-storm the
-  single capped key — a 429 maps to `no_offers`/inconclusive, which the schedule
-  path soft-passes, i.e. silent promotion. Onboarded images **must** join the group
-  **and** stagger their build crons (the group alone drops excess matrix cells under
-  contention → those images held, not tested).
+- **One QA account → bounded concurrency, NOT a shared concurrency group.**
+  *(Corrected 2026-08-05 — this bullet previously instructed onboarded images to
+  join a `concurrency: qa-vast-account` group, contradicting condition 6 above and
+  the shipped `qa-gate.yml`, which removed that group as harmful: it allows only
+  1 running + 1 pending and cancels the rest, and a cancelled qa cell blocks
+  `merge-manifests`.)* Onboarding images must instead bound their own matrix
+  (`max-parallel`), stagger their crons away from other gates' schedules, and rely
+  on the client's 429/5xx backoff; the account-aware semaphore remains the planned
+  proper fix. See [ADR 0019](0019-base-image-promotion-qa-gate.md) condition 9 for
+  the base image's posture.
 - **Smoke model ≠ production model.** Mirror the production template's *launch path*
   (runtype, ports, PORTAL_CONFIG, args) but **not** its model/floors: production
   models are large (e.g. llama-cpp's default is a ~35B GGUF) and would brick the
