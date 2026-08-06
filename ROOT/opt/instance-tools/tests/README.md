@@ -220,6 +220,27 @@ self-auth HTTP that Vast injects and the image cannot move behind Caddy, e.g. Ju
 | `INSTANCE_TEST_DEFAULT_TIMEOUT` | `3600` | Per-test timeout in seconds (overridable per-test via `# TEST_TIMEOUT=N`) |
 | `INSTANCE_TEST_SYSTEM_LOG` | — | Comma-separated log file paths to stream to client (e.g. `/var/log/portal/vllm.log`) |
 | `INSTANCE_TEST_WEBHOOK` | — | URL to POST results JSON to on completion |
+| `INSTANCE_TEST_REQUIRE_PASS` | — | Space/comma-separated test names that MUST have **passed** for the suite to pass. A named test that skipped, is missing from the image, or was never reached fails the run (ADR 0019). Unset = a skip is fine, which is right for customer instances and wrong for a gating QA run. |
+
+### Required-pass gate
+
+A skip is not a pass. `test_skip` exits 77, the runner records `skipped`, and a skip
+does not fail the suite — so the GPU trio (`60-gpu-cuda`, `61-cuda-compute`,
+`62-gpu-libraries`), which all open with `has_gpu || test_skip`, reports green on a box
+whose driver or CUDA userland never came up. That is fine on a customer instance and
+useless in a QA gate.
+
+A gating template therefore names what it demands actually ran:
+
+```yaml
+env:
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+```
+
+Names match the results JSON exactly (path-relative, no `.sh` — e.g. `base/60-gpu-cuda`,
+`comfyui.d/10-comfyui-serving`). The gate catches three cases a per-test flag cannot:
+the test skipped, the test is **absent from the image**, and the test was never reached
+because an earlier `test_fatal` aborted the suite.
 | `EXPOSURE_ENFORCE` | `false` | `true` makes `base/28-inadvertent-exposure.sh` FAIL on a violation instead of reporting it advisory (ADR 0006 cond 2). A scan that could not run fails either way. |
 
 ### Provisioning test configuration
