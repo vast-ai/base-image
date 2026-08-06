@@ -99,6 +99,15 @@ on:
         required: false
         type: string
         default: ""
+      set_filters:
+        description: >-
+          Space-separated KEY.OP=VALUE floor overrides applied at template-create time
+          (e.g. "cuda_max_good.gte=13.0"). RAISE-ONLY — create.py rejects an override that
+          would widen selection, so the linted floors keep describing what gets rented.
+          Used by the base gate, whose 12 configs each need their own driver floor.
+        required: false
+        type: string
+        default: ""
     secrets:
       VAST_API_KEY:
         required: false
@@ -173,11 +182,15 @@ jobs:
         id: create
         env:
           STAGING_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          SET_FILTERS: ${{ inputs.set_filters }}
         run: |
           IMAGE="${STAGING_NS}/${{ inputs.repo }}"
           echo "Testing ${IMAGE}:${{ inputs.tag }}"
+          SF=()
+          for f in ${SET_FILTERS}; do SF+=(--set-filter "$f"); done
           python "${TM}/create.py" "${{ github.workspace }}/${{ inputs.template_dir }}" \
             --image "${IMAGE}" --tag "${{ inputs.tag }}" \
+            "${SF[@]}" \
             --emit-result /tmp/qa-create.json
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
