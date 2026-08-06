@@ -1,0 +1,2 @@
+[console_scripts]
+imagegen = imagegen.cli:main
