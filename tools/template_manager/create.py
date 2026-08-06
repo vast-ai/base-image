@@ -102,6 +102,65 @@ def inject_readme(
 # Create-from-YAML entry point helpers
 # ---------------------------------------------------------------------------
 
+# --- QA floor overrides (ADR 0019) -----------------------------------------
+
+_TIGHTENS = {"gte": "raise", "gt": "raise", "lte": "lower", "lt": "lower"}
+
+
+def parse_set_filter(spec: str) -> tuple[str, str, float]:
+    """Parse ``KEY.OP=VALUE`` (e.g. ``cuda_max_good.gte=13.0``)."""
+    key_op, _, raw = spec.partition("=")
+    if not raw or "." not in key_op:
+        raise ValueError(f"--set-filter expects KEY.OP=VALUE, got {spec!r}")
+    key, _, op = key_op.rpartition(".")
+    if op not in _TIGHTENS:
+        raise ValueError(f"--set-filter op must be one of {sorted(_TIGHTENS)}, got {op!r}")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"--set-filter value must be numeric, got {raw!r}") from None
+    return key, op, value
+
+
+def apply_set_filters(template, specs) -> None:
+    """Apply ``KEY.OP=VALUE`` overrides to a template's extra_filters, RAISE-ONLY.
+
+    CI raises a per-config floor at rent time (each base config wants its own
+    cuda_max_good). The direction is deliberately one-way: an override may only
+    TIGHTEN selection, never widen it.
+
+    That rule is what keeps L050/L054 meaningful. Those rules verify the floors in
+    the committed template; if a CI flag could lower or delete one, the static
+    guarantee would say nothing about what actually gets rented, and the gate could
+    quietly select a box the template promises it never would. Widening must be a
+    reviewed edit to the template, not a workflow argument.
+    """
+    for spec in specs or []:
+        key, op, value = parse_set_filter(spec)
+        ef = template.extra_filters if isinstance(template.extra_filters, dict) else {}
+        cur = ef.get(key)
+        cur_val = cur.get(op) if isinstance(cur, dict) else (cur if op == "gte" else None)
+        if cur_val is not None:
+            try:
+                cur_num = float(cur_val)
+            except (TypeError, ValueError):
+                cur_num = None
+            if cur_num is not None:
+                widens = (value < cur_num) if _TIGHTENS[op] == "raise" else (value > cur_num)
+                if widens:
+                    raise ValueError(
+                        f"--set-filter {spec} would WIDEN selection: {key}.{op} is "
+                        f"{cur_num} in the template. Overrides may only tighten — "
+                        f"widening must be a reviewed change to template.yml, or the "
+                        f"linted floors stop describing what gets rented."
+                    )
+        merged = dict(cur) if isinstance(cur, dict) else {}
+        merged[op] = value
+        ef = dict(ef)
+        ef[key] = merged
+        template.extra_filters = ef
+
+
 def load_template_from_yaml(yaml_path: Path) -> List[VastTemplate]:
     """Load and validate one or more templates from a YAML file."""
     try:
@@ -119,6 +178,7 @@ def process_template_dir(
     yaml_filename: str = "template.yml",
     image_override: Optional[str] = None,
     tag_override: Optional[str] = None,
+    set_filters: Optional[List[str]] = None,
 ) -> List[dict]:
     """
     Process a single template directory (template.yml + optional README.md).
@@ -143,6 +203,11 @@ def process_template_dir(
             t.image = image_override
         if tag_override is not None:
             t.tag = tag_override
+        try:
+            apply_set_filters(t, set_filters)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
     results = []
 
     # Build referral URL once per directory
@@ -251,9 +316,11 @@ def _print_hash_line(r: Dict):
 
 
 def run(path: Path, api_key: str, dry_run: bool, readme: Optional[Path] = None,
-        image_override: Optional[str] = None, tag_override: Optional[str] = None):
+        image_override: Optional[str] = None, tag_override: Optional[str] = None,
+        set_filters: Optional[List[str]] = None):
     """Main entry point."""
-    over = {"image_override": image_override, "tag_override": tag_override}
+    over = {"image_override": image_override, "tag_override": tag_override,
+            "set_filters": set_filters}
     with TemplateManager(api_key=api_key) as manager:
         all_results = []
 
@@ -340,6 +407,15 @@ Examples:
         help="Override the template's tag (e.g. the freshly-built staging tag)",
     )
     parser.add_argument(
+        "--set-filter",
+        action="append",
+        metavar="KEY.OP=VALUE",
+        help="Tighten an extra_filters floor at create time, e.g. "
+             "cuda_max_good.gte=13.0 (repeatable). RAISE-ONLY: an override that would "
+             "widen selection is rejected, so the linted floors keep describing what "
+             "actually gets rented.",
+    )
+    parser.add_argument(
         "--delete",
         type=int,
         metavar="TEMPLATE_ID",
@@ -386,7 +462,8 @@ Examples:
 
     try:
         results = run(args.path, api_key or "", args.dry_run, readme=args.readme,
-                      image_override=args.image, tag_override=args.tag)
+                      image_override=args.image, tag_override=args.tag,
+                      set_filters=args.set_filter)
     except urllib.error.HTTPError as e:
         # The API-layer handler already printed the status + body; exit cleanly
         # (no traceback) so CI logs show the actionable message, not a stack.
