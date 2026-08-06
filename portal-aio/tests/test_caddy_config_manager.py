@@ -222,14 +222,18 @@ def test_valid_cache_wins_over_env(tmp_path, monkeypatch):
     assert set(ccm.load_config(str(p))) == {"Cached App"}
 
 
-def test_empty_applications_map_is_honoured_not_clobbered(tmp_path, monkeypatch):
-    """An empty applications map is a documented operator action (exit_portal.sh says
-    entries may be pruned), so it must be honoured — not silently regenerated over."""
+def test_empty_applications_map_regenerates(tmp_path, monkeypatch):
+    """An empty applications map must regenerate, not be honoured as "no apps".
+
+    Verified on a live instance: with `applications: {}` Caddy emits a Caddyfile with
+    no front ports — :1111 disappears and every external route into the box goes with
+    it, and nothing restores it. Whatever an operator meant by emptying the map, the
+    self-healing fall-through is the safer reading of it.
+    """
     p = tmp_path / "portal.yaml"
     p.write_text("applications: {}\n")
     monkeypatch.setenv("PORTAL_CONFIG", _CFG)
-    assert ccm.load_config(str(p)) == {}
-    assert p.read_text() == "applications: {}\n", "the operator's file was rewritten"
+    assert set(ccm.load_config(str(p))) == {"Instance Portal", "App UI"}
 
 
 def test_regenerated_cache_is_well_formed(tmp_path, monkeypatch):

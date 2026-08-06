@@ -28,9 +28,14 @@ def load_config(yaml_path='/etc/portal.yaml'):
             print(f"Ignoring unusable {yaml_path} ({type(e).__name__}: {e}); "
                   f"regenerating from PORTAL_CONFIG")
             data = None
-        if isinstance(data, dict) and isinstance(data.get('applications'), dict):
-            # An empty applications map is a legitimate operator choice (exit_portal.sh
-            # documents pruning entries), so honour it rather than regenerating over it.
+        # Require a NON-EMPTY mapping. The isinstance check matters because a list
+        # reaches generate_caddyfile() and dies on .items(); the non-empty check
+        # matters because an empty map makes Caddy generate a Caddyfile with no front
+        # ports at all — verified on a live instance, where port 1111 disappeared and
+        # the box lost every external route in, with nothing to restore it. Treating
+        # empty as "regenerate from PORTAL_CONFIG" keeps that self-healing.
+        if isinstance(data, dict) and isinstance(data.get('applications'), dict) \
+                and data['applications']:
             return data['applications']
         if data is not None:
             print(f"Ignoring {yaml_path}: no usable 'applications' map; "
