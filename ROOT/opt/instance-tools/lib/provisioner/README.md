@@ -456,8 +456,14 @@ Downloads run in two independent parallel pools:
 | URL Pattern | Handler | Auth | Pool |
 |-------------|---------|------|------|
 | `huggingface.co` | `hf download` | `$HF_TOKEN` (automatic) | `hf_downloads` |
-| `civitai.com` | `wget` with `Authorization` header | `$CIVITAI_TOKEN` | `wget_downloads` |
+| `civitai.com` (https, host-matched) | `curl` with `Authorization` header | `$CIVITAI_TOKEN` | `wget_downloads` |
 | Everything else | `wget` | None | `wget_downloads` |
+
+Authenticated CivitAI downloads use `curl` rather than `wget`: CivitAI's download
+endpoint 307s to a presigned CDN host, and `wget --header` re-sends the header across
+that host change (leaking the token, and the CDN 400s on it), while `curl` drops it.
+The CivitAI match is on the parsed **host** over https — not a substring — so a URL
+merely containing `civitai.com` in its path or query never receives the token.
 
 **HuggingFace URL formats:**
 

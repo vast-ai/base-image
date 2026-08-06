@@ -55,6 +55,10 @@ def validate_civitai_token(token_env: str = "CIVITAI_TOKEN") -> bool:
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
+                # urllib's default User-Agent ("Python-urllib/x.y") is blocked
+                # by CivitAI's Cloudflare WAF (403, before the Authorization
+                # header is evaluated), making every token look invalid.
+                "User-Agent": "Mozilla/5.0 (compatible; vast-ai-provisioner)",
             },
         )
         with urlopen(req, timeout=15) as resp:
