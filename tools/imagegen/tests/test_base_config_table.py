@@ -1,0 +1,152 @@
+"""configs/base-image.json is the single source of truth for the base matrices (ADR 0019).
+
+The table used to live inline in build-, promote- AND extend-base-image.yml. A patch
+bump had to be applied three times and a miss was silent — the 13.3.0 -> 13.3.1 bump
+found exactly that: two copies were known about, the third was not.
+
+These tests pin three properties:
+  1. the workflows read the file rather than carrying their own copy;
+  2. the table can still express every field each workflow needs;
+  3. the auto-tag name remains DERIVABLE from tag_template, because that name is
+     customer-facing and a second stored copy is how one silently stops updating.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[3]
+CONFIG = REPO / "configs/base-image.json"
+WORKFLOWS = {
+    "build": REPO / ".github/workflows/build-base-image.yml",
+    "promote": REPO / ".github/workflows/promote-base-image.yml",
+    "extend": REPO / ".github/workflows/extend-base-image.yml",
+}
+
+# The auto tag is derived in promote with this expression; the test asserts the
+# derivation still yields a version for every CUDA config. Kept in sync by
+# test_promote_still_derives_the_auto_tag_with_this_expression below.
+_AUTO_RE = re.compile(r"^cuda-([0-9.]+)-")
+
+
+@pytest.fixture(scope="module")
+def cfg():
+    return json.loads(CONFIG.read_text())
+
+
+def test_config_file_parses_and_is_non_empty(cfg):
+    assert cfg["configs"], "no configs — every matrix would be empty"
+    assert cfg["mini"], "no mini configs"
+    assert cfg["python_versions"] and cfg["mini_python_versions"]
+
+
+def test_every_config_has_the_fields_all_three_workflows_consume(cfg):
+    for c in cfg["configs"]:
+        for field in ("key", "base_image", "tag_template", "arches", "default_python"):
+            assert c.get(field), f"{c.get('key')} missing {field}"
+        assert isinstance(c["arches"], list) and c["arches"]
+        assert c["default_python"] in cfg["python_versions"], (
+            f"{c['key']} default_python {c['default_python']} is not built"
+        )
+    for m in cfg["mini"]:
+        for field in ("key", "mini_tag", "cuda_versions"):
+            assert m.get(field), f"{m.get('key')} missing {field}"
+
+
+def test_keys_and_tag_templates_are_unique(cfg):
+    """A duplicate key would silently build one config twice and, at promote,
+    write the same prod tag from two sources."""
+    keys = [c["key"] for c in cfg["configs"]]
+    tags = [c["tag_template"] for c in cfg["configs"]]
+    assert len(keys) == len(set(keys)), f"duplicate config keys: {keys}"
+    assert len(tags) == len(set(tags)), f"duplicate tag_templates: {tags}"
+
+
+def test_no_pipe_character_in_any_field(cfg):
+    """The workflows read the table as pipe-delimited lines via jq, so a literal
+    '|' in a value would silently shift every field after it."""
+    for c in cfg["configs"] + cfg["mini"]:
+        for k, v in c.items():
+            vals = v if isinstance(v, list) else [v]
+            for val in vals:
+                assert "|" not in str(val), f"{c.get('key')}.{k} contains a pipe: {val!r}"
+
+
+# --- the property that keeps the customer-facing auto tag honest -------------
+
+def test_auto_tag_version_is_derivable_for_every_cuda_config(cfg):
+    """Every cuda-* config's tag_template must yield a version.
+
+    promote derives `cuda-<ver>-auto` from tag_template with a sed. A config whose
+    template stopped matching would be skipped by that derivation with no error —
+    its auto tag would simply stop being updated, which is invisible until a
+    customer reports stale bits. This is also why the version is NOT stored as a
+    field: one source of truth, derived at the point of use.
+    """
+    for c in cfg["configs"]:
+        if not c["tag_template"].startswith("cuda-"):
+            continue
+        m = _AUTO_RE.match(c["tag_template"])
+        assert m and m.group(1), (
+            f"{c['key']}: tag_template {c['tag_template']!r} yields no auto-tag version"
+        )
+
+
+def test_stock_configs_yield_no_auto_tag(cfg):
+    """stock-* have no CUDA version and therefore no auto tag; the promote loop
+    `continue`s on them. Pinned so a rename never accidentally mints one."""
+    for c in cfg["configs"]:
+        if c["key"].startswith("stock"):
+            assert not _AUTO_RE.match(c["tag_template"]), (
+                f"{c['key']} would now mint an auto tag"
+            )
+
+
+def test_promote_still_derives_the_auto_tag_with_this_expression():
+    """If promote's sed changes, the assertions above stop describing reality."""
+    t = WORKFLOWS["promote"].read_text()
+    assert r"sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p'" in t, (
+        "promote's auto-tag derivation changed — update _AUTO_RE to match"
+    )
+
+
+# --- the workflows must consume the table, not carry a copy ------------------
+
+@pytest.mark.parametrize("name", sorted(WORKFLOWS))
+def test_workflow_reads_the_shared_table(name):
+    t = WORKFLOWS[name].read_text()
+    assert "configs/base-image.json" in t, f"{name} does not read the shared config table"
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOWS))
+def test_workflow_has_no_inline_config_array(name):
+    """The drift this whole extraction exists to remove."""
+    t = WORKFLOWS[name].read_text()
+    for arr in ("CONFIGS=(", "ALL_CONFIGS=(", "MINI_CONFIGS=("):
+        assert arr not in t, f"{name} still declares an inline {arr.rstrip('=(')} array"
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOWS))
+def test_matrix_job_checks_out_the_repo(name):
+    """These jobs had no checkout — reading a file from the repo needs one, and
+    without it the run fails at jq with a confusing 'no such file'."""
+    t = WORKFLOWS[name].read_text()
+    job = "generate-configs" if name == "promote" else "generate-matrix"
+    after = t.split(f"\n  {job}:", 1)[1]
+    # A job block runs until the next top-level job key: a line indented exactly
+    # two spaces followed by a non-space. Splitting on a bare "\n  " would cut at
+    # the first 4-space-indented line inside the block.
+    block = re.split(r"\n  (?=\S)", after, maxsplit=1)[0]
+    assert "actions/checkout" in block, f"{name}'s {job} job does not check out the repo"
+
+
+def test_config_count_matches_the_documented_fleet(cfg):
+    """A tripwire, not a rule: the fleet is 12 configs + 2 mini. Changing it is
+    fine and expected — update this number deliberately so the change is noticed
+    in review rather than slipping in."""
+    assert len(cfg["configs"]) == 12
+    assert len(cfg["mini"]) == 2

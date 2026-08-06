@@ -56,6 +56,9 @@ jobs:
       mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
+      # Needed for configs/base-image.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
+
       - name: Generate matrices
         id: matrix
         run: |
@@ -65,21 +68,8 @@ jobs:
           FILTER="${{ inputs.FILTER }}"
 
           # Build configs: key|base_image|tag_template|arches|default_python
-          # tag_template does NOT include -pyXXX (that's added dynamically)
-          CONFIGS=(
-            "stock-22|ubuntu:22.04|stock-ubuntu22.04|linux/amd64,linux/arm64|3.10"
-            "stock-24|ubuntu:24.04|stock-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-11.8-22|nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04|cuda-11.8.0-cudnn8-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
-            "cuda-12.1-22|nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04|cuda-12.1.1-cudnn8-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
-            "cuda-12.4-22|nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04|cuda-12.4.1-cudnn-devel-ubuntu22.04|linux/amd64,linux/arm64|3.10"
-            "cuda-12.6-24|nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04|cuda-12.6.3-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-12.8-24|nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04|cuda-12.8.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-12.9-24|nvidia/cuda:12.9.2-cudnn-devel-ubuntu24.04|cuda-12.9.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.0-24|nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04|cuda-13.0.3-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.1-24|nvidia/cuda:13.1.2-cudnn-devel-ubuntu24.04|cuda-13.1.2-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.2-24|nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04|cuda-13.2.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-            "cuda-13.3-24|nvidia/cuda:13.3.1-cudnn-devel-ubuntu24.04|cuda-13.3.1-cudnn-devel-ubuntu24.04|linux/amd64,linux/arm64|3.12"
-          )
+          # Config table lives in configs/base-image.json (ADR 0019) — it was inline in three workflows, so a patch bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t CONFIGS < <(jq -r '.configs[] | "\(.key)|\(.base_image)|\(.tag_template)|\(.arches|join(","))|\(.default_python)"' "$GITHUB_WORKSPACE/configs/base-image.json")
 
           BUILD_MATRIX="[]"
           MERGE_MATRIX="[]"
@@ -120,12 +110,8 @@ jobs:
                 '. + [{"config_key": $key, "base_image": $base_image, "tag_template": $tag_template, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "default_python": $default_python}]')
             done
           done
-
-          # Mini configs: key|mini_tag|cuda_versions
-          MINI_CONFIGS=(
-            "cuda-12.9-mini|cuda-12.9-mini|12-9"
-            "cuda-13.2-mini|cuda-13.2-mini|13-2"
-          )
+          # Mini configs from the same table.
+          mapfile -t MINI_CONFIGS < <(jq -r '.mini[] | "\(.key)|\(.mini_tag)|\(.cuda_versions)"' "$GITHUB_WORKSPACE/configs/base-image.json")
 
           MINI_BUILD_MATRIX="[]"
           MINI_MERGE_MATRIX="[]"

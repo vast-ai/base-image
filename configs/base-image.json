@@ -1,0 +1,161 @@
+{
+  "_comment": [
+    "Single source of truth for the base-image build/promote/extend matrices (ADR 0019).",
+    "Consumed by .github/workflows/{build,promote,extend}-base-image.yml via jq; the",
+    "list previously lived inline in all three, so a patch bump had to be applied three",
+    "times and a miss was silent.",
+    "ORDER IS SIGNIFICANT: promote walks these in order and the auto-tag dance depends",
+    "on it. Append new configs; do not reorder to tidy.",
+    "The cuda-X.Y.Z-auto tag name is DERIVED from tag_template at promote time, never",
+    "stored here - a second source of truth for a customer-facing tag name is how one",
+    "silently stops being updated."
+  ],
+  "python_versions": [
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13",
+    "3.14"
+  ],
+  "mini_python_versions": [
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13",
+    "3.14"
+  ],
+  "configs": [
+    {
+      "key": "stock-22",
+      "base_image": "ubuntu:22.04",
+      "tag_template": "stock-ubuntu22.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.10"
+    },
+    {
+      "key": "stock-24",
+      "base_image": "ubuntu:24.04",
+      "tag_template": "stock-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-11.8-22",
+      "base_image": "nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04",
+      "tag_template": "cuda-11.8.0-cudnn8-devel-ubuntu22.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.10"
+    },
+    {
+      "key": "cuda-12.1-22",
+      "base_image": "nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04",
+      "tag_template": "cuda-12.1.1-cudnn8-devel-ubuntu22.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.10"
+    },
+    {
+      "key": "cuda-12.4-22",
+      "base_image": "nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04",
+      "tag_template": "cuda-12.4.1-cudnn-devel-ubuntu22.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.10"
+    },
+    {
+      "key": "cuda-12.6-24",
+      "base_image": "nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-12.6.3-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-12.8-24",
+      "base_image": "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-12.8.1-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-12.9-24",
+      "base_image": "nvidia/cuda:12.9.2-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-12.9.2-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-13.0-24",
+      "base_image": "nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-13.0.3-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-13.1-24",
+      "base_image": "nvidia/cuda:13.1.2-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-13.1.2-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-13.2-24",
+      "base_image": "nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-13.2.1-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    },
+    {
+      "key": "cuda-13.3-24",
+      "base_image": "nvidia/cuda:13.3.1-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-13.3.1-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
+    }
+  ],
+  "mini": [
+    {
+      "key": "cuda-12.9-mini",
+      "mini_tag": "cuda-12.9-mini",
+      "cuda_versions": "12-9"
+    },
+    {
+      "key": "cuda-13.2-mini",
+      "mini_tag": "cuda-13.2-mini",
+      "cuda_versions": "13-2"
+    }
+  ]
+}
