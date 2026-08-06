@@ -62,6 +62,14 @@ extra_filters:
     gte: 750
   # MAJOR-baseline, not exact-minor, and raised per config at rent time.
   #
+  # DIRECTION: this is a LOWER bound and must stay one. cuda_max_good is the newest
+  # CUDA a host's driver supports, so `gte: 11.8` matches an 11.8 host AND every
+  # newer one — a cuda-11.8 image landing on a 13.x-driver box is correct, because
+  # newer drivers run older CUDA. Most of the fleet has long since moved past 11.8,
+  # so those cells SHOULD be expected to run on much newer hosts. Never add an `lte`
+  # here: pinning to an exact generation would brick the older configs against a
+  # market that no longer has those drivers, while proving nothing extra.
+  #
   # This is the axis where the configs DO differ, and it has to be right in both
   # directions. Too low and a cuda-13.x image lands on a 12.x-driver host: when the
   # compat libs fail to activate, 60-gpu-cuda calls test_fail on the major mismatch —
