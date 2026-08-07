@@ -609,8 +609,8 @@ def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
     Format AND adequacy. A floor below the request is the subtle case: it looks like
     the axis is covered while still admitting boxes that cannot hold the image.
 
-    Scoped to the base image for now, on the same reasoning as L057: comfyui-qa
-    (40 GB) and vllm-qa (32 GB) have the identical hole, but widening the rule to
+    Scoped to the base image for now, on the same reasoning as L057: comfyui-qa (40 GB)
+    and vllm-qa (32 GB) have the identical hole, but widening the rule to
     them turns two live, currently-passing gates red and changes which hosts they
     select — a linter rule is not the place to do that quietly. Widen once each has
     been re-validated.
