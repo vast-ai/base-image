@@ -313,6 +313,13 @@ jobs:
       require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
+      # Base QA pulls a 10-20 GB image and downloads no model; observed passing
+      # cells complete the ENTIRE test in 2-8 min. The client's 40 min default is
+      # calibrated for a derivative fetching a 100 GB model, so here it means a
+      # slow host burns 40 min per launch attempt before the client moves on —
+      # which is exactly what happened on run 31174508116. 15 min is still ~2x the
+      # slowest observed full cell.
+      poll_timeout: "900"
       max_price: "1.00"
       timeout: "2400"
       extra_env: |

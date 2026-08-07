@@ -87,6 +87,18 @@ on:
         required: false
         type: number
         default: 0
+      poll_timeout:
+        description: >-
+          Seconds to wait for an instance to reach "running" (boot + image pull)
+          before abandoning that offer and trying the next. Empty keeps the
+          client's default of 2400 (40 min), which suits a derivative pulling a
+          large model. An image whose whole test takes minutes should set this far
+          lower: a generous cap means one pathologically slow host burns the full
+          window before the client moves on, and it can do that once per launch
+          attempt.
+        required: false
+        type: string
+        default: ""
       retry_delay:
         description: "Seconds to wait between retries. A thin offer market does not change in 90s."
         required: false
@@ -148,6 +160,9 @@ jobs:
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       TM: tools/template_manager
+      # Empty leaves the client's own default in place — _env_int treats unset and
+      # empty identically — so every existing consumer is untouched.
+      QA_POLL_TIMEOUT: ${{ inputs.poll_timeout }}
     steps:
       - uses: actions/checkout@v4
 

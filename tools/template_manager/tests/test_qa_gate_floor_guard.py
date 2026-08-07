@@ -43,3 +43,46 @@ def test_require_floor_is_wired_to_the_cli():
     assert "inputs.require_floor" in text, (
         "qa-gate.yml --require-floor is not keyed on the require_floor input"
     )
+
+
+# --- host-shape floors (added 2026-08-07 from a live incident) --------------
+
+def test_base_qa_floors_out_port_restricted_hosts():
+    """A proxied/VPN-fronted host pulls images pathologically slowly even when it
+    ADVERTISES a fast link — so the floor is on port count, not bandwidth.
+
+    Measured against 930 live offers matching the other base-qa floors: hosts with
+    <8 forwardable ports still advertised a median 253 Mbps. A bandwidth floor
+    would not have excluded them; this one does.
+    """
+    import yaml
+    from pathlib import Path
+    tmpl = yaml.safe_load(
+        (Path(__file__).resolve().parents[3] / "templates/base-qa/template.yml").read_text())
+    dpc = tmpl["extra_filters"]["direct_port_count"]
+    assert "gte" in dpc, "direct_port_count must be a LOWER bound"
+    assert "lte" not in dpc and "lt" not in dpc, (
+        "an upper bound here would select FOR the restricted hosts this excludes")
+    assert dpc["gte"] >= 32, f"floor {dpc['gte']} is inside the low-port tail"
+
+
+def test_base_qa_bounds_the_loading_phase_for_a_short_workload():
+    """The client's 40 min default is calibrated for a derivative pulling a 100 GB
+    model. Base QA's whole test takes 2-8 min, so a generous cap means one slow
+    host burns 40 min per launch attempt — bounded only by the job cap."""
+    import yaml
+    from pathlib import Path
+    wf = yaml.safe_load(
+        (Path(__file__).resolve().parents[3] / ".github/workflows/promote-base-image.yml").read_text())
+    pt = int(wf["jobs"]["qa"]["with"]["poll_timeout"])
+    assert 0 < pt <= 1800, f"poll_timeout {pt}s does not bound a minutes-long workload"
+
+
+def test_poll_timeout_default_leaves_other_consumers_untouched():
+    """qa-gate is shared with the live vLLM and ComfyUI gates, which legitimately
+    need the long default. An empty default must mean 'unchanged'."""
+    import yaml
+    from pathlib import Path
+    wf = yaml.safe_load(
+        (Path(__file__).resolve().parents[3] / ".github/workflows/qa-gate.yml").read_text())
+    assert wf[True]["workflow_call"]["inputs"]["poll_timeout"]["default"] == ""
