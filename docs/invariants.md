@@ -253,6 +253,14 @@ one. It has been disarmed three times, each time with the whole suite green:
 | the `continue` was deleted from the hold branch | the test asserted the `if` line exists, not that it skips |
 | five assignments were deleted from the `dry-run` loop | nothing asserted anything about `dry-run` |
 
+There is **no bypass**: the `SKIP_QA` dispatch input added on 2026-08-05 was
+removed on 2026-08-07 (ADR 0019 cond 3, amended). Its untested-ness stuck to the
+run rather than the digest, so re-dispatching the same staging date afterwards
+rendered as a clean gated promotion. Holding is affordable because a held auto tag
+does not block shipping — the dated prod tags promote regardless of the decision,
+so only the customer-facing pointer waits for evidence. Moving a pointer without
+CI evidence is the separately-approved `Move Base Auto Tag` workflow.
+
 So it is enforced by **executing the workflow's shell**:
 `tools/template_manager/tests/wfexec.py` extracts a step's `run:` script, runs it
 under bash with a stub `crane` over a fake registry, and the tests assert the

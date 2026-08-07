@@ -47,7 +47,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 PROMOTE = REPO / ".github/workflows/promote-base-image.yml"
-ROLLBACK = REPO / ".github/workflows/rollback-base-auto.yml"
+MOVE = REPO / ".github/workflows/move-base-auto-tag.yml"
 
 # A stub standing in for crane, backed by a JSON file: {"ref": "sha256:..."}.
 # It implements only what the scripts under test actually call, and it fails

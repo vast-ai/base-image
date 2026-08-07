@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from wfexec import ROLLBACK, requires_tools, run_step, step_script
+from wfexec import MOVE, requires_tools, run_step, step_script
 
 pytestmark = pytest.mark.skipif(not requires_tools(), reason="jq not available")
 
@@ -75,7 +75,7 @@ def _configs(cuda_ver):
 
 def _run(tmp_path, cuda_ver, target, registry=None, configs=None):
     return run_step(
-        step_script(ROLLBACK, "rollback", STEP), tmp_path / "rb",
+        step_script(MOVE, "move", STEP), tmp_path / "rb",
         registry if registry is not None else _registry(cuda_ver),
         {"NAMESPACE_PROD": PROD, "CUDA_VERSION": cuda_ver, "TARGET": target,
          "REASON": "incident"},
@@ -90,7 +90,7 @@ def test_every_auto_tag_the_repo_actually_produces_is_accepted(tmp_path):
     versions = real_auto_versions()
     assert versions, "config table produced no auto versions — fixture is wrong"
     for v in versions:
-        r = run_step(step_script(ROLLBACK, "rollback", STEP), tmp_path / f"v{v}",
+        r = run_step(step_script(MOVE, "move", STEP), tmp_path / f"v{v}",
                      _registry(v),
                      {"NAMESPACE_PROD": PROD, "CUDA_VERSION": v,
                       "TARGET": _dated(v),
@@ -186,7 +186,7 @@ def test_a_nonexistent_auto_tag_is_refused(tmp_path):
     r = _run(tmp_path, "12.9.2",
              _dated("12.9.2"), registry=reg)
     assert r["code"] != 0
-    assert "promote instead" in r["out"] + r["err"]
+    assert "it does not create one" in r["out"] + r["err"]
 
 
 def test_an_anchor_is_found_among_patch_versioned_tags(tmp_path):
@@ -200,16 +200,16 @@ def test_an_anchor_is_found_among_patch_versioned_tags(tmp_path):
         "no Phase A anchor resolved — the dance degrades to a single push")
 
 
-def test_the_superseded_digest_is_reported_for_rolling_forward(tmp_path):
+def test_the_superseded_digest_is_reported_so_the_move_is_reversible(tmp_path):
     r = _run(tmp_path, "12.9.2", _dated("12.9.2"))
-    assert "To undo this rollback" in r["summary"]
+    assert "To undo this move" in r["summary"]
     assert CUR in r["summary"]
 
 
 def test_an_incident_reason_containing_a_quote_does_not_break_the_hatch(tmp_path):
     """The escape hatch must survive the input it is designed to receive. A
     reason like: image "cuda-12.9" broke — was a bash syntax error."""
-    r = run_step(step_script(ROLLBACK, "rollback", STEP), tmp_path / "q",
+    r = run_step(step_script(MOVE, "move", STEP), tmp_path / "q",
                  _registry("12.9.2"),
                  {"NAMESPACE_PROD": PROD, "CUDA_VERSION": "12.9.2",
                   "TARGET": _dated("12.9.2"),

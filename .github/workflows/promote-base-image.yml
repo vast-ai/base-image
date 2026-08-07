@@ -15,7 +15,7 @@ name: Promote Base Image
 # "approve" from the notification never sees the flip/hold table unless they open
 # the run. Put the decisive facts in the title itself.
 run-name: >-
-  Promote base ${{ inputs.STAGING_DATE }}${{ inputs.SKIP_QA == true && ' — QA SKIPPED' || '' }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
+  Promote base ${{ inputs.STAGING_DATE }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
 
 on:
   workflow_dispatch:
@@ -33,21 +33,6 @@ on:
         required: false
         default: false
         type: boolean
-      SKIP_QA:
-        description: >-
-          Promote WITHOUT the live-GPU gate. For bits already verified by hand.
-          Requires SKIP_REASON; the reason is shown at the approval prompt and in
-          Slack. Tripwire (ADR 0019 cond 3): more than 1 skip in any 4 consecutive
-          promotions voids the flag's premise — fix the gate or drop the flag.
-        required: false
-        default: false
-        type: boolean
-      SKIP_REASON:
-        description: "Why QA is being skipped (mandatory when SKIP_QA is set)"
-        required: false
-        default: ""
-        type: string
-
 concurrency:
   group: base-image-promote
   cancel-in-progress: false
@@ -137,10 +122,6 @@ jobs:
       - name: Check the gate can actually run
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-          # Via env, never interpolated into the script: a reason containing a quote
-          # or $(...) would otherwise break or execute in the step.
-          SKIP_QA: ${{ inputs.SKIP_QA }}
-          SKIP_REASON: ${{ inputs.SKIP_REASON }}
           NS_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           NS_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -166,18 +147,10 @@ jobs:
             echo "::error::STAGING_DATE must be YYYY-MM-DD, got '${STAGING_DATE}'"
             exit 1
           fi
-          if [ "${SKIP_QA}" = "true" ]; then
-            if [ -z "${SKIP_REASON}" ]; then
-              echo "::error::SKIP_QA requires SKIP_REASON — an unexplained bypass is not auditable."
-              exit 1
-            fi
-            echo "::warning::SKIP_QA: ${SKIP_REASON}"
-            exit 0
-          fi
           # Fail here, before a human is asked to approve anything, rather than
           # letting twelve cells skip and report green (ADR 0019 cond 3).
           if [ -z "${VAST_API_KEY}" ]; then
-            echo "::error::VAST_API_KEY is not set — the QA gate cannot run. Set the secret, or dispatch with SKIP_QA + SKIP_REASON."
+            echo "::error::VAST_API_KEY is not set — the QA gate cannot run, so no -auto tag may move. Fix the secret and re-dispatch; there is deliberately no bypass (ADR 0019). To move a tag by hand: promote first (dated tags land regardless), then use the Move Base Auto Tag workflow."
             exit 1
           fi
           echo "QA gate ready"
@@ -276,7 +249,7 @@ jobs:
 
   qa:
     needs: [generate-configs, resolve-digests]
-    if: ${{ !inputs.DRY_RUN && inputs.SKIP_QA != true && needs.resolve-digests.outputs.qa-matrix != '{"include":[]}' }}
+    if: ${{ !inputs.DRY_RUN && needs.resolve-digests.outputs.qa-matrix != '{"include":[]}' }}
     strategy:
       fail-fast: false
       # Bounded against the single-key QA account. ADR 0005 cond 6's account-aware
@@ -377,7 +350,7 @@ jobs:
           PY
           cat evidence.json
 
-          python tools/template_manager/verify_qa_evidence.py             --manifest manifest.json --evidence evidence.json             ${{ inputs.SKIP_QA == true && '--skip-qa' || '' }}             --out decisions.json --summary summary.md
+          python tools/template_manager/verify_qa_evidence.py             --manifest manifest.json --evidence evidence.json             --out decisions.json --summary summary.md
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
           echo "holds=$(jq '[.[] | select(.decision=="hold")] | length' decisions.json)" >> "$GITHUB_OUTPUT"
 
@@ -1000,10 +973,10 @@ jobs:
       build-result: ${{ needs.promote.result }}
       # ADR 0019 cond 3: a promotion that bypassed the gate, or one that held tags,
       # must be distinguishable in Slack from a clean gated promotion. Without this
-      # a SKIP_QA run looks identical to a fully-tested one in the only place most
+      # a run with holds looks identical to a fully-clear one in the only place most
       # people actually read.
-      status: ${{ (inputs.SKIP_QA == true || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
-      headline: ${{ inputs.SKIP_QA == true && format('Base image promoted WITHOUT automated QA — {0}', inputs.SKIP_REASON) || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != '' && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them)', needs.qa-summary.outputs.holds)) || '' }}
+      status: ${{ (needs.qa-summary.result != 'success' || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
+      headline: ${{ needs.qa-summary.result != 'success' && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified' || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != '' && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds)) || '' }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

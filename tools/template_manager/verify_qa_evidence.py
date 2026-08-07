@@ -28,6 +28,23 @@ Verdict per config:
 fleet promotion is how a gate gets routed around; holding one tag while the other
 eleven proceed keeps the gate honest AND keeps it usable. Held tags are surfaced
 loudly to the approver — that is the mitigation, not silence.
+
+There is NO bypass here, by decision (ADR 0019, amended 2026-08-07). An earlier
+`SKIP_QA` flag flipped tags without evidence; it was removed because its
+untested-ness stuck to the RUN rather than to the DIGEST. Using it once and then
+re-dispatching the same staging date rendered as a clean gated promotion —
+`target == current` by then, so every row classified `flip / digest unchanged`,
+with no banner, no holds and no warning. The run history is what the bypass's
+tripwire relied on as its record, so a two-minute sequence that relabelled a
+skipped promotion as a gated one did not weaken the control, it removed it.
+
+Holding costs less than it appears to: a held auto tag does not block shipping.
+The dated prod tags are promoted regardless of the decision, so the bits are in
+production under their explicit names and only the customer-facing pointer waits
+for evidence. Moving that pointer without CI evidence is still possible, but it
+is a separate, separately-approved, separately-logged action — the Move Base
+Auto Tag workflow — rather than a flag on the promotion that produces a
+green-looking run.
 """
 
 from __future__ import annotations
@@ -37,7 +54,7 @@ import json
 import sys
 
 
-def classify_configs(manifest: dict, evidence: dict, skip_qa: bool = False) -> list[dict]:
+def classify_configs(manifest: dict, evidence: dict) -> list[dict]:
     """Return a per-config decision list.
 
     manifest: {"configs": [{"key","tag_template","auto_version","target_digest",
@@ -64,11 +81,6 @@ def classify_configs(manifest: dict, evidence: dict, skip_qa: bool = False) -> l
         if target == current:
             # Not a flip: same content. Re-pushed for ordering, nothing to certify.
             out.append({**c, "decision": "flip", "reason": "digest unchanged (re-push only)"})
-            continue
-
-        if skip_qa:
-            out.append({**c, "decision": "flip",
-                        "reason": "SKIP_QA — flipped WITHOUT automated evidence"})
             continue
 
         ev = evidence.get(key)
@@ -106,8 +118,6 @@ def render_summary(decisions: list[dict]) -> str:
             continue
         mark = {"flip": "flip", "hold": "**HOLD**"}[d["decision"]]
         lines.append(f"| `{d['key']}` | `cuda-{d['auto_version']}-auto` | {mark} | {d['reason']} |")
-    if any(d["reason"].startswith("SKIP_QA") for d in decisions):
-        lines += ["", "> **SKIP_QA was used — these tags flip with NO automated evidence.**"]
     # ADR 0019 cond 5: what a pass does NOT cover, stated where the approver reads it
     # rather than only in the ADR. A green table means less than it looks like.
     lines += [
@@ -132,7 +142,6 @@ def main(argv=None) -> int:
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--evidence", required=True,
                     help="JSON map of config_key -> {verdict, digest}")
-    ap.add_argument("--skip-qa", action="store_true")
     ap.add_argument("--out", help="write the decision list here")
     ap.add_argument("--summary", help="write the markdown summary here")
     args = ap.parse_args(argv)
@@ -143,7 +152,7 @@ def main(argv=None) -> int:
     except (OSError, json.JSONDecodeError):
         evidence = {}
 
-    decisions = classify_configs(manifest, evidence, skip_qa=args.skip_qa)
+    decisions = classify_configs(manifest, evidence)
 
     if args.out:
         json.dump(decisions, open(args.out, "w", encoding="utf-8"), indent=2)

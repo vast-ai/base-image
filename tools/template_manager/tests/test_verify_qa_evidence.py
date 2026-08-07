@@ -11,6 +11,8 @@ partial rebuild rewrites them — so "this config passed" is not the same claim 
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from verify_qa_evidence import classify_configs, render_summary
@@ -112,15 +114,22 @@ def test_a_single_hold_does_not_affect_the_others():
 
 # --- the break-glass, and its visibility -----------------------------------
 
-def test_skip_qa_flips_without_evidence_but_says_so():
-    d = only(classify_configs(manifest(cfg()), {}, skip_qa=True), "cuda-13.0-24")
-    assert d["decision"] == "flip"
-    assert "WITHOUT automated evidence" in d["reason"]
+def test_there_is_no_skip_parameter_at_all(tmp_path):
+    """Removed rather than defaulted off (ADR 0019, amended 2026-08-07). A flag
+    that still exists is a flag that gets passed; its untested-ness stuck to the
+    run rather than the digest, so re-dispatching the same staging date laundered
+    a skipped promotion into a clean-looking gated one."""
+    import inspect
+    assert "skip_qa" not in inspect.signature(classify_configs).parameters
+    src = (Path(__file__).resolve().parents[1] / "verify_qa_evidence.py").read_text()
+    assert "--skip-qa" not in src
 
 
-def test_summary_shouts_about_skip_qa():
-    out = render_summary(classify_configs(manifest(cfg()), {}, skip_qa=True))
-    assert "SKIP_QA was used" in out
+def test_no_evidence_holds_no_matter_what(tmp_path):
+    """The behaviour the removal is for: a changed digest with no evidence has
+    exactly one outcome now."""
+    d = only(classify_configs(manifest(cfg()), {}), "cuda-13.0-24")
+    assert d["decision"] == "hold"
 
 
 def test_summary_leads_with_holds_and_names_them():

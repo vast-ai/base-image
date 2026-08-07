@@ -26,8 +26,6 @@ BASE = {
     "DH_USER": "user",
     "DH_TOKEN": "token",
     "STAGING_DATE": "2026-08-07",
-    "SKIP_QA": "false",
-    "SKIP_REASON": "",
     "VAST_API_KEY": "key",
 }
 
@@ -48,20 +46,6 @@ def test_a_missing_qa_key_fails_before_approval_is_requested(tmp_path):
     """Without the key every QA cell would skip and report green — the exact
     skip-as-pass shape the gate exists to close, one layer up."""
     assert _run(tmp_path, VAST_API_KEY="")["code"] == 1
-
-
-def test_skip_qa_without_a_reason_is_refused(tmp_path):
-    """An unexplained bypass is not auditable, and the run history is what ADR
-    cond 3 relies on as the tripwire's record."""
-    assert _run(tmp_path, SKIP_QA="true", SKIP_REASON="")["code"] == 1
-
-
-def test_skip_qa_with_a_reason_proceeds_without_the_key(tmp_path):
-    """The bypass is meant to work when the gate cannot run at all — otherwise a
-    broken key would leave no path forward and the flag would get deleted."""
-    r = _run(tmp_path, SKIP_QA="true", SKIP_REASON="verified by hand", VAST_API_KEY="")
-    assert r["code"] == 0, r["err"]
-    assert "verified by hand" in r["out"]
 
 
 @pytest.mark.parametrize("secret", ["NS_STAGING", "NS_PROD", "DH_USER", "DH_TOKEN"])
@@ -86,8 +70,20 @@ def test_a_staging_date_cannot_execute(tmp_path):
     assert not canary.exists(), "the dispatch input executed as shell"
 
 
-def test_skip_qa_is_checked_before_the_key_so_the_bypass_is_reachable(tmp_path):
-    """Ordering matters: if the key check ran first, SKIP_QA could never be used
-    in the one situation it is for."""
-    r = _run(tmp_path, SKIP_QA="true", SKIP_REASON="key rotated", VAST_API_KEY="")
-    assert r["code"] == 0
+def test_there_is_no_way_to_proceed_without_the_qa_key(tmp_path):
+    """The SKIP_QA bypass was removed (ADR 0019, amended 2026-08-07). No env
+    combination may reach 'QA gate ready' with an empty key — if one did, the
+    bypass would be back without anyone deciding to bring it back."""
+    for extra in ({}, {"SKIP_QA": "true"}, {"SKIP_QA": "true", "SKIP_REASON": "x"},
+                  {"SKIP_REASON": "x"}, {"FORCE": "true"}):
+        r = _run(tmp_path, VAST_API_KEY="", **extra)
+        assert r["code"] == 1, f"preflight passed with no key given {extra}"
+        assert "QA gate ready" not in r["out"]
+
+
+def test_the_error_names_the_sanctioned_alternative(tmp_path):
+    """A gate with no stated alternative is a gate people route around. Point at
+    the workflow that exists for it rather than leaving the operator to invent
+    something with crane."""
+    r = _run(tmp_path, VAST_API_KEY="")
+    assert "Move Base Auto Tag" in r["out"] + r["err"]

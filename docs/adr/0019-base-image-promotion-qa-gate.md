@@ -133,7 +133,8 @@ Shape:
   and held-digest age — in the approval summary and Slack. Dated-tag copies proceed for
   all configs (dated tags are opt-in by explicit reference; the gate's claim is the
   `-auto` surface). There is no `EXCLUDE` input; a loud, reasoned, human-approved
-  `SKIP_QA` bypass exists under condition 3's guardrails (2026-08-05 amendment).
+  there is no bypass at all (condition 3, as amended 2026-08-07 — the `SKIP_QA`
+  flag added on 2026-08-05 was removed).
 - **Fail-not-skip:** the in-instance runner gains a required-pass gate
   (`INSTANCE_TEST_REQUIRE_PASS`: a named test that is skipped, **missing**, or
   unreached marks the suite failed), and CI independently re-asserts the per-cell
@@ -148,7 +149,8 @@ Shape:
   major-baseline is both representative (a 13.0-driver host legitimately serves 13.3
   bits) and keeps the offer pool wide. CI tightening of floors is **raise-only**
   (`create.py --set-filter`), preserving the linted floor guarantee at rent time.
-- **Rollback:** a separate tiny dispatch workflow (`rollback-base-auto.yml`) runs
+- **Manual auto-tag move:** a separate tiny dispatch workflow
+  (`move-base-auto-tag.yml`) runs
   **only the dance** against already-promoted prod tags — no build, no copies, no
   QA, seconds, still `environment: production`, and **in the same
   `base-image-promote` concurrency group** as promote so the two dances can never
@@ -194,27 +196,49 @@ refused, this decision is void.
 3. **(extends 0005 as cond 13) No silent or automated bypass; fail-closed.** The
    promote path has no soft-pass and no `schedule:` trigger; when QA is not skipped, a
    missing `VAST_API_KEY` fails the run before any spend.
-   *(Amended 2026-08-05, owner decision. This condition originally read "no bypass
-   input"; the final critical review rated a skip input the single most likely
-   gate-erosion path — "used the first time the gate is inconvenient, then every time
-   after" — and that finding stands recorded, not overturned. The owner accepts the
-   risk because some promotions are preceded by hands-on manual testing.)*
-   A `SKIP_QA` dispatch input exists, under four non-negotiable guardrails:
-   - `SKIP_REASON` is mandatory — an empty reason fails pre-flight;
-   - it is loud at the moment of decision: the approval summary renders a prominent
-     warning naming every auto tag that will flip **without automated evidence**, with
-     the reason verbatim, and the Slack notification carries a distinct
-     "promoted WITHOUT automated QA" headline;
-   - the skip waives only the flip⇒evidence requirement — digest pinning,
-     copy-by-digest, the concurrent-promotion abort and the staging-drift checks all
-     still run (the bypass skips the test, never the integrity chain);
-   - **usage tripwire:** if more than 1 of any 4 consecutive promotions is skipped,
-     the flag's premise is void — either the gate is too painful (fix the gate) or
-     skipping is becoming the default path (remove the flag); resolved by ADR
-     amendment, with the run history as the record.
-   The rollback workflow remains the only other un-QA'd prod write and can only
-   repoint to already-promoted bits. Artifacts: dispatch-inputs, trigger, needs-edge,
-   concurrency-group, `require_key`, mandatory-reason and warning-banner guard tests.
+   *(Amended 2026-08-05, then AMENDED AGAIN 2026-08-07 — owner decision. The
+   condition originally read "no bypass input". The 2026-08-05 amendment added a
+   `SKIP_QA` dispatch input under four guardrails, over the recorded objection that
+   a skip input was the single most likely gate-erosion path — "used the first time
+   the gate is inconvenient, then every time after". **That objection has now won:
+   `SKIP_QA` is removed.** The condition reverts to its original form, and the
+   removal is stronger than the original because it comes with a sanctioned
+   alternative and executed tests.)*
+
+   **There is no QA bypass. An image that does not pass QA does not reach an
+   `-auto` tag via CI.** No dispatch input, no environment variable, no argument to
+   `verify_qa_evidence`. Not a flag defaulting to off — absent, and asserted absent.
+
+   What removed it was not the erosion argument but a concrete laundering path
+   found in implementation review, and reproduced: the skip's untested-ness stuck
+   to the RUN, not to the DIGEST. Dispatch with `SKIP_QA=true`, then immediately
+   re-dispatch the same `STAGING_DATE` with `SKIP_QA=false`. By then prod holds the
+   untested digest, so `target == current` for every config, the QA matrix is empty,
+   the `qa` job is skipped entirely, and every row classifies
+   `flip / "digest unchanged (re-push only)"` — zero holds, zero GPUs, no banner, no
+   warning status, no "QA SKIPPED" in the run name. Cond 3's tripwire named the run
+   history as its record; a two-minute sequence that relabels a skipped promotion as
+   a gated one does not weaken that control, it removes it.
+
+   **Holding costs less than it appears to, which is what makes removal affordable.**
+   A held auto tag does not block shipping: the dated prod tags are promoted
+   regardless of the flip/hold decision, so the bits are in production under their
+   explicit names and only the customer-facing pointer waits for evidence. Verified
+   behaviourally — with every config held, 12 prod dated tags still land and no auto
+   tag moves.
+
+   **The sanctioned alternative** for "verified by hand, QA cannot run" is the
+   `Move Base Auto Tag` workflow (`move-base-auto-tag.yml`, renamed from
+   `rollback-base-auto.yml` because it is now the forward path as well as the
+   rollback path). Promote first, then move the tag there. It costs one extra
+   dispatch and buys: a separate `production` approval, a separate run, a mandatory
+   reason, a Slack line that says "MANUAL AUTO-TAG MOVE (no CI QA evidence)", a
+   refusal of any source outside the production repo, and a refusal of a CUDA-minor
+   mismatch. Crucially the record attaches to the tag move itself, so no subsequent
+   promotion can relabel it.
+   Artifacts: dispatch-inputs, trigger, needs-edge, concurrency-group, `require_key`
+   guard tests, plus executed tests asserting that no env combination reaches
+   "QA gate ready" without the key and that `classify_configs` has no skip parameter.
 4. **(extends 0005 as cond 14) Pre-committed de-scoping fallback.** If more than 1 in 3
    promotions hold on infrastructure (not real image defects), the gating set is cut to
    a representative 4 (oldest CUDA, newest CUDA, each ubuntu base) and the rest labeled
@@ -300,8 +324,9 @@ distinguish a working gate from a disarmed one. So the wiring is now executed:
 it under bash with a stub `crane` over a fake registry, and the tests assert the
 digest each auto tag ends up holding. Of eight disarming mutations, six are
 invisible to the string-matching suite and caught only by execution; the other
-two are static consistency properties (the `SKIP_QA` default, and the four copies
-of the required-test list) now pinned structurally.
+two are static consistency properties (the four copies of the required-test list,
+and — until it was removed outright — the `SKIP_QA` default) now pinned
+structurally.
 
 This does not replace the structural tests — the job graph, the `production`
 environment placement and the trigger set are still asserted against parsed YAML,
@@ -338,9 +363,10 @@ differently, which is the point.
 
 ## What would reverse this
 
-- **The `SKIP_QA` tripwire firing** (more than 1 of any 4 consecutive promotions
-  skipped): the flag is removed or the gate's pain point is fixed — either way by ADR
-  amendment, never by letting skips quietly become the norm.
+- **A promotion being blocked with no way forward.** Holding is affordable only
+  because dated tags still promote and `Move Base Auto Tag` exists. If operators
+  start reaching for `crane` by hand instead, the gate has become the thing it was
+  meant to prevent — revisit by ADR amendment, not by re-adding a flag.
 - Promoting older, already-QA'd staging dates becoming routine (not exceptional) — the
   same-run topology then taxes every re-promotion with a fresh sweep, and option B's
   digest-keyed attestation carrier becomes the right evolution; this ADR records it as

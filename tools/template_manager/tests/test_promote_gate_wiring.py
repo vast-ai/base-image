@@ -70,11 +70,6 @@ def test_preflight_fails_when_the_key_is_missing(raw):
     assert "VAST_API_KEY" in block and "exit 1" in block
 
 
-def test_skip_qa_requires_a_reason(raw):
-    block = raw.split("\n  preflight:", 1)[1].split("\n  resolve-digests:", 1)[0]
-    assert "SKIP_REASON" in block and "exit 1" in block
-
-
 def test_qa_cells_are_fail_closed_and_assert_the_gpu_trio(wf):
     with_ = _job(wf, "qa")["with"]
     assert with_["require_key"] is True, "a missing key would skip and report green"
@@ -201,11 +196,20 @@ def test_every_copy_of_the_required_trio_agrees(raw, wf):
         "two layers are supposed to assert the SAME thing in different places")
 
 
-def test_skip_qa_defaults_to_false(wf):
-    """One character between a human-approved break-glass and every promotion
-    being ungated by default."""
+def test_no_qa_bypass_input_exists(wf):
+    """ADR 0019 amended 2026-08-07: an image that does not pass QA does not get
+    promoted to an -auto tag via CI. Not a flag defaulting to off — absent."""
     on = wf.get("on", wf.get(True))
-    assert on["workflow_dispatch"]["inputs"]["SKIP_QA"]["default"] is False
+    inputs = set(on["workflow_dispatch"]["inputs"])
+    assert not (inputs & {"SKIP_QA", "SKIP_REASON", "FORCE", "NO_QA"}), (
+        f"a QA bypass input is back: {inputs}")
+
+
+def test_the_qa_job_is_not_conditional_on_any_bypass(raw, wf):
+    """The `if:` on the qa job is the other place a bypass would live."""
+    cond = str(_job(wf, "qa").get("if", ""))
+    for word in ("SKIP", "FORCE", "BYPASS"):
+        assert word not in cond.upper(), f"qa job condition mentions {word}: {cond}"
 
 
 def test_dry_run_defaults_to_false_so_a_plain_dispatch_really_promotes(wf):

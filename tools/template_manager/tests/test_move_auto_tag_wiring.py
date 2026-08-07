@@ -10,30 +10,30 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
-ROLLBACK = REPO / ".github/workflows/rollback-base-auto.yml"
+MOVE = REPO / ".github/workflows/move-base-auto-tag.yml"
 
 
 @pytest.fixture(scope="module")
 def wf():
-    return yaml.safe_load(ROLLBACK.read_text())
+    return yaml.safe_load(MOVE.read_text())
 
 
 @pytest.fixture(scope="module")
 def raw():
-    return ROLLBACK.read_text()
+    return MOVE.read_text()
 
 
-def test_rollback_exists():
-    """Shipping a gate without a rollback path inverts the risk trade the gate
-    was justified by: it raises the cost of a good promotion and leaves the cost
-    of a bad one untouched."""
-    assert ROLLBACK.exists()
+def test_the_manual_move_workflow_exists():
+    """This is the whole escape path now. With SKIP_QA removed (ADR 0019, amended
+    2026-08-07), a gate with no sanctioned manual route would be a gate someone
+    routes around with crane — no approval, no minor guard, no record."""
+    assert MOVE.exists()
 
 
 def test_rollback_is_still_human_gated(wf):
     """Fast is not the same as unattended. Skipping QA is the concession; skipping
     the approvers is not."""
-    assert wf["jobs"]["rollback"]["environment"] == "production"
+    assert wf["jobs"]["move"]["environment"] == "production"
 
 
 def test_rollback_is_dispatch_only(wf):
@@ -63,11 +63,11 @@ def test_rollback_performs_the_two_phase_dance(raw):
     assert "no distinct anchor available" in raw, "silent fallback when no anchor exists"
 
 
-def test_rollback_records_the_digest_it_moved_away_from(raw):
+def test_the_workflow_records_the_digest_it_moved_away_from(raw):
     """You often need to roll forward again once the real cause is found. If the
     superseded digest isn't recorded, it has to be reconstructed from registry
     archaeology during the incident."""
-    assert "To undo this rollback" in raw
+    assert "To undo this move" in raw
 
 
 def test_rollback_shares_the_promote_concurrency_group(wf):

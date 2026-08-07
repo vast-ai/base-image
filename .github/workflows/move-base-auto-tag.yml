@@ -1,27 +1,41 @@
-# Point a cuda-X.Y-auto tag back at a digest that is ALREADY in production.
+# Point a cuda-X.Y.Z-auto tag at a digest that is ALREADY in production.
 #
-# The promotion gate (ADR 0019) exists to stop a bad image reaching an -auto tag.
-# This is the other half: what you run when one gets there anyway. It is
-# deliberately a separate workflow from promote-base-image.yml, because the two
-# have opposite requirements — promotion is slow and evidence-bound, rollback has
-# to be usable by a woken-up human with an incident open and no QA budget.
+# This is the ONLY way to move an auto tag without same-run QA evidence, and it
+# is deliberately a workflow of its own rather than a flag on the promotion.
+# Two jobs, both of them real:
 #
-# Two things keep it from being a hole in the gate:
+#   Rolling back — a bad image reached an auto tag and customers are hitting it.
+#   Promotion is slow and evidence-bound by design; this has to be usable by a
+#   woken-up human with an incident open and no QA budget.
 #
-#   1. The source must already exist under the PRODUCTION namespace. You can only
-#      go back to bits that previously cleared the gate (or were promoted under
-#      SKIP_QA, which is logged). Staging refs and foreign registries are refused,
-#      so this cannot be used to ship anything new.
-#   2. It still requires the `production` environment approval — same reviewers as
+#   Moving forward without CI evidence — QA could not run (key rotated, market
+#   thin, harness broken) but the bits were verified by hand. Promote first: the
+#   dated prod tags land regardless of any hold, so the image is already in
+#   production under its explicit name. Then point the auto tag at it here.
+#
+# That second case used to be a SKIP_QA flag on the promotion. It was removed
+# (ADR 0019, amended 2026-08-07) because a skipped promotion could be relabelled
+# as a gated one simply by re-dispatching the same staging date, leaving no
+# record that anything was skipped. Doing it here instead costs one extra
+# dispatch and buys a separate approval, a separate run, a mandatory reason, and
+# a Slack line that says plainly what happened.
+#
+# Three things keep it from being a hole in the gate:
+#
+#   1. The source must already exist under the PRODUCTION namespace. Staging refs
+#      and foreign registries are refused, so this can only point a tag at bits
+#      that were promoted — never at something that skipped promotion entirely.
+#   2. It requires the `production` environment approval — the same reviewers as
 #      a promotion. Fast is not the same as unattended.
+#   3. It refuses a source whose CUDA minor differs from the tag being written.
 #
 # Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN,
 # DOCKERHUB_NAMESPACE. Optional: SLACK_WEBHOOK_URL.
 
-name: Rollback Base Auto Tag
+name: Move Base Auto Tag
 
 run-name: >-
-  ROLLBACK cuda-${{ inputs.CUDA_VERSION }}-auto -> ${{ inputs.TARGET }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
+  MOVE cuda-${{ inputs.CUDA_VERSION }}-auto -> ${{ inputs.TARGET }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
 
 on:
   workflow_dispatch:
@@ -38,7 +52,7 @@ on:
         required: true
         type: string
       REASON:
-        description: "What went wrong (shown at the approval prompt and in Slack)"
+        description: "Why this tag is being moved by hand (shown at approval and in Slack)"
         required: true
         type: string
       DRY_RUN:
@@ -54,7 +68,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  rollback:
+  move:
     runs-on: ubuntu-latest
     # Same gate as a promotion. The escape hatch is fast because it skips QA, not
     # because it skips people.
@@ -120,8 +134,8 @@ jobs:
           if CUR_DIGEST=$(crane digest "$AUTO_TAG" 2>/dev/null); then
             echo "current: ${AUTO_TAG} -> ${CUR_DIGEST}"
           else
-            echo "No existing ${AUTO_TAG}. Rollback is for moving a tag BACK; if the" >&2
-            echo "tag does not exist yet, promote instead." >&2
+            echo "No existing ${AUTO_TAG}. This workflow MOVES an existing auto tag;" >&2
+            echo "it does not create one. If the tag does not exist yet, promote." >&2
             exit 1
           fi
 
@@ -181,7 +195,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           {
-            echo "## Rollback: \`cuda-${CUDA_VERSION}-auto\`"
+            echo "## Manual auto-tag move: \`cuda-${CUDA_VERSION}-auto\`"
             echo ""
             echo "| | |"
             echo "|---|---|"
@@ -191,7 +205,7 @@ jobs:
             echo "| to digest | \`${SRC_DIGEST}\` |"
             echo "| image CUDA | ${img_cuda} |"
             echo ""
-            echo "**To undo this rollback**, re-run this workflow with"
+            echo "**To undo this move**, re-run this workflow with"
             echo "\`TARGET=${CUR_DIGEST}\` — that is the digest being moved away from."
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -230,9 +244,9 @@ jobs:
           set -euo pipefail
           [[ -z "${SLACK_WEBHOOK_URL:-}" ]] && exit 0
           if [[ "$JOB_STATUS" == "success" ]]; then
-            text="ROLLBACK: cuda-${CUDA_VERSION}-auto moved to ${SRC_DIGEST} (was ${CUR_DIGEST}). Reason: ${REASON}"
+            text="MANUAL AUTO-TAG MOVE (no CI QA evidence): cuda-${CUDA_VERSION}-auto -> ${SRC_DIGEST} (was ${CUR_DIGEST}). Reason: ${REASON}"
           else
-            text="ROLLBACK FAILED for cuda-${CUDA_VERSION}-auto — the auto tag may be unchanged OR mid-dance. Check the run before retrying. Reason given: ${REASON}"
+            text="MANUAL AUTO-TAG MOVE FAILED for cuda-${CUDA_VERSION}-auto — the tag may be unchanged OR mid-dance. Check the run before retrying. Reason given: ${REASON}"
           fi
           jq -n --arg t "$text" '{text: $t}' | \
             curl -sS -X POST -H 'Content-type: application/json' -d @- "$SLACK_WEBHOOK_URL" >/dev/null
