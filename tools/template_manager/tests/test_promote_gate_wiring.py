@@ -171,3 +171,44 @@ def test_qa_summary_runs_even_when_a_cell_failed(raw):
     """The run with a red cell is exactly the one whose table matters."""
     block = raw.split("\n  qa-summary:", 1)[1].split("\n  promote:", 1)[0]
     assert "always()" in block
+
+
+# --- the required-test list, in every copy ---------------------------------
+
+def test_every_copy_of_the_required_trio_agrees(raw, wf):
+    """There are four independent copies of the GPU trio: the QA template's
+    INSTANCE_TEST_REQUIRE_PASS, the qa job's require_tests input, qa-summary's
+    REQUIRE_TESTS, and the linter's list. qa-summary's copy is the ACTUAL
+    arbiter — it re-classifies every cell and decides flip/hold — and it was the
+    one nothing pinned. Emptying it makes a GPU-trio self-skip classify as a pass
+    and flip the tag, with the whole suite green."""
+    import re as _re
+    trio = {"base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries"}
+
+    cell = set(_job(wf, "qa")["with"]["require_tests"].split())
+    assert cell == trio, f"qa job require_tests drifted: {cell}"
+
+    m = _re.search(r'export REQUIRE_TESTS="([^"]*)"', _job_block(raw, "qa-summary"))
+    assert m, "qa-summary no longer exports REQUIRE_TESTS — the arbiter lost its list"
+    assert set(m.group(1).split()) == trio, (
+        f"qa-summary's REQUIRE_TESTS is {m.group(1)!r}, not the trio. This copy "
+        f"decides flip/hold; a weaker one silently reopens skip-as-pass.")
+
+    tmpl = yaml.safe_load((REPO / "templates/base-qa/template.yml").read_text())
+    env = tmpl.get("env", {}) if isinstance(tmpl, dict) else {}
+    assert set(str(env.get("INSTANCE_TEST_REQUIRE_PASS", "")).split()) == trio, (
+        "the QA template's required-pass list drifted from the CI-side one; the "
+        "two layers are supposed to assert the SAME thing in different places")
+
+
+def test_skip_qa_defaults_to_false(wf):
+    """One character between a human-approved break-glass and every promotion
+    being ungated by default."""
+    on = wf.get("on", wf.get(True))
+    assert on["workflow_dispatch"]["inputs"]["SKIP_QA"]["default"] is False
+
+
+def test_dry_run_defaults_to_false_so_a_plain_dispatch_really_promotes(wf):
+    """Stated so the pair with SKIP_QA is deliberate rather than accidental."""
+    on = wf.get("on", wf.get(True))
+    assert on["workflow_dispatch"]["inputs"]["DRY_RUN"]["default"] is False

@@ -74,17 +74,29 @@ jobs:
           NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
           CUDA_VERSION: ${{ inputs.CUDA_VERSION }}
           TARGET: ${{ inputs.TARGET }}
+          # Via env:, never spliced into the script. An incident reason containing a
+          # quote is a bash syntax error that breaks the escape hatch on exactly the
+          # input it exists to receive; one containing $(...) would execute.
+          REASON: ${{ inputs.REASON }}
         run: |
           set -euo pipefail
           REPO="${NAMESPACE_PROD}/base-image"
           AUTO_TAG="${REPO}:cuda-${CUDA_VERSION}-auto"
 
           # The version is pasted by a human under pressure; a typo here writes a
-          # tag nobody is watching.
-          if [[ ! "$CUDA_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "CUDA_VERSION must look like 12.9, got '${CUDA_VERSION}'" >&2
+          # tag nobody is watching. The real auto tags are PATCH-versioned —
+          # promote derives them from tag_template with a greedy sed, so
+          # cuda-12.9.2-cudnn-devel-ubuntu24.04 yields cuda-12.9.2-auto. A
+          # two-component-only rule refuses every tag that actually exists, and
+          # accepts `12.9`, which either matches nothing or matches a frozen
+          # orphan — a rollback that reports success and changes nothing.
+          if [[ ! "$CUDA_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "CUDA_VERSION must look like 12.9.2 (or 12.9), got '${CUDA_VERSION}'" >&2
             exit 1
           fi
+          # major.minor of the REQUESTED tag, for the CUDA-minor guard below.
+          REQ_MM="${CUDA_VERSION%.*}"
+          [[ "$CUDA_VERSION" == *.*.* ]] || REQ_MM="$CUDA_VERSION"
 
           # Refuse anything that is not already in the production repo. This is
           # what stops rollback being a way to ship untested bits: a foreign
@@ -123,7 +135,7 @@ jobs:
           # through these tags, so a mismatched rollback silently changes the CUDA
           # userland under every instance that lands on it. nvidia/cuda sets
           # CUDA_VERSION in the image env; we compare its major.minor.
-          img_cuda=$(crane config "$SRC" 2>/dev/null \
+          img_cuda=$(crane config --platform linux/amd64 "$SRC" 2>/dev/null \
             | jq -r '(.config.Env // [])[] | select(startswith("CUDA_VERSION=")) | sub("^CUDA_VERSION=";"")' \
             | head -1)
           if [[ -z "$img_cuda" ]]; then
@@ -132,11 +144,13 @@ jobs:
             exit 1
           fi
           img_mm="${img_cuda%.*}"
-          # A patch-level difference is expected and fine: cuda-12.9-auto has always
-          # served whichever 12.9.x was current. A MINOR difference is not.
-          if [[ "$img_mm" != "$CUDA_VERSION" ]]; then
+          # A patch-level difference is expected and fine: cuda-12.9.2-auto may be
+          # rolled back to a 12.9.1 build. A MINOR difference is not — so compare
+          # major.minor to major.minor, never to the raw input.
+          if [[ "$img_mm" != "$REQ_MM" ]]; then
             echo "REFUSING: ${SRC} is a CUDA ${img_cuda} image, but you asked to put it" >&2
-            echo "on cuda-${CUDA_VERSION}-auto. That would change the CUDA minor served" >&2
+            echo "on cuda-${CUDA_VERSION}-auto (minor ${REQ_MM}). That would change the CUDA" >&2
+            echo "minor served" >&2
             echo "to every instance resolving that tag." >&2
             exit 1
           fi
@@ -148,7 +162,7 @@ jobs:
           # unchanged re-push does not advance anything). Any other auto tag whose
           # digest differs will do.
           ANCHOR=""
-          for cand in $(crane ls "$REPO" 2>/dev/null | grep -E '^cuda-[0-9]+\.[0-9]+-auto$' || true); do
+          for cand in $(crane ls "$REPO" 2>/dev/null | grep -E '^cuda-[0-9]+(\.[0-9]+)+-auto$' || true); do
             [[ "$cand" == "cuda-${CUDA_VERSION}-auto" ]] && continue
             if d=$(crane digest "${REPO}:${cand}" 2>/dev/null); then
               if [[ "$d" != "$SRC_DIGEST" && "$d" != "$CUR_DIGEST" ]]; then
@@ -171,7 +185,7 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| reason | ${{ inputs.REASON }} |"
+            echo "| reason | ${REASON} |"
             echo "| from (current) | \`${CUR_DIGEST}\` |"
             echo "| to | \`${SRC}\` |"
             echo "| to digest | \`${SRC_DIGEST}\` |"
@@ -207,13 +221,18 @@ jobs:
         if: ${{ always() && inputs.DRY_RUN != true }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          CUDA_VERSION: ${{ inputs.CUDA_VERSION }}
+          REASON: ${{ inputs.REASON }}
+          SRC_DIGEST: ${{ steps.resolve.outputs.src_digest }}
+          CUR_DIGEST: ${{ steps.resolve.outputs.cur_digest }}
         run: |
           set -euo pipefail
           [[ -z "${SLACK_WEBHOOK_URL:-}" ]] && exit 0
-          if [[ "${{ job.status }}" == "success" ]]; then
-            text="ROLLBACK: cuda-${{ inputs.CUDA_VERSION }}-auto moved to ${{ steps.resolve.outputs.src_digest }} (was ${{ steps.resolve.outputs.cur_digest }}). Reason: ${{ inputs.REASON }}"
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            text="ROLLBACK: cuda-${CUDA_VERSION}-auto moved to ${SRC_DIGEST} (was ${CUR_DIGEST}). Reason: ${REASON}"
           else
-            text="ROLLBACK FAILED for cuda-${{ inputs.CUDA_VERSION }}-auto — the auto tag may be unchanged OR mid-dance. Check the run before retrying. Reason given: ${{ inputs.REASON }}"
+            text="ROLLBACK FAILED for cuda-${CUDA_VERSION}-auto — the auto tag may be unchanged OR mid-dance. Check the run before retrying. Reason given: ${REASON}"
           fi
           jq -n --arg t "$text" '{text: $t}' | \
             curl -sS -X POST -H 'Content-type: application/json' -d @- "$SLACK_WEBHOOK_URL" >/dev/null

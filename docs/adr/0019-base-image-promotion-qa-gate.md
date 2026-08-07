@@ -285,6 +285,29 @@ Both were caught by review, not by CI, and neither would have been caught by the
 12 live-GPU validation runs — those exercised `qa-gate.yml` directly, never the
 promote wiring around it.
 
+A second review round then found three more of the same shape, two of them
+introduced *by the fixes above*: the `dry-run` loop lost five assignments when the
+misplaced gate block was removed from it; the new rollback workflow's version
+regex accepted `12.9` and refused `12.9.2`, while every auto tag that exists is
+patch-versioned, so the escape hatch was inert; and deleting the single word
+`continue` from the hold branch flips every held tag, with all 19 guard tests
+green.
+
+The conclusion is about the tests, not the lines. Every safety property here is
+bash inside YAML, and asserting that a *string* appears in that YAML cannot
+distinguish a working gate from a disarmed one. So the wiring is now executed:
+`tools/template_manager/tests/wfexec.py` extracts a step's `run:` script and runs
+it under bash with a stub `crane` over a fake registry, and the tests assert the
+digest each auto tag ends up holding. Of eight disarming mutations, six are
+invisible to the string-matching suite and caught only by execution; the other
+two are static consistency properties (the `SKIP_QA` default, and the four copies
+of the required-test list) now pinned structurally.
+
+This does not replace the structural tests — the job graph, the `production`
+environment placement and the trigger set are still asserted against parsed YAML,
+because those are not properties of any one script. The two layers fail
+differently, which is the point.
+
 ## Consequences
 
 - The highest-blast-radius artifact in the repo stops promoting untested: every `-auto`
