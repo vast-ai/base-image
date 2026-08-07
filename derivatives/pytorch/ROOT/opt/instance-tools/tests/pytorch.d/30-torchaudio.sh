@@ -6,6 +6,13 @@
 #   - torchaudio 2.6–2.8 (torch 2.6–2.8): FFmpeg-based, has list_audio_backends/ffmpeg_utils
 #   - torchaudio 2.9+ (torch 2.9+): TorchCodec-based, StreamWriter/StreamReader and
 #     ffmpeg_utils removed. torchaudio.save/load still works (delegates to TorchCodec).
+# TEST_TIMEOUT=1200
+# Sized for the VENV COUNT, not for one venv. This test loops over every
+# torch venv in /venv/; the `multi` image ships three, so base's single-venv
+# timing does not transfer. Read by runner.sh (per-test header beats the
+# INSTANCE_TEST_DEFAULT_TIMEOUT the workflow pushes). Under ADR 0020 a
+# timeout is inconclusive-and-retried rather than a block, so an under-sized
+# value costs real money in re-rentals instead of producing a false red.
 source "$(dirname "$0")/../lib.sh"
 
 # ── Discover torch venvs ──────────────────────────────────────────────

@@ -21,6 +21,13 @@
 # inside 10-torch-core.sh behind `device_count > 1` and fell through to a bare
 # `echo "skip: ..."` on one GPU, so the enclosing test passed either way. Renting
 # two GPUs would have produced a green cell that certified nothing.
+# TEST_TIMEOUT=1200
+# Sized for the VENV COUNT, not for one venv. This test loops over every
+# torch venv in /venv/; the `multi` image ships three, so base's single-venv
+# timing does not transfer. Read by runner.sh (per-test header beats the
+# INSTANCE_TEST_DEFAULT_TIMEOUT the workflow pushes). Under ADR 0020 a
+# timeout is inconclusive-and-retried rather than a block, so an under-sized
+# value costs real money in re-rentals instead of producing a false red.
 source "$(dirname "$0")/../lib.sh"
 
 has_gpu || test_skip "no GPU detected"

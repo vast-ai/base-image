@@ -1,0 +1,140 @@
+# PyTorch image QA template (ADR 0021 live-GPU gate for pytorch promotion).
+#
+# WHAT THIS CERTIFIES. The pytorch family is a platform, not an app: the base
+# image's supervisor/portal/Caddy/CUDA layer plus a torch stack in one or more
+# venvs IS the product. So, as for base-image (ADR 0019), the shipped suite is a
+# real functional test rather than a boot-and-curl laundering "booted" into
+# "QA'd" (ADR 0005 option A, rejected).
+#
+# WHAT IT DOES NOT CERTIFY, stated rather than implied (ADR 0021):
+#   * amd64 only — the promoted index's arm64 child is never booted.
+#   * single GPU — no cell exercises collectives across devices. The multi-GPU
+#     matrix (pytorch.d/41-nccl-collectives) skips itself below 2 GPUs and is
+#     deliberately NOT required here.
+#   * one box, one moment — not a guarantee under load or over time.
+#
+# ADR 0010 EXEMPTION, same as base-qa: 0010 wants one template per image with
+# the gate booting the file a user launches. The pytorch customer launch
+# templates live on the Vast side, outside this repo, so this approximates a
+# customer launch and drift from the real Vast-side template is a risk no check
+# in here can detect. Keep them in step by hand when either moves.
+#
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag,
+# raises cuda_max_good per config via create.py --set-filter (raise-only), and
+# passes EXPECTED_TORCH_VENVS per cell via the gate's extra_env.
+name: "PyTorch QA — platform + torch/CUDA suite"
+image: vastai/pytorch
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "6006:6006"                   # Tensorboard
+  - "8384:8384"                   # Syncthing
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # Only entries whose port actually binds: the harness's port check fails an
+  # entry pointing at a dead port. Inherited unchanged from base — the pytorch
+  # images add a torch stack, not a different platform.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:6006:16006:/:Tensorboard|localhost:8384:18384:/:Syncthing|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+
+  # A skip is not a pass (ADR 0019), and a test that cannot fail is not a test
+  # (ADR 0020, gated by L059). Every name below resolves to a file with a real
+  # failure path.
+  #
+  # NAMING: derivative tests are named by their DIRECTORY, so it is
+  # `pytorch.d/10-torch-core`, NOT `pytorch/10-torch-core`. runner.sh derives the
+  # name as the path relative to the tests dir minus `.sh`, and the directory on
+  # disk is `pytorch.d/`. Getting this wrong fails CLOSED — the runner reports
+  # "missing from this image" and the cell blocks — so the error is safe but it
+  # would be a systematic false red on all 56 cells. Pinned by
+  # test_required_test_names.py, which derives the names from the runner's own
+  # rule rather than restating them.
+  #
+  # NOT required, deliberately: pytorch.d/41-nccl-collectives. It skips below 2
+  # GPUs and every cell here is single-GPU, so requiring it would fail every
+  # cell. The image-owned half of that surface — libnccl present, ABI-matched,
+  # ncclCommInitRank works — is 40-nccl-init, which runs on one GPU and IS
+  # required. That split is the point of ADR 0021 decision 5.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest pytorch.d/10-torch-core pytorch.d/20-torchvision pytorch.d/30-torchaudio pytorch.d/40-nccl-init"
+
+  # Overridden per cell by the workflow. Declared here so the template is
+  # self-describing and so a single-venv cell still asserts SOMETHING about
+  # completeness rather than trusting discovery (ADR 0021 decision 6).
+  EXPECTED_TORCH_VENVS: "main"
+
+# QA gate floors (ADR 0005). Identical in shape to base-qa: these were derived
+# from measured offer data during the base rollout and the reasoning does not
+# change for pytorch. Each is reproduced with its direction, because getting a
+# direction backwards is the failure mode that keeps recurring.
+extra_filters:
+  # sm_75 (Turing). The pytorch images ship prebuilt wheels rather than
+  # compiling kernels at test time, so the real target is "a GPU generation this
+  # torch/CUDA pairing still supports". CUDA 13 dropped pre-sm_75 anyway.
+  compute_cap:
+    gte: 750
+  # MAJOR-baseline, raised per config at rent time via --set-filter.
+  #
+  # DIRECTION: a LOWER bound, and it must stay one. cuda_max_good is the NEWEST
+  # CUDA a host's driver supports, so `gte: 12.0` matches a 12.0 host and every
+  # newer one — a cu126 image on a 13.x-driver box is correct, because newer
+  # drivers run older CUDA. An `lte` here would select FOR the oldest hosts,
+  # which is the opposite of the intent and would brick the newer backends.
+  #
+  # The floor of the floor: the oldest CUDA any pytorch config targets is 12.x
+  # (there is no cu118 in the table), so 12.0 rather than base's 11.8.
+  cuda_max_good:
+    gte: 12.0
+  # PER-GPU, not the sum. gpu_total_ram lets a multi-GPU box of small cards
+  # clear the floor and behave nothing like the target — observed live on the
+  # vLLM cu13.0 cell, where GPU 0 was 9.64 GiB against a 16 GB *total* floor.
+  #
+  # These tests allocate small tensors and load no model, so 8 GB is ample.
+  gpu_ram:
+    gte: 8192
+  # Cheap unreliable hosts fail in host-specific ways the image cannot fix: a
+  # truncated pull ("unexpected eof") and a host with no outbound egress, both
+  # observed live. Good hosts sit ~0.92-0.99.
+  reliability2:
+    gte: 0.95
+  # A host that forwards very few ports is usually proxied/VPN-fronted, and
+  # those pull images pathologically slowly even when they ADVERTISE fast links.
+  # That is why this is a port floor and not an inet_down floor: measured across
+  # 930 live offers at these same floors, hosts with <8 forwardable ports still
+  # advertised a median 253 Mbps, so a bandwidth floor would not have excluded
+  # them. Reported bandwidth is a claim; port count is structural.
+  #
+  # DIRECTION: a LOWER bound. An `lte` would select FOR the hosts this avoids.
+  direct_port_count:
+    gte: 64
+  # THE DISK FLOOR THAT ACTUALLY FILTERS, and it is NOT about image size.
+  #
+  # On Vast the container image is stored separately and is not charged to the
+  # instance; the disk requested is the additional (overlayfs) space for what
+  # the instance WRITES. So a 15 GB multi image does not need a bigger disk than
+  # a 5 GB mini one, and an offer with less disk than the image is not thereby
+  # unable to run it.
+  #
+  # What this prevents is mechanical: the client REQUESTS recommended_disk_space
+  # at create time and rejects any instance that comes up with less than the
+  # full request (DISK_TOLERANCE). Without a matching search floor, offers are
+  # never filtered on disk, so the client rents a box that cannot satisfy the
+  # request and only learns after launch — burning a bounded launch attempt.
+  #
+  # Keep this >= recommended_disk_space. L058 enforces that relationship.
+  disk_space:
+    gte: 16
+# Overlayfs space for what the instance WRITES — not for the image, which Vast
+# stores separately. This suite downloads no models and no test carries a
+# download step; it writes little beyond logs and provisioning scratch.
+recommended_disk_space: 16.0
