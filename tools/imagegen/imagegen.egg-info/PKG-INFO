@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: imagegen
-Version: 0.1.0
-Summary: Static invariant-linter + deterministic image generator for base-image Docker images. See docs/adr/0001 + docs/invariants.md.
-Requires-Python: >=3.10
-Requires-Dist: pyyaml>=6.0
-Provides-Extra: dev
-Requires-Dist: pytest>=7; extra == "dev"
