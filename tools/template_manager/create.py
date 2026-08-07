@@ -106,6 +106,10 @@ def inject_readme(
 
 _TIGHTENS = {"gte": "raise", "gt": "raise", "lte": "lower", "lt": "lower"}
 
+# Filter keys whose value is a VERSION squeezed into a float by Vast's API,
+# where float ordering and version ordering can disagree.
+_VERSION_KEYS = {"cuda_max_good", "cuda_vers", "driver_version"}
+
 
 def parse_set_filter(spec: str) -> tuple[str, str, float]:
     """Parse ``KEY.OP=VALUE`` (e.g. ``cuda_max_good.gte=13.0``)."""
@@ -119,6 +123,19 @@ def parse_set_filter(spec: str) -> tuple[str, str, float]:
         value = float(raw)
     except ValueError:
         raise ValueError(f"--set-filter value must be numeric, got {raw!r}") from None
+    # Vast's cuda_max_good is a numeric field, so a CUDA version reaches the API as
+    # a float and 12.9 vs 13.0 orders correctly. A two-digit minor would not: 12.10
+    # is 12.1 as a float, i.e. LOWER than 12.9, so a floor meant to be the strictest
+    # would silently become one of the loosest. No CUDA release has ever had one
+    # (11 stopped at 11.8, 12 at 12.9), but if one ships, the API encoding itself is
+    # ambiguous and this needs revisiting — fail loudly rather than pick wrong.
+    # Scoped to the version-encoded keys only: a plain numeric floor like
+    # reliability2.gte=0.95 has a two-digit fraction and is perfectly well ordered.
+    if key in _VERSION_KEYS and len(raw.partition(".")[2]) > 1:
+        raise ValueError(
+            f"--set-filter {spec}: {raw!r} has a multi-digit minor. Compared as a "
+            f"float that orders BELOW single-digit minors (12.10 < 12.9), which "
+            f"would invert the floor. Encode the intent explicitly instead.")
     return key, op, value
 
 

@@ -148,12 +148,19 @@ Shape:
   major-baseline is both representative (a 13.0-driver host legitimately serves 13.3
   bits) and keeps the offer pool wide. CI tightening of floors is **raise-only**
   (`create.py --set-filter`), preserving the linted floor guarantee at rent time.
-- **Rollback:** a separate tiny dispatch workflow runs **only the dance** against
-  already-promoted prod dated tags of a prior staging date — no build, no copies, no
+- **Rollback:** a separate tiny dispatch workflow (`rollback-base-auto.yml`) runs
+  **only the dance** against already-promoted prod tags — no build, no copies, no
   QA, seconds, still `environment: production`, and **in the same
   `base-image-promote` concurrency group** as promote so the two dances can never
   interleave. Safe because it can only repoint auto tags at bits that already went
-  through promotion; rolling *forward* untested bits remains impossible.
+  through promotion; rolling *forward* untested bits remains impossible. As built it
+  refuses any `TARGET` carrying a registry, namespace or repo prefix (so the source
+  is always the production `base-image` repo), and refuses a source whose own
+  `CUDA_VERSION` minor differs from the auto tag being written — putting a 12.4 image
+  on `cuda-12.9-auto` is the single most damaging typo available at 3am, and it looks
+  exactly like a correct command. It reports the digest it moved away from, because
+  rolling forward again after the real cause is found should not require registry
+  archaeology during an incident.
 - **Config table extracted** to a single machine-readable file consumed by both
   workflows (matrices proven byte-identical before anything else moves). The auto-tag
   version stays **derived** from `tag_template` (no hand-maintained field — a second
@@ -216,6 +223,9 @@ refused, this decision is void.
    (the promoted index's arm64 child is never booted); default-python index only (the
    exact `-auto` surface); mini variants and non-default pythons promote untested via
    dated tags; single-GPU; no pre-Turing. The approval summary and the ADR say so.
+   *(As built: the summary renders a "What a `flip` here does and does not certify"
+   section under the decision table, so the approver reads the limits in the same
+   place as the verdicts rather than having to come here for them.)*
 6. **Fail-not-skip proven by mutation.** The GPU-less-box case turns the suite red under
    the required-pass gate (and stays green-skip without it); required-test
    missing/unreached cases covered; per-cell matrix required-sets pinned by a guard
@@ -250,6 +260,30 @@ refused, this decision is void.
     probe that new instances resolve the renamed tag before orphan cleanup. ADR 0005's
     stale "all qa jobs share the `concurrency: qa-vast-account` group" sentence (its
     rollout section contradicts its own Decision) is corrected as part of this work.
+
+## Implementation notes (added 2026-08-07, after the build review)
+
+The build was reviewed as an implementation once complete. Two findings are recorded
+here because they change what the conditions above are worth, not just the code:
+
+- **The gate shipped disarmed, and every guard test passed anyway.** The hold check
+  was written into the `dry-run` job instead of `promote`, so production would have
+  flipped every auto tag with no reference to the QA decisions at all. The guard test
+  intended to prevent exactly this searched the whole workflow file for the check's
+  text, found the copy sitting in `dry-run`, and went green. A structural property
+  needs a structurally *scoped* test: the tests now slice the `promote` job out of the
+  file by name and additionally assert the check exists **nowhere else**, so relocating
+  it fails the suite rather than passing it twice over.
+- **A shared workflow can be broken by a change that looks local.** Making the verdict
+  reach the shell via `eval` of a tool's stdout broke every QA cell for every consumer
+  of `qa-gate.yml` — including the live vLLM and ComfyUI gates — because a *passing*
+  verdict's reason contains parentheses, which is a bash syntax error under `set -e`.
+  The verdict now travels through `$GITHUB_OUTPUT` as a heredoc and never reaches the
+  shell as text to evaluate.
+
+Both were caught by review, not by CI, and neither would have been caught by the
+12 live-GPU validation runs — those exercised `qa-gate.yml` directly, never the
+promote wiring around it.
 
 ## Consequences
 

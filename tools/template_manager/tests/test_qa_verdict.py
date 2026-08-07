@@ -142,12 +142,37 @@ def test_parse_required(spec, expected):
 
 # --- CLI, including the polluted-stdout case that once flipped a real PASS --
 
+def _parse_github_output(path):
+    """Read GitHub's key=value / key<<DELIM heredoc output format."""
+    out, lines = {}, path.read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        key, _, val = lines[i].partition("=")
+        if "<<" in lines[i].split("=", 1)[0] or (not _ and "<<" in lines[i]):
+            key, _, delim = lines[i].partition("<<")
+            body = []
+            i += 1
+            while i < len(lines) and lines[i] != delim:
+                body.append(lines[i]); i += 1
+            out[key] = "\n".join(body)
+        else:
+            out[key] = val
+        i += 1
+    return out
+
+
 def _run_cli(capsys, tmp_path, exit_code, payload_text, require=""):
+    """The verdict now leaves via --github-output, never via stdout: a reason
+    legitimately contains spaces, ';' and '()', and the caller used to `eval`
+    stdout — which made a PASSING cell a bash syntax error under `set -e`."""
     p = tmp_path / "raw.json"
     p.write_text(payload_text)
-    main(["--exit-code", str(exit_code), "--raw", str(p), "--require-tests", require])
-    out = capsys.readouterr().out
-    return dict(line.split("=", 1) for line in out.strip().splitlines())
+    gho = tmp_path / "gh-output"
+    gho.touch()
+    main(["--exit-code", str(exit_code), "--raw", str(p), "--require-tests", require,
+          "--github-output", str(gho)])
+    capsys.readouterr()
+    return _parse_github_output(gho)
 
 
 def test_cli_takes_the_last_json_line_not_the_whole_file(capsys, tmp_path):
@@ -163,14 +188,34 @@ def test_cli_exit_zero_with_unparseable_raw_blocks(capsys, tmp_path):
     assert "no parseable" in res["reason"]
 
 
-def test_cli_missing_raw_file_on_exit_zero_blocks(capsys):
-    main(["--exit-code", "0", "--raw", "/nonexistent/raw.json"])
-    res = dict(line.split("=", 1) for line in capsys.readouterr().out.strip().splitlines())
-    assert res["verdict"] == BLOCK
+def test_cli_missing_raw_file_on_exit_zero_blocks(capsys, tmp_path):
+    gho = tmp_path / "gh-output"; gho.touch()
+    main(["--exit-code", "0", "--raw", "/nonexistent/raw.json", "--github-output", str(gho)])
+    capsys.readouterr()
+    assert _parse_github_output(gho)["verdict"] == BLOCK
 
 
 def test_cli_always_exits_zero_so_a_verdict_is_not_confused_with_a_crash(capsys, tmp_path):
     p = tmp_path / "raw.json"
     p.write_text(json.dumps(raw_pass([])))
-    assert main(["--exit-code", "0", "--raw", str(p), "--require-tests", "base/60-gpu-cuda"]) == 0
-    assert "verdict=block" in capsys.readouterr().out
+    gho = tmp_path / "gh-output"; gho.touch()
+    assert main(["--exit-code", "0", "--raw", str(p), "--require-tests", "base/60-gpu-cuda",
+                 "--github-output", str(gho)]) == 0
+    capsys.readouterr()
+    assert _parse_github_output(gho)["verdict"] == BLOCK
+
+
+def test_a_reason_with_shell_metacharacters_survives_the_output_file(capsys, tmp_path):
+    """The regression that broke every QA cell: the reason for a PASS contains
+    '(' and ')', and the workflow used to `eval` it. Nothing about the transport
+    may re-introduce shell interpretation."""
+    p = tmp_path / "raw.json"
+    p.write_text(json.dumps(raw_pass()))
+    gho = tmp_path / "gh-output"; gho.touch()
+    main(["--exit-code", "0", "--raw", str(p), "--require-tests", " ".join(GPU_TRIO),
+          "--github-output", str(gho)])
+    capsys.readouterr()
+    res = _parse_github_output(gho)
+    assert res["verdict"] == PASS
+    assert "(" in res["reason"] and ")" in res["reason"], (
+        "the very payload that broke bash must still round-trip intact")

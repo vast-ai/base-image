@@ -4,6 +4,7 @@ The safety properties here are structural — they live in the job graph, not in
 function — so they need structural tests. Each one below corresponds to a way the
 gate could be silently disarmed by an ordinary-looking edit.
 """
+import re
 from pathlib import Path
 
 import pytest
@@ -41,11 +42,19 @@ def test_promote_depends_on_the_qa_summary(wf):
     assert "qa-summary" in _job(wf, "promote")["needs"]
 
 
-def test_promote_is_not_always(raw):
-    """`if: always()` on promote would let it run after the QA phase collapsed,
-    raising an approval prompt for a gate that never reported."""
-    block = raw.split("\n  promote:", 1)[1].split("\n  ", 1)[0]
-    assert "always()" not in block
+def test_promote_has_no_always_condition(wf):
+    """Assert the parsed `if:`, not the job text — the text contains the word in a
+    comment, and a test that greps for a string cannot tell a condition from prose."""
+    cond = str(_job(wf, "promote").get("if", ""))
+    assert "always()" not in cond, f"promote's if: is {cond!r}"
+
+
+def test_a_collapsed_qa_phase_holds_everything_rather_than_flipping(raw):
+    """promote IS reachable after a collapsed QA phase (qa-summary is always()).
+    Safety then rests entirely on 'no evidence -> hold', so the decision read must
+    be strict: a missing decisions.json must fail the step, not default open."""
+    promote = _job_block(raw, "promote")
+    assert "jq -er" in promote
 
 
 def test_no_schedule_trigger(wf):
@@ -75,17 +84,57 @@ def test_qa_cells_are_fail_closed_and_assert_the_gpu_trio(wf):
 
 # --- the gate's actual decision --------------------------------------------
 
-def test_promote_consults_the_decisions_before_flipping(raw):
-    """The one line that makes this a gate: a held config keeps its pre-captured
-    target instead of being pointed at the new build."""
-    assert "decisions.json" in raw
-    assert 'decision" == "hold"' in raw or '"$decision" == "hold"' in raw
+def _job_block(raw, name):
+    """Slice one job's text. Scoping matters: this file previously asserted the
+    gate's presence against the WHOLE workflow, and passed for six commits while
+    the gate sat in the dry-run job and production flipped unguarded."""
+    after = raw.split(f"\n  {name}:", 1)[1]
+    return re.split(r"\n  (?=\S)", after, maxsplit=1)[0]
 
 
-def test_promote_reverifies_staging_before_writing(raw):
-    """Approval can sit for hours; staging tags are mutable."""
-    block = raw.split("\n  promote:", 1)[1]
-    assert "aborting before any prod write" in block
+def test_the_hold_check_is_inside_the_promote_job(raw):
+    """THE test. Must be scoped: a whole-file grep cannot tell a working gate from
+    a copy of the gate sitting in a job that writes nothing."""
+    promote = _job_block(raw, "promote")
+    assert "decisions.json" in promote, "promote never reads the decisions"
+    assert '"$decision" == "hold"' in promote, "promote does not act on a hold"
+
+
+def test_the_hold_check_is_NOT_merely_somewhere_in_the_file(raw):
+    """Relocation mutation: if the block moves to any other job, the assertion above
+    must fail. Pinning that here means a future move cannot be masked by the string
+    still existing elsewhere."""
+    promote = _job_block(raw, "promote")
+    elsewhere = raw.replace(promote, "")
+    assert '"$decision" == "hold"' not in elsewhere, (
+        "a hold check exists outside the promote job — if it is ALSO absent from "
+        "promote the gate is disarmed, which is exactly how this shipped before"
+    )
+
+
+def test_promote_requires_decisions_rather_than_defaulting_open(raw):
+    """`jq ... 2>/dev/null || echo ""` on a missing decisions.json would yield an
+    empty decision and flip everything. -e makes absence fail the step."""
+    promote = _job_block(raw, "promote")
+    assert "jq -er" in promote, "decisions are read without -e; a missing file fails open"
+
+
+def test_promote_points_auto_tags_at_the_approved_digest(raw):
+    """Copy-by-digest (ADR 0019). A tag ref could have moved since approval."""
+    promote = _job_block(raw, "promote")
+    assert 'AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image@${target_digest}"' in promote
+
+
+def test_promote_reverifies_the_MUTABLE_ref_before_writing(raw):
+    """Approval can sit for hours; the dated staging tag is what can move and what
+    gets copied. Re-resolving the run-scoped alias instead would be a tautology —
+    this run created it at that digest and nothing else writes it."""
+    promote = _job_block(raw, "promote")
+    assert "aborting before any prod write" in promote
+    assert "${tpl}-${dp}-" in promote, (
+        "the drift check does not resolve the dated staging tag — if it re-resolves "
+        "the run-scoped alias it can never disagree and proves nothing"
+    )
 
 
 def test_qa_only_tests_configs_whose_digest_changes(raw):

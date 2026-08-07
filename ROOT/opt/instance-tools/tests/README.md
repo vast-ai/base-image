@@ -221,6 +221,7 @@ self-auth HTTP that Vast injects and the image cannot move behind Caddy, e.g. Ju
 | `INSTANCE_TEST_SYSTEM_LOG` | — | Comma-separated log file paths to stream to client (e.g. `/var/log/portal/vllm.log`) |
 | `INSTANCE_TEST_WEBHOOK` | — | URL to POST results JSON to on completion |
 | `INSTANCE_TEST_REQUIRE_PASS` | — | Space/comma-separated test names that MUST have **passed** for the suite to pass. A named test that skipped, is missing from the image, or was never reached fails the run (ADR 0019). Unset = a skip is fine, which is right for customer instances and wrong for a gating QA run. |
+| `EXPOSURE_ENFORCE` | `false` | `true` makes `base/28-inadvertent-exposure.sh` FAIL on a violation instead of reporting it advisory (ADR 0006 cond 2). A scan that could not run fails either way. |
 
 ### Required-pass gate
 
@@ -241,7 +242,6 @@ Names match the results JSON exactly (path-relative, no `.sh` — e.g. `base/60-
 `comfyui.d/10-comfyui-serving`). The gate catches three cases a per-test flag cannot:
 the test skipped, the test is **absent from the image**, and the test was never reached
 because an earlier `test_fatal` aborted the suite.
-| `EXPOSURE_ENFORCE` | `false` | `true` makes `base/28-inadvertent-exposure.sh` FAIL on a violation instead of reporting it advisory (ADR 0006 cond 2). A scan that could not run fails either way. |
 
 ### Provisioning test configuration
 | Variable | Default | Description |

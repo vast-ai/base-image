@@ -150,3 +150,32 @@ def test_config_count_matches_the_documented_fleet(cfg):
     in review rather than slipping in."""
     assert len(cfg["configs"]) == 12
     assert len(cfg["mini"]) == 2
+
+
+# --- the shared table must actually be load-bearing -------------------------
+
+def test_python_versions_are_read_from_the_table_not_hardcoded():
+    """`python_versions` was in the shared config but no workflow read it: five
+    hardcoded arrays in build-base-image.yml were the real source. A field the
+    table declares but nothing consumes is worse than no field — it reads as
+    authoritative and isn't."""
+    t = (REPO / ".github/workflows/build-base-image.yml").read_text()
+    import re
+    stale = re.findall(r'^\s*(?:MINI_)?PYTHON_VERSIONS=\(', t, re.M)
+    assert not stale, f"{len(stale)} hardcoded python array(s) still shadow the shared table"
+    assert t.count("jq -r '.python_versions[]'") == 3
+    assert t.count("jq -r '.mini_python_versions[]'") == 2
+
+
+def test_every_job_that_reads_the_table_checks_out():
+    """`$GITHUB_WORKSPACE/configs/base-image.json` is empty without a checkout, and
+    jq on a missing file yields an empty array — a silent no-op build, not an error."""
+    import yaml
+    for wf_name in ("build-base-image.yml", "promote-base-image.yml", "extend-base-image.yml"):
+        wf = yaml.safe_load((REPO / ".github/workflows" / wf_name).read_text())
+        for name, job in wf["jobs"].items():
+            body = "\n".join(str(s.get("run", "")) for s in job.get("steps", []))
+            if "configs/base-image.json" not in body:
+                continue
+            uses = " ".join(str(s.get("uses", "")) for s in job["steps"])
+            assert "actions/checkout" in uses, f"{wf_name}:{name} reads the table without a checkout"

@@ -514,8 +514,11 @@ done
 if [[ -n "${INSTANCE_TEST_REQUIRE_PASS:-}" ]]; then
     echo "─── Required-pass gate: ${INSTANCE_TEST_REQUIRE_PASS} ───" | log_output
     # Accept comma- and/or whitespace-separated names.
-    _required_raw="${INSTANCE_TEST_REQUIRE_PASS//,/ }"
-    for _req in $_required_raw; do
+    # read -ra, not an unquoted expansion: word-splitting is wanted, pathname
+    # expansion is not. An unquoted $_required_raw containing a `*` would glob
+    # against the CWD and silently rewrite the required list.
+    read -ra _required_names <<< "${INSTANCE_TEST_REQUIRE_PASS//,/ }"
+    for _req in "${_required_names[@]}"; do
         [[ -z "$_req" ]] && continue
         _found=false
         _state=""

@@ -95,7 +95,6 @@ def classify_configs(manifest: dict, evidence: dict, skip_qa: bool = False) -> l
 
 def render_summary(decisions: list[dict]) -> str:
     """Markdown for the approval summary — this is what a reviewer actually reads."""
-    flips = [d for d in decisions if d["decision"] == "flip"]
     holds = [d for d in decisions if d["decision"] == "hold"]
     lines = ["## Base image promotion — auto-tag decisions", ""]
     if holds:
@@ -109,6 +108,21 @@ def render_summary(decisions: list[dict]) -> str:
         lines.append(f"| `{d['key']}` | `cuda-{d['auto_version']}-auto` | {mark} | {d['reason']} |")
     if any(d["reason"].startswith("SKIP_QA") for d in decisions):
         lines += ["", "> **SKIP_QA was used — these tags flip with NO automated evidence.**"]
+    # ADR 0019 cond 5: what a pass does NOT cover, stated where the approver reads it
+    # rather than only in the ADR. A green table means less than it looks like.
+    lines += [
+        "",
+        "### What a `flip` here does and does not certify",
+        "",
+        "- **amd64 only.** The promoted artifact is a multi-arch index; its arm64",
+        "  manifest was never booted.",
+        "- **Default-python only.** The other four python variants per config, and the",
+        "  mini variants, are promoted untested — they carry no auto tag and are",
+        "  reached only by explicit dated reference.",
+        "- **Single GPU, Turing or newer**, on one box in the selected VRAM band.",
+        "- **A point-in-time boot**, not a runtime guarantee: a service that breaks",
+        "  later, or under load, is out of scope.",
+    ]
     return "\n".join(lines) + "\n"
 
 

@@ -11,6 +11,12 @@
 
 name: Promote Base Image
 
+# The approvals list shows the run NAME, not the job summary — a reviewer clicking
+# "approve" from the notification never sees the flip/hold table unless they open
+# the run. Put the decisive facts in the title itself.
+run-name: >-
+  Promote base ${{ inputs.STAGING_DATE }}${{ inputs.SKIP_QA == true && ' — QA SKIPPED' || '' }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -131,13 +137,29 @@ jobs:
       - name: Check the gate can actually run
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          # Via env, never interpolated into the script: a reason containing a quote
+          # or $(...) would otherwise break or execute in the step.
+          SKIP_QA: ${{ inputs.SKIP_QA }}
+          SKIP_REASON: ${{ inputs.SKIP_REASON }}
+          NS_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NS_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
         run: |
-          if [ "${{ inputs.SKIP_QA }}" = "true" ]; then
-            if [ -z "${{ inputs.SKIP_REASON }}" ]; then
+          # Every secret the run needs, checked before a human is asked to approve
+          # and before any GPU spend — a missing namespace otherwise surfaces as a
+          # malformed ref deep into the promote.
+          missing=()
+          [ -z "${NS_STAGING}" ] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          [ -z "${NS_PROD}" ] && missing+=("DOCKERHUB_NAMESPACE")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          if [ "${SKIP_QA}" = "true" ]; then
+            if [ -z "${SKIP_REASON}" ]; then
               echo "::error::SKIP_QA requires SKIP_REASON — an unexplained bypass is not auditable."
               exit 1
             fi
-            echo "::warning::SKIP_QA: ${{ inputs.SKIP_REASON }}"
+            echo "::warning::SKIP_QA: ${SKIP_REASON}"
             exit 0
           fi
           # Fail here, before a human is asked to approve anything, rather than
@@ -279,7 +301,7 @@ jobs:
     if: ${{ always() && !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     outputs:
-      decisions: ${{ steps.decide.outputs.decisions }}
+      holds: ${{ steps.decide.outputs.holds }}
     steps:
       - uses: actions/checkout@v4
       - uses: imjasonh/setup-crane@v0.4
@@ -299,44 +321,53 @@ jobs:
         run: |
           set -euo pipefail
           # Collapse each cell's verdict payload into {config: {verdict, digest}}.
-          # What digest did each cell actually test? The cell tested the
-          # run-scoped alias tag, which resolve-digests pinned to the target
-          # digest. Re-resolving it HERE — rather than trusting a field in the
-          # payload — means the link is checked at the moment it is used, and a
-          # tag that somehow moved shows up as a mismatch instead of passing.
+          # Each cell's verdict comes from qa_verdict.py — the SAME function the cell
+          # itself ran, with the same required-tests list. Re-deriving a predicate here
+          # from (state, got_result_event) would silently drop the required-tests
+          # assertion, which is the only BLOCK class those two fields cannot see: a
+          # GPU-trio self-skip yields state=passed + got_result_event=true. Since a red
+          # cell does not fail this job (holds are not aborts), that weaker copy would
+          # have been the sole arbiter — reopening the exact skip-as-pass hole the gate
+          # exists to close.
+          #
+          # The tested digest is re-resolved from the run-scoped alias tag rather than
+          # trusted from the payload, so the link is checked at the point of use.
           export STAGING_NS="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}"
           export RUN_ID="${{ github.run_id }}"
+          export REQUIRE_TESTS="base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
           python - <<'PY' > evidence.json
-          import json, os, pathlib, subprocess
+          import json, os, pathlib, subprocess, sys
+          sys.path.insert(0, "tools/template_manager")
+          from qa_verdict import classify, parse_required
+
           out = {}
           root = pathlib.Path("evidence")
           ns, run_id = os.environ["STAGING_NS"], os.environ["RUN_ID"]
+          required = parse_required(os.environ["REQUIRE_TESTS"])
           for d in sorted(root.glob("qa-evidence-*")) if root.is_dir() else []:
               key = d.name[len("qa-evidence-"):]
-              raw = d / "qa-raw.json"
-              if not raw.is_file():
-                  continue
-              lines = [l for l in raw.read_text().splitlines() if l.strip().startswith("{")]
-              if not lines:
-                  continue
-              p = json.loads(lines[-1])
-              passed = p.get("state") == "passed" and bool(p.get("got_result_event"))
+              raw_file = d / "qa-raw.json"
+              payload, verdict, reason = None, "block", "no verdict payload for this cell"
+              if raw_file.is_file():
+                  lines = [l for l in raw_file.read_text().splitlines()
+                           if l.strip().startswith("{")]
+                  if lines:
+                      payload = json.loads(lines[-1])
+                      verdict, reason = classify(payload.get("exit_code", 1), payload, required)
               ref = f"{ns}/base-image:qa-{run_id}-{key}"
               try:
                   digest = subprocess.run(["crane", "digest", ref], capture_output=True,
                                           text=True, timeout=120).stdout.strip()
               except Exception:
                   digest = ""
-              out[key] = {"verdict": "pass" if passed else "block", "digest": digest}
+              out[key] = {"verdict": verdict, "reason": reason, "digest": digest}
           print(json.dumps(out, indent=2))
           PY
           cat evidence.json
 
           python tools/template_manager/verify_qa_evidence.py             --manifest manifest.json --evidence evidence.json             ${{ inputs.SKIP_QA == true && '--skip-qa' || '' }}             --out decisions.json --summary summary.md
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
-          echo "decisions<<EOF" >> "$GITHUB_OUTPUT"
-          jq -c . decisions.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "holds=$(jq '[.[] | select(.decision=="hold")] | length' decisions.json)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with: { name: promotion-decisions, path: "decisions.json", retention-days: 7 }
@@ -344,9 +375,13 @@ jobs:
 
   promote:
     needs: [generate-configs, qa-summary]
-    # No always(): if the QA phase itself fell over (as opposed to individual cells
-    # reporting), this job never becomes eligible, so the approval prompt is never
-    # even raised and nobody can rubber-stamp past a broken gate.
+    # This job IS reachable after a collapsed QA phase — qa-summary carries
+    # always(), so it succeeds regardless of the cells' results and promote becomes
+    # eligible. That is deliberate and safe, but NOT because of the job graph: with
+    # no evidence artifacts, every config's decision is `hold`, so nothing flips and
+    # the approval summary says so. Safety here comes from the decisions, not from
+    # unreachability — do not weaken the hold logic on the belief that the graph
+    # already blocks this case.
     if: ${{ !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     environment: production
@@ -368,19 +403,21 @@ jobs:
           set -euo pipefail
           echo "--- decisions approved for this run ---"
           jq -r '.[] | select(.decision != "n/a") | "  \(.decision)\t cuda-\(.auto_version)-auto\t \(.reason)"' decisions.json
-          # Approval can sit for hours. If a staging digest moved since the plan was
-          # made, the reviewer approved a picture that no longer matches reality —
-          # abort rather than promote something nobody looked at.
+          # Approval can sit for hours, and the DATED staging tag is mutable — a
+          # same-day partial rebuild rewrites it. That is the ref this job copies, so
+          # it is the ref that must be re-checked. (Re-resolving the run-scoped alias
+          # instead would be a tautology: this run created it at that digest and
+          # nothing else writes it, so it can never disagree.)
           drift=0
-          while read -r key digest; do
+          while read -r key tpl dp digest; do
             [ -z "$digest" ] && continue
-            src="${NAMESPACE_STAGING}/base-image:qa-${{ github.run_id }}-${key}"
+            src="${NAMESPACE_STAGING}/base-image:${tpl}-${dp}-${{ inputs.STAGING_DATE }}"
             now=$(crane digest "$src" 2>/dev/null || echo "")
             if [ "$now" != "$digest" ]; then
-              echo "::error::${key}: pinned ${digest:0:19}… but ${src} now resolves to ${now:0:19}…"
+              echo "::error::${key}: approved ${digest:0:19}… but ${src} now resolves to ${now:0:19}…"
               drift=1
             fi
-          done < <(jq -r '.configs[] | select(.target_digest != "") | "\(.key) \(.target_digest)"' manifest.json)
+          done < <(jq -r '.configs[] | select(.target_digest != "") | "\(.key) \(.tag_template) \(.default_py) \(.target_digest)"' manifest.json)
           [ "$drift" -eq 0 ] || { echo "::error::staging moved after the plan was approved — aborting before any prod write"; exit 1; }
           echo "staging still matches the approved plan"
 
@@ -480,6 +517,15 @@ jobs:
               py_tag="${py_version//.}"
 
               SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              # The default-python artifact is what the auto tag will point at, so copy
+              # it by the digest the gate actually approved rather than by a tag that
+              # could have moved (ADR 0019: "copy by digest"). Other pythons keep the
+              # tag ref: they carry no auto tag, and the drift check above already
+              # aborted if the dated source moved.
+              if [[ "$py_version" == "$default_python" ]]; then
+                pinned=$(jq -er --arg k "$key" '.configs[] | select(.key==$k) | .target_digest' manifest.json 2>/dev/null || echo "")
+                [[ -n "$pinned" ]] && SOURCE="${NAMESPACE_STAGING}/base-image@${pinned}"
+              fi
               DATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
 
               echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
@@ -544,12 +590,33 @@ jobs:
             AUTO_TARGET_FINAL[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]}"
           done
           for ((i=0; i<CONFIG_COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
             cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
             [[ -z "$cuda_ver" ]] && continue
+            # THE GATE (ADR 0019 cond 2). This is the only line that makes the whole
+            # pipeline a gate: an auto tag moves ONLY to bits that passed live-GPU QA
+            # on that exact digest. A held config keeps its PRE-captured target, so its
+            # tag is still re-pushed (push ordering is preserved for every tag, every
+            # run) while its CONTENT does not change.
+            #
+            # Held, not aborted: one flaky cell out of twelve costing the whole fleet's
+            # promotion is how a gate gets routed around. The rest ship; the held tag is
+            # named in the approval summary.
+            #
+            # decisions.json is REQUIRED here — `jq -e` so a missing or malformed file
+            # fails the step instead of silently yielding "" and flipping everything.
+            decision=$(jq -er --arg k "$key" '.[] | select(.key==$k) | .decision' decisions.json)
+            if [[ "$decision" == "hold" ]]; then
+              echo "  HOLD cuda-${cuda_ver}-auto (${key}) — content unchanged this run"
+              continue
+            fi
             dp_tag="${default_python//.}"
-            AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
+            # Point the auto tag at the QA'd DIGEST, not at a tag that could have moved
+            # since the plan was made (ADR 0019: "copy by digest").
+            target_digest=$(jq -er --arg k "$key" '.configs[] | select(.key==$k) | .target_digest' manifest.json)
+            AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image@${target_digest}"
           done
 
           # Resolve each final target to its digest so we can pick
@@ -626,6 +693,37 @@ jobs:
           name: promoted-tags
           path: built-tags/
           retention-days: 1
+
+  cleanup-qa-refs:
+    # ADR 0019 cond 8. The run-scoped alias tags are forensic evidence of exactly
+    # which digest each cell tested, so they are swept AFTER a successful promote,
+    # and only strays from OTHER runs are removed — never this run's, which the
+    # postmortem would want. Best-effort: a failed sweep must not fail a promotion
+    # that already wrote prod.
+    needs: [promote]
+    if: ${{ always() && !inputs.DRY_RUN && needs.promote.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Sweep stray qa-* alias tags from previous runs
+        continue-on-error: true
+        env:
+          NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          KEEP: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          swept=0
+          for tag in $(crane ls "${NS}/base-image" 2>/dev/null | grep -E '^qa-[0-9]+-' || true); do
+            run_id="${tag#qa-}"; run_id="${run_id%%-*}"
+            [ "$run_id" = "$KEEP" ] && continue
+            crane delete "${NS}/base-image:${tag}" 2>/dev/null && swept=$((swept+1))
+          done
+          echo "swept ${swept} stray qa-* alias tag(s); kept this run's for forensics"
 
   collect-tags:
     needs: [promote]
@@ -787,25 +885,6 @@ jobs:
             AUTO_TARGET_FINAL[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]}"
           done
           for ((i=0; i<CONFIG_COUNT; i++)); do
-            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
-            tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
-            default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
-            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
-            [[ -z "$cuda_ver" ]] && continue
-            # THE GATE (ADR 0019 cond 2). An auto tag only moves to bits that passed
-            # live-GPU QA on that exact digest. A config the gate HELD keeps its
-            # pre-captured target: the tag is still re-pushed (push ordering is
-            # preserved for every tag, every run) but its CONTENT does not change.
-            #
-            # Held, not aborted: one flaky cell out of twelve costing the whole
-            # fleet's promotion is how a gate gets routed around. The other eleven
-            # ship, and the held tag is named loudly in the approval summary.
-            decision=$(jq -r --arg k "$key" '.[] | select(.key==$k) | .decision' decisions.json 2>/dev/null || echo "")
-            if [[ "$decision" == "hold" ]]; then
-              echo "  HOLD cuda-${cuda_ver}-auto (${key}) — content unchanged this run"
-              continue
-            fi
-            dp_tag="${default_python//.}"
             AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
           done
 
@@ -892,11 +971,17 @@ jobs:
           done
 
   notify:
-    needs: [generate-configs, promote, collect-tags]
+    needs: [generate-configs, qa-summary, promote, collect-tags]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.promote.result }}
+      # ADR 0019 cond 3: a promotion that bypassed the gate, or one that held tags,
+      # must be distinguishable in Slack from a clean gated promotion. Without this
+      # a SKIP_QA run looks identical to a fully-tested one in the only place most
+      # people actually read.
+      status: ${{ (inputs.SKIP_QA == true || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
+      headline: ${{ inputs.SKIP_QA == true && format('Base image promoted WITHOUT automated QA — {0}', inputs.SKIP_REASON) || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != '' && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them)', needs.qa-summary.outputs.holds)) || '' }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

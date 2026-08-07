@@ -135,3 +135,20 @@ def test_the_per_config_raises_the_base_gate_will_make_are_all_legal():
         t = T({"cuda_max_good": {"gte": baseline}})
         apply_set_filters(t, [f"cuda_max_good.gte={value}"])
         assert t.extra_filters["cuda_max_good"]["gte"] == value
+
+
+def test_a_multi_digit_cuda_minor_is_refused_not_silently_inverted():
+    """Vast encodes cuda_max_good as a number, so 12.10 arrives as 12.1 — BELOW
+    12.9. A floor meant to be the strictest would become one of the loosest, and
+    nothing downstream could tell. lib.sh's own `version_gt` documents 12.10 > 12.9
+    as the correct ordering, so the hazard is already recognised in this repo."""
+    with pytest.raises(ValueError, match="multi-digit minor"):
+        parse_set_filter("cuda_max_good.gte=12.10")
+
+
+def test_plain_numeric_floors_with_two_decimals_still_parse():
+    """The guard must not catch reliability2.gte=0.95 — a fraction, not a version,
+    and it orders correctly as a float. Over-tightening here would break the
+    committed base-qa floors."""
+    assert parse_set_filter("reliability2.gte=0.95") == ("reliability2", "gte", 0.95)
+    assert parse_set_filter("gpu_ram.gte=8192") == ("gpu_ram", "gte", 8192.0)

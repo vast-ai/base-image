@@ -1534,7 +1534,8 @@ def main():
         if event.get("_reconnect"):
             # Not fatal: the run continues, we just stopped listening for a moment.
             # Verdict lines emitted during the gap are recovered after the stream
-            # ends by backfilling from /test-status (see stream_gap_backfill below).
+            # ends by backfilling per-test state from /test-status (see the
+            # post-stream reconciliation near the end of run_test).
             log(f"\nStream dropped ({event.get('_reason', '?')}); "
                 f"reconnecting (attempt {event['_reconnect']}/{MAX_STREAM_RECONNECTS})")
             stream_had_gap = True

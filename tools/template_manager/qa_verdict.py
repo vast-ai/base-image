@@ -21,16 +21,24 @@ Bash owns the retry loop and the exit; Python owns the decision (repo convention
 bash for plumbing, Python for structured/tested logic).
 
 Usage:
-    qa_verdict.py --exit-code N --raw FILE [--require-tests "a b,c"]
-    -> prints "verdict=<v>" and "reason=<text>" for $GITHUB_OUTPUT; exits 0 always
-       (the caller maps verdict -> job outcome, so a verdict is never confused
-       with this tool's own failure).
+    qa_verdict.py --exit-code N --raw FILE [--require-tests "a b,c"] [--github-output FILE]
+
+Exits 0 always — the caller maps verdict -> job outcome, so a verdict is never
+confused with this tool's own failure.
+
+Output contract: the verdict is written to the file named by --github-output (or
+$GITHUB_OUTPUT) as `verdict=` / `reason=` key-value lines, and a human-readable
+line goes to stdout. Callers must NOT `eval` the stdout: a reason legitimately
+contains spaces, semicolons and parentheses ("3 required test(s) passed"), which
+under `bash -e` is a syntax error that fails the step on a PASSING cell. Writing
+the machine-readable form to a file keeps arbitrary text out of the shell.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 PASS = "pass"
@@ -114,6 +122,8 @@ def main(argv=None) -> int:
                     help="file holding test_template.py --raw output")
     ap.add_argument("--require-tests", default="",
                     help="space/comma-separated test names that must have passed")
+    ap.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
+                    help="file to append verdict=/reason= to (default: $GITHUB_OUTPUT)")
     args = ap.parse_args(argv)
 
     raw = None
@@ -144,8 +154,18 @@ def main(argv=None) -> int:
     else:
         verdict, reason = classify(args.exit_code, raw, parse_required(args.require_tests))
 
-    print(f"verdict={verdict}")
-    print(f"reason={reason}")
+    # Human-readable to stdout (safe to log, never parsed by the shell).
+    print(f"{verdict}: {reason}")
+
+    # Machine-readable to a file. A reason contains spaces, ';' and '()', so it
+    # must never reach the shell as text to evaluate.
+    if args.github_output:
+        # A multiline-safe heredoc, per GitHub's own output format — a reason with
+        # a newline would otherwise inject arbitrary keys.
+        delim = "qa_verdict_EOF"
+        with open(args.github_output, "a", encoding="utf-8") as fh:
+            fh.write(f"verdict={verdict}\n")
+            fh.write(f"reason<<{delim}\n{reason}\n{delim}\n")
     return 0
 
 

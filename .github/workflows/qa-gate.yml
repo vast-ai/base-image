@@ -232,8 +232,13 @@ jobs:
             echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
             [ "$CODE" -ne 2 ] && break
             if [ "$attempt" -lt "$ATTEMPTS" ]; then
-              echo "no offers matched the floors; waiting ${{ inputs.retry_delay }}s before retrying"
-              sleep "${{ inputs.retry_delay }}"
+              # Jitter: a matrix of cells that all went inconclusive did so because
+              # the market was thin for all of them at once, so an unjittered delay
+              # marches them back to the single-key account in lockstep (ADR 0005
+              # cond 6). Spread is up to +50%.
+              _delay=$(( ${{ inputs.retry_delay }} + RANDOM % ((${{ inputs.retry_delay }} / 2) + 1) ))
+              echo "no offers matched the floors; waiting ${_delay}s before retrying"
+              sleep "$_delay"
             fi
           done
           echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
@@ -255,26 +260,30 @@ jobs:
           # also owns the "take the last complete {...} line" parsing: a whole-file
           # parse once silently turned a real PASS into a BLOCK on the cu12.9 cell.
           # This step keeps only the POLICY: what to do with an inconclusive.
-          eval "$(python "${TM}/qa_verdict.py" \
-                    --exit-code "${CODE}" \
-                    --raw /tmp/qa-raw.json \
-                    --require-tests "${{ inputs.require_tests }}")"
+          # NEVER eval this tool's stdout. A reason legitimately contains spaces,
+          # ';' and '()' ("3 required test(s) passed"), so under bash -e an eval is a
+          # syntax error that fails the step on a PASSING cell — and this workflow is
+          # shared with the live comfyui/vllm gates. The tool appends verdict=/reason=
+          # to $GITHUB_OUTPUT itself; we read the key back.
+          python "${TM}/qa_verdict.py" \
+            --exit-code "${CODE}" \
+            --raw /tmp/qa-raw.json \
+            --require-tests "${{ inputs.require_tests }}"
+          verdict=$(sed -n 's/^verdict=//p' "$GITHUB_OUTPUT" | tail -n1)
           echo "exit_code=${CODE} verdict=${verdict}"
-          echo "reason: ${reason}"
-          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
 
           case "${verdict}" in
             pass)
-              echo "::notice::FULL pass — ${reason}"
+              echo "::notice::FULL pass (see the verdict line above)"
               exit 0 ;;
             block)
-              echo "::error::BLOCK — ${reason}"
+              echo "::error::BLOCK (see the verdict line above)"
               exit 1 ;;
             inconclusive)
               # ADR 0005: a gating path HOLDS so a human looks; only the unattended
               # schedule soft-passes, so a thin 00:00 market cannot block the nightly
               # promotion of an unchanged image.
-              echo "::warning::INCONCLUSIVE — ${reason}"
+              echo "::warning::INCONCLUSIVE (see the verdict line above)"
               if [ "${{ github.event_name }}" = "schedule" ]; then
                 # Set BEFORE the exit so the output is written; notify-soft-pass pings
                 # Slack, because a gate that chronically cannot run must surface rather

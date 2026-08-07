@@ -210,7 +210,10 @@ jobs:
           DEFAULT_PYTHON: ${{ matrix.default_python }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
+          # identically in five places here, so the shared table could claim one set
+          # of versions while the build shipped another.
+          mapfile -t PYTHON_VERSIONS < <(jq -r '.python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
           mkdir -p built-tags
 
           for py_version in "${PYTHON_VERSIONS[@]}"; do
@@ -256,6 +259,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.merge-matrix) }}
     steps:
+      # Needed for configs/base-image.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
       - name: Set up crane
         uses: imjasonh/setup-crane@v0.4
 
@@ -272,7 +277,10 @@ jobs:
           DEFAULT_PYTHON: ${{ matrix.default_python }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
+          # identically in five places here, so the shared table could claim one set
+          # of versions while the build shipped another.
+          mapfile -t PYTHON_VERSIONS < <(jq -r '.python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
           mkdir -p built-tags
 
           for py_version in "${PYTHON_VERSIONS[@]}"; do
@@ -343,7 +351,10 @@ jobs:
           ARCH_SUFFIX: ${{ matrix.arch_suffix }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
+          # identically in five places here, so the shared table could claim one set
+          # of versions while the build shipped another.
+          mapfile -t MINI_PYTHON_VERSIONS < <(jq -r '.mini_python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
           mkdir -p built-tags
 
           for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
@@ -380,6 +391,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-merge-matrix) }}
     steps:
+      # Needed for configs/base-image.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
       - name: Set up crane
         uses: imjasonh/setup-crane@v0.4
 
@@ -395,7 +408,10 @@ jobs:
           MINI_TAG: ${{ matrix.mini_tag }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
-          MINI_PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
+          # identically in five places here, so the shared table could claim one set
+          # of versions while the build shipped another.
+          mapfile -t MINI_PYTHON_VERSIONS < <(jq -r '.mini_python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
           mkdir -p built-tags
 
           for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
@@ -456,6 +472,8 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
+      # Needed for configs/base-image.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
       - name: Print build plan
         env:
           BUILD_MATRIX: ${{ needs.generate-matrix.outputs.build-matrix }}
@@ -478,7 +496,10 @@ jobs:
           echo ""
 
           echo "=== Tags that would be created ==="
-          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
+          # identically in five places here, so the shared table could claim one set
+          # of versions while the build shipped another.
+          mapfile -t PYTHON_VERSIONS < <(jq -r '.python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
           echo "$MERGE_MATRIX" | jq -c '.include[]' | while IFS= read -r entry; do
             tag_template=$(echo "$entry" | jq -r '.tag_template')
             default_python=$(echo "$entry" | jq -r '.default_python')
