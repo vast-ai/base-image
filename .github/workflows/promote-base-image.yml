@@ -255,7 +255,16 @@ jobs:
       # Bounded against the single-key QA account. ADR 0005 cond 6's account-aware
       # semaphore is still the proper fix; until then this plus the client's 429
       # backoff is the interim, and promotions are staggered off the other gates' crons.
-      max-parallel: 2
+      #
+      # 4, from measurement (run 31170473940, 2026-08-07): 10 cells, median 3.3 min,
+      # slowest 13.6 min, ~43 min of cell time, zero 429s at max-parallel 2. The
+      # slowest single cell sets a ~13.6 min floor, so 4 captures essentially all the
+      # available speedup and anything higher buys nothing — 2->4 saves ~10 min,
+      # 4->10 saves zero. Not raised further because the cost is not only rate
+      # limits: concurrent cells query the same thin offer market, and two cells
+      # racing for one box surfaces as bad_instance (exit 3), which is deliberately
+      # never retried. On a thin day more parallelism converts passes into holds.
+      max-parallel: 4
       matrix: ${{ fromJson(needs.resolve-digests.outputs.qa-matrix) }}
     uses: ./.github/workflows/qa-gate.yml
     with:

@@ -141,8 +141,17 @@ def test_qa_only_tests_configs_whose_digest_changes(raw):
 # --- bounded against the single-key account --------------------------------
 
 def test_qa_matrix_parallelism_is_bounded(wf):
+    """Raised 2 -> 4 on 2026-08-07 from measurement, not intuition (ADR 0019 cond 9).
+
+    The ceiling is not a rate-limit guess: the slowest single cell (13.6 min of a
+    ~43 min total across 10 cells) sets the wall-clock floor, so 4 already captures
+    essentially all the available speedup. Higher buys nothing measurable and costs
+    offer-market contention, where two cells racing for one box surfaces as
+    bad_instance (exit 3) — which is deliberately never retried, so contention turns
+    passes into holds. ADR 0005 cond 6's account-level semaphore remains the real fix.
+    """
     mp = _job(wf, "qa")["strategy"]["max-parallel"]
-    assert mp <= 3, f"max-parallel {mp} would storm the single-key QA account (ADR 0005 cond 6)"
+    assert mp <= 4, f"max-parallel {mp} would storm the single-key QA account (ADR 0005 cond 6)"
 
 
 def test_qa_evidence_names_are_per_cell(wf):

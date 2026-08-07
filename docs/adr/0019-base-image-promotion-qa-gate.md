@@ -259,11 +259,41 @@ refused, this decision is void.
 8. **Recovery mechanics verified:** alias tags carry no `run_attempt`; cleanup deletes
    them only after successful promote (next run sweeps strays); "Re-run failed jobs"
    demonstrated to re-test the same pinned digest.
-9. **Honest operating numbers:** ~2.5 h typical dispatch→approval at `max-parallel: 2`
-   (6 waves), 4–5 h bad day; GPU ~$2.50 typical, $10 budgeted, `max_price 1.00`. The
-   account-level semaphore (0005 cond 6) remains deferred; promotions are staggered off
-   the other gates' cron edges, and the semaphore is revisited at the next image
-   onboarding.
+9. **Honest operating numbers.** *(Corrected 2026-08-07 from the first full CI run,
+   31170473940 — the original figures were estimates and were wrong by ~6x. They are
+   replaced here rather than annotated, because a stale estimate in a condition is
+   what the next person sizing this will trust.)*
+
+   Measured, 10 cuda cells against staging date 2026-08-06 at `max-parallel: 2`:
+
+   | | |
+   |---|---|
+   | QA phase, dispatch → approval requested | **~25 min** (estimated 2.5 h) |
+   | per-cell duration | median **3.3 min**, slowest **13.6 min** |
+   | total cell time | ~43 min |
+   | HTTP 429s | **0** |
+   | no-offer retries | **0** |
+   | cells passing | 10 of 10 |
+
+   `max-parallel` was raised 2 → 4 on this evidence. The ceiling is set by the tail,
+   not by the rate limit: the slowest single cell puts a ~13.6 min floor under the
+   phase, so 4 captures essentially all the available speedup (2→4 saves ~10 min;
+   4→10 saves nothing measurable). It is not raised further because the cost is not
+   only API pressure — concurrent cells query the same thin offer market, and two
+   cells racing for one box surfaces as `bad_instance` (exit 3), which is
+   deliberately never retried, so contention converts passes into holds.
+
+   Ten minutes is in any case small against the human approval that follows, which
+   is the real latency in this pipeline. Optimising the QA phase further is not
+   where the time is.
+
+   GPU cost tracked at ~$2.50 typical, $10 budgeted, `max_price 1.00`. The
+   account-level semaphore (0005 cond 6) remains deferred and is the proper fix;
+   promotions are staggered off the other gates' cron edges (comfyui and vllm at
+   00:00/12:00 UTC), and the semaphore is revisited at the next image onboarding.
+
+   **Caveat on generality:** one run, on one day, on a market that was not thin.
+   The zero-429 result licenses 4, not 10, and says nothing about a bad day.
 10. **Known carried defect recorded:** the dance's Phase A points each auto tag at
     another config's (QA-passed) image for a seconds-long window — pre-existing,
     unchanged in v1 to keep the dance byte-identical. Named follow-up with a **proven
