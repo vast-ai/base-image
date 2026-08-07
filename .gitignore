@@ -7,3 +7,6 @@ __pycache__
 tools/template_manager/output/
 .qa/
 .venv/
+
+# uv lockfile for the imagegen tool venv — a local build artifact, not a pin we ship
+tools/imagegen/uv.lock

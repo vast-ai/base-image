@@ -283,19 +283,33 @@ def _lint_base(tmp_path, mutate):
     return r.stdout + r.stderr
 
 
+def _committed_floor():
+    """Read the floor from the template rather than hardcoding it — these mutations
+    broke once when the floor moved 64 -> 16, which is a test rotting rather than a
+    defect being caught."""
+    import re
+    tpl = next(REPO.glob("**/templates/base-qa/template.yml"))
+    m = re.search(r"^  disk_space:\n    gte: *([0-9.]+)", tpl.read_text(), re.M)
+    assert m, "no disk_space floor in base-qa — L058 should already be failing"
+    return m.group(1)
+
+
 def test_L058_fires_when_the_disk_floor_is_removed(tmp_path):
     """The defect as found: recommended_disk_space set, no disk_space filter, so
-    offers are never filtered on disk and a 9 GB box is selectable even though the
-    client will request 64 GB of overlay and reject anything short of it."""
-    out = _lint_base(tmp_path, lambda t: t.replace("  disk_space:\n    gte: 64\n", ""))
+    offers are never filtered on disk at all and a box that cannot satisfy the
+    request is selectable — failing only after launch."""
+    f = _committed_floor()
+    out = _lint_base(tmp_path, lambda t: t.replace(f"  disk_space:\n    gte: {f}\n", ""))
     assert "L058" in out, f"L058 did not fire on a missing disk floor:\n{out[-1500:]}"
 
 
 def test_L058_fires_when_the_floor_is_below_the_request(tmp_path):
     """The subtle case: a floor exists, so the axis looks covered, but it still
     admits boxes that cannot satisfy what the client then requests."""
-    out = _lint_base(tmp_path, lambda t: t.replace("  disk_space:\n    gte: 64",
-                                                   "  disk_space:\n    gte: 20"))
+    f = _committed_floor()
+    below = max(1, int(float(f)) // 2)
+    out = _lint_base(tmp_path, lambda t: t.replace(f"  disk_space:\n    gte: {f}",
+                                                   f"  disk_space:\n    gte: {below}"))
     assert "L058" in out, f"L058 did not fire on an inadequate floor:\n{out[-1500:]}"
     assert "below" in out
 
