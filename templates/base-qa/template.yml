@@ -116,20 +116,33 @@ extra_filters:
   # `lte` here would select FOR the restricted hosts this exists to avoid.
   direct_port_count:
     gte: 64
-  # THE DISK FLOOR THAT ACTUALLY FILTERS. recommended_disk_space (below) only sizes
-  # the instance request; without this, offers were never filtered on available disk
-  # at all. Measured the day this was added: of 773 offers admitted by the other
-  # floors, 31 (4%) could not satisfy the 64 GB the client then requested — the
-  # smallest had 9 GB, against a CUDA -devel image of 10-20 GB before any workspace.
-  # Those were rented and only then rejected by the post-launch disk check, burning
-  # a launch attempt each time.
+  # THE DISK FLOOR THAT ACTUALLY FILTERS, and it is NOT about image size.
   #
-  # Keep this >= recommended_disk_space. A floor BELOW it looks like the axis is
-  # covered while still admitting boxes too small to hold the image — which is why
-  # L058 checks the relationship, not merely the presence.
+  # On Vast the container image is stored separately and is not charged to the
+  # instance; the disk you request is the additional (overlayfs) space for whatever
+  # the instance writes — downloads, workspace, logs. So a big -devel image does NOT
+  # need a big disk request, and an offer with less disk than the image is not
+  # thereby unable to run it.
+  #
+  # What this floor prevents is narrower and purely mechanical: the client REQUESTS
+  # `recommended_disk_space` at create time, and rejects any instance that comes up
+  # with less than the full request (DISK_TOLERANCE). Without a matching search
+  # floor, offers are never filtered on available disk, so the client rents a box
+  # that cannot satisfy the request and only learns after launch — burning one of
+  # its bounded launch attempts. Measured when this was added: of 773 offers
+  # admitted by the other floors, 31 (4%) had less disk than the request, the
+  # smallest 9 GB.
+  #
+  # Keep this >= recommended_disk_space; a floor below it silently readmits exactly
+  # those offers. L058 checks that relationship, not merely the presence of a floor.
   disk_space:
     gte: 64
-# The disk the instance REQUESTS at create time. On its own this filters NOTHING —
-# the disk_space floor in extra_filters above is what stops an offer too small to
-# hold the image being selected. Both must move together; L058 enforces that.
+# Overlayfs space requested for what the instance WRITES — not for the image, which
+# Vast stores separately and does not charge to the instance. The base suite writes
+# little (no model downloads), so this is generous rather than tight; it is kept at
+# 64 GB so a provisioning test with room to work is not the thing that fails.
+#
+# On its own this filters NOTHING — it is a request, not a constraint on selection.
+# The disk_space floor in extra_filters above is what keeps the client from renting
+# a box that cannot satisfy it. Both must move together; L058 enforces that.
 recommended_disk_space: 64.0
