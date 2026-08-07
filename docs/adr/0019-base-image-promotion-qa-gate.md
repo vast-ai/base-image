@@ -247,6 +247,31 @@ refused, this decision is void.
    (the promoted index's arm64 child is never booted); default-python index only (the
    exact `-auto` surface); mini variants and non-default pythons promote untested via
    dated tags; single-GPU; no pre-Turing. The approval summary and the ADR say so.
+
+   *(2026-08-07, owner decision: the two largest of these gaps were reviewed and
+   are DECLINED deliberately, not left open — see
+   `docs/design/2026-08-07-qa-coverage-mini-and-arm64/`.*
+
+   * ***mini images stay untested.*** They carry no `-auto` tag, so a bad mini
+     image has no automatic path to a customer; it reaches one only via a
+     derivative build pinning an explicit dated tag, which is a reviewed act.
+     Extending flip/hold to dated tags was considered and rejected: it adds
+     conditional behaviour to the job that writes production tags in exchange for
+     covering artifacts with no automatic blast radius. Caveat of record: neither
+     consumer (`llama-cpp`, `linux-desktop`) is itself QA-gated today, so the
+     transitive coverage is a future property. Revisit if either ships to
+     customers without its own gate.
+   * ***arm64 stays untested, parked on market size.*** Measured 2026-08-07: 10
+     offers at these floors versus 744 amd64, all one GPU model (GB10). A cell at
+     that density would produce coverage debt rather than coverage. Re-open when
+     arm64 offers at the base-qa floors reach ~50, or span more than one GPU model.
+     Explicitly NOT adopted: any "test if available, else proceed" rule — that is
+     the `SKIP_QA` defect in another costume, attaching untested-ness to the run
+     instead of the artifact so it vanishes on the next dispatch.*
+
+   The distinction that makes both acceptable: these gaps are **standing and
+   disclosed**, restated at every approval, rather than per-run states that
+   disappear.)
    *(As built: the summary renders a "What a `flip` here does and does not certify"
    section under the decision table, so the approver reads the limits in the same
    place as the verdicts rather than having to come here for them.)*

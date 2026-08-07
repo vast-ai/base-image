@@ -1,6 +1,6 @@
 # Design brief — QA coverage for mini images and arm64
 
-**Status:** open for review. Nothing is being built against this yet.
+**Status:** DECIDED 2026-08-07 (owner). Neither is being built — see §7.
 **Date:** 2026-08-07
 **Extends:** ADR 0019 (base promotion QA gate), ADR 0005 (live-GPU QA gate)
 
@@ -163,3 +163,61 @@ First stage only. Per the repo's process this wants independent competing design
 and a critical review before an ADR, particularly for M2 — it adds conditional
 behaviour to the job that writes production tags, which is the highest-risk place
 in this system to add anything.
+
+
+---
+
+## 7. Decision (2026-08-07, owner)
+
+Both are **declined for now**, deliberately rather than by omission. The analysis
+above is kept because the reasons matter more than the outcome, and because the
+arm64 half has a re-open trigger.
+
+### Mini images — will not be QA'd
+
+**Rationale:** mini carries no `-auto` tag, so a bad mini image cannot reach a
+customer automatically. It reaches one only through a derivative build, which pins
+an explicit dated tag — a reviewed, deliberate act with a human in it. The
+derivatives that consume mini are expected to be QA'd in their own right, which
+covers the mini image transitively at the point where it actually ships to users.
+
+**Honest caveat on that last point.** As of today neither consumer is gated:
+`build-llama-cpp.yml` and `build-linux-desktop.yml` carry no `qa-gate` — only
+`build-comfyui.yml` and `build-vllm.yml` do (ADR 0005's allowlist). So the
+transitive coverage is a *future* property, not a current one. What holds today is
+the first argument alone: no auto tag, so no automatic blast radius. If llama-cpp
+or linux-desktop are ever promoted to customers without their own gate, this
+decision should be revisited, because then nothing tests the mini image at any
+point in the chain.
+
+This supersedes option M2 in §3. The recommendation there (mini failures hold the
+mini dated tags) is **not** being built; the argument against it is that it adds
+conditional behaviour to the job that writes production tags in exchange for
+covering artifacts with no automatic path to a customer, which is a poor risk trade
+in the most safety-critical job in the system.
+
+### arm64 — parked, with a measurable re-open trigger
+
+**Rationale:** the market cannot support it. 10 offers at base-qa floors against
+744 amd64, all of them one GPU model (GB10). At that density `no_offers` would be
+the routine outcome, so an arm64 cell would mostly generate coverage debt rather
+than coverage — the machinery of §3's A1 without the benefit.
+
+**Re-open when:** arm64 offers at the base-qa floors are numerous enough that a
+cell would routinely find a box, and ideally span more than one GPU model.
+A concrete trigger to re-measure against — reproducible with the query used for §1:
+
+```
+arm64 offers at base-qa floors >= ~50, or >1 distinct GPU model
+   (today: 10, GB10 only)
+```
+
+Until then arm64 manifests are promoted untested, which ADR 0019 cond 5 already
+states and the approval summary already shows. **The gap is disclosed, not hidden**
+— that is the difference between this and the `SKIP_QA` shape rejected in §2. The
+untested-ness is a standing, documented property of every promotion rather than a
+per-run state that disappears.
+
+**Not adopted:** any "test-if-available" rule that does not accumulate. §2's
+argument stands unchanged and is the reason this is a clean park rather than a
+half-measure.
