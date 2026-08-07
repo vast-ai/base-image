@@ -129,20 +129,25 @@ extra_filters:
   # with less than the full request (DISK_TOLERANCE). Without a matching search
   # floor, offers are never filtered on available disk, so the client rents a box
   # that cannot satisfy the request and only learns after launch — burning one of
-  # its bounded launch attempts. Measured when this was added: of 773 offers
-  # admitted by the other floors, 31 (4%) had less disk than the request, the
-  # smallest 9 GB.
+  # its bounded launch attempts.
   #
-  # Keep this >= recommended_disk_space; a floor below it silently readmits exactly
-  # those offers. L058 checks that relationship, not merely the presence of a floor.
+  # Sized to the request, and the request is small because the image is not in it.
+  # Measured across the other floors: no floor 753 offers, >=16 745, >=32 737,
+  # >=64 724. The old 64 GB cost 29 offers to reserve space this suite never writes.
+  #
+  # Keep this >= recommended_disk_space; a floor below it silently readmits offers
+  # that cannot satisfy the request. L058 checks that relationship, not merely the
+  # presence of a floor.
   disk_space:
-    gte: 64
+    gte: 16
 # Overlayfs space requested for what the instance WRITES — not for the image, which
-# Vast stores separately and does not charge to the instance. The base suite writes
-# little (no model downloads), so this is generous rather than tight; it is kept at
-# 64 GB so a provisioning test with room to work is not the thing that fails.
+# Vast stores separately and does not charge to the instance. The base suite
+# downloads no models and writes little beyond logs and provisioning scratch, so 16
+# GB is sized to the actual workload. It was 64 GB while the comment wrongly claimed
+# the disk had to hold the image; that reserved space nothing writes and cost 29
+# offers (724 vs 753 unfiltered).
 #
 # On its own this filters NOTHING — it is a request, not a constraint on selection.
 # The disk_space floor in extra_filters above is what keeps the client from renting
 # a box that cannot satisfy it. Both must move together; L058 enforces that.
-recommended_disk_space: 64.0
+recommended_disk_space: 16.0
