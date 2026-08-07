@@ -47,6 +47,8 @@ jobs:
       has-multi: ${{ steps.matrix.outputs.has-multi }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
+      # Needed for configs/pytorch.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
       - name: Generate matrices
         id: matrix
         run: |
@@ -58,46 +60,20 @@ jobs:
 
           # All pytorch versions — extend sources from prod, no base_image needed
           # Format: torch_ver|key|cuda_short|arches|python_versions
-          ALL_CONFIGS=(
-            "2.6.0|cu126|12.6.3|linux/amd64,linux/arm64|310 311 312"
-            "2.7.1|cu126|12.6.3|linux/amd64|310 311 312"
-            "2.7.1|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313"
-            "2.8.0|cu126|12.6.3|linux/amd64|310 311 312"
-            "2.8.0|cu128|12.8.1|linux/amd64|310 311 312 313"
-            "2.8.0|cu129|12.9.2|linux/amd64|310 311 312 313"
-            "2.9.1|cu126|12.6.3|linux/amd64|310 311 312"
-            "2.9.1|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.1|cu130|13.0.3|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu126|12.6.3|linux/amd64|310 311 312"
-            "2.10.0|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu130|13.0.3|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu126|12.6.3|linux/amd64|310 311 312"
-            "2.11.0|cu128|12.8.1|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu130|13.0.3|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu126|12.6.3|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu130|13.0.3|linux/amd64,linux/arm64|310 311 312 313 314"
-          )
+          # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t ALL_CONFIGS < <(jq -r '.configs[] | "\(.torch)|\(.key)|\(.cuda_ver | split("-")[0])|\(.arches | join(","))|\(.python_versions | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          [ "${#ALL_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_CONFIGS"; exit 1; }
 
           # Mini format: torch_ver|key|torch_backend|cuda_minor|arches|python_versions
-          ALL_MINI_CONFIGS=(
-            "2.6.0|cu126-mini|cu126|12.9|linux/amd64,linux/arm64|310 311 312 313"
-            "2.7.1|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313"
-            "2.8.0|cu128-mini|cu128|12.9|linux/amd64|310 311 312 313"
-            "2.9.1|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.1|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu128-mini|cu128|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu126-mini|cu126|12.9|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu130-mini|cu130|13.2|linux/amd64,linux/arm64|310 311 312 313 314"
-          )
+          # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t ALL_MINI_CONFIGS < <(jq -r '.mini[] | "\(.torch)|\(.key)|\(.backend)|\(.mini_base_tag | ltrimstr("cuda-") | rtrimstr("-mini"))|\(.arches | join(","))|\(.python_versions | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          [ "${#ALL_MINI_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_MINI_CONFIGS"; exit 1; }
 
           # Multi-torch format: key|primary_torch|primary_backend|cuda_minor|arches|python_versions
           # (key already encodes the full tag; extend overlays the prod manifest per arch)
-          ALL_MULTI_CONFIGS=(
-            "multi-210-291-271|2.10.0|cu128|12.9|linux/amd64,linux/arm64|312"
-          )
+          # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t ALL_MULTI_CONFIGS < <(jq -r '.multi[] | "\(.key)|\(.primary_torch)|\(.primary_backend)|\(.cuda_minor)|\(.arches | join(","))|\(.python_versions | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          [ "${#ALL_MULTI_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_MULTI_CONFIGS"; exit 1; }
 
           BUILD_MATRIX="[]"
           MERGE_MATRIX="[]"

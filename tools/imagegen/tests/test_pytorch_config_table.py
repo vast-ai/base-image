@@ -112,17 +112,139 @@ def test_round_trip_promote_configs(table):
     assert have == want
 
 
+def _minor(c):
+    """cuda_minor, as extend/promote spell it for mini: cuda-12.9-mini -> 12.9."""
+    return c["mini_base_tag"].removeprefix("cuda-").removesuffix("-mini")
+
+
+def test_round_trip_extend_mini(table):
+    have = _entries((W / "extend-pytorch.yml").read_text(), "ALL_MINI_CONFIGS")
+    if have is None:
+        pytest.skip("extend-pytorch.yml now reads the table")
+    want = [f"{c['torch']}|{c['key']}|{c['backend']}|{_minor(c)}|"
+            f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in table["mini"]]
+    assert have == want
+
+
+def test_round_trip_promote_mini(table):
+    have = _entries((W / "promote-pytorch.yml").read_text(), "ALL_MINI_CONFIGS")
+    if have is None:
+        pytest.skip("promote-pytorch.yml now reads the table")
+    want = [f"{c['torch']}|{c['key']}|{c['backend']}|{_minor(c)}|"
+            f"{' '.join(c['python_versions'])}" for c in table["mini"]]
+    assert have == want
+
+
+def test_round_trip_extend_multi(table):
+    have = _entries((W / "extend-pytorch.yml").read_text(), "ALL_MULTI_CONFIGS")
+    if have is None:
+        pytest.skip("extend-pytorch.yml now reads the table")
+    want = [f"{c['key']}|{c['primary_torch']}|{c['primary_backend']}|{c['cuda_minor']}|"
+            f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in table["multi"]]
+    assert have == want
+
+
+def test_round_trip_promote_multi(table):
+    have = _entries((W / "promote-pytorch.yml").read_text(), "ALL_MULTI_CONFIGS")
+    if have is None:
+        pytest.skip("promote-pytorch.yml now reads the table")
+    want = [f"{c['key']}|{c['primary_torch']}|{c['primary_backend']}|{c['cuda_minor']}|"
+            f"{' '.join(c['python_versions'])}" for c in table["multi"]]
+    assert have == want
+
+
+def test_every_mini_base_tag_yields_a_cuda_minor(table):
+    """extend/promote derive cuda_minor from mini_base_tag by stripping the affixes.
+    A mini_base_tag that does not fit that shape would silently yield a garbage
+    minor rather than failing."""
+    import re as _re
+    for c in table["mini"]:
+        assert _re.fullmatch(r"cuda-\d+\.\d+-mini", c["mini_base_tag"]), (
+            f"{c['key']}: mini_base_tag {c['mini_base_tag']!r} does not fit "
+            f"cuda-<major>.<minor>-mini, so cuda_minor cannot be derived")
+
+
 # --- the end state ---------------------------------------------------------
 
-@pytest.mark.xfail(reason="migration in progress: workflows still carry inline arrays",
-                   strict=False)
 def test_no_workflow_still_hardcodes_the_lists():
-    """The goal. Flips to passing as each workflow is wired to the table; drop the
-    xfail once all three are done, and delete the round-trip tests above with the
-    arrays they check."""
+    """Met 2026-08-07: all nine arrays across the three workflows now read the
+    table. The round-trip tests above skip themselves now that the arrays are gone;
+    test_wired_jq_reproduces_the_table below is what guards the wiring instead."""
     stale = []
     for name in ("build-pytorch.yml", "extend-pytorch.yml", "promote-pytorch.yml"):
         t = (W / name).read_text()
         if re.search(r"^\s*ALL_(CONFIGS|MINI_CONFIGS|MULTI_CONFIGS)=\(", t, re.M):
             stale.append(name)
     assert not stale, f"still hardcoding the pytorch matrices: {stale}"
+
+
+# --- the wiring itself ------------------------------------------------------
+
+def _minor2(c):
+    return c["mini_base_tag"].removeprefix("cuda-").removesuffix("-mini")
+
+
+def _short2(c):
+    return c["cuda_ver"].split("-")[0]
+
+
+EXPECTED = {
+    ("build-pytorch.yml", "ALL_CONFIGS"): lambda T: [
+        f"{c['torch']}|{c['key']}|{c['cuda_ver']}|{c['backend']}|"
+        f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in T["configs"]],
+    ("build-pytorch.yml", "ALL_MINI_CONFIGS"): lambda T: [
+        f"{c['torch']}|{c['key']}|{c['mini_base_tag']}|{c['backend']}|"
+        f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in T["mini"]],
+    ("build-pytorch.yml", "ALL_MULTI_CONFIGS"): lambda T: [
+        f"{c['key']}|{c['primary_torch']}|{c['primary_backend']}|{c['cuda_minor']}|"
+        f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in T["multi"]],
+    ("extend-pytorch.yml", "ALL_CONFIGS"): lambda T: [
+        f"{c['torch']}|{c['key']}|{_short2(c)}|{','.join(c['arches'])}|"
+        f"{' '.join(c['python_versions'])}" for c in T["configs"]],
+    ("extend-pytorch.yml", "ALL_MINI_CONFIGS"): lambda T: [
+        f"{c['torch']}|{c['key']}|{c['backend']}|{_minor2(c)}|{','.join(c['arches'])}|"
+        f"{' '.join(c['python_versions'])}" for c in T["mini"]],
+    ("extend-pytorch.yml", "ALL_MULTI_CONFIGS"): lambda T: [
+        f"{c['key']}|{c['primary_torch']}|{c['primary_backend']}|{c['cuda_minor']}|"
+        f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in T["multi"]],
+    ("promote-pytorch.yml", "ALL_CONFIGS"): lambda T: [
+        f"{c['torch']}|{c['key']}|{_short2(c)}|{' '.join(c['python_versions'])}"
+        for c in T["configs"]],
+    ("promote-pytorch.yml", "ALL_MINI_CONFIGS"): lambda T: [
+        f"{c['torch']}|{c['key']}|{c['backend']}|{_minor2(c)}|"
+        f"{' '.join(c['python_versions'])}" for c in T["mini"]],
+    ("promote-pytorch.yml", "ALL_MULTI_CONFIGS"): lambda T: [
+        f"{c['key']}|{c['primary_torch']}|{c['primary_backend']}|{c['cuda_minor']}|"
+        f"{' '.join(c['python_versions'])}" for c in T["multi"]],
+}
+
+
+@pytest.mark.parametrize("fname,arr", sorted(EXPECTED))
+def test_wired_jq_reproduces_the_table(table, fname, arr):
+    """RUN the committed jq and compare its output to the table.
+
+    The extraction was verified once against the arrays it replaced; this keeps it
+    verified. A jq expression is easy to edit into something that still parses and
+    silently drops a field — e.g. losing the arch join, which would build one arch
+    instead of two with no error anywhere.
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("jq"):
+        pytest.skip("jq not available")
+    text = (W / fname).read_text()
+    m = re.search(rf"""mapfile -t {arr} < <\(jq -r '(.*?)' "\$GITHUB_WORKSPACE/configs/pytorch\.json"\)""", text)
+    assert m, f"{fname}:{arr} is not wired to the table"
+    got = subprocess.run(["jq", "-r", m.group(1), str(CONFIG)],
+                         capture_output=True, text=True, check=True).stdout.splitlines()
+    assert got == EXPECTED[(fname, arr)](table)
+
+
+@pytest.mark.parametrize("fname,arr", sorted(EXPECTED))
+def test_wired_read_fails_closed_on_an_empty_table(fname, arr):
+    """`mapfile < <(jq ...)` does not propagate jq's exit status and succeeds on
+    empty input, so a missing or renamed table would yield an empty matrix and a
+    GREEN run that built nothing."""
+    text = (W / fname).read_text()
+    guard = f'[ "${{#{arr}[@]}}" -gt 0 ]'
+    assert guard in text, f"{fname}:{arr} has no non-empty guard after the mapfile"
