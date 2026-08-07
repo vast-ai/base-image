@@ -116,6 +116,20 @@ extra_filters:
   # `lte` here would select FOR the restricted hosts this exists to avoid.
   direct_port_count:
     gte: 64
-# CUDA -devel bases are large (~10-20 GB) and the disk must hold the image plus
-# workspace; a too-small disk surfaces as bad_instance, not as a clear error.
+  # THE DISK FLOOR THAT ACTUALLY FILTERS. recommended_disk_space (below) only sizes
+  # the instance request; without this, offers were never filtered on available disk
+  # at all. Measured the day this was added: of 773 offers admitted by the other
+  # floors, 31 (4%) could not satisfy the 64 GB the client then requested — the
+  # smallest had 9 GB, against a CUDA -devel image of 10-20 GB before any workspace.
+  # Those were rented and only then rejected by the post-launch disk check, burning
+  # a launch attempt each time.
+  #
+  # Keep this >= recommended_disk_space. A floor BELOW it looks like the axis is
+  # covered while still admitting boxes too small to hold the image — which is why
+  # L058 checks the relationship, not merely the presence.
+  disk_space:
+    gte: 64
+# The disk the instance REQUESTS at create time. On its own this filters NOTHING —
+# the disk_space floor in extra_filters above is what stops an offer too small to
+# hold the image being selected. Both must move together; L058 enforces that.
 recommended_disk_space: 64.0

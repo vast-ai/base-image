@@ -75,6 +75,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
+    ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space only sizes the instance REQUEST; without the floor, offers are never filtered on available disk, so the client rents a box that cannot hold the image and only finds out after launch (ADR 0019)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -591,6 +592,73 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
                               " — these skip themselves when the GPU/driver is unavailable")
 
 
+
+def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
+    """L058 — a QA template's disk floor must FILTER offers, not just size the request.
+
+    `recommended_disk_space` is only the disk the client asks for at create time. If
+    `extra_filters` carries no `disk_space` floor, offers are never filtered on
+    available disk: the client rents a box that cannot hold the image, requests more
+    than it has, and discovers the shortfall only in the post-launch disk check —
+    burning a launch attempt each time.
+
+    Measured on the base-qa filters the day this rule was written: 31 of 773 admitted
+    offers (4%) could not satisfy the 64 GB the client then requested, the smallest
+    having 9 GB. A CUDA -devel image is 10-20 GB before any workspace.
+
+    Format AND adequacy. A floor below the request is the subtle case: it looks like
+    the axis is covered while still admitting boxes that cannot hold the image.
+
+    Scoped to the base image for now, on the same reasoning as L057: comfyui-qa
+    (40 GB) and vllm-qa (32 GB) have the identical hole, but widening the rule to
+    them turns two live, currently-passing gates red and changes which hosts they
+    select — a linter rule is not the place to do that quietly. Widen once each has
+    been re-validated.
+    """
+    if img.cls != "base":
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            want = entry.get("recommended_disk_space")
+            if not _is_number(want):
+                continue                   # nothing declared, nothing to enforce
+            ef = entry.get("extra_filters")
+            spec = ef.get("disk_space") if isinstance(ef, dict) else None
+            floor = None
+            if isinstance(spec, dict):
+                for op in ("gte", "gt", "eq"):
+                    if op in spec and _is_number(spec[op]):
+                        floor = float(spec[op])
+                        break
+            elif _is_number(spec):
+                floor = float(spec)
+            if floor is None:
+                yield Finding("L058", ERROR, img.name, rel,
+                              f"recommended_disk_space={want} GB but extra_filters has no "
+                              f"numeric disk_space floor — offers are not filtered on disk, so a "
+                              f"box too small to hold the image is selectable and only fails "
+                              f"after launch")
+            elif floor < float(want):
+                yield Finding("L058", ERROR, img.name, rel,
+                              f"extra_filters.disk_space floor {floor} GB is below "
+                              f"recommended_disk_space={want} GB — it admits boxes that cannot "
+                              f"hold what the client then requests")
+
+
 def check_supervisor_executable(img: Image) -> Iterable[Finding]:
     """L051 — supervisor launch scripts must be executable. The generated .conf runs
     `command=/opt/supervisor-scripts/<name>.sh` directly (no interpreter prefix), so a
@@ -812,6 +880,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))
     if apply_exceptions:

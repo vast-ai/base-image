@@ -258,3 +258,49 @@ def test_the_runbook_is_reachable_from_the_context_map():
     cm = (REPO / "docs/context-map.md").read_text()
     assert "runbooks/new-cuda-version" in cm, (
         "the runbook is not referenced from docs/context-map.md")
+
+
+# --- L058: the disk floor must FILTER, not just size the request ------------
+
+def _lint_base(tmp_path, mutate):
+    """Run the linter over a scratch copy of the repo with base-qa mutated."""
+    import shutil
+    import subprocess
+    import sys
+    dst = tmp_path / "repo"
+    if not dst.exists():
+        shutil.copytree(REPO, dst, symlinks=True, ignore=shutil.ignore_patterns(
+            ".git", "__pycache__", "*.pyc", "test", "pcl"))
+    tpl = dst / "images/base/base-image/templates/base-qa/template.yml"
+    if not tpl.exists():
+        tpl = next(dst.glob("**/templates/base-qa/template.yml"))
+    tpl.write_text(mutate(tpl.read_text()))
+    r = subprocess.run([sys.executable, "-c",
+                        "import sys;sys.argv=['imagegen','lint','--all'];"
+                        "from imagegen.cli import main;sys.exit(main())"],
+                       cwd=dst / "tools/imagegen", capture_output=True, text=True,
+                       env={"PYTHONPATH": ".", "PATH": "/usr/bin:/bin"})
+    return r.stdout + r.stderr
+
+
+def test_L058_fires_when_the_disk_floor_is_removed(tmp_path):
+    """The defect as found: recommended_disk_space set, no disk_space filter, so
+    offers are never filtered on disk and a 9 GB box is selectable for a 10-20 GB
+    image."""
+    out = _lint_base(tmp_path, lambda t: t.replace("  disk_space:\n    gte: 64\n", ""))
+    assert "L058" in out, f"L058 did not fire on a missing disk floor:\n{out[-1500:]}"
+
+
+def test_L058_fires_when_the_floor_is_below_the_request(tmp_path):
+    """The subtle case: a floor exists, so the axis looks covered, but it still
+    admits boxes that cannot hold what the client then requests."""
+    out = _lint_base(tmp_path, lambda t: t.replace("  disk_space:\n    gte: 64",
+                                                   "  disk_space:\n    gte: 20"))
+    assert "L058" in out, f"L058 did not fire on an inadequate floor:\n{out[-1500:]}"
+    assert "below" in out
+
+
+def test_L058_is_satisfied_by_the_committed_template(tmp_path):
+    """Guards against a rule that fires on everything."""
+    out = _lint_base(tmp_path, lambda t: t)
+    assert "L058" not in out, f"L058 fires on the committed template:\n{out[-1500:]}"
