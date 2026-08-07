@@ -176,7 +176,7 @@ def step_script(workflow: Path, job: str, step_name: str) -> str:
 
 
 def run_step(script: str, workdir: Path, registry: dict, env: dict,
-             configs: dict | None = None) -> dict:
+             configs: dict | None = None, extra_digests=()) -> dict:
     """Run `script` under bash with a stubbed crane. Returns the outcome + registry.
 
     `registry` maps a ref ("ns/base-image:tag") to a digest. It is mutated by
@@ -193,7 +193,11 @@ def run_step(script: str, workdir: Path, registry: dict, env: dict,
     reg_file.write_text(json.dumps(registry, indent=2))
     # Manifests are content-addressed and outlive the tags that reference them.
     known_file = workdir / "digests.json"
-    known_file.write_text(json.dumps(sorted(set(registry.values()))))
+    # extra_digests models manifests that no tag points at any more — e.g. a
+    # rebuild rewrote the tag, but the digest this run pinned is still pullable.
+    # Without it, a rebuild fixture would make the pinned ref look deleted and the
+    # test would pass for the wrong reason.
+    known_file.write_text(json.dumps(sorted(set(registry.values()) | set(extra_digests))))
     log = workdir / "crane.log"
     log.write_text("")
     gh_out = workdir / "github_output"
@@ -260,6 +264,18 @@ def build_registry(target_digests: dict, auto_digests: dict) -> dict:
     return reg
 
 
+PYS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+
+
+def py_digests(cfg, target):
+    """Every python pinned, exactly as resolve-digests records them."""
+    out = {}
+    for py in PYS:
+        pt = "py" + py.replace(".", "")
+        out[pt] = target if py == cfg["default_python"] else f"sha256:other-{cfg['key']}-{pt[2:]}"
+    return out
+
+
 def manifest(target_digests: dict, current_digests: dict) -> dict:
     return {"configs": [
         {"key": c["key"], "tag_template": c["tag_template"],
@@ -267,8 +283,9 @@ def manifest(target_digests: dict, current_digests: dict) -> dict:
          "default_python": c["default_python"],
          "auto_version": c["tag_template"].split("-")[1],
          "target_digest": target_digests[c["key"]],
-         "current_digest": current_digests.get(c["key"], "")}
-        for c in CONFIGS]}
+         "current_digest": current_digests.get(c["key"], ""),
+         "py_digests": py_digests(c, target_digests[c["key"]])}
+        for c in CONFIGS], "mini": []}
 
 
 def decisions(verdicts: dict, target_digests: dict) -> list:

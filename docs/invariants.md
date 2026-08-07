@@ -268,7 +268,19 @@ resulting digest of each auto tag. `test_promote_behaviour.py`,
 `test_preflight_behaviour.py` and `test_rollback_behaviour.py` each carry the
 mutation that the string-matching tests survive.
 
-Two rules follow, and both are themselves tested:
+A third rule follows from a defect found reviewing this: **every artifact a
+promotion copies is read from the registry exactly once, at plan time, and copied
+by digest.** Staging tags are mutable — a same-day rebuild rewrites them — so a
+tag ref read at write time can be different bits from the ones that were resolved,
+tested and approved. Previously only the default-python image was pinned; the other
+four pythons and the mini variants were copied by tag, justified by "the drift
+check already aborted if the dated source moved". That was false: the drift check
+only re-resolves the *default-python* tag, using it as a proxy for "the whole
+config was rebuilt". The proxy holds for an all-or-nothing rebuild and breaks for a
+FILTERed or partially re-run one. A missing pin now fails the step rather than
+falling back to the tag.
+
+Two further rules, both themselves tested:
 
 - **A dispatch input must reach a script via `env:`, never `${{ }}`.** Inputs are
   free text; `${{ }}` splices them in before the shell parses the line, so a value

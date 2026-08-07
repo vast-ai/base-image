@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from wfexec import (PROMOTE, PROD, auto_tag, build_registry, decisions, manifest,
+from wfexec import (DATE, PROMOTE, PROD, auto_tag, build_registry, decisions, manifest,
                     promote_env, requires_tools, run_step, step_script)
 
 pytestmark = pytest.mark.skipif(not requires_tools(), reason="jq not available")
@@ -30,7 +30,7 @@ NEW = {"cuda-12.9-24": "sha256:new12", "cuda-13.3-24": "sha256:new13"}
 AUTOS = {"12.9.2": "sha256:old12", "13.3.1": "sha256:old13"}
 
 
-def _run(tmp_path, verdicts, targets=None, current=None, registry=None):
+def _run(tmp_path, verdicts, targets=None, current=None, registry=None, extra_digests=()):
     targets = targets or NEW
     current = current if current is not None else OLD
     wd = tmp_path / "wd"
@@ -40,7 +40,7 @@ def _run(tmp_path, verdicts, targets=None, current=None, registry=None):
         (wd / "decisions.json").write_text(json.dumps(decisions(verdicts, targets)))
     return run_step(step_script(PROMOTE, "promote", DANCE), wd,
                     registry if registry is not None else build_registry(targets, AUTOS),
-                    promote_env())
+                    promote_env(), extra_digests=extra_digests)
 
 
 # --- THE property ----------------------------------------------------------
@@ -276,3 +276,80 @@ def test_the_dry_run_writes_nothing(tmp_path):
     r = _plan(tmp_path, registry=dict(before))
     assert r["registry"] == before, "the dry run mutated the registry"
     assert not [c for c in r["crane_calls"] if c.startswith("copy")]
+
+
+# --- a same-day rebuild must not change what ships -------------------------
+
+def _rebuild_staging(reg, key, tag_template, only_py=None):
+    """Simulate a rebuild rewriting the MUTABLE dated staging tags after the plan
+    was pinned. `only_py` reproduces a FILTERed/partial rebuild, which is the case
+    the old default-python drift proxy could not see."""
+    out = dict(reg)
+    for py in ("310", "311", "312", "313", "314"):
+        if only_py and py != only_py:
+            continue
+        k = f"staging/base-image:{tag_template}-py{py}-{DATE}"
+        if k in out:
+            out[k] = f"sha256:REBUILT-{py}"
+    return out
+
+
+def test_a_partial_rebuild_of_a_non_default_python_cannot_reach_prod(tmp_path):
+    """THE case that motivated pinning everything. py310 carries no auto tag, so
+    the default-python drift check does not see it move — and py310 used to be
+    copied by TAG, so the rebuilt bits would have shipped under the prod dated
+    tag with nothing detecting it."""
+    base = build_registry(NEW, AUTOS)
+    reg = _rebuild_staging(base, "cuda-12.9-24",
+                           "cuda-12.9.2-cudnn-devel-ubuntu24.04", only_py="310")
+    r = _run(tmp_path, {"cuda-12.9-24": "flip", "cuda-13.3-24": "flip"}, registry=reg,
+             extra_digests=set(base.values()))
+    assert r["code"] == 0, r["err"]
+    shipped = r["registry"]["prod/base-image:cuda-12.9.2-cudnn-devel-ubuntu24.04-py310-" + DATE]
+    assert shipped == "sha256:other-cuda-12.9-24-310", (
+        f"a post-plan rebuild reached prod: py310 shipped {shipped}")
+    assert not shipped.startswith("sha256:REBUILT"), "rebuilt bits were promoted"
+
+
+def test_no_prod_tag_is_ever_copied_from_a_mutable_staging_tag(tmp_path):
+    """Structural version of the same property, over the whole run: every copy
+    into prod must name a digest, never a dated staging tag. A single by-tag copy
+    reopens the hole for whichever artifact it covers."""
+    r = _run(tmp_path, {"cuda-12.9-24": "flip", "cuda-13.3-24": "flip"})
+    assert r["code"] == 0, r["err"]
+    by_tag = [c for c in r["crane_calls"]
+              if c.startswith("copy") and f"-{DATE}" in c.split()[1] and "@sha256:" not in c.split()[1]]
+    assert by_tag == [], f"{len(by_tag)} prod copies read a mutable staging tag: {by_tag[:3]}"
+
+
+def test_a_missing_pinned_digest_fails_rather_than_falling_back_to_the_tag(tmp_path):
+    """The dangerous repair is `|| SOURCE=<tag>`: it would restore the old
+    behaviour silently on exactly the config whose pin went missing."""
+    wd = tmp_path / "nopin"
+    wd.mkdir()
+    m = manifest(NEW, OLD)
+    del m["configs"][0]["py_digests"]["py310"]
+    (wd / "manifest.json").write_text(json.dumps(m))
+    (wd / "decisions.json").write_text(json.dumps(
+        decisions({"cuda-12.9-24": "flip", "cuda-13.3-24": "flip"}, NEW)))
+    r = run_step(step_script(PROMOTE, "promote", DANCE), wd,
+                 build_registry(NEW, AUTOS), promote_env())
+    assert r["code"] != 0, "a missing pin did not fail the step"
+    assert "refusing to copy by mutable tag" in r["out"] + r["err"]
+
+
+def test_a_full_rebuild_still_aborts_via_the_default_python_drift_check(tmp_path):
+    """Pinning does not make the drift check redundant: when default-python moves,
+    the QA evidence no longer describes what staging holds, and the operator should
+    be told rather than silently shipping older-but-approved bits."""
+    wd = tmp_path / "drift2"
+    wd.mkdir()
+    (wd / "manifest.json").write_text(json.dumps(manifest(NEW, OLD)))
+    (wd / "decisions.json").write_text(json.dumps(
+        decisions({"cuda-12.9-24": "flip", "cuda-13.3-24": "flip"}, NEW)))
+    reg = _rebuild_staging(build_registry(NEW, AUTOS), "cuda-12.9-24",
+                           "cuda-12.9.2-cudnn-devel-ubuntu24.04")
+    r = run_step(step_script(PROMOTE, "promote", "Re-verify the decisions still describe staging"),
+                 wd, reg, {"NAMESPACE_STAGING": "staging", "STAGING_DATE": DATE})
+    assert r["code"] != 0
+    assert "aborting before any prod write" in r["out"] + r["err"]
