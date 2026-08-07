@@ -285,15 +285,15 @@ def _lint_base(tmp_path, mutate):
 
 def test_L058_fires_when_the_disk_floor_is_removed(tmp_path):
     """The defect as found: recommended_disk_space set, no disk_space filter, so
-    offers are never filtered on disk and a 9 GB box is selectable for a 10-20 GB
-    image."""
+    offers are never filtered on disk and a 9 GB box is selectable even though the
+    client will request 64 GB of overlay and reject anything short of it."""
     out = _lint_base(tmp_path, lambda t: t.replace("  disk_space:\n    gte: 64\n", ""))
     assert "L058" in out, f"L058 did not fire on a missing disk floor:\n{out[-1500:]}"
 
 
 def test_L058_fires_when_the_floor_is_below_the_request(tmp_path):
     """The subtle case: a floor exists, so the axis looks covered, but it still
-    admits boxes that cannot hold what the client then requests."""
+    admits boxes that cannot satisfy what the client then requests."""
     out = _lint_base(tmp_path, lambda t: t.replace("  disk_space:\n    gte: 64",
                                                    "  disk_space:\n    gte: 20"))
     assert "L058" in out, f"L058 did not fire on an inadequate floor:\n{out[-1500:]}"

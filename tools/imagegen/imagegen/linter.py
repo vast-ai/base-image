@@ -75,7 +75,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
-    ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space only sizes the instance REQUEST; without the floor, offers are never filtered on available disk, so the client rents a box that cannot hold the image and only finds out after launch (ADR 0019)"),
+    ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -596,18 +596,23 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
 def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
     """L058 — a QA template's disk floor must FILTER offers, not just size the request.
 
-    `recommended_disk_space` is only the disk the client asks for at create time. If
-    `extra_filters` carries no `disk_space` floor, offers are never filtered on
-    available disk: the client rents a box that cannot hold the image, requests more
-    than it has, and discovers the shortfall only in the post-launch disk check —
-    burning a launch attempt each time.
+    NOT about image size. On Vast the container image is stored separately and is not
+    charged to the instance; `recommended_disk_space` requests the additional
+    (overlayfs) space for what the instance writes. A large -devel image therefore
+    does not need a large disk request, and an offer with less disk than the image is
+    not thereby unable to run it.
 
-    Measured on the base-qa filters the day this rule was written: 31 of 773 admitted
-    offers (4%) could not satisfy the 64 GB the client then requested, the smallest
-    having 9 GB. A CUDA -devel image is 10-20 GB before any workspace.
+    The failure this prevents is mechanical: the client requests that disk at create
+    time and rejects any instance that comes up with less than the full request
+    (DISK_TOLERANCE). With no matching search floor, offers are never filtered on
+    available disk, so the client rents a box that cannot satisfy the request and
+    discovers it only after launch — spending one of its bounded launch attempts.
+
+    Measured on the base-qa filters when this rule was written: 31 of 773 admitted
+    offers (4%) had less disk than the request, the smallest having 9 GB.
 
     Format AND adequacy. A floor below the request is the subtle case: it looks like
-    the axis is covered while still admitting boxes that cannot hold the image.
+    the axis is covered while silently readmitting exactly those offers.
 
     Scoped to the base image for now, on the same reasoning as L057: comfyui-qa (40 GB)
     and vllm-qa (32 GB) have the identical hole, but widening the rule to
@@ -650,13 +655,13 @@ def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
                 yield Finding("L058", ERROR, img.name, rel,
                               f"recommended_disk_space={want} GB but extra_filters has no "
                               f"numeric disk_space floor — offers are not filtered on disk, so a "
-                              f"box too small to hold the image is selectable and only fails "
-                              f"after launch")
+                              f"box that cannot satisfy the request is selectable and only "
+                              f"fails after launch")
             elif floor < float(want):
                 yield Finding("L058", ERROR, img.name, rel,
                               f"extra_filters.disk_space floor {floor} GB is below "
                               f"recommended_disk_space={want} GB — it admits boxes that cannot "
-                              f"hold what the client then requests")
+                              f"satisfy what the client then requests")
 
 
 def check_supervisor_executable(img: Image) -> Iterable[Finding]:
