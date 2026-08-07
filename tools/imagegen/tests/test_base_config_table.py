@@ -179,3 +179,82 @@ def test_every_job_that_reads_the_table_checks_out():
                 continue
             uses = " ".join(str(s.get("uses", "")) for s in job["steps"])
             assert "actions/checkout" in uses, f"{wf_name}:{name} reads the table without a checkout"
+
+
+# --- adding a new CUDA version must not silently mis-floor QA ---------------
+
+def test_every_cuda_major_in_the_table_has_a_driver_floor():
+    """A new CUDA major added to configs/base-image.json needs a matching branch in
+    promote's floor `case`. Without one it used to inherit 11.8, letting QA rent a
+    host whose driver only supports CUDA 11.8 to test, say, a CUDA 14 image — which
+    fails closed but presents as a broken IMAGE, not a missing config line.
+
+    This test is the reason the runbook can be trusted: the step it tells you not
+    to forget is enforced, not merely written down.
+    """
+    import json
+    import re
+    cfg = json.loads(CONFIG.read_text())
+    majors = set()
+    for c in cfg["configs"]:
+        m = re.match(r"^cuda-(\d+)\.", c["tag_template"])
+        if m:
+            majors.add(m.group(1))
+    assert majors, "no cuda configs found — fixture is wrong"
+
+    wf = (REPO / ".github/workflows/promote-base-image.yml").read_text()
+    block = wf.split('case "$auto" in', 1)[1].split("esac", 1)[0]
+    mapped = set(re.findall(r"^\s*(\d+)\.\*\)", block, re.M))
+    missing = majors - mapped
+    assert not missing, (
+        f"CUDA major(s) {sorted(missing)} are in the config table but have no "
+        f"driver floor branch. Add '<major>.*) floor=X ;;' to promote-base-image.yml.")
+
+
+def test_the_floor_case_fails_closed_on_an_unmapped_major():
+    """The default branch must exit, not pick a floor. A silent default is how the
+    above becomes invisible again."""
+    import re
+    wf = (REPO / ".github/workflows/promote-base-image.yml").read_text()
+    block = wf.split('case "$auto" in', 1)[1].split("esac", 1)[0]
+    # the catch-all is a bare `*)` at the start of a line — `11.*)` also contains
+    # the substring, so anchor on the line rather than splitting on it
+    m = re.search(r"^\s*\*\)(.*)$", block, re.S | re.M)
+    assert m, "no catch-all branch found in the floor case statement"
+    default = m.group(1)
+    assert "exit 1" in default, "the unmapped-major branch does not fail"
+    assert not re.search(r"^\s*floor=", default, re.M), (
+        "the unmapped-major branch still assigns a floor — it must refuse instead")
+
+
+def test_the_runbook_exists_and_names_checks_that_are_real():
+    """A runbook is only trustworthy if the commands and tests it cites exist. This
+    catches the ordinary rot of a procedure doc drifting from the code it describes
+    — which matters more than usual here, because the runbook's whole claim is that
+    its rules are enforced rather than remembered."""
+    import re
+    rb = REPO / "docs/runbooks/new-cuda-version.md"
+    assert rb.exists(), "the new-CUDA runbook is missing"
+    text = rb.read_text()
+
+    # every test name it cites must exist somewhere in the suites
+    cited = set(re.findall(r"`(test_[a-z0-9_]+)`", text))
+    assert cited, "runbook cites no tests — it has become prose"
+    have = ""
+    for d in ("tools/imagegen/tests", "tools/template_manager/tests"):
+        for f in (REPO / d).glob("test_*.py"):
+            have += f.read_text()
+    missing = sorted(n for n in cited if f"def {n}(" not in have)
+    assert not missing, f"runbook cites tests that do not exist: {missing}"
+
+    # every repo path it cites must exist
+    paths = set(re.findall(r"`((?:configs|templates|tools|docs|derivatives|\.github)/[^`\s]+)`", text))
+    absent = sorted(p for p in paths if not (REPO / p).exists())
+    assert not absent, f"runbook cites paths that do not exist: {absent}"
+
+
+def test_the_runbook_is_reachable_from_the_context_map():
+    """An unlinked runbook is one nobody finds when it matters."""
+    cm = (REPO / "docs/context-map.md").read_text()
+    assert "runbooks/new-cuda-version" in cm, (
+        "the runbook is not referenced from docs/context-map.md")

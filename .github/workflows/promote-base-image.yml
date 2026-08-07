@@ -225,7 +225,17 @@ jobs:
               11.*) floor=11.8 ;;
               12.*) floor=12.0 ;;
               13.*) floor=13.0 ;;
-              *)    floor=11.8 ;;
+              *)
+                # FAIL, do not default. A new CUDA major added to the config table
+                # without a floor here would silently inherit 11.8 and QA would be
+                # free to rent a host whose driver only supports CUDA 11.8 to test
+                # it. That fails closed (the GPU tests go red, the tag holds) but it
+                # presents as a broken IMAGE, sending whoever is on call to debug a
+                # build that is fine. Name the real cause instead.
+                echo "::error::${key}: CUDA major of '${auto}' has no driver floor."
+                echo "::error::Add a '${auto%%.*}.*) floor=X ;;' branch to this case"
+                echo "::error::statement (see docs/runbooks/new-cuda-version.md)."
+                exit 1 ;;
             esac
             manifest_entry=$(jq -nc --arg k "$key" --arg t "$tpl" --arg a "$auto" \
               --arg tg "$target" --arg cu "$current" --arg dp "$dptag" --arg fl "$floor" \

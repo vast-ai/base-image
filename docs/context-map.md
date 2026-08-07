@@ -1,5 +1,12 @@
 # Context map
 
+## Runbooks — start here for a routine operation
+
+- [runbooks/new-cuda-version.md](runbooks/new-cuda-version.md) — add, bump or
+  retire a CUDA version in base-image: config table → driver floor → build →
+  QA-gated, human-approved promotion, and what each failure message means. The
+  rules it states are enforced by tests, not just written down.
+
 Where things live and what they're responsible for. A monorepo that builds the
 Vast.ai Docker image family: a CUDA/ML base image + a tree of derived application
 images, sharing a common runtime overlay (`ROOT/`), built and promoted to DockerHub
