@@ -24,10 +24,32 @@ TEST_SERVER_PORT = 10199
 
 # ── Timeouts (seconds) ───────────────────────────────────────────────────
 DEFAULT_TEST_TIMEOUT = 7200      # 2 hours — total time for test suite to complete
-POLL_TIMEOUT = 2400              # 40 min — max wait for instance to reach "running"
-                                 # (boot + image pull; beyond this the box is bad).
-                                 # Bounded well under the GitHub 6h job cap — see
-                                 # the runtime budget in ADR 0005.
+def _env_int(name, default):
+    """Parse an int env var defensively — a bad value falls back to the default
+    (and clamps to >= 1) rather than crashing the script at import."""
+    try:
+        return max(1, int(os.environ.get(name) or default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+# Max wait for an instance to reach "running" (boot + image pull); beyond this the
+# box is treated as bad and the client moves to the next offer. Bounded well under
+# the GitHub 6h job cap — see the runtime budget in ADR 0005.
+#
+# Overridable because 40 min is calibrated for the worst case this client serves —
+# a derivative pulling a 100 GB model — and is far too generous for a workload
+# whose whole expected runtime is minutes. Base-image QA pulls a 10-20 GB image and
+# downloads no model; observed passing cells complete the ENTIRE test in 2-8 min.
+# At that scale a 40 min loading cap means one pathologically slow host burns 40
+# minutes before the client tries another, and with MAX_LAUNCH_ATTEMPTS offers the
+# phase is bounded only by the job cap.
+#
+# This is the right lever precisely because the alternative was already tried: a
+# loading-phase stall heuristic was evaluated and DROPPED (see the note below) —
+# Vast exposes no reliable liveness signal to key on. So the loading phase can only
+# be bounded by a timeout, and the timeout should match the workload.
+POLL_TIMEOUT = _env_int("QA_POLL_TIMEOUT", 2400)
 POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-id call)
 # NOTE: a loading-phase stall heuristic (abandon an offer whose status_msg stays
 # frozen pre-"running") was evaluated and DROPPED — a captured cadence trace

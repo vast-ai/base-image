@@ -225,7 +225,17 @@ jobs:
               11.*) floor=11.8 ;;
               12.*) floor=12.0 ;;
               13.*) floor=13.0 ;;
-              *)    floor=11.8 ;;
+              *)
+                # FAIL, do not default. A new CUDA major added to the config table
+                # without a floor here would silently inherit 11.8 and QA would be
+                # free to rent a host whose driver only supports CUDA 11.8 to test
+                # it. That fails closed (the GPU tests go red, the tag holds) but it
+                # presents as a broken IMAGE, sending whoever is on call to debug a
+                # build that is fine. Name the real cause instead.
+                echo "::error::${key}: CUDA major of '${auto}' has no driver floor."
+                echo "::error::Add a '${auto%%.*}.*) floor=X ;;' branch to this case"
+                echo "::error::statement (see docs/runbooks/new-cuda-version.md)."
+                exit 1 ;;
             esac
             manifest_entry=$(jq -nc --arg k "$key" --arg t "$tpl" --arg a "$auto" \
               --arg tg "$target" --arg cu "$current" --arg dp "$dptag" --arg fl "$floor" \
@@ -313,6 +323,13 @@ jobs:
       require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
+      # Base QA pulls a 10-20 GB image and downloads no model; observed passing
+      # cells complete the ENTIRE test in 2-8 min. The client's 40 min default is
+      # calibrated for a derivative fetching a 100 GB model, so here it means a
+      # slow host burns 40 min per launch attempt before the client moves on —
+      # which is exactly what happened on run 31174508116. 15 min is still ~2x the
+      # slowest observed full cell.
+      poll_timeout: "900"
       max_price: "1.00"
       timeout: "2400"
       extra_env: |

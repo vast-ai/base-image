@@ -100,6 +100,36 @@ extra_filters:
   # here, not less. Good hosts sit ~0.92-0.99.
   reliability2:
     gte: 0.95
-# CUDA -devel bases are large (~10-20 GB) and the disk must hold the image plus
-# workspace; a too-small disk surfaces as bad_instance, not as a clear error.
+  # A host that forwards very few ports is usually not a plain datacentre box —
+  # it is proxied/VPN-fronted, and those hosts pull images pathologically slowly
+  # even when they ADVERTISE fast links. That last part is why this floor exists
+  # instead of an inet_down floor: measured against 930 live offers matching these
+  # same floors, hosts with <8 forwardable ports still advertised a median 253
+  # Mbps, so a bandwidth floor would not have excluded them. Reported bandwidth is
+  # a claim; port count is a structural property of how the host is connected.
+  #
+  # Distribution across that sample: median 99, mode 64-127 (34%), and a thin tail
+  # of 17% below 32. gte 64 keeps ~751 offers — 75x what a promotion needs — while
+  # excluding that whole tail.
+  #
+  # DIRECTION: like cuda_max_good this is a LOWER bound and must stay one. An
+  # `lte` here would select FOR the restricted hosts this exists to avoid.
+  direct_port_count:
+    gte: 64
+  # THE DISK FLOOR THAT ACTUALLY FILTERS. recommended_disk_space (below) only sizes
+  # the instance request; without this, offers were never filtered on available disk
+  # at all. Measured the day this was added: of 773 offers admitted by the other
+  # floors, 31 (4%) could not satisfy the 64 GB the client then requested — the
+  # smallest had 9 GB, against a CUDA -devel image of 10-20 GB before any workspace.
+  # Those were rented and only then rejected by the post-launch disk check, burning
+  # a launch attempt each time.
+  #
+  # Keep this >= recommended_disk_space. A floor BELOW it looks like the axis is
+  # covered while still admitting boxes too small to hold the image — which is why
+  # L058 checks the relationship, not merely the presence.
+  disk_space:
+    gte: 64
+# The disk the instance REQUESTS at create time. On its own this filters NOTHING —
+# the disk_space floor in extra_filters above is what stops an offer too small to
+# hold the image being selected. Both must move together; L058 enforces that.
 recommended_disk_space: 64.0
