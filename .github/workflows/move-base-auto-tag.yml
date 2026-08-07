@@ -1,0 +1,252 @@
+# Point a cuda-X.Y.Z-auto tag at a digest that is ALREADY in production.
+#
+# This is the ONLY way to move an auto tag without same-run QA evidence, and it
+# is deliberately a workflow of its own rather than a flag on the promotion.
+# Two jobs, both of them real:
+#
+#   Rolling back — a bad image reached an auto tag and customers are hitting it.
+#   Promotion is slow and evidence-bound by design; this has to be usable by a
+#   woken-up human with an incident open and no QA budget.
+#
+#   Moving forward without CI evidence — QA could not run (key rotated, market
+#   thin, harness broken) but the bits were verified by hand. Promote first: the
+#   dated prod tags land regardless of any hold, so the image is already in
+#   production under its explicit name. Then point the auto tag at it here.
+#
+# That second case used to be a SKIP_QA flag on the promotion. It was removed
+# (ADR 0019, amended 2026-08-07) because a skipped promotion could be relabelled
+# as a gated one simply by re-dispatching the same staging date, leaving no
+# record that anything was skipped. Doing it here instead costs one extra
+# dispatch and buys a separate approval, a separate run, a mandatory reason, and
+# a Slack line that says plainly what happened.
+#
+# Three things keep it from being a hole in the gate:
+#
+#   1. The source must already exist under the PRODUCTION namespace. Staging refs
+#      and foreign registries are refused, so this can only point a tag at bits
+#      that were promoted — never at something that skipped promotion entirely.
+#   2. It requires the `production` environment approval — the same reviewers as
+#      a promotion. Fast is not the same as unattended.
+#   3. It refuses a source whose CUDA minor differs from the tag being written.
+#
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN,
+# DOCKERHUB_NAMESPACE. Optional: SLACK_WEBHOOK_URL.
+
+name: Move Base Auto Tag
+
+run-name: >-
+  MOVE cuda-${{ inputs.CUDA_VERSION }}-auto -> ${{ inputs.TARGET }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      CUDA_VERSION:
+        description: "Which auto tag to move, as the bare version (e.g. 12.9)"
+        required: true
+        type: string
+      TARGET:
+        description: >-
+          What it should point at. A tag under the production base-image repo
+          (e.g. cuda-12.9.1-cudnn-py312-2026-06-10) or a bare sha256: digest.
+          Must already exist in production.
+        required: true
+        type: string
+      REASON:
+        description: "Why this tag is being moved by hand (shown at approval and in Slack)"
+        required: true
+        type: string
+      DRY_RUN:
+        description: "Resolve and validate, but write nothing"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  # Shares promote's group: a rollback racing a promotion on the same auto tag is
+  # how you get an unpredictable final digest.
+  group: base-image-promote
+  cancel-in-progress: false
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    # Same gate as a promotion. The escape hatch is fast because it skips QA, not
+    # because it skips people.
+    environment: production
+    steps:
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Log in to DockerHub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+            crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Resolve and validate
+        id: resolve
+        env:
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          CUDA_VERSION: ${{ inputs.CUDA_VERSION }}
+          TARGET: ${{ inputs.TARGET }}
+          # Via env:, never spliced into the script. An incident reason containing a
+          # quote is a bash syntax error that breaks the escape hatch on exactly the
+          # input it exists to receive; one containing $(...) would execute.
+          REASON: ${{ inputs.REASON }}
+        run: |
+          set -euo pipefail
+          REPO="${NAMESPACE_PROD}/base-image"
+          AUTO_TAG="${REPO}:cuda-${CUDA_VERSION}-auto"
+
+          # The version is pasted by a human under pressure; a typo here writes a
+          # tag nobody is watching. The real auto tags are PATCH-versioned —
+          # promote derives them from tag_template with a greedy sed, so
+          # cuda-12.9.2-cudnn-devel-ubuntu24.04 yields cuda-12.9.2-auto. A
+          # two-component-only rule refuses every tag that actually exists, and
+          # accepts `12.9`, which either matches nothing or matches a frozen
+          # orphan — a rollback that reports success and changes nothing.
+          if [[ ! "$CUDA_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "CUDA_VERSION must look like 12.9.2 (or 12.9), got '${CUDA_VERSION}'" >&2
+            exit 1
+          fi
+          # major.minor of the REQUESTED tag, for the CUDA-minor guard below.
+          REQ_MM="${CUDA_VERSION%.*}"
+          [[ "$CUDA_VERSION" == *.*.* ]] || REQ_MM="$CUDA_VERSION"
+
+          # Refuse anything that is not already in the production repo. This is
+          # what stops rollback being a way to ship untested bits: a foreign
+          # registry, a staging namespace, or another repo is rejected outright
+          # rather than normalised into something plausible.
+          case "$TARGET" in
+            sha256:*)      SRC="${REPO}@${TARGET}" ;;
+            *:*|*/*)
+              echo "TARGET must be a bare tag or a sha256: digest within ${REPO}." >&2
+              echo "Got '${TARGET}' — a registry, namespace or repo prefix is not accepted," >&2
+              echo "so a rollback can never introduce bits from outside production." >&2
+              exit 1 ;;
+            *)             SRC="${REPO}:${TARGET}" ;;
+          esac
+
+          if ! SRC_DIGEST=$(crane digest "$SRC" 2>/dev/null); then
+            echo "Rollback source does not exist: ${SRC}" >&2
+            exit 1
+          fi
+
+          if CUR_DIGEST=$(crane digest "$AUTO_TAG" 2>/dev/null); then
+            echo "current: ${AUTO_TAG} -> ${CUR_DIGEST}"
+          else
+            echo "No existing ${AUTO_TAG}. This workflow MOVES an existing auto tag;" >&2
+            echo "it does not create one. If the tag does not exist yet, promote." >&2
+            exit 1
+          fi
+
+          if [[ "$SRC_DIGEST" == "$CUR_DIGEST" ]]; then
+            echo "${AUTO_TAG} already points at ${SRC_DIGEST} — nothing to do." >&2
+            exit 1
+          fi
+
+          # The check that matters at 3am: is the thing you are about to put on
+          # cuda-12.9-auto actually a 12.9 image? Vast resolves customer templates
+          # through these tags, so a mismatched rollback silently changes the CUDA
+          # userland under every instance that lands on it. nvidia/cuda sets
+          # CUDA_VERSION in the image env; we compare its major.minor.
+          img_cuda=$(crane config --platform linux/amd64 "$SRC" 2>/dev/null \
+            | jq -r '(.config.Env // [])[] | select(startswith("CUDA_VERSION=")) | sub("^CUDA_VERSION=";"")' \
+            | head -1)
+          if [[ -z "$img_cuda" ]]; then
+            echo "Could not read CUDA_VERSION from ${SRC}. Refusing to guess." >&2
+            echo "(A stock-ubuntu image has no CUDA and no auto tag — check TARGET.)" >&2
+            exit 1
+          fi
+          img_mm="${img_cuda%.*}"
+          # A patch-level difference is expected and fine: cuda-12.9.2-auto may be
+          # rolled back to a 12.9.1 build. A MINOR difference is not — so compare
+          # major.minor to major.minor, never to the raw input.
+          if [[ "$img_mm" != "$REQ_MM" ]]; then
+            echo "REFUSING: ${SRC} is a CUDA ${img_cuda} image, but you asked to put it" >&2
+            echo "on cuda-${CUDA_VERSION}-auto (minor ${REQ_MM}). That would change the CUDA" >&2
+            echo "minor served" >&2
+            echo "to every instance resolving that tag." >&2
+            exit 1
+          fi
+
+          # Phase A of the auto-tag dance needs an anchor whose digest differs from
+          # both the current and the intended content, so the registry records a
+          # genuine push ordering (ADR 0013 / the dance in promote-base-image.yml:
+          # Vast's @vastai-automatic-tag backend resolves by newest push, so an
+          # unchanged re-push does not advance anything). Any other auto tag whose
+          # digest differs will do.
+          ANCHOR=""
+          for cand in $(crane ls "$REPO" 2>/dev/null | grep -E '^cuda-[0-9]+(\.[0-9]+)+-auto$' || true); do
+            [[ "$cand" == "cuda-${CUDA_VERSION}-auto" ]] && continue
+            if d=$(crane digest "${REPO}:${cand}" 2>/dev/null); then
+              if [[ "$d" != "$SRC_DIGEST" && "$d" != "$CUR_DIGEST" ]]; then
+                ANCHOR="${REPO}@${d}"; break
+              fi
+            fi
+          done
+
+          {
+            echo "auto_tag=${AUTO_TAG}"
+            echo "src=${SRC}"
+            echo "src_digest=${SRC_DIGEST}"
+            echo "cur_digest=${CUR_DIGEST}"
+            echo "anchor=${ANCHOR}"
+            echo "img_cuda=${img_cuda}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Manual auto-tag move: \`cuda-${CUDA_VERSION}-auto\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| reason | ${REASON} |"
+            echo "| from (current) | \`${CUR_DIGEST}\` |"
+            echo "| to | \`${SRC}\` |"
+            echo "| to digest | \`${SRC_DIGEST}\` |"
+            echo "| image CUDA | ${img_cuda} |"
+            echo ""
+            echo "**To undo this move**, re-run this workflow with"
+            echo "\`TARGET=${CUR_DIGEST}\` — that is the digest being moved away from."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Move the auto tag
+        if: ${{ inputs.DRY_RUN != true }}
+        env:
+          AUTO_TAG: ${{ steps.resolve.outputs.auto_tag }}
+          SRC: ${{ steps.resolve.outputs.src }}
+          ANCHOR: ${{ steps.resolve.outputs.anchor }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ANCHOR" ]]; then
+            echo "Phase A: ${AUTO_TAG} -> anchor ${ANCHOR}"
+            crane copy "$ANCHOR" "$AUTO_TAG"
+          else
+            # Only possible when no other auto tag has a distinct digest. The write
+            # still lands; what is lost is the guaranteed ordering advance, so say
+            # so rather than reporting a clean rollback.
+            echo "WARN: no distinct anchor available — writing directly. Vast's"
+            echo "automatic-tag resolution may not treat this as a newer push."
+          fi
+          echo "Phase B: ${AUTO_TAG} -> ${SRC}"
+          crane copy "$SRC" "$AUTO_TAG"
+          echo "Rolled back. Now: $(crane digest "$AUTO_TAG")"
+
+      - name: Notify Slack
+        if: ${{ always() && inputs.DRY_RUN != true }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          CUDA_VERSION: ${{ inputs.CUDA_VERSION }}
+          REASON: ${{ inputs.REASON }}
+          SRC_DIGEST: ${{ steps.resolve.outputs.src_digest }}
+          CUR_DIGEST: ${{ steps.resolve.outputs.cur_digest }}
+        run: |
+          set -euo pipefail
+          [[ -z "${SLACK_WEBHOOK_URL:-}" ]] && exit 0
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            text="MANUAL AUTO-TAG MOVE (no CI QA evidence): cuda-${CUDA_VERSION}-auto -> ${SRC_DIGEST} (was ${CUR_DIGEST}). Reason: ${REASON}"
+          else
+            text="MANUAL AUTO-TAG MOVE FAILED for cuda-${CUDA_VERSION}-auto — the tag may be unchanged OR mid-dance. Check the run before retrying. Reason given: ${REASON}"
+          fi
+          jq -n --arg t "$text" '{text: $t}' | \
+            curl -sS -X POST -H 'Content-type: application/json' -d @- "$SLACK_WEBHOOK_URL" >/dev/null

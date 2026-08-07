@@ -63,12 +63,19 @@ write_results() {
     local elapsed=$((now_epoch - START_EPOCH))
 
     local tests_json=""
-    for i in "${!TEST_NAMES[@]}"; do
+    # `local idx`, NOT a bare `i`: this function is called from inside the runner's
+    # own `for i in "${!ALL_TESTS[@]}"` loop, and bash has no function-local scope
+    # unless asked for one. A bare `i` here left the caller's index pointing at the
+    # LAST test, so every per-test state was written to the wrong slot — each test
+    # finished by marking the final entry, and every earlier entry stayed "running"
+    # even on a clean pass.
+    local idx
+    for idx in "${!TEST_NAMES[@]}"; do
         [[ -n "$tests_json" ]] && tests_json+=","
         tests_json+=$(printf '{"name":"%s","state":"%s","duration_s":%s}' \
-            "$(_json_escape "${TEST_NAMES[$i]}")" \
-            "${TEST_STATES[$i]}" \
-            "${TEST_DURATIONS[$i]}")
+            "$(_json_escape "${TEST_NAMES[$idx]}")" \
+            "${TEST_STATES[$idx]}" \
+            "${TEST_DURATIONS[$idx]}")
     done
 
     local json
@@ -494,6 +501,54 @@ for i in "${!ALL_TESTS[@]}"; do
 
     write_results "running"
 done
+
+# Required-pass gate (ADR 0019). A QA template names the tests that MUST have
+# PASSED — not skipped, not missing from the image, not left unreached by an
+# earlier fatal. Without this, a test that self-skips is indistinguishable from
+# one that ran clean: the GPU suite skips itself on a box where nvidia-smi or
+# libcuda is unavailable, and the runner reports the whole suite green, so a QA
+# gate could certify an image whose CUDA userland never loaded.
+#
+# Opt-in by design: unset (every customer instance, and any image not being
+# gated on it) keeps the existing skip-is-fine behaviour.
+if [[ -n "${INSTANCE_TEST_REQUIRE_PASS:-}" ]]; then
+    echo "─── Required-pass gate: ${INSTANCE_TEST_REQUIRE_PASS} ───" | log_output
+    # Accept comma- and/or whitespace-separated names.
+    # read -ra, not an unquoted expansion: word-splitting is wanted, pathname
+    # expansion is not. An unquoted $_required_raw containing a `*` would glob
+    # against the CWD and silently rewrite the required list.
+    read -ra _required_names <<< "${INSTANCE_TEST_REQUIRE_PASS//,/ }"
+    for _req in "${_required_names[@]}"; do
+        [[ -z "$_req" ]] && continue
+        _found=false
+        _state=""
+        # `_idx`, not `i` — the runner's test loop owns `i` at top level (see the
+        # note in write_results); reusing it here would work only by accident of
+        # this block running last.
+        for _idx in "${!TEST_NAMES[@]}"; do
+            if [[ "${TEST_NAMES[$_idx]}" == "$_req" ]]; then
+                _found=true
+                _state="${TEST_STATES[$_idx]}"
+                break
+            fi
+        done
+        # NOTE: deliberately not prefixed with the "→" verdict marker. The client
+        # (test_template.py) attributes any line starting with → to the test named
+        # by the preceding "─── Running: ─── " header, and by this point that is
+        # cleared — such a line would bump the failed counter while attaching to no
+        # test. The gate's effect reaches the client through has_failure, which
+        # makes the final result event "failed"; that is the authoritative path.
+        if ! $_found; then
+            has_failure=true
+            echo "  REQUIRED-FAIL ${_req}: missing from this image" | log_output
+        elif [[ "$_state" != "passed" ]]; then
+            has_failure=true
+            echo "  REQUIRED-FAIL ${_req}: did not pass (state=${_state})" | log_output
+        else
+            echo "  ok: ${_req}" | log_output
+        fi
+    done
+fi
 
 # Final state
 if $has_failure; then

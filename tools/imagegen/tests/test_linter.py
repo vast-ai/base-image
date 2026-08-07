@@ -681,3 +681,62 @@ def test_mut_llama_cuda_substring_backdoor_does_not_hide():
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))
+
+
+# ---- L057: a gating QA template must demand its tests actually ran (ADR 0019) ----
+
+_TRIO = "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+_FLOORS = "extra_filters:\n  compute_cap:\n    gte: 750\n"
+
+
+def _base_qa(img, env_line):
+    _write_template(img, f"name: Base QA\nimage: vastai/base-image\n{env_line}{_FLOORS}")
+
+
+def test_L057_base_qa_template_without_require_pass_fires(tmp_path):
+    """THE mutation: strip the declaration and the rule must fire. Without it a
+    self-skipping GPU test reports the suite green and the gate certifies an
+    image it never exercised."""
+    img = make(tmp_path, cls="base")
+    _base_qa(img, "")
+    assert has(img, tmp_path, "L057", "no env.INSTANCE_TEST_REQUIRE_PASS")
+
+
+def test_L057_partial_require_pass_fires_and_names_the_gap(tmp_path):
+    """Declaring only some of the trio is the subtler regression — the template
+    looks configured while the omitted test can still skip green."""
+    img = make(tmp_path, cls="base")
+    _base_qa(img, "env:\n  INSTANCE_TEST_REQUIRE_PASS: base/60-gpu-cuda\n")
+    assert has(img, tmp_path, "L057", "base/61-cuda-compute")
+
+
+def test_L057_full_trio_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _base_qa(img, f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {_TRIO}\n")
+    assert "L057" not in errs(img, tmp_path)
+
+
+def test_L057_accepts_comma_separated(tmp_path):
+    img = make(tmp_path, cls="base")
+    _base_qa(img, "env:\n  INSTANCE_TEST_REQUIRE_PASS: "
+                  "base/60-gpu-cuda,base/61-cuda-compute,base/62-gpu-libraries\n")
+    assert "L057" not in errs(img, tmp_path)
+
+
+def test_L057_is_scoped_to_base_for_now(tmp_path):
+    """comfyui-qa/vllm-qa have the same hole, but widening the rule to them must
+    re-validate two live, currently-passing gates — not something a linter rule
+    should do silently. Scope is deliberate; this pins it."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    assert "L057" not in errs(img, tmp_path)
+
+
+def test_L050_L054_now_apply_to_base(tmp_path):
+    """Base was exempt from the template rules until it had a template of its own
+    (ADR 0019). A floor-less base QA template must fire L050."""
+    img = make(tmp_path, cls="base")
+    _write_template(img, "name: Base QA\nimage: vastai/base-image\n"
+                         f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {_TRIO}\n"
+                         "extra_filters:\n  gpu_ram:\n    gte: 8192\n")
+    assert "L050" in errs(img, tmp_path)

@@ -133,7 +133,8 @@ Shape:
   and held-digest age — in the approval summary and Slack. Dated-tag copies proceed for
   all configs (dated tags are opt-in by explicit reference; the gate's claim is the
   `-auto` surface). There is no `EXCLUDE` input; a loud, reasoned, human-approved
-  `SKIP_QA` bypass exists under condition 3's guardrails (2026-08-05 amendment).
+  there is no bypass at all (condition 3, as amended 2026-08-07 — the `SKIP_QA`
+  flag added on 2026-08-05 was removed).
 - **Fail-not-skip:** the in-instance runner gains a required-pass gate
   (`INSTANCE_TEST_REQUIRE_PASS`: a named test that is skipped, **missing**, or
   unreached marks the suite failed), and CI independently re-asserts the per-cell
@@ -148,12 +149,20 @@ Shape:
   major-baseline is both representative (a 13.0-driver host legitimately serves 13.3
   bits) and keeps the offer pool wide. CI tightening of floors is **raise-only**
   (`create.py --set-filter`), preserving the linted floor guarantee at rent time.
-- **Rollback:** a separate tiny dispatch workflow runs **only the dance** against
-  already-promoted prod dated tags of a prior staging date — no build, no copies, no
+- **Manual auto-tag move:** a separate tiny dispatch workflow
+  (`move-base-auto-tag.yml`) runs
+  **only the dance** against already-promoted prod tags — no build, no copies, no
   QA, seconds, still `environment: production`, and **in the same
   `base-image-promote` concurrency group** as promote so the two dances can never
   interleave. Safe because it can only repoint auto tags at bits that already went
-  through promotion; rolling *forward* untested bits remains impossible.
+  through promotion; rolling *forward* untested bits remains impossible. As built it
+  refuses any `TARGET` carrying a registry, namespace or repo prefix (so the source
+  is always the production `base-image` repo), and refuses a source whose own
+  `CUDA_VERSION` minor differs from the auto tag being written — putting a 12.4 image
+  on `cuda-12.9-auto` is the single most damaging typo available at 3am, and it looks
+  exactly like a correct command. It reports the digest it moved away from, because
+  rolling forward again after the real cause is found should not require registry
+  archaeology during an incident.
 - **Config table extracted** to a single machine-readable file consumed by both
   workflows (matrices proven byte-identical before anything else moves). The auto-tag
   version stays **derived** from `tag_template` (no hand-maintained field — a second
@@ -187,27 +196,49 @@ refused, this decision is void.
 3. **(extends 0005 as cond 13) No silent or automated bypass; fail-closed.** The
    promote path has no soft-pass and no `schedule:` trigger; when QA is not skipped, a
    missing `VAST_API_KEY` fails the run before any spend.
-   *(Amended 2026-08-05, owner decision. This condition originally read "no bypass
-   input"; the final critical review rated a skip input the single most likely
-   gate-erosion path — "used the first time the gate is inconvenient, then every time
-   after" — and that finding stands recorded, not overturned. The owner accepts the
-   risk because some promotions are preceded by hands-on manual testing.)*
-   A `SKIP_QA` dispatch input exists, under four non-negotiable guardrails:
-   - `SKIP_REASON` is mandatory — an empty reason fails pre-flight;
-   - it is loud at the moment of decision: the approval summary renders a prominent
-     warning naming every auto tag that will flip **without automated evidence**, with
-     the reason verbatim, and the Slack notification carries a distinct
-     "promoted WITHOUT automated QA" headline;
-   - the skip waives only the flip⇒evidence requirement — digest pinning,
-     copy-by-digest, the concurrent-promotion abort and the staging-drift checks all
-     still run (the bypass skips the test, never the integrity chain);
-   - **usage tripwire:** if more than 1 of any 4 consecutive promotions is skipped,
-     the flag's premise is void — either the gate is too painful (fix the gate) or
-     skipping is becoming the default path (remove the flag); resolved by ADR
-     amendment, with the run history as the record.
-   The rollback workflow remains the only other un-QA'd prod write and can only
-   repoint to already-promoted bits. Artifacts: dispatch-inputs, trigger, needs-edge,
-   concurrency-group, `require_key`, mandatory-reason and warning-banner guard tests.
+   *(Amended 2026-08-05, then AMENDED AGAIN 2026-08-07 — owner decision. The
+   condition originally read "no bypass input". The 2026-08-05 amendment added a
+   `SKIP_QA` dispatch input under four guardrails, over the recorded objection that
+   a skip input was the single most likely gate-erosion path — "used the first time
+   the gate is inconvenient, then every time after". **That objection has now won:
+   `SKIP_QA` is removed.** The condition reverts to its original form, and the
+   removal is stronger than the original because it comes with a sanctioned
+   alternative and executed tests.)*
+
+   **There is no QA bypass. An image that does not pass QA does not reach an
+   `-auto` tag via CI.** No dispatch input, no environment variable, no argument to
+   `verify_qa_evidence`. Not a flag defaulting to off — absent, and asserted absent.
+
+   What removed it was not the erosion argument but a concrete laundering path
+   found in implementation review, and reproduced: the skip's untested-ness stuck
+   to the RUN, not to the DIGEST. Dispatch with `SKIP_QA=true`, then immediately
+   re-dispatch the same `STAGING_DATE` with `SKIP_QA=false`. By then prod holds the
+   untested digest, so `target == current` for every config, the QA matrix is empty,
+   the `qa` job is skipped entirely, and every row classifies
+   `flip / "digest unchanged (re-push only)"` — zero holds, zero GPUs, no banner, no
+   warning status, no "QA SKIPPED" in the run name. Cond 3's tripwire named the run
+   history as its record; a two-minute sequence that relabels a skipped promotion as
+   a gated one does not weaken that control, it removes it.
+
+   **Holding costs less than it appears to, which is what makes removal affordable.**
+   A held auto tag does not block shipping: the dated prod tags are promoted
+   regardless of the flip/hold decision, so the bits are in production under their
+   explicit names and only the customer-facing pointer waits for evidence. Verified
+   behaviourally — with every config held, 12 prod dated tags still land and no auto
+   tag moves.
+
+   **The sanctioned alternative** for "verified by hand, QA cannot run" is the
+   `Move Base Auto Tag` workflow (`move-base-auto-tag.yml`, renamed from
+   `rollback-base-auto.yml` because it is now the forward path as well as the
+   rollback path). Promote first, then move the tag there. It costs one extra
+   dispatch and buys: a separate `production` approval, a separate run, a mandatory
+   reason, a Slack line that says "MANUAL AUTO-TAG MOVE (no CI QA evidence)", a
+   refusal of any source outside the production repo, and a refusal of a CUDA-minor
+   mismatch. Crucially the record attaches to the tag move itself, so no subsequent
+   promotion can relabel it.
+   Artifacts: dispatch-inputs, trigger, needs-edge, concurrency-group, `require_key`
+   guard tests, plus executed tests asserting that no env combination reaches
+   "QA gate ready" without the key and that `classify_configs` has no skip parameter.
 4. **(extends 0005 as cond 14) Pre-committed de-scoping fallback.** If more than 1 in 3
    promotions hold on infrastructure (not real image defects), the gating set is cut to
    a representative 4 (oldest CUDA, newest CUDA, each ubuntu base) and the rest labeled
@@ -216,6 +247,9 @@ refused, this decision is void.
    (the promoted index's arm64 child is never booted); default-python index only (the
    exact `-auto` surface); mini variants and non-default pythons promote untested via
    dated tags; single-GPU; no pre-Turing. The approval summary and the ADR say so.
+   *(As built: the summary renders a "What a `flip` here does and does not certify"
+   section under the decision table, so the approver reads the limits in the same
+   place as the verdicts rather than having to come here for them.)*
 6. **Fail-not-skip proven by mutation.** The GPU-less-box case turns the suite red under
    the required-pass gate (and stays green-skip without it); required-test
    missing/unreached cases covered; per-cell matrix required-sets pinned by a guard
@@ -225,11 +259,41 @@ refused, this decision is void.
 8. **Recovery mechanics verified:** alias tags carry no `run_attempt`; cleanup deletes
    them only after successful promote (next run sweeps strays); "Re-run failed jobs"
    demonstrated to re-test the same pinned digest.
-9. **Honest operating numbers:** ~2.5 h typical dispatch→approval at `max-parallel: 2`
-   (6 waves), 4–5 h bad day; GPU ~$2.50 typical, $10 budgeted, `max_price 1.00`. The
-   account-level semaphore (0005 cond 6) remains deferred; promotions are staggered off
-   the other gates' cron edges, and the semaphore is revisited at the next image
-   onboarding.
+9. **Honest operating numbers.** *(Corrected 2026-08-07 from the first full CI run,
+   31170473940 — the original figures were estimates and were wrong by ~6x. They are
+   replaced here rather than annotated, because a stale estimate in a condition is
+   what the next person sizing this will trust.)*
+
+   Measured, 10 cuda cells against staging date 2026-08-06 at `max-parallel: 2`:
+
+   | | |
+   |---|---|
+   | QA phase, dispatch → approval requested | **~25 min** (estimated 2.5 h) |
+   | per-cell duration | median **3.3 min**, slowest **13.6 min** |
+   | total cell time | ~43 min |
+   | HTTP 429s | **0** |
+   | no-offer retries | **0** |
+   | cells passing | 10 of 10 |
+
+   `max-parallel` was raised 2 → 4 on this evidence. The ceiling is set by the tail,
+   not by the rate limit: the slowest single cell puts a ~13.6 min floor under the
+   phase, so 4 captures essentially all the available speedup (2→4 saves ~10 min;
+   4→10 saves nothing measurable). It is not raised further because the cost is not
+   only API pressure — concurrent cells query the same thin offer market, and two
+   cells racing for one box surfaces as `bad_instance` (exit 3), which is
+   deliberately never retried, so contention converts passes into holds.
+
+   Ten minutes is in any case small against the human approval that follows, which
+   is the real latency in this pipeline. Optimising the QA phase further is not
+   where the time is.
+
+   GPU cost tracked at ~$2.50 typical, $10 budgeted, `max_price 1.00`. The
+   account-level semaphore (0005 cond 6) remains deferred and is the proper fix;
+   promotions are staggered off the other gates' cron edges (comfyui and vllm at
+   00:00/12:00 UTC), and the semaphore is revisited at the next image onboarding.
+
+   **Caveat on generality:** one run, on one day, on a market that was not thin.
+   The zero-429 result licenses 4, not 10, and says nothing about a bad day.
 10. **Known carried defect recorded:** the dance's Phase A points each auto tag at
     another config's (QA-passed) image for a seconds-long window — pre-existing,
     unchanged in v1 to keep the dance byte-identical. Named follow-up with a **proven
@@ -250,6 +314,54 @@ refused, this decision is void.
     probe that new instances resolve the renamed tag before orphan cleanup. ADR 0005's
     stale "all qa jobs share the `concurrency: qa-vast-account` group" sentence (its
     rollout section contradicts its own Decision) is corrected as part of this work.
+
+## Implementation notes (added 2026-08-07, after the build review)
+
+The build was reviewed as an implementation once complete. Two findings are recorded
+here because they change what the conditions above are worth, not just the code:
+
+- **The gate shipped disarmed, and every guard test passed anyway.** The hold check
+  was written into the `dry-run` job instead of `promote`, so production would have
+  flipped every auto tag with no reference to the QA decisions at all. The guard test
+  intended to prevent exactly this searched the whole workflow file for the check's
+  text, found the copy sitting in `dry-run`, and went green. A structural property
+  needs a structurally *scoped* test: the tests now slice the `promote` job out of the
+  file by name and additionally assert the check exists **nowhere else**, so relocating
+  it fails the suite rather than passing it twice over.
+- **A shared workflow can be broken by a change that looks local.** Making the verdict
+  reach the shell via `eval` of a tool's stdout broke every QA cell for every consumer
+  of `qa-gate.yml` — including the live vLLM and ComfyUI gates — because a *passing*
+  verdict's reason contains parentheses, which is a bash syntax error under `set -e`.
+  The verdict now travels through `$GITHUB_OUTPUT` as a heredoc and never reaches the
+  shell as text to evaluate.
+
+Both were caught by review, not by CI, and neither would have been caught by the
+12 live-GPU validation runs — those exercised `qa-gate.yml` directly, never the
+promote wiring around it.
+
+A second review round then found three more of the same shape, two of them
+introduced *by the fixes above*: the `dry-run` loop lost five assignments when the
+misplaced gate block was removed from it; the new rollback workflow's version
+regex accepted `12.9` and refused `12.9.2`, while every auto tag that exists is
+patch-versioned, so the escape hatch was inert; and deleting the single word
+`continue` from the hold branch flips every held tag, with all 19 guard tests
+green.
+
+The conclusion is about the tests, not the lines. Every safety property here is
+bash inside YAML, and asserting that a *string* appears in that YAML cannot
+distinguish a working gate from a disarmed one. So the wiring is now executed:
+`tools/template_manager/tests/wfexec.py` extracts a step's `run:` script and runs
+it under bash with a stub `crane` over a fake registry, and the tests assert the
+digest each auto tag ends up holding. Of eight disarming mutations, six are
+invisible to the string-matching suite and caught only by execution; the other
+two are static consistency properties (the four copies of the required-test list,
+and — until it was removed outright — the `SKIP_QA` default) now pinned
+structurally.
+
+This does not replace the structural tests — the job graph, the `production`
+environment placement and the trigger set are still asserted against parsed YAML,
+because those are not properties of any one script. The two layers fail
+differently, which is the point.
 
 ## Consequences
 
@@ -281,9 +393,10 @@ refused, this decision is void.
 
 ## What would reverse this
 
-- **The `SKIP_QA` tripwire firing** (more than 1 of any 4 consecutive promotions
-  skipped): the flag is removed or the gate's pain point is fixed — either way by ADR
-  amendment, never by letting skips quietly become the norm.
+- **A promotion being blocked with no way forward.** Holding is affordable only
+  because dated tags still promote and `Move Base Auto Tag` exists. If operators
+  start reaching for `crane` by hand instead, the gate has become the thing it was
+  meant to prevent — revisit by ADR amendment, not by re-adding a flag.
 - Promoting older, already-QA'd staging dates becoming routine (not exceptional) — the
   same-run topology then taxes every re-promotion with a fresh sweep, and option B's
   digest-keyed attestation carrier becomes the right evolution; this ADR records it as

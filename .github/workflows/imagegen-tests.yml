@@ -10,12 +10,32 @@ on:
       - "tools/imagegen/**"
       - "tools/template_manager/**"
       - ".github/workflows/imagegen-tests.yml"
+      # The guard tests are worthless if they do not run on the PR that edits what
+      # they guard: a change to the promote workflow or the in-instance harness is
+      # exactly the edit that could disarm the gate.
+      - ".github/workflows/promote-base-image.yml"
+      - ".github/workflows/qa-gate.yml"
+      - ".github/workflows/build-base-image.yml"
+      - ".github/workflows/extend-base-image.yml"
+      - "ROOT/opt/instance-tools/tests/**"
+      - "configs/**"
+      - "templates/**"
   push:
     branches: [main]
     paths:
       - "tools/imagegen/**"
       - "tools/template_manager/**"
       - ".github/workflows/imagegen-tests.yml"
+      # The guard tests are worthless if they do not run on the PR that edits what
+      # they guard: a change to the promote workflow or the in-instance harness is
+      # exactly the edit that could disarm the gate.
+      - ".github/workflows/promote-base-image.yml"
+      - ".github/workflows/qa-gate.yml"
+      - ".github/workflows/build-base-image.yml"
+      - ".github/workflows/extend-base-image.yml"
+      - "ROOT/opt/instance-tools/tests/**"
+      - "configs/**"
+      - "templates/**"
 
 jobs:
   imagegen-tests:

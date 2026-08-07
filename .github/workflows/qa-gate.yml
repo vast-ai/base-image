@@ -58,6 +58,56 @@ on:
         required: false
         type: boolean
         default: true
+      # --- ADR 0019 additions. Every default reproduces today's behaviour exactly,
+      # so the existing comfyui/vllm callers are unaffected without touching them.
+      require_key:
+        description: >-
+          Fail (not skip) when VAST_API_KEY is absent. The default advisory-skip is a
+          deliberate rollout ramp, but for a consumer that calls itself a gate a missing
+          key silently turns gating back into no gating, with a green check.
+        required: false
+        type: boolean
+        default: false
+      require_tests:
+        description: >-
+          Space/comma-separated test names that must be PRESENT and PASSED in the
+          verdict payload. A skip is not a pass: the GPU trio skips itself when the
+          driver or CUDA userland is unavailable, and the suite then reports green.
+          This is the CI-side half of the runner's INSTANCE_TEST_REQUIRE_PASS gate —
+          it still fires if the template loses that env var.
+        required: false
+        type: string
+        default: ""
+      retries:
+        description: >-
+          Extra attempts on an INFRA-inconclusive outcome only (no_offers). Never on a
+          real failure, an instance crash or a config error — retrying a red is how a
+          gate becomes decoration. bad_instance is excluded too: it already exhausted
+          the client's own launch attempts.
+        required: false
+        type: number
+        default: 0
+      retry_delay:
+        description: "Seconds to wait between retries. A thin offer market does not change in 90s."
+        required: false
+        type: number
+        default: 300
+      evidence_name:
+        description: >-
+          Artifact name for this cell's verdict payload. Must be unique per matrix cell —
+          upload-artifact@v4 rejects duplicate names within a run. Empty = no upload.
+        required: false
+        type: string
+        default: ""
+      set_filters:
+        description: >-
+          Space-separated KEY.OP=VALUE floor overrides applied at template-create time
+          (e.g. "cuda_max_good.gte=13.0"). RAISE-ONLY — create.py rejects an override that
+          would widen selection, so the linted floors keep describing what gets rented.
+          Used by the base gate, whose 12 configs each need their own driver floor.
+        required: false
+        type: string
+        default: ""
     secrets:
       VAST_API_KEY:
         required: false
@@ -105,6 +155,13 @@ jobs:
         id: guard
         run: |
           if [ -z "${VAST_API_KEY}" ]; then
+            if [ "${{ inputs.require_key }}" = "true" ]; then
+              # A caller that gates promotion on this cannot treat a missing key as
+              # "skip, carry on" — that converts gating into no gating while still
+              # reporting green. Fail closed instead (ADR 0019 cond 3).
+              echo "::error::VAST_API_KEY not set and require_key=true — refusing to report a pass for a test that did not run."
+              exit 1
+            fi
             echo "::warning::VAST_API_KEY not set — skipping live QA (advisory; promotion not blocked)."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
@@ -125,11 +182,15 @@ jobs:
         id: create
         env:
           STAGING_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          SET_FILTERS: ${{ inputs.set_filters }}
         run: |
           IMAGE="${STAGING_NS}/${{ inputs.repo }}"
           echo "Testing ${IMAGE}:${{ inputs.tag }}"
+          SF=()
+          for f in ${SET_FILTERS}; do SF+=(--set-filter "$f"); done
           python "${TM}/create.py" "${{ github.workspace }}/${{ inputs.template_dir }}" \
             --image "${IMAGE}" --tag "${{ inputs.tag }}" \
+            "${SF[@]}" \
             --emit-result /tmp/qa-create.json
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -151,15 +212,37 @@ jobs:
           for p in ${LOG_PATHS}; do ARGS+=(--log "$p"); done
           while IFS= read -r kv; do [ -n "$kv" ] && ARGS+=(--env "$kv"); done <<< "${EXTRA_ENV}"
           if [ "${{ inputs.require_floor }}" = "true" ]; then ARGS+=(--require-floor); fi
-          set +e
-          python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
-            --destroy --raw --force --label "${{ inputs.label }}" \
-            --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
-            "${ARGS[@]}" \
-            > /tmp/qa-raw.json
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
-          set -e
-          echo "---- machine-readable verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
+
+          # Retry only an INFRA-inconclusive outcome (2 = no_offers: nothing in the
+          # market matched the floors, so the image was never tested). Never retry a
+          # real failure (1), an instance crash (5) or a config error (4) — retrying a
+          # red is how a gate turns into decoration. 3 (bad_instance) is excluded
+          # because the client already exhausted its own launch attempts internally.
+          ATTEMPTS=$(( ${{ inputs.retries }} + 1 ))
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            [ "$attempt" -gt 1 ] && echo "::notice::attempt ${attempt}/${ATTEMPTS} after an inconclusive market result"
+            set +e
+            python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
+              --destroy --raw --force --label "${{ inputs.label }}" \
+              --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
+              "${ARGS[@]}" \
+              > /tmp/qa-raw.json
+            CODE=$?
+            set -e
+            echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
+            [ "$CODE" -ne 2 ] && break
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              # Jitter: a matrix of cells that all went inconclusive did so because
+              # the market was thin for all of them at once, so an unjittered delay
+              # marches them back to the single-key account in lockstep (ADR 0005
+              # cond 6). Spread is up to +50%.
+              _delay=$(( ${{ inputs.retry_delay }} + RANDOM % ((${{ inputs.retry_delay }} / 2) + 1) ))
+              echo "no offers matched the floors; waiting ${_delay}s before retrying"
+              sleep "$_delay"
+            fi
+          done
+          echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
+          echo "attempts=${attempt}" >> "$GITHUB_OUTPUT"
 
       - name: Delete the throwaway template (always)
         if: always() && steps.create.outputs.id != ''
@@ -172,39 +255,62 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: |
           CODE="${{ steps.test.outputs.exit_code }}"
-          # The client prints the verdict as a single-line JSON object (json.dumps,
-          # no indent) as its FINAL stdout line. Narration/system-logs go to stderr,
-          # but be robust to any bleed: take the last complete {...} line, not the
-          # whole file (json.load on a multi-line/polluted file fails -> '?', which
-          # silently turned a real PASS into a BLOCK on the cu12.9 cell).
-          RAW=$(grep -E '^\{.*\}$' /tmp/qa-raw.json | tail -n1)
-          STATE=$(printf '%s' "$RAW" | python -c "import sys,json;print(json.load(sys.stdin).get('state','?'))" 2>/dev/null || echo "?")
-          GOT=$(printf '%s' "$RAW" | python -c "import sys,json;print(json.load(sys.stdin).get('got_result_event',False))" 2>/dev/null || echo "?")
-          echo "exit_code=${CODE} state=${STATE} got_result_event=${GOT}"
-          # ADR 0005 cond 2: a 'passed' without a result event is not trustworthy.
-          # Inconclusive must not silently auto-promote on the gating path — a
-          # manual/dispatch run HOLDS (exit 1); only the unattended schedule soft-passes.
-          INCONCLUSIVE_EXIT=1
-          [ "${{ github.event_name }}" = "schedule" ] && INCONCLUSIVE_EXIT=0
-          case "${CODE}" in
-            0)  if [ "${GOT}" = "True" ]; then
-                  echo "::notice::FULL pass (state=${STATE})"; exit 0
-                else
-                  echo "::error::passed WITHOUT a result event — verdict not trustworthy (ADR 0005 cond 2)"; exit 1
-                fi ;;
-            2|3) echo "::warning::INCONCLUSIVE (state=${STATE}) — thin market / infra; holding unless scheduled"
-                 if [ "${INCONCLUSIVE_EXIT}" = "0" ]; then
-                   # Unattended schedule soft-passes (promotes ungated). Flag it so
-                   # notify-soft-pass pings Slack — a chronically-skipped gate must
-                   # not decay silently. Set BEFORE the exit so the output is written.
-                   echo "soft_pass=true" >> "$GITHUB_OUTPUT"
-                   echo "::warning::scheduled run promoted UNGATED (no live QA ran) — Slack alerted"
-                 fi
-                 exit ${INCONCLUSIVE_EXIT} ;;
-            1|5) echo "::error::BLOCK (state=${STATE}) — a real test failure or instance crash"; exit 1 ;;
-            4)  echo "::error::CONFIG ERROR (state=${STATE}) — CI/template bug, not the image"; exit 1 ;;
-            *)  echo "::error::unexpected exit code ${CODE}"; exit 1 ;;
+          # The decision (pass / block / inconclusive) lives in qa_verdict.py — pure,
+          # unit-tested, and the place the required-tests assertion is enforced. It
+          # also owns the "take the last complete {...} line" parsing: a whole-file
+          # parse once silently turned a real PASS into a BLOCK on the cu12.9 cell.
+          # This step keeps only the POLICY: what to do with an inconclusive.
+          # NEVER eval this tool's stdout. A reason legitimately contains spaces,
+          # ';' and '()' ("3 required test(s) passed"), so under bash -e an eval is a
+          # syntax error that fails the step on a PASSING cell — and this workflow is
+          # shared with the live comfyui/vllm gates. The tool appends verdict=/reason=
+          # to $GITHUB_OUTPUT itself; we read the key back.
+          python "${TM}/qa_verdict.py" \
+            --exit-code "${CODE}" \
+            --raw /tmp/qa-raw.json \
+            --require-tests "${{ inputs.require_tests }}"
+          verdict=$(sed -n 's/^verdict=//p' "$GITHUB_OUTPUT" | tail -n1)
+          echo "exit_code=${CODE} verdict=${verdict}"
+
+          case "${verdict}" in
+            pass)
+              echo "::notice::FULL pass (see the verdict line above)"
+              exit 0 ;;
+            block)
+              echo "::error::BLOCK (see the verdict line above)"
+              exit 1 ;;
+            inconclusive)
+              # ADR 0005: a gating path HOLDS so a human looks; only the unattended
+              # schedule soft-passes, so a thin 00:00 market cannot block the nightly
+              # promotion of an unchanged image.
+              echo "::warning::INCONCLUSIVE (see the verdict line above)"
+              if [ "${{ github.event_name }}" = "schedule" ]; then
+                # Set BEFORE the exit so the output is written; notify-soft-pass pings
+                # Slack, because a gate that chronically cannot run must surface rather
+                # than decay into a no-op.
+                echo "soft_pass=true" >> "$GITHUB_OUTPUT"
+                echo "::warning::scheduled run promoted UNGATED (no live QA ran) — Slack alerted"
+                exit 0
+              fi
+              exit 1 ;;
+            *)
+              echo "::error::qa_verdict returned no usable verdict (${verdict:-<empty>})"
+              exit 1 ;;
           esac
+
+      # Per-cell evidence for the approval summary: the verdict payload names the
+      # GPU, driver, digest and per-test states the decision was actually made on.
+      # `always()` so a BLOCKed cell — the one a human most needs to read — still
+      # uploads. The name must be unique per matrix cell; upload-artifact@v4 rejects
+      # duplicates within a run.
+      - name: Upload verdict evidence
+        if: always() && inputs.evidence_name != '' && steps.guard.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.evidence_name }}
+          path: /tmp/qa-raw.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   # When an unattended scheduled run soft-passed (promoted UNGATED on an infra-
   # inconclusive outcome), ping Slack. Real test failures BLOCK the qa job, so

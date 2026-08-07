@@ -74,6 +74,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L054", ERROR, "A template's VRAM floor, IF set, uses a valid key (gpu_ram / gpu_total_ram, MB) with a numeric value — presence is optional (multi-model hosts omit it; qa supplies it)"),
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
+    ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -455,9 +456,12 @@ def check_template_floor(img: Image, repo: Path) -> Iterable[Finding]:
     compute_cap floor; without one there is nothing to select against (selection
     would fall back to a random GPU generation). Only fires for images that ship a
     ``templates/`` dir — not every image has one.
+
+    Applies to the base image too (ADR 0019): base gained its own QA template, and
+    the floor rule is exactly as load-bearing there. Base's ``img.dir`` is the repo
+    root and the scan is rooted at ``<img.dir>/templates``, so this picks up
+    ``templates/base-qa/`` and nothing else.
     """
-    if img.cls == "base":
-        return
     tdir = img.dir / "templates"
     if not tdir.is_dir():
         return
@@ -515,9 +519,9 @@ def check_template_vram(img: Image, repo: Path) -> Iterable[Finding]:
     SHOULD set it sized to its model; a model-agnostic host leaves it unset and the qa gate
     supplies a floor at rent time (ADR 0010 amendment). The linter validates FORMAT only — a
     misspelled key or a key-only floor lints falsely clean but selects nothing at rent time.
+
+    Applies to the base image too (ADR 0019) — see the note in check_template_floor.
     """
-    if img.cls == "base":
-        return
     tdir = img.dir / "templates"
     if not tdir.is_dir():
         return
@@ -533,6 +537,58 @@ def check_template_vram(img: Image, repo: Path) -> Iterable[Finding]:
             continue                       # invalid YAML is L050's report, not ours
         for entry in (data if isinstance(data, list) else [data]):
             yield from _vram_findings(entry, img.name, rel)
+
+
+# Tests a gating QA template must demand actually ran. The GPU trio is the case that
+# motivated the rule: all three open with `has_gpu || test_skip`, so on a box whose
+# driver or CUDA userland never came up they skip, the suite reports green, and the
+# gate certifies an image it never exercised.
+_REQUIRED_GPU_TESTS = ("base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries")
+
+
+def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
+    """L057 — a gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS (ADR 0019).
+
+    Scoped to the base image's QA template for now. comfyui-qa and vllm-qa have the
+    same hole, but widening the rule to them is a separate change that has to
+    re-validate two live, currently-passing gates — a linter rule is not the place to
+    quietly turn those red. Widen once each has been re-validated.
+
+    Format only: this asserts the declaration exists and covers the GPU trio. Whether
+    the tests then pass is the runner's job (INSTANCE_TEST_REQUIRE_PASS) and CI's
+    (qa_verdict) — the two enforcement layers this declaration feeds.
+    """
+    if img.cls != "base":
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            env = entry.get("env")
+            declared = env.get("INSTANCE_TEST_REQUIRE_PASS", "") if isinstance(env, dict) else ""
+            names = set(str(declared).replace(",", " ").split())
+            if not names:
+                yield Finding("L057", ERROR, img.name, rel,
+                              "no env.INSTANCE_TEST_REQUIRE_PASS — a self-skipping test would "
+                              "report the suite green and the gate would certify an untested image")
+                continue
+            missing = [t for t in _REQUIRED_GPU_TESTS if t not in names]
+            if missing:
+                yield Finding("L057", ERROR, img.name, rel,
+                              "env.INSTANCE_TEST_REQUIRE_PASS omits " + ", ".join(missing) +
+                              " — these skip themselves when the GPU/driver is unavailable")
 
 
 def check_supervisor_executable(img: Image) -> Iterable[Finding]:
@@ -755,6 +811,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_no_hardcoded_staging_namespace(img, repo))
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
+    out.extend(check_template_require_pass(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))
     if apply_exceptions:

@@ -38,6 +38,13 @@ POLL_INTERVAL = 10               # seconds between startup-poll ticks (cheap by-
 # docs/redteam/2026-07-20-pr220-stall-offer-scoring/cadence-trace-findings.md.
 API_REQUEST_TIMEOUT = 30         # individual API call timeout
 SSE_READ_TIMEOUT = 30            # read timeout per attempt (server heartbeats every 5s)
+# Bounded mid-stream reconnects. A test that restarts a service (26-caddy-auth
+# restarts Caddy three times) can drop the stream while the run continues; without
+# reconnect the client misses the result event and a healthy image reports as
+# "passed without a result event" = BLOCK. Bounded so a genuinely dead instance
+# still terminates promptly rather than looping to the deadline.
+MAX_STREAM_RECONNECTS = 10
+STREAM_RECONNECT_DELAY = 3       # seconds between reconnect attempts
 TIMEOUT_HEADROOM = 600           # 10 min headroom added to computed minimum timeout
 
 # Instance-side timeout env vars and their defaults.  Used to auto-compute
@@ -641,14 +648,27 @@ def stream_sse(url, timeout, token=None):
       1. Connection phase — retries every 5s for up to 5 min while the instance
          boots and the test server starts.  Uses SSE_READ_TIMEOUT per attempt.
       2. Streaming phase — once connected, uses SSE_READ_TIMEOUT as the socket
-         read timeout.  If no data arrives within that window, the connection is
-         considered lost and we exit immediately (no reconnect).  A dead instance
-         won't recover, so there's no point retrying.
+         read timeout.  A drop here is RECONNECTED (bounded), not fatal.
+
+    On reconnect: this used to give up on any mid-stream drop, on the reasoning
+    that "a dead instance won't recover, so there's no point retrying". That
+    assumption does not hold. Observed live on a cuda-11.8 QA cell: the stream
+    ended cleanly (readline returned "") during base/26-caddy-auth — a test that
+    restarts Caddy three times — while the instance was perfectly healthy and went
+    on to finish all 23 tests. The client stopped listening, never received the
+    runner's result event, and fell back to a status poll, so the verdict became
+    "passed without a result event" = BLOCK. An infra blip was reported as an
+    untrustworthy artifact.
+
+    A genuinely dead instance still terminates quickly: the reconnect attempts fail
+    fast with connection-refused and exhaust the bound, and the caller's own
+    instance-death monitor short-circuits the loop independently.
     """
     deadline = time.time() + timeout
     retries = 0
     max_retries = 60  # 60 * 5s = 5 min for boot scripts + test server startup
     connected = False
+    reconnects = 0
 
     while time.time() < deadline and retries <= max_retries:
         try:
@@ -696,19 +716,47 @@ def stream_sse(url, timeout, token=None):
                 elif line.startswith("data:"):
                     data_lines.append(line[5:].strip())
                 elif line == "" and data_lines:
-                    yield _parse_sse_event(data_lines, event_type)
+                    parsed = _parse_sse_event(data_lines, event_type)
+                    is_result = event_type == "result"
+                    yield parsed
                     event_type = None
                     data_lines = []
+                    if is_result:
+                        # The run is over. Stop here rather than letting the
+                        # server's close look like a mid-run drop and trigger a
+                        # pointless reconnect. (Callers break on `result`, so this
+                        # only shows up when the generator is drained — but the
+                        # generator should not depend on the caller to stop it.)
+                        return
 
-            # Stream ended cleanly — flush any remaining data
+            # Stream ended — flush any remaining data
             if data_lines and event_type is not None:
                 yield _parse_sse_event(data_lines, event_type)
+            # The server closed the connection. If that were the end of the run we
+            # would have seen a `result` event and the caller would have stopped
+            # reading, so reaching here means the run is still going: reconnect.
+            if reconnects < MAX_STREAM_RECONNECTS and time.time() < deadline:
+                reconnects += 1
+                yield {"_reconnect": reconnects,
+                       "_reason": "server closed the stream before the result event"}
+                time.sleep(STREAM_RECONNECT_DELAY)
+                continue
             return
 
         except (urllib.error.URLError, OSError, TimeoutError):
             if connected:
-                # Lost connection after we were streaming — instance is gone
-                yield {"_error": f"connection lost (no data/heartbeat for {SSE_READ_TIMEOUT}s)"}
+                # Lost mid-stream. Not necessarily a dead instance — see the
+                # docstring; a service restart inside a test can do this while the
+                # run continues. Reconnect within bounds and let the caller's
+                # instance-death monitor handle the genuinely-dead case.
+                if reconnects < MAX_STREAM_RECONNECTS and time.time() < deadline:
+                    reconnects += 1
+                    yield {"_reconnect": reconnects,
+                           "_reason": f"no data/heartbeat for {SSE_READ_TIMEOUT}s"}
+                    time.sleep(STREAM_RECONNECT_DELAY)
+                    continue
+                yield {"_error": f"connection lost and not recoverable after "
+                                 f"{reconnects} reconnect(s)"}
                 return
             retries += 1
             if retries > max_retries:
@@ -1474,6 +1522,7 @@ def main():
     current_test_name = None
 
     got_result_event = False
+    stream_had_gap = False   # set if the SSE stream dropped and reconnected
     for event in stream_sse(stream_url, timeout=args.timeout, token=auth_token):
         # Check if instance died unexpectedly
         if instance_dead.is_set():
@@ -1481,6 +1530,17 @@ def main():
             log(f"\nInstance {instance_id} went to '{_get_dead_reason()}' during testing")
             final_state = "error"
             break
+
+        if event.get("_reconnect"):
+            # Not fatal: the run continues, we just stopped listening for a moment.
+            # Verdict lines emitted during the gap are recovered after the stream
+            # ends by backfilling per-test state from /test-status (see the
+            # post-stream reconciliation near the end of run_test).
+            log(f"\nStream dropped ({event.get('_reason', '?')}); "
+                f"reconnecting (attempt {event['_reconnect']}/{MAX_STREAM_RECONNECTS})")
+            stream_had_gap = True
+            current_test_name = None    # a partial test header is no longer valid
+            continue
 
         if event.get("_timeout"):
             panel.cleanup()
@@ -1563,8 +1623,18 @@ def main():
     if final_result and elapsed is None:
         elapsed = final_result.get("elapsed_s")
 
-    # Build authoritative per-test results from stream data.
-    # Patch into final_result so --raw JSON has correct per-test states.
+    # Per-test results: stream data is authoritative where we have it, and the
+    # status JSON fills the gaps. That matters after a reconnect — verdict lines
+    # emitted while we were disconnected exist only in the JSON, and without this
+    # backfill a required-tests assertion would block on a test that actually ran.
+    #
+    # The JSON is trustworthy for this as of the ADR 0019 runner fix. It previously
+    # mis-recorded every test but the last (write_results looped on a bare `i` while
+    # being called from inside the runner's own `for i` loop, so each result landed
+    # on the final slot) — which is what the old "write-race issues" note here was
+    # really describing. Images built before that fix still report the old way, so a
+    # backfilled state may read "running": that fails a required-tests assertion
+    # closed, which is the correct direction.
     if stream_tests:
         stream_test_map = {t["name"]: t["state"] for t in stream_tests}
         if final_result and "tests" in final_result:
@@ -1593,6 +1663,10 @@ def main():
         raw_output["got_result_event"] = got_result_event
         raw_output["exit_code"] = exit_code
         raw_output["stream_counts"] = stream_counts
+        # Surfaced so a reviewer can tell "the run was noisy" from "the artifact is
+        # bad": a gap means some per-test states were backfilled from the status
+        # JSON rather than observed live.
+        raw_output["stream_had_gap"] = stream_had_gap
         # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
         # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
         if instance_id:

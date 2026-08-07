@@ -11,6 +11,12 @@
 
 name: Promote Base Image
 
+# The approvals list shows the run NAME, not the job summary — a reviewer clicking
+# "approve" from the notification never sees the flip/hold table unless they open
+# the run. Put the decisive facts in the title itself.
+run-name: >-
+  Promote base ${{ inputs.STAGING_DATE }}${{ inputs.DRY_RUN == true && ' (dry run)' || '' }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +33,6 @@ on:
         required: false
         default: false
         type: boolean
-
 concurrency:
   group: base-image-promote
   cancel-in-progress: false
@@ -40,26 +45,15 @@ jobs:
       all-configs: ${{ steps.configs.outputs.all-configs }}
       mini-tags: ${{ steps.configs.outputs.mini-tags }}
     steps:
+      # Needed for configs/base-image.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
+
       - name: Generate filtered config list
         id: configs
         run: |
           FILTER="${{ inputs.FILTER }}"
-
-          # Configs in promotion order: key|tag_template|default_python
-          ALL_CONFIGS=(
-            "stock-22|stock-ubuntu22.04|3.10"
-            "stock-24|stock-ubuntu24.04|3.12"
-            "cuda-11.8-22|cuda-11.8.0-cudnn8-devel-ubuntu22.04|3.10"
-            "cuda-12.1-22|cuda-12.1.1-cudnn8-devel-ubuntu22.04|3.10"
-            "cuda-12.4-22|cuda-12.4.1-cudnn-devel-ubuntu22.04|3.10"
-            "cuda-12.6-24|cuda-12.6.3-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-12.8-24|cuda-12.8.1-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-12.9-24|cuda-12.9.2-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.0-24|cuda-13.0.3-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.1-24|cuda-13.1.2-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.2-24|cuda-13.2.1-cudnn-devel-ubuntu24.04|3.12"
-            "cuda-13.3-24|cuda-13.3.1-cudnn-devel-ubuntu24.04|3.12"
-          )
+          # Config table lives in configs/base-image.json (ADR 0019) — it was inline in three workflows, so a patch bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t ALL_CONFIGS < <(jq -r '.configs[] | "\(.key)|\(.tag_template)|\(.default_python)"' "$GITHUB_WORKSPACE/configs/base-image.json")
 
           CONFIGS_JSON="[]"
           ALL_CONFIGS_JSON="[]"
@@ -81,12 +75,8 @@ jobs:
 
             CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
           done
-
-          # Mini configs: key|mini_tag
-          MINI_CONFIGS=(
-            "cuda-12.9-mini|cuda-12.9-mini"
-            "cuda-13.2-mini|cuda-13.2-mini"
-          )
+          # Mini configs from the same table.
+          mapfile -t MINI_CONFIGS < <(jq -r '.mini[] | "\(.key)|\(.mini_tag)"' "$GITHUB_WORKSPACE/configs/base-image.json")
 
           MINI_TAGS_JSON="[]"
           for mini_config in "${MINI_CONFIGS[@]}"; do
@@ -118,14 +108,370 @@ jobs:
           echo "Configs: $(echo "$CONFIGS_JSON" | jq length)"
           echo "Mini tags: $(echo "$MINI_TAGS_JSON" | jq length)"
 
-  promote:
+  # ── QA phase (ADR 0019) ────────────────────────────────────────────────
+  # Runs BEFORE the approval gate and carries no `environment:`, so the twelve
+  # cells complete unattended and the reviewer sees their verdicts at the moment
+  # they are asked to approve. The prod write stays behind `environment: production`
+  # exactly as before.
+
+  preflight:
     needs: generate-configs
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the gate can actually run
+        env:
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          NS_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NS_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+        run: |
+          # Every secret the run needs, checked before a human is asked to approve
+          # and before any GPU spend — a missing namespace otherwise surfaces as a
+          # malformed ref deep into the promote.
+          missing=()
+          [ -z "${NS_STAGING}" ] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          [ -z "${NS_PROD}" ] && missing+=("DOCKERHUB_NAMESPACE")
+          [ -z "${DH_USER}" ] && missing+=("DOCKERHUB_USERNAME")
+          [ -z "${DH_TOKEN}" ] && missing+=("DOCKERHUB_TOKEN")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          # STAGING_DATE is free dispatch text that ends up in ~70 registry refs.
+          # Pin its shape here, where checking costs nothing, rather than finding
+          # out via a malformed ref after the QA phase has already been paid for.
+          if [[ ! "${STAGING_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::STAGING_DATE must be YYYY-MM-DD, got '${STAGING_DATE}'"
+            exit 1
+          fi
+          # Fail here, before a human is asked to approve anything, rather than
+          # letting twelve cells skip and report green (ADR 0019 cond 3).
+          if [ -z "${VAST_API_KEY}" ]; then
+            echo "::error::VAST_API_KEY is not set — the QA gate cannot run, so no -auto tag may move. Fix the secret and re-dispatch; there is deliberately no bypass (ADR 0019). To move a tag by hand: promote first (dated tags land regardless), then use the Move Base Auto Tag workflow."
+            exit 1
+          fi
+          echo "QA gate ready"
+
+  resolve-digests:
+    needs: [generate-configs, preflight]
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    outputs:
+      qa-matrix: ${{ steps.plan.outputs.qa-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pin the digests this run will promote
+        id: plan
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          NAMESPACE_PROD: ${{ secrets.DOCKERHUB_NAMESPACE }}
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+          CONFIGS: ${{ needs.generate-configs.outputs.configs }}
+          MINI_TAGS: ${{ needs.generate-configs.outputs.mini-tags }}
+        run: |
+          set -euo pipefail
+          # The manifest of record. Everything downstream — what QA tests, what the
+          # approver sees, what gets copied — is keyed on these digests, NOT on the
+          # dated tag. Staging tags are mutable (a same-day partial rebuild rewrites
+          # them), so a tag-keyed pipeline can certify one set of bits and ship another.
+          echo '{"configs":[],"mini":[]}' > manifest.json
+          mapfile -t PYTHON_VERSIONS < <(jq -r '.python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
+          mapfile -t MINI_PYTHON_VERSIONS < <(jq -r '.mini_python_versions[]' "$GITHUB_WORKSPACE/configs/base-image.json")
+          [ "${#PYTHON_VERSIONS[@]}" -gt 0 ] || { echo "::error::no python_versions in the config table"; exit 1; }
+          COUNT=$(echo "$CONFIGS" | jq length)
+          for ((i=0; i<COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
+            tpl=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
+            dp=$(echo "$CONFIGS"  | jq -r ".[$i].default_python")
+            dptag="py${dp//./}"
+            # The auto tag points at the DEFAULT-PYTHON index; that is the artifact
+            # whose digest matters, so it is the one QA tests and the one recorded as
+            # target_digest.
+            src="${NAMESPACE_STAGING}/base-image:${tpl}-${dptag}-${STAGING_DATE}"
+            target=$(crane digest "$src" 2>/dev/null || echo "")
+            # ...but EVERY artifact this run copies is pinned here too. Previously only
+            # default-python was pinned and the other four pythons were copied by TAG at
+            # write time, justified by "the drift check already aborted if the dated
+            # source moved" — which is false: the drift check only re-resolves the
+            # default-python tag. That used default-python as a PROXY for "the whole
+            # config was rebuilt"; it holds for an all-or-nothing rebuild and breaks for
+            # a FILTERed or partially re-run one. Pinning everything means the mutable
+            # tag is read exactly once, and nothing afterwards can change what ships.
+            pys="{}"
+            for pv in "${PYTHON_VERSIONS[@]}"; do
+              pt="py${pv//./}"
+              d=$(crane digest "${NAMESPACE_STAGING}/base-image:${tpl}-${pt}-${STAGING_DATE}" 2>/dev/null || echo "")
+              pys=$(jq -c --arg k "$pt" --arg v "$d" '.[$k]=$v' <<<"$pys")
+            done
+            auto=$(echo "$tpl" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            current=""
+            if [ -n "$auto" ]; then
+              current=$(crane digest "${NAMESPACE_PROD}/base-image:cuda-${auto}-auto" 2>/dev/null || echo "")
+            fi
+            # Major-baseline driver floor, raised per config at rent time. gte is a
+            # LOWER bound: an 11.8 image is happy on a much newer driver, which is
+            # where most of the fleet now is.
+            case "$auto" in
+              11.*) floor=11.8 ;;
+              12.*) floor=12.0 ;;
+              13.*) floor=13.0 ;;
+              *)    floor=11.8 ;;
+            esac
+            manifest_entry=$(jq -nc --arg k "$key" --arg t "$tpl" --arg a "$auto" \
+              --arg tg "$target" --arg cu "$current" --arg dp "$dptag" --arg fl "$floor" \
+              --argjson py "$pys" \
+              '{key:$k, tag_template:$t, auto_version:$a, target_digest:$tg,
+                current_digest:$cu, default_py:$dp, floor:$fl, py_digests:$py}')
+            jq --argjson e "$manifest_entry" '.configs += [$e]' manifest.json > m.tmp && mv m.tmp manifest.json
+          done
+          # Mini variants carry no auto tag and are never QA'd, but this run DOES copy
+          # them to prod, so they are pinned on the same principle.
+          MCOUNT=$(echo "$MINI_TAGS" | jq length)
+          for ((i=0; i<MCOUNT; i++)); do
+            mkey=$(echo "$MINI_TAGS" | jq -r ".[$i].key")
+            mtag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
+            mpys="{}"
+            for pv in "${MINI_PYTHON_VERSIONS[@]}"; do
+              pt="py${pv//./}"
+              d=$(crane digest "${NAMESPACE_STAGING}/base-image:${mtag}-${pt}-${STAGING_DATE}" 2>/dev/null || echo "")
+              mpys=$(jq -c --arg k "$pt" --arg v "$d" '.[$k]=$v' <<<"$mpys")
+            done
+            entry=$(jq -nc --arg k "$mkey" --arg t "$mtag" --argjson py "$mpys" '{key:$k, mini_tag:$t, py_digests:$py}')
+            jq --argjson e "$entry" '.mini += [$e]' manifest.json > m.tmp && mv m.tmp manifest.json
+          done
+          echo "pinned $(jq '[.configs[].py_digests[], .mini[].py_digests[]] | map(select(. != "")) | length' manifest.json) artifacts by digest"
+
+          echo "--- manifest ---"; jq -r '.configs[] | "  \(.key): target=\(.target_digest[0:19]) current=\(.current_digest[0:19]) floor=\(.floor)"' manifest.json
+
+          # QA only the configs whose auto tag would actually FLIP. An unchanged
+          # digest is re-pushed for ordering, not re-shipped, so renting a GPU to
+          # re-certify identical bits is pure cost — and would make an unrelated
+          # flake block a no-op.
+          jq -c '[.configs[] | select(.auto_version != "" and .target_digest != "" and .target_digest != .current_digest)]' manifest.json > qa-set.json
+          echo "qa-matrix=$(jq -c '{include: .}' qa-set.json)" >> "$GITHUB_OUTPUT"
+          echo "cells to test: $(jq length qa-set.json)"
+
+      - name: Publish run-scoped QA refs
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+        run: |
+          set -euo pipefail
+          # Pin each tested artifact to an immutable, run-scoped tag. QA then tests
+          # THAT, so a concurrent rebuild cannot swap the bits under the test. The
+          # name carries no run_attempt: a re-run of failed jobs must find the same
+          # refs (resolve-digests will not re-run, having succeeded).
+          jq -r '.configs[] | select(.target_digest != "") | "\(.key) \(.target_digest)"' manifest.json |
+          while read -r key digest; do
+            ref="${NAMESPACE_STAGING}/base-image:qa-${{ github.run_id }}-${key}"
+            crane copy "${NAMESPACE_STAGING}/base-image@${digest}" "$ref"
+            echo "  $ref -> ${digest:0:19}…"
+          done
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: promotion-manifest
+          path: manifest.json
+          retention-days: 7
+
+  qa:
+    needs: [generate-configs, resolve-digests]
+    if: ${{ !inputs.DRY_RUN && needs.resolve-digests.outputs.qa-matrix != '{"include":[]}' }}
+    strategy:
+      fail-fast: false
+      # Bounded against the single-key QA account. ADR 0005 cond 6's account-aware
+      # semaphore is still the proper fix; until then this plus the client's 429
+      # backoff is the interim, and promotions are staggered off the other gates' crons.
+      #
+      # 4, from measurement (run 31170473940, 2026-08-07): 10 cells, median 3.3 min,
+      # slowest 13.6 min, ~43 min of cell time, zero 429s at max-parallel 2. The
+      # slowest single cell sets a ~13.6 min floor, so 4 captures essentially all the
+      # available speedup and anything higher buys nothing — 2->4 saves ~10 min,
+      # 4->10 saves zero. Not raised further because the cost is not only rate
+      # limits: concurrent cells query the same thin offer market, and two cells
+      # racing for one box surfaces as bad_instance (exit 3), which is deliberately
+      # never retried. On a thin day more parallelism converts passes into holds.
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.resolve-digests.outputs.qa-matrix) }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: base-image
+      tag: qa-${{ github.run_id }}-${{ matrix.key }}
+      template_dir: templates/base-qa
+      label: base-image-qa-base
+      require_key: true
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+      set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
+      retries: 2
+      max_price: "1.00"
+      timeout: "2400"
+      extra_env: |
+        PROV_TIMEOUT=900
+        INSTANCE_TEST_DEFAULT_TIMEOUT=900
+        VLLM_HEALTH_TIMEOUT=900
+      evidence_name: qa-evidence-${{ matrix.key }}
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  qa-summary:
+    needs: [resolve-digests, qa]
+    # always(): a red cell must still produce the decision table — that is exactly
+    # the run where the approver needs to see which tags are being held.
+    if: ${{ always() && !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    outputs:
+      holds: ${{ steps.decide.outputs.holds }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with: { name: promotion-manifest, path: . }
+      - uses: actions/download-artifact@v4
+        with: { pattern: qa-evidence-*, path: evidence, merge-multiple: false }
+        continue-on-error: true
+
+      - name: Decide which auto tags may flip
+        id: decide
+        run: |
+          set -euo pipefail
+          # Collapse each cell's verdict payload into {config: {verdict, digest}}.
+          # Each cell's verdict comes from qa_verdict.py — the SAME function the cell
+          # itself ran, with the same required-tests list. Re-deriving a predicate here
+          # from (state, got_result_event) would silently drop the required-tests
+          # assertion, which is the only BLOCK class those two fields cannot see: a
+          # GPU-trio self-skip yields state=passed + got_result_event=true. Since a red
+          # cell does not fail this job (holds are not aborts), that weaker copy would
+          # have been the sole arbiter — reopening the exact skip-as-pass hole the gate
+          # exists to close.
+          #
+          # The tested digest is re-resolved from the run-scoped alias tag rather than
+          # trusted from the payload, so the link is checked at the point of use.
+          export STAGING_NS="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}"
+          export RUN_ID="${{ github.run_id }}"
+          export REQUIRE_TESTS="base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+          python - <<'PY' > evidence.json
+          import json, os, pathlib, subprocess, sys
+          sys.path.insert(0, "tools/template_manager")
+          from qa_verdict import classify, parse_required
+
+          out = {}
+          root = pathlib.Path("evidence")
+          ns, run_id = os.environ["STAGING_NS"], os.environ["RUN_ID"]
+          required = parse_required(os.environ["REQUIRE_TESTS"])
+          for d in sorted(root.glob("qa-evidence-*")) if root.is_dir() else []:
+              key = d.name[len("qa-evidence-"):]
+              raw_file = d / "qa-raw.json"
+              payload, verdict, reason = None, "block", "no verdict payload for this cell"
+              if raw_file.is_file():
+                  lines = [l for l in raw_file.read_text().splitlines()
+                           if l.strip().startswith("{")]
+                  if lines:
+                      payload = json.loads(lines[-1])
+                      verdict, reason = classify(payload.get("exit_code", 1), payload, required)
+              ref = f"{ns}/base-image:qa-{run_id}-{key}"
+              try:
+                  digest = subprocess.run(["crane", "digest", ref], capture_output=True,
+                                          text=True, timeout=120).stdout.strip()
+              except Exception:
+                  digest = ""
+              out[key] = {"verdict": verdict, "reason": reason, "digest": digest}
+          print(json.dumps(out, indent=2))
+          PY
+          cat evidence.json
+
+          python tools/template_manager/verify_qa_evidence.py             --manifest manifest.json --evidence evidence.json             --out decisions.json --summary summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "holds=$(jq '[.[] | select(.decision=="hold")] | length' decisions.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with: { name: promotion-decisions, path: "decisions.json", retention-days: 7 }
+
+
+  promote:
+    needs: [generate-configs, qa-summary]
+    # This job IS reachable after a collapsed QA phase — qa-summary carries
+    # always(), so it succeeds regardless of the cells' results and promote becomes
+    # eligible. That is deliberate and safe, but NOT because of the job graph: with
+    # no evidence artifacts, every config's decision is `hold`, so nothing flips and
+    # the approval summary says so. Safety here comes from the decisions, not from
+    # unreachability — do not weaken the hold logic on the belief that the graph
+    # already blocks this case.
     if: ${{ !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     environment: production
     steps:
       - name: Set up crane
         uses: imjasonh/setup-crane@v0.4
+
+      # The gate's decisions, computed BEFORE the approval was requested. The
+      # reviewer approved a specific set of flips and holds; this is that record.
+      - uses: actions/download-artifact@v4
+        with: { name: promotion-decisions, path: . }
+      - uses: actions/download-artifact@v4
+        with: { name: promotion-manifest, path: . }
+
+      - name: Re-verify the decisions still describe staging
+        env:
+          NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          # Via env:, never interpolated into the script. A dispatch input is free
+          # text; `${{ }}` splices it into bash BEFORE the shell sees it, so a value
+          # containing $(...) would execute here — in the production-approved job,
+          # and before the drift check it is part of could complete.
+          STAGING_DATE: ${{ inputs.STAGING_DATE }}
+        run: |
+          set -euo pipefail
+          echo "--- decisions approved for this run ---"
+          jq -r '.[] | select(.decision != "n/a") | "  \(.decision)\t cuda-\(.auto_version)-auto\t \(.reason)"' decisions.json
+          # Approval can sit for hours, and the DATED staging tag is mutable — a
+          # same-day partial rebuild rewrites it. That is the ref this job copies, so
+          # it is the ref that must be re-checked. (Re-resolving the run-scoped alias
+          # instead would be a tautology: this run created it at that digest and
+          # nothing else writes it, so it can never disagree.)
+          drift=0
+          while read -r key tpl dp digest; do
+            [ -z "$digest" ] && continue
+            src="${NAMESPACE_STAGING}/base-image:${tpl}-${dp}-${STAGING_DATE}"
+            now=$(crane digest "$src" 2>/dev/null || echo "")
+            if [ "$now" != "$digest" ]; then
+              echo "::error::${key}: approved ${digest:0:19}… but ${src} now resolves to ${now:0:19}…"
+              drift=1
+            fi
+          done < <(jq -r '.configs[] | select(.target_digest != "") | "\(.key) \(.tag_template) \(.default_py) \(.target_digest)"' manifest.json)
+          [ "$drift" -eq 0 ] || { echo "::error::staging moved after the plan was approved — aborting before any prod write"; exit 1; }
+          echo "staging still matches the approved plan (default-python refs)"
+          # Every other artifact is copied by its pinned digest, so a moved tag
+          # there cannot change what ships — but it does mean somebody rebuilt
+          # mid-promotion, and the operator should know the dated prod tags will
+          # carry the PINNED bits rather than what staging shows now. Warn rather
+          # than abort: the pinned digests are exactly what was planned.
+          moved=0
+          while read -r mkey mtpl mdpy mpytag mdigest; do
+            [ -z "$mdigest" ] && continue
+            [ "$mpytag" = "$mdpy" ] && continue
+            now=$(crane digest "${NAMESPACE_STAGING}/base-image:${mtpl}-${mpytag}-${STAGING_DATE}" 2>/dev/null || echo "")
+            if [ "$now" != "$mdigest" ]; then
+              echo "::warning::${mkey} ${mpytag}: staging tag now ${now:0:19}… but promoting the pinned ${mdigest:0:19}…"
+              moved=$((moved+1))
+            fi
+          done < <(jq -r '.configs[] | . as $c | .py_digests | to_entries[] | "\($c.key) \($c.tag_template) \($c.default_py) \(.key) \(.value)"' manifest.json)
+          [ "$moved" -eq 0 ] && echo "no non-default-python staging tags moved either" || true
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -222,7 +568,20 @@ jobs:
             for py_version in "${PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
 
-              SOURCE="${NAMESPACE_STAGING}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
+              # EVERY artifact is copied by the digest pinned in resolve-digests, not by
+              # the dated staging tag. Staging tags are mutable: a same-day rebuild
+              # rewrites them, so a tag ref read at write time can be different bits from
+              # the ones this run resolved, tested and got approved. Only default-python
+              # used to be pinned; the rest were copied by tag on the (false) grounds that
+              # the drift check would have caught any movement — it only re-resolves the
+              # default-python tag.
+              pinned=$(jq -er --arg k "$key" --arg p "py${py_tag}" \
+                '.configs[] | select(.key==$k) | .py_digests[$p]' manifest.json 2>/dev/null) || pinned=""
+              if [[ -z "$pinned" ]]; then
+                echo "::error::no pinned digest for ${key} py${py_tag} — refusing to copy by mutable tag"
+                exit 1
+              fi
+              SOURCE="${NAMESPACE_STAGING}/base-image@${pinned}"
               DATED_TAG="${NAMESPACE_PROD}/base-image:${tag_template}-py${py_tag}-${STAGING_DATE}"
 
               echo "Promoting: ${SOURCE} -> ${DATED_TAG}"
@@ -247,12 +606,19 @@ jobs:
           MINI_COUNT=$(echo "$MINI_TAGS" | jq length)
 
           for ((i=0; i<MINI_COUNT; i++)); do
+            mini_key=$(echo "$MINI_TAGS" | jq -r ".[$i].key")
             mini_tag=$(echo "$MINI_TAGS" | jq -r ".[$i].mini_tag")
 
             for py_version in "${MINI_PYTHON_VERSIONS[@]}"; do
               py_tag="${py_version//.}"
 
-              SOURCE="${NAMESPACE_STAGING}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
+              pinned=$(jq -er --arg k "$mini_key" --arg p "py${py_tag}" \
+                '.mini[] | select(.key==$k) | .py_digests[$p]' manifest.json 2>/dev/null) || pinned=""
+              if [[ -z "$pinned" ]]; then
+                echo "::error::no pinned digest for mini ${mini_key} py${py_tag} — refusing to copy by mutable tag"
+                exit 1
+              fi
+              SOURCE="${NAMESPACE_STAGING}/base-image@${pinned}"
               DATED_TAG="${NAMESPACE_PROD}/base-image:${mini_tag}-py${py_tag}-${STAGING_DATE}"
 
               echo "Promoting mini: ${SOURCE} -> ${DATED_TAG}"
@@ -287,12 +653,33 @@ jobs:
             AUTO_TARGET_FINAL[$cuda_ver]="${AUTO_TARGET_PRE[$cuda_ver]}"
           done
           for ((i=0; i<CONFIG_COUNT; i++)); do
+            key=$(echo "$CONFIGS" | jq -r ".[$i].key")
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
             cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
             [[ -z "$cuda_ver" ]] && continue
+            # THE GATE (ADR 0019 cond 2). This is the only line that makes the whole
+            # pipeline a gate: an auto tag moves ONLY to bits that passed live-GPU QA
+            # on that exact digest. A held config keeps its PRE-captured target, so its
+            # tag is still re-pushed (push ordering is preserved for every tag, every
+            # run) while its CONTENT does not change.
+            #
+            # Held, not aborted: one flaky cell out of twelve costing the whole fleet's
+            # promotion is how a gate gets routed around. The rest ship; the held tag is
+            # named in the approval summary.
+            #
+            # decisions.json is REQUIRED here — `jq -e` so a missing or malformed file
+            # fails the step instead of silently yielding "" and flipping everything.
+            decision=$(jq -er --arg k "$key" '.[] | select(.key==$k) | .decision' decisions.json)
+            if [[ "$decision" == "hold" ]]; then
+              echo "  HOLD cuda-${cuda_ver}-auto (${key}) — content unchanged this run"
+              continue
+            fi
             dp_tag="${default_python//.}"
-            AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
+            # Point the auto tag at the QA'd DIGEST, not at a tag that could have moved
+            # since the plan was made (ADR 0019: "copy by digest").
+            target_digest=$(jq -er --arg k "$key" '.configs[] | select(.key==$k) | .target_digest' manifest.json)
+            AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image@${target_digest}"
           done
 
           # Resolve each final target to its digest so we can pick
@@ -369,6 +756,37 @@ jobs:
           name: promoted-tags
           path: built-tags/
           retention-days: 1
+
+  cleanup-qa-refs:
+    # ADR 0019 cond 8. The run-scoped alias tags are forensic evidence of exactly
+    # which digest each cell tested, so they are swept AFTER a successful promote,
+    # and only strays from OTHER runs are removed — never this run's, which the
+    # postmortem would want. Best-effort: a failed sweep must not fail a promotion
+    # that already wrote prod.
+    needs: [promote]
+    if: ${{ always() && !inputs.DRY_RUN && needs.promote.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Sweep stray qa-* alias tags from previous runs
+        continue-on-error: true
+        env:
+          NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          KEEP: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          swept=0
+          for tag in $(crane ls "${NS}/base-image" 2>/dev/null | grep -E '^qa-[0-9]+-' || true); do
+            run_id="${tag#qa-}"; run_id="${run_id%%-*}"
+            [ "$run_id" = "$KEEP" ] && continue
+            crane delete "${NS}/base-image:${tag}" 2>/dev/null && swept=$((swept+1))
+          done
+          echo "swept ${swept} stray qa-* alias tag(s); kept this run's for forensics"
 
   collect-tags:
     needs: [promote]
@@ -621,11 +1039,17 @@ jobs:
           done
 
   notify:
-    needs: [generate-configs, promote, collect-tags]
+    needs: [generate-configs, qa-summary, promote, collect-tags]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.promote.result }}
+      # ADR 0019 cond 3: a promotion that bypassed the gate, or one that held tags,
+      # must be distinguishable in Slack from a clean gated promotion. Without this
+      # a run with holds looks identical to a fully-clear one in the only place most
+      # people actually read.
+      status: ${{ (needs.qa-summary.result != 'success' || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
+      headline: ${{ needs.qa-summary.result != 'success' && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified' || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != '' && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds)) || '' }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

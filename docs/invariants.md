@@ -234,6 +234,64 @@ generator; hence not an `L0xx` code). **Scope:** direct-bind apps
 Caddy and are not covered — cloudflared hits connection-refused there (error 1033),
 a different failure with no origin 5xx to convert.
 
+### No `-auto` tag moves without same-run, digest-matched QA evidence — **enforced by executed tests (ADR 0019)**
+
+`cuda-X.Y.Z-auto` is what Vast's `@vastai-automatic-tag` backend resolves for live
+customer templates, so it is the highest-blast-radius write in this repo. The
+invariant:
+
+> An auto tag may only move to a digest that PASSED live-GPU QA in this run, on
+> that exact digest. Anything else HOLDS the tag at its current digest.
+
+Not statically checkable — it is a property of ~420 lines of bash inside
+`promote-base-image.yml`, and a linter cannot see a working gate versus a copy of
+one. It has been disarmed three times, each time with the whole suite green:
+
+| how it was disarmed | why the tests missed it |
+|---|---|
+| the hold check was written into `dry-run`, not `promote` | the test grepped the whole file and found the stray copy |
+| the `continue` was deleted from the hold branch | the test asserted the `if` line exists, not that it skips |
+| five assignments were deleted from the `dry-run` loop | nothing asserted anything about `dry-run` |
+
+There is **no bypass**: the `SKIP_QA` dispatch input added on 2026-08-05 was
+removed on 2026-08-07 (ADR 0019 cond 3, amended). Its untested-ness stuck to the
+run rather than the digest, so re-dispatching the same staging date afterwards
+rendered as a clean gated promotion. Holding is affordable because a held auto tag
+does not block shipping — the dated prod tags promote regardless of the decision,
+so only the customer-facing pointer waits for evidence. Moving a pointer without
+CI evidence is the separately-approved `Move Base Auto Tag` workflow.
+
+So it is enforced by **executing the workflow's shell**:
+`tools/template_manager/tests/wfexec.py` extracts a step's `run:` script, runs it
+under bash with a stub `crane` over a fake registry, and the tests assert the
+resulting digest of each auto tag. `test_promote_behaviour.py`,
+`test_preflight_behaviour.py` and `test_rollback_behaviour.py` each carry the
+mutation that the string-matching tests survive.
+
+A third rule follows from a defect found reviewing this: **every artifact a
+promotion copies is read from the registry exactly once, at plan time, and copied
+by digest.** Staging tags are mutable — a same-day rebuild rewrites them — so a
+tag ref read at write time can be different bits from the ones that were resolved,
+tested and approved. Previously only the default-python image was pinned; the other
+four pythons and the mini variants were copied by tag, justified by "the drift
+check already aborted if the dated source moved". That was false: the drift check
+only re-resolves the *default-python* tag, using it as a proxy for "the whole
+config was rebuilt". The proxy holds for an all-or-nothing rebuild and breaks for a
+FILTERed or partially re-run one. A missing pin now fails the step rather than
+falling back to the tag.
+
+Two further rules, both themselves tested:
+
+- **A dispatch input must reach a script via `env:`, never `${{ }}`.** Inputs are
+  free text; `${{ }}` splices them in before the shell parses the line, so a value
+  containing `$(...)` executes — and in `promote` that is inside the job holding
+  production credentials. `wfexec.step_script` refuses any non-secret expression
+  left in a `run:` block, so this cannot regress silently.
+- **The required-test list must be identical in all four places** it appears
+  (the QA template, the `qa` job input, `qa-summary`'s `REQUIRE_TESTS`, and the
+  linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
+  a self-skipped GPU suite classify as a pass.
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

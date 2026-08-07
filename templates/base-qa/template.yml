@@ -1,0 +1,105 @@
+# Base image QA template (ADR 0019 live-GPU gate for base-image promotion).
+#
+# WHAT THIS CERTIFIES. For an app image the product sits above the platform, so a
+# boot-and-curl gate would launder "booted" into "QA'd" (ADR 0005 option A, rejected).
+# For the base image there is nothing above the platform: supervisor, the portal,
+# Caddy's TLS/auth gate, the exposure scan, the python/venv layer and the CUDA
+# userland ARE the product. So the base/ suite is a real functional test here, and
+# base earns its allowlist seat honestly rather than by exemption.
+#
+# ADR 0010 EXEMPTION, stated rather than drifted: 0010 says one template per image,
+# with the QA gate booting the same file a user launches. Base cannot satisfy that —
+# its customer launch templates live on the Vast side, outside this repo — so this is
+# an approximation of a customer launch, and drift from the real Vast-side template is
+# a risk no check in here can detect. Keep the two in step by hand when either moves.
+#
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag, and
+# raises cuda_max_good per config via create.py --set-filter (raise-only).
+name: "Base image QA — platform + GPU/CUDA suite"
+image: vastai/base-image
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "6006:6006"                   # Tensorboard
+  - "8384:8384"                   # Syncthing
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # Only entries whose port actually binds: the harness's port check fails an entry
+  # pointing at a dead port. Tensorboard and Syncthing autostart in the base image
+  # (both observed RUNNING on a live instance), so including them exercises the
+  # Caddy-fronting path for real services rather than just the portal itself.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:6006:16006:/:Tensorboard|localhost:8384:18384:/:Syncthing|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  # A skip is not a pass (ADR 0019). All three GPU tests open with
+  # `has_gpu || test_skip`, so on a box where nvidia-smi or libcuda never came up they
+  # skip themselves, the suite reports green, and the gate would certify an image whose
+  # CUDA userland — the ONLY thing that differs between the 12 configs — was never
+  # exercised. Naming them here makes that outcome red. Enforced twice: by the runner
+  # in-instance, and by qa_verdict.py in CI, so a template that lost this line still
+  # cannot produce a passing verdict. Gated by linter rule L057.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+# QA gate floors (ADR 0005): smallest viable box above the declared floors, VRAM
+# bounded at 3x so a small claim is never tested on a huge box.
+extra_filters:
+  # sm_75 (Turing). The base image compiles no kernels — the GPU suite runs
+  # nvidia-smi, a driver-API cuInit/alloc via ctypes, and library loads — so the real
+  # feature target is "a GPU generation this CUDA userland still supports". CUDA 13
+  # dropped pre-sm_75 anyway, and Turing+ is where the market is. Twelve different
+  # compute_cap floors would be false precision: this is the one axis where the
+  # configs genuinely do not differ.
+  compute_cap:
+    gte: 750
+  # MAJOR-baseline, not exact-minor, and raised per config at rent time.
+  #
+  # DIRECTION: this is a LOWER bound and must stay one. cuda_max_good is the newest
+  # CUDA a host's driver supports, so `gte: 11.8` matches an 11.8 host AND every
+  # newer one — a cuda-11.8 image landing on a 13.x-driver box is correct, because
+  # newer drivers run older CUDA. Most of the fleet has long since moved past 11.8,
+  # so those cells SHOULD be expected to run on much newer hosts. Never add an `lte`
+  # here: pinning to an exact generation would brick the older configs against a
+  # market that no longer has those drivers, while proving nothing extra.
+  #
+  # This is the axis where the configs DO differ, and it has to be right in both
+  # directions. Too low and a cuda-13.x image lands on a 12.x-driver host: when the
+  # compat libs fail to activate, 60-gpu-cuda calls test_fail on the major mismatch —
+  # a systematic false red that has nothing to do with the image. Too high (exact
+  # minor, e.g. >= 13.3) and every cell competes for the newest-driver tier on a thin
+  # amd64 market, which is how a gate starts flaking and then gets routed around.
+  #
+  # Major-baseline is not a compromise between those, it is the correct answer:
+  # NVIDIA guarantees minor-version compatibility within a major, 60-gpu-cuda's own
+  # same-major branch passes ("minor compat ok"), and a 13.0-driver host running the
+  # 13.3 toolkit is a configuration real customers land on — so testing it is
+  # representative rather than lenient.
+  #
+  # The value below is the FLOOR OF THE FLOOR; CI raises it per config (11.8 -> 11.8,
+  # 12.x -> 12.0, 13.x -> 13.0) via --set-filter, which may only tighten.
+  cuda_max_good:
+    gte: 11.8
+  # PER-GPU, not the sum. gpu_total_ram lets a multi-GPU box of small cards clear the
+  # floor and then behave nothing like the target — observed live on the vLLM cu13.0
+  # cell, where GPU 0 was 9.64 GiB against a 16 GB *total* floor. The base image loads
+  # no model, so 8 GB is ample; with ADR 0005's 3x ceiling this selects the abundant
+  # 8-24 GB tier rather than the datacenter cards.
+  gpu_ram:
+    gte: 8192
+  # Cheap unreliable hosts fail in host-specific ways the image cannot fix: a truncated
+  # image pull ("unexpected eof") and a host with no outbound egress, both observed live
+  # on the vLLM gate. Base images are 10-20 GB pulls, so pull integrity matters more
+  # here, not less. Good hosts sit ~0.92-0.99.
+  reliability2:
+    gte: 0.95
+# CUDA -devel bases are large (~10-20 GB) and the disk must hold the image plus
+# workspace; a too-small disk surfaces as bad_instance, not as a clear error.
+recommended_disk_space: 64.0
