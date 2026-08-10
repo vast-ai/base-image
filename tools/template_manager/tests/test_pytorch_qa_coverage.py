@@ -165,13 +165,37 @@ def test_each_auto_cell_tests_the_newest_torch_for_its_backend(tmp_path):
 
 
 def test_the_lexical_version_trap_is_actually_avoided(tmp_path):
-    """Explicit regression for the above: with 2.9.1 and 2.12.0 both present on
-    a backend, a string max picks 2.9.1. Both are in the real table today, so
-    this would be a live defect rather than a hypothetical one."""
+    """Explicit regression for the above, DERIVED rather than pinned.
+
+    A string max over e.g. ["2.9.1", "2.13.0"] picks "2.9.1", because "9" > "1"
+    lexically. This finds every backend where the lexical and numeric answers
+    actually DIFFER — i.e. where the bug would show — and asserts the gate took
+    the numeric one.
+
+    Written this way because the first version hardcoded "cu130 -> 2.12.0" and
+    broke the moment torch 2.13.0 entered the table. A test that pins today's
+    data rots into a false failure and trains people to edit tests until they
+    pass. The invariant is "numeric beats lexical", not "cu130 is on 2.12.0".
+    """
     cells = {c["cell"]: c for c in build_matrix(tmp_path) if c["kind"] == "auto"}
-    cu130 = [c["torch"] for c in TABLE["configs"] if c["key"] == "cu130"]
-    assert "2.9.1" in cu130 and "2.12.0" in cu130, "table changed; revisit this test"
-    assert cells["auto-cu130"]["describe"].startswith("2.12.0-")
+    numeric = lambda v: [int(x) for x in v.split(".")]
+
+    trapped = []
+    for backend in {c["key"] for c in TABLE["configs"]}:
+        vers = [c["torch"] for c in TABLE["configs"] if c["key"] == backend]
+        if max(vers) != max(vers, key=numeric):
+            trapped.append(backend)
+            assert cells[f"auto-{backend}"]["describe"].startswith(
+                max(vers, key=numeric) + "-"), (
+                f"{backend}: gated {cells[f'auto-{backend}']['describe']}, but "
+                f"lexical max is {max(vers)} and numeric max is "
+                f"{max(vers, key=numeric)} — the selection sorted as strings")
+
+    assert trapped, (
+        "no backend in the table currently distinguishes lexical from numeric "
+        "ordering, so this test proves nothing. Add a version pair that does "
+        "(e.g. 2.9.x alongside 2.1x.y), or delete this test — do not leave it "
+        "passing vacuously.")
 
 
 # --- multi -----------------------------------------------------------------

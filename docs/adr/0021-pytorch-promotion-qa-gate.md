@@ -132,20 +132,21 @@ aliases) → `qa` matrix → `qa-summary` → human approval (`environment: prod
 `promote`. Every promoted artifact is copied **by digest**, never by a mutable
 staging tag. There is no bypass input.
 
-**2. The gated set is 57 cells, all single-GPU:**
+**2. The gated set is 78 cells, all single-GPU:**
 
 | cells | what | python |
 |---|---|---|
-| 4 | one per config backend (cu126, cu128, cu129, cu130) | 312 |
-| 52 | **every mini artifact the build produces** | every python built (310–314) |
+| 5 | one per config backend (cu126, cu128, cu129, cu130, cu132) | 312 |
+| 72 | **every mini artifact the build produces** | every python built (310–314) |
 | 1 | `multi` | 312 |
 
-*(Corrected 2026-08-10 from "3 cells / 56". The table builds **four** backends,
-not three: `cu129` (torch 2.8.0) exists but `AUTO_TAG_MAP` references only
-cu126, cu128 and cu130, so cu129 is promoted as dated tags with no pointer. The
-statement "3 images cover 100% of the automatic blast radius" remains true —
-cu129 is gated as ordinary coverage, on the same reasoning that put mini in
-scope: no auto tag is not the same as no consumer.)*
+*(Restated 2026-08-10. The count moved twice: first from a wrong "3 backends /
+56 cells" — the table builds cu129 too, which `AUTO_TAG_MAP` does not reference,
+so it is promoted with no pointer and gated as ordinary coverage — and then
+again when the table was brought up to date with upstream (torch 2.12.1 and
+2.13.0 added, cu132 added as a new backend). Cell counts are DERIVED from the
+config table and asserted by test; treat any number written here as a snapshot
+and the test as the authority.)*
 
 The auto cells are derived from the config table's backends, but the thing that
 decides customer exposure is `AUTO_TAG_MAP`. Those agree today and nothing made
@@ -222,7 +223,7 @@ has three, so base's single-venv timing does not transfer.
    GPU count is not. Any cell that specifies a GPU count and does not get it must be
    treated as a bad box (`inconclusive`, retried), never as a pass.
 5. **Cost and wall-clock are measured after the first three promotions.** Estimated
-   at $18–20 per promotion (57 cells). If actual materially exceeds that, the mini
+   at $25–30 per promotion (78 cells). If actual materially exceeds that, the mini
    set is cut — first to one cell per config at default python (11), then to the
    artifacts derivatives pin (7) — by ADR amendment, never by per-run exemption.
 6. **Coverage is stated, not implied.** See below, and it is restated in the
@@ -234,7 +235,7 @@ has three, so base's single-venv timing does not transfer.
    the day it is written and silently wrong at the next table edit; that is the
    exact drift the config-table extraction was done to remove. The test must fail
    loudly on an uncovered artifact rather than skipping.
-8. **Matrix concurrency is bounded and the rate limit is respected.** 57 cells run
+8. **Matrix concurrency is bounded and the rate limit is respected.** 78 cells run
    against a single QA API key with no semaphore (ADR 0005 cond 6, still open). The
    client already backs off with jitter on 429/5xx, and ADR 0020 makes a genuine
    rate-limit casualty `inconclusive`-and-retried rather than a block — but
@@ -281,7 +282,7 @@ has three, so base's single-venv timing does not transfer.
 - One genuinely bad artifact stops the release for everything, including healthy
   artifacts. This is the deliberate trade: pytorch images are the base layer for the
   derivative estate, so shipping a known-bad one is worse than shipping nothing.
-- ~57 instance rentals per promotion, plus retries — roughly $18–20 and a QA phase
+- ~78 instance rentals per promotion, plus retries — roughly $25–30 and a QA phase
   measured in hours rather than minutes. Accepted on the grounds that pytorch
   promotions are infrequent, so per-promotion cost and latency are the cheap axes
   and coverage of the derivative estate's base layer is the expensive one.

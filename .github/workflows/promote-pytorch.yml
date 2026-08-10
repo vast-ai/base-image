@@ -635,12 +635,29 @@ jobs:
           # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
           # card on a 12.8/12.9 host would get an unusable image.
           #
-          # cu132 isn't built yet (uv has no --torch-backend value for it), so
-          # there is no native 13.1/13.2 image. The cuda-13.1.2-auto and
-          # cuda-13.2.1-auto entries alias those hosts onto cu130 — it runs on
-          # any CUDA 13.x driver via minor-version compatibility. Without them
-          # the platform falls back to the 13.2 mini for 13.1/13.2 hosts, which
-          # we don't want. When cu132 ships, point cuda-13.2.1-auto at cu132.
+          # cu132 IS built now (the blocker was uv: `--torch-backend cu132` did
+          # not exist until uv 0.12.0 — verified 2026-08-10 against uv's
+          # TorchBackend enum; the base installs uv unpinned, so a build today
+          # gets it). Upstream wheels: download.pytorch.org/whl/cu132, torch
+          # 2.12.0/2.12.1/2.13.0, all five pythons, both arches.
+          #
+          # ONLY cuda-13.2.1-auto moves to it. That host tier gets a natively
+          # matched image, strictly better than the cu130 it replaces.
+          #
+          # cuda-13.1.2-auto deliberately STAYS on cu130, and the reason is the
+          # direction of CUDA minor-version compatibility. The safe direction is
+          # an OLDER-built image on a NEWER driver — a cuda-11.8 image is fine on
+          # a 13.x box, which is why every floor in the QA templates is a `gte`.
+          # The reverse is the fragile one. `cuda_max_good` is the newest CUDA a
+          # host's driver supports, so a host at 13.1 served a 13.2-built image
+          # is relying on compat in the direction that can fail, across a whole
+          # host tier at once. cu131 has no wheel index upstream (404s), so there
+          # is no native option for that tier; cu130 is the newest build every
+          # 13.1 driver can definitely run.
+          #
+          # If this is ever revisited, the QA floor must move with it: the cu132
+          # cell rents at cuda_max_good >= 13.2, so 13.1 hosts are not exercised
+          # by any cell today.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -649,7 +666,7 @@ jobs:
             "cuda-12.9.2-auto|cu128"
             "cuda-13.0.3-auto|cu130"
             "cuda-13.1.2-auto|cu130"
-            "cuda-13.2.1-auto|cu130"
+            "cuda-13.2.1-auto|cu132"
           )
 
           # Pre-flight: every staging source we plan to promote must
@@ -1033,12 +1050,29 @@ jobs:
           # force a 2.12 bump — cu126 has no Blackwell kernels, so a Blackwell
           # card on a 12.8/12.9 host would get an unusable image.
           #
-          # cu132 isn't built yet (uv has no --torch-backend value for it), so
-          # there is no native 13.1/13.2 image. The cuda-13.1.2-auto and
-          # cuda-13.2.1-auto entries alias those hosts onto cu130 — it runs on
-          # any CUDA 13.x driver via minor-version compatibility. Without them
-          # the platform falls back to the 13.2 mini for 13.1/13.2 hosts, which
-          # we don't want. When cu132 ships, point cuda-13.2.1-auto at cu132.
+          # cu132 IS built now (the blocker was uv: `--torch-backend cu132` did
+          # not exist until uv 0.12.0 — verified 2026-08-10 against uv's
+          # TorchBackend enum; the base installs uv unpinned, so a build today
+          # gets it). Upstream wheels: download.pytorch.org/whl/cu132, torch
+          # 2.12.0/2.12.1/2.13.0, all five pythons, both arches.
+          #
+          # ONLY cuda-13.2.1-auto moves to it. That host tier gets a natively
+          # matched image, strictly better than the cu130 it replaces.
+          #
+          # cuda-13.1.2-auto deliberately STAYS on cu130, and the reason is the
+          # direction of CUDA minor-version compatibility. The safe direction is
+          # an OLDER-built image on a NEWER driver — a cuda-11.8 image is fine on
+          # a 13.x box, which is why every floor in the QA templates is a `gte`.
+          # The reverse is the fragile one. `cuda_max_good` is the newest CUDA a
+          # host's driver supports, so a host at 13.1 served a 13.2-built image
+          # is relying on compat in the direction that can fail, across a whole
+          # host tier at once. cu131 has no wheel index upstream (404s), so there
+          # is no native option for that tier; cu130 is the newest build every
+          # 13.1 driver can definitely run.
+          #
+          # If this is ever revisited, the QA floor must move with it: the cu132
+          # cell rents at cuda_max_good >= 13.2, so 13.1 hosts are not exercised
+          # by any cell today.
           AUTO_TAG_MAP=(
             "cuda-12.1.1-auto|cu126"
             "cuda-12.4.1-auto|cu126"
@@ -1047,7 +1081,7 @@ jobs:
             "cuda-12.9.2-auto|cu128"
             "cuda-13.0.3-auto|cu130"
             "cuda-13.1.2-auto|cu130"
-            "cuda-13.2.1-auto|cu130"
+            "cuda-13.2.1-auto|cu132"
           )
 
           # Pre-flight: mirror the real promote so missing images
