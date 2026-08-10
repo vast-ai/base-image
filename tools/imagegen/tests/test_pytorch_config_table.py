@@ -248,3 +248,36 @@ def test_wired_read_fails_closed_on_an_empty_table(fname, arr):
     text = (W / fname).read_text()
     guard = f'[ "${{#{arr}[@]}}" -gt 0 ]'
     assert guard in text, f"{fname}:{arr} has no non-empty guard after the mapfile"
+
+
+# --- the multi image's venv list must match what the Dockerfile installs ------
+#
+# 05-venv-manifest.sh asserts the image ships the venvs it should, and it gets
+# the expected set from the config table via the QA template's extra_env. That
+# only helps if the table agrees with what is actually built — otherwise the
+# check is self-consistent and wrong, which is worse than no check because it
+# reports green.
+#
+# The Dockerfile is the ground truth: /venv/main comes from the base image, and
+# each `install-torch-venv.sh <ver>` line adds /venv/torch-<ver>.
+
+def test_multi_venvs_match_the_dockerfile(table):
+    df = (REPO / "derivatives/pytorch/Dockerfile.multi-torch").read_text()
+    installed = re.findall(r"install-torch-venv\.sh\s+([0-9]+\.[0-9]+\.[0-9]+)", df)
+    assert installed, "no install-torch-venv.sh invocations found — did the Dockerfile move?"
+
+    for m in table["multi"]:
+        want = ["main"] + [f"torch-{v}" for v in installed]
+        assert m["venvs"] == want, (
+            f"{m['key']}: table says venvs={m['venvs']} but Dockerfile.multi-torch "
+            f"builds {want}. 05-venv-manifest.sh trusts the table, so a mismatch "
+            f"means the gate asserts the wrong set and passes anyway.")
+
+
+def test_every_multi_config_declares_its_venvs(table):
+    """A multi entry without `venvs` would silently pass an empty expectation to
+    05-venv-manifest.sh, which would then assert nothing — the absence-detection
+    hole it exists to close, reopened via a missing field."""
+    for m in table["multi"]:
+        assert m.get("venvs"), f"{m['key']}: no venvs declared"
+        assert "main" in m["venvs"], f"{m['key']}: venvs must include the base's main venv"
