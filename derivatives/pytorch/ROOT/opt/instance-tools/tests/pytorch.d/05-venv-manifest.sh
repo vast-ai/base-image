@@ -41,7 +41,33 @@ for want in "${_expected[@]}"; do
     for got in "${_found[@]}"; do
         [[ "$got" == "$want" ]] && _hit=true && break
     done
-    $_hit || fail_later "venv-missing" "declared torch venv '${want}' is absent or has no working torch"
+    $_hit || { fail_later "venv-missing" "declared torch venv '${want}' is absent or has no working torch"; continue; }
+
+    # THE NAME IS A CLAIM — check it. A venv called torch-2.12.1 that contains
+    # torch 2.11.0 satisfies every other test in pytorch.d: the presence check
+    # above passes, and 10/20/30/40 all iterate whatever they find and validate
+    # it on its own terms, never against what it is supposed to be. That is the
+    # same shape as the absence hole this file was written to close, one level
+    # in — a claim nothing verifies.
+    #
+    # 10-torch-core asserts the version for `main` only (against PYTORCH_VERSION),
+    # so the supplementary venvs are exactly the ones with no version check at
+    # all. install-torch-venv.sh does verify at build time, but the point of a
+    # QA gate is to test the artifact rather than trust the build that made it.
+    #
+    # `main` is skipped here deliberately: its name encodes no version, and
+    # 10-torch-core already checks it against the PYTORCH_VERSION env.
+    [[ "$want" == "main" ]] && continue
+    _want_ver="${want#torch-}"
+    [[ "$_want_ver" == "$want" ]] && continue   # not a torch-X.Y.Z name; nothing claimed
+    _actual=$("/venv/${want}/bin/python3" -c "import torch; print(torch.__version__)" 2>/dev/null || echo "")
+    if [[ -z "$_actual" ]]; then
+        fail_later "venv-version" "could not read torch version from venv '${want}'"
+    elif [[ "$_actual" != "${_want_ver}"* ]]; then
+        fail_later "venv-version" "venv '${want}' contains torch ${_actual}, not ${_want_ver}"
+    else
+        echo "  ${want}: torch ${_actual} matches the name"
+    fi
 done
 
 # Extra venvs are reported but do NOT fail. An image gaining a venv is a change
