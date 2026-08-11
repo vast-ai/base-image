@@ -1,27 +1,53 @@
 # Extend a PyTorch image with supplementary torch venvs.
-# Each additional version gets its own layer and venv at /venv/torch-X.Y.Z
+# Each additional version gets its own venv at /venv/torch-X.Y.Z
 # The base image's /venv/main is left untouched.
 #
 # Usage:
 #   docker buildx build -f Dockerfile.multi-torch \
-#     --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-06-15 \
-#     --build-arg PYTORCH_BACKEND=cu128 \
+#     --build-arg PYTORCH_BASE=vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py312-2026-08-11 \
+#     --build-arg PYTORCH_BACKEND=cu130 \
+#     --build-arg EXTRA_TORCH_VERSIONS="2.12.1 2.11.0" \
 #     -t my-multi-torch .
+#
+# EXTRA_TORCH_VERSIONS was hardcoded here as two `RUN install-torch-venv.sh`
+# lines until 2026-08-11. That made exactly one venv set possible, so a second
+# multi variant could not be expressed at all — the config table could describe
+# it, the build could not produce it. The list now comes from the table's
+# `multi[].venvs` (minus `main`, which is the base's own venv), so variants are
+# a data change rather than a Dockerfile edit.
+#
+# CONSTRAINT worth knowing before adding a variant: every version here is
+# installed with the SAME ${PYTORCH_BACKEND} as the base, because that is what
+# install-torch-venv.sh is given. So every version in a multi must exist on that
+# one backend — which is why the cu128 variant cannot go past torch 2.11.0
+# (no cu128 wheels beyond it) and why cu126 is not used for multis at all
+# (no Blackwell kernels before CUDA 12.8, so the image would be unusable on
+# 50-series and B-series cards).
 
 ARG PYTORCH_BASE
 FROM ${PYTORCH_BASE}
 
 ARG PYTORCH_BACKEND
 ARG TARGETARCH
+ARG EXTRA_TORCH_VERSIONS
 
 COPY ./torch-companions.json /tmp/torch-companions.json
 COPY ./install-torch-venv.sh /tmp/install-torch-venv.sh
 
-# Each version is a separate layer for better caching
-RUN /tmp/install-torch-venv.sh 2.9.1 "${PYTORCH_BACKEND}" "${TARGETARCH}"
-RUN /tmp/install-torch-venv.sh 2.7.1 "${PYTORCH_BACKEND}" "${TARGETARCH}"
-
-RUN rm -f /tmp/install-torch-venv.sh /tmp/torch-companions.json
+# One RUN rather than one per version: the version list is now a build arg, so a
+# per-version layer would invalidate on any list change anyway, and this keeps
+# the Dockerfile independent of how many versions a variant carries.
+#
+# Fails closed on an empty list: a multi image with no supplementary venv is not
+# a multi image, and silently producing one would ship an artifact that passes
+# every discovery-based test while being wrong (the venv-manifest test exists
+# for exactly this, but the build should not create the case in the first place).
+RUN set -euo pipefail && \
+    [[ -n "${EXTRA_TORCH_VERSIONS}" ]] || { echo "EXTRA_TORCH_VERSIONS is empty — a multi image needs at least one supplementary venv" && exit 1; } && \
+    for _v in ${EXTRA_TORCH_VERSIONS}; do \
+        /tmp/install-torch-venv.sh "${_v}" "${PYTORCH_BACKEND}" "${TARGETARCH}"; \
+    done && \
+    rm -f /tmp/install-torch-venv.sh /tmp/torch-companions.json
 
 # Refresh environment hash
 RUN env-hash > /.env_hash

@@ -195,9 +195,15 @@ EXPECTED = {
     ("build-pytorch.yml", "ALL_MINI_CONFIGS"): lambda T: [
         f"{c['torch']}|{c['key']}|{c['mini_base_tag']}|{c['backend']}|"
         f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in T["mini"]],
+    # build-pytorch alone carries a 7th field: the SUPPLEMENTARY venv versions,
+    # derived from .venvs by dropping "main" and stripping the "torch-" prefix.
+    # Only the build needs it (it becomes EXTRA_TORCH_VERSIONS); extend and
+    # promote never install anything, so they do not carry it.
     ("build-pytorch.yml", "ALL_MULTI_CONFIGS"): lambda T: [
         f"{c['key']}|{c['primary_torch']}|{c['primary_backend']}|{c['cuda_minor']}|"
-        f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}" for c in T["multi"]],
+        f"{','.join(c['arches'])}|{' '.join(c['python_versions'])}|"
+        f"{' '.join(v.removeprefix('torch-') for v in c['venvs'] if v != 'main')}"
+        for c in T["multi"]],
     ("extend-pytorch.yml", "ALL_CONFIGS"): lambda T: [
         f"{c['torch']}|{c['key']}|{_short2(c)}|{','.join(c['arches'])}|"
         f"{' '.join(c['python_versions'])}" for c in T["configs"]],
@@ -261,17 +267,53 @@ def test_wired_read_fails_closed_on_an_empty_table(fname, arr):
 # The Dockerfile is the ground truth: /venv/main comes from the base image, and
 # each `install-torch-venv.sh <ver>` line adds /venv/torch-<ver>.
 
-def test_multi_venvs_match_the_dockerfile(table):
+def test_the_dockerfile_no_longer_hardcodes_venv_versions():
+    """The venv list moved from Dockerfile.multi-torch into the config table on
+    2026-08-11, so variants are a data change. Re-hardcoding a version here
+    would silently make the table non-authoritative: the QA manifest test would
+    still check the table, the build would install something else, and the two
+    would disagree with nothing reporting it."""
     df = (REPO / "derivatives/pytorch/Dockerfile.multi-torch").read_text()
-    installed = re.findall(r"install-torch-venv\.sh\s+([0-9]+\.[0-9]+\.[0-9]+)", df)
-    assert installed, "no install-torch-venv.sh invocations found — did the Dockerfile move?"
+    hardcoded = re.findall(r"install-torch-venv\.sh\s+([0-9]+\.[0-9]+\.[0-9]+)", df)
+    assert not hardcoded, (
+        f"Dockerfile.multi-torch hardcodes torch {hardcoded}. Supplementary "
+        f"versions must come from EXTRA_TORCH_VERSIONS, which the build derives "
+        f"from configs/pytorch.json .multi[].venvs.")
+    assert "EXTRA_TORCH_VERSIONS" in df, "the build arg the versions arrive by is gone"
 
-    for m in table["multi"]:
-        want = ["main"] + [f"torch-{v}" for v in installed]
-        assert m["venvs"] == want, (
-            f"{m['key']}: table says venvs={m['venvs']} but Dockerfile.multi-torch "
-            f"builds {want}. 05-venv-manifest.sh trusts the table, so a mismatch "
-            f"means the gate asserts the wrong set and passes anyway.")
+
+def test_every_multi_venv_has_a_companions_entry():
+    """install-torch-venv.sh looks each version up in torch-companions.json with
+    the same `error("version not found")` jq as the main build, so a venv version
+    with no entry kills the multi build at exit 5 — the failure that cost a CI
+    run on the config side."""
+    comp = set(json.loads((REPO / "derivatives/pytorch/torch-companions.json").read_text()))
+    for m in TABLE_MULTI():
+        for v in (x.removeprefix("torch-") for x in m["venvs"] if x != "main"):
+            assert v in comp, (
+                f"{m['key']}: venv torch {v} has no torch-companions.json entry; "
+                f"the multi build would fail with `jq: error: version not found`")
+
+
+def test_multi_primary_matches_its_declared_main_venv():
+    """`main` is the base image's own venv, so it IS primary_torch. If they
+    disagreed, 05-venv-manifest.sh would pass (it only checks names) while the
+    image contained a different torch than the table claims."""
+    for m in TABLE_MULTI():
+        assert "main" in m["venvs"], f"{m['key']}: venvs must include main"
+
+
+def test_multi_variants_have_distinct_keys_and_venv_sets():
+    """Two variants with the same key would overwrite each other's tags; two
+    with the same venv set are the same image built twice."""
+    keys = [m["key"] for m in TABLE_MULTI()]
+    assert len(keys) == len(set(keys)), f"duplicate multi keys: {keys}"
+    sets = [tuple(m["venvs"]) + (m["primary_backend"],) for m in TABLE_MULTI()]
+    assert len(sets) == len(set(sets)), "two multi variants describe the same image"
+
+
+def TABLE_MULTI():
+    return json.loads(CONFIG.read_text())["multi"]
 
 
 def test_every_multi_config_declares_its_venvs(table):

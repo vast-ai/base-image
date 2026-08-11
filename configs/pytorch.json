@@ -541,6 +541,23 @@
         "313",
         "314"
       ]
+    },
+    {
+      "torch": "2.13.0",
+      "key": "cu132-mini",
+      "mini_base_tag": "cuda-13.2-mini",
+      "backend": "cu132",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "python_versions": [
+        "310",
+        "311",
+        "312",
+        "313",
+        "314"
+      ]
     }
   ],
   "multi": [
@@ -554,6 +571,41 @@
         "torch-2.7.1"
       ],
       "cuda_minor": "12.9",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "python_versions": [
+        "312"
+      ]
+    },
+    {
+      "key": "multi-2130-2121-2110",
+      "primary_torch": "2.13.0",
+      "primary_backend": "cu130",
+      "venvs": [
+        "main",
+        "torch-2.12.1",
+        "torch-2.11.0"
+      ],
+      "cuda_minor": "13.2",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "python_versions": [
+        "312"
+      ]
+    },
+    {
+      "key": "multi-2130-2121",
+      "primary_torch": "2.13.0",
+      "primary_backend": "cu132",
+      "venvs": [
+        "main",
+        "torch-2.12.1"
+      ],
+      "cuda_minor": "13.2",
       "arches": [
         "linux/amd64",
         "linux/arm64"

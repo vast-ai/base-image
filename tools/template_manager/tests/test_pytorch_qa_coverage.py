@@ -205,10 +205,17 @@ def test_the_multi_alias_is_gated_and_declares_its_venvs(tmp_path):
     studio base. Its venv list is what makes a MISSING venv detectable —
     05-venv-manifest.sh has nothing to compare against without it."""
     cells = [c for c in build_matrix(tmp_path) if c["kind"] == "multi"]
-    assert cells, "the multi alias is not gated"
+    assert cells, "no multi variant is gated"
+    # EVERY variant, matched by key — not TABLE["multi"][0]. The single-variant
+    # assumption held until 2026-08-11, when cu130 and cu132 variants were added;
+    # indexing [0] would have silently checked one and ignored the rest.
+    by_key = {m["key"]: m for m in TABLE["multi"]}
+    assert len(cells) == len(by_key), (
+        f"{len(cells)} multi cells for {len(by_key)} variants — a variant is ungated")
     for c in cells:
-        assert c["venvs"].split() == TABLE["multi"][0]["venvs"]
-        assert len(c["venvs"].split()) > 1, "a multi image with one venv is not multi"
+        key = next(k for k in by_key if c["cell"].startswith(f"multi-{k}-py"))
+        assert c["venvs"].split() == by_key[key]["venvs"], f"{key}: venv list mismatch"
+        assert len(c["venvs"].split()) > 1, f"{key}: one venv is not a multi image"
 
 
 def test_single_venv_cells_still_declare_an_expectation(tmp_path):

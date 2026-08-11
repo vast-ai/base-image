@@ -92,7 +92,12 @@ jobs:
           # and is later merged into a multi-arch manifest.
           # Format: key|primary_torch|primary_backend|cuda_minor|arches|python_versions
           # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
-          mapfile -t ALL_MULTI_CONFIGS < <(jq -r '.multi[] | "\(.key)|\(.primary_torch)|\(.primary_backend)|\(.cuda_minor)|\(.arches | join(","))|\(.python_versions | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          # `extra_venvs` is derived from .venvs by dropping "main" (the base image's own
+          # venv, not something this build installs) and stripping the "torch-" prefix
+          # to get bare versions for install-torch-venv.sh. Deriving it here rather than
+          # storing a second list keeps ONE statement of what a variant contains — the
+          # same list 05-venv-manifest.sh asserts against at QA time.
+          mapfile -t ALL_MULTI_CONFIGS < <(jq -r '.multi[] | "\(.key)|\(.primary_torch)|\(.primary_backend)|\(.cuda_minor)|\(.arches | join(","))|\(.python_versions | join(" "))|\(.venvs | map(select(. != "main")) | map(ltrimstr("torch-")) | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
           [ "${#ALL_MULTI_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_MULTI_CONFIGS"; exit 1; }
 
           # Mini format: torch_ver|key|mini_base_tag|torch_backend|arches|python_versions
@@ -151,7 +156,7 @@ jobs:
           # it (e.g. FILTER=multi excludes every mini by substring).
           REQUIRED_MINI_PAIRS="|"
           for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
-            IFS='|' read -r mkey primary_torch primary_backend mcuda_minor marches mpython_versions <<< "$multi_config"
+            IFS='|' read -r mkey primary_torch primary_backend mcuda_minor marches mpython_versions mextra_venvs <<< "$multi_config"
             if [[ -n "$FILTER" && "$mkey" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
               continue
             fi
@@ -219,7 +224,8 @@ jobs:
           MULTI_MERGE_MATRIX="[]"
 
           for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
-            IFS='|' read -r key primary_torch primary_backend cuda_minor arches python_versions <<< "$multi_config"
+            IFS='|' read -r key primary_torch primary_backend cuda_minor arches python_versions extra_venvs <<< "$multi_config"
+            [ -n "$extra_venvs" ] || { echo "::error::${key}: no supplementary venvs derived from .venvs — a multi with only 'main' is not a multi"; exit 1; }
 
             # FILTER=mini also includes multi since multi layers on mini.
             if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
@@ -248,7 +254,8 @@ jobs:
                 --arg arch_suffix "$arch_suffix" \
                 --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
+                --arg extra_venvs "$extra_venvs" \
+                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions, "extra_venvs": $extra_venvs}]')
             done
           done
 
@@ -603,6 +610,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           ARCH_SUFFIX: ${{ matrix.arch_suffix }}
           PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          EXTRA_VENVS: ${{ matrix.extra_venvs }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/built-tags"
@@ -621,6 +629,7 @@ jobs:
               -f Dockerfile.multi-torch \
               --build-arg PYTORCH_BASE="${BASE}" \
               --build-arg PYTORCH_BACKEND="${PRIMARY_BACKEND}" \
+              --build-arg EXTRA_TORCH_VERSIONS="${EXTRA_VENVS}" \
               --tag "${TAG}" \
               --push .
 
