@@ -159,3 +159,64 @@ def test_retired_minors_are_genuinely_unused():
     pins = pinned_minors()
     clash = {m: pins[m] for m in RETIRED if m in pins}
     assert not clash, f"retired minors are still pinned: {clash}"
+
+
+# --- the SECOND source of truth: torch-companions.json ---------------------
+#
+# Found the hard way. Adding a version to configs/pytorch.json is NOT enough:
+# the Dockerfile also reads derivatives/pytorch/torch-companions.json to pin
+# torchvision/torchcodec/etc, via
+#
+#     jq '... if .[$v] == null then error("version not found") ...'
+#
+# so a missing entry fails the BUILD with jq exit code 5 and the message
+# "jq: error: version not found" — after pulling the base image, and with
+# nothing pointing at the file that is actually wrong. It cost a real CI run to
+# find, on a version added the same day.
+#
+# Two files that must agree and no check that they do is exactly the drift the
+# config-table extraction was done to remove, so it is checked here.
+
+COMPANIONS = json.loads((REPO / "derivatives/pytorch/torch-companions.json").read_text())
+
+
+def test_every_built_torch_version_has_a_companions_entry():
+    """THE assertion. Missing => the build dies late with an opaque jq error."""
+    want = {c["torch"] for c in TABLE["configs"]} | {m["torch"] for m in TABLE["mini"]}
+    want |= {u["primary_torch"] for u in TABLE["multi"]}
+    missing = sorted(want - set(COMPANIONS), key=vkey)
+    assert not missing, (
+        f"torch {missing} are in configs/pytorch.json but not in "
+        f"torch-companions.json. The build will fail with `jq: error: version "
+        f"not found` (exit 5) after pulling the base image.")
+
+
+def test_companions_has_no_entries_for_versions_we_no_longer_build():
+    """The other direction. A stale entry is harmless to the build but it is a
+    lie about what is supported, and it is how a retired version quietly looks
+    live to whoever reads this file next."""
+    built = {c["torch"] for c in TABLE["configs"]} | {m["torch"] for m in TABLE["mini"]}
+    stale = sorted(set(COMPANIONS) - built, key=vkey)
+    assert not stale, (
+        f"torch-companions.json still carries {stale}, which nothing builds. "
+        f"Remove them when retiring a version (ADR 0022).")
+
+
+def test_every_companions_entry_is_well_formed():
+    """A typo'd key produces a confusing runtime failure rather than a clear one:
+    `.packages` missing makes the jq emit nothing, so PACKAGES is just `torch==X`
+    and the companions are silently NOT installed — the image ships without
+    torchvision and every test that imports it fails much later."""
+    for ver, entry in sorted(COMPANIONS.items(), key=lambda kv: vkey(kv[0])):
+        assert isinstance(entry.get("packages"), dict) and entry["packages"], \
+            f"{ver}: no non-empty .packages — companions would silently not install"
+        assert isinstance(entry.get("amd64_only", []), list), f"{ver}: amd64_only not a list"
+        for pkg, pin in entry["packages"].items():
+            # X.Y is tolerated because 2.7.1 pins torchcodec "0.5" and that
+            # version is consumed by five derivatives — tightening it is a
+            # separate, riskier change. Noting the consequence rather than
+            # silently accepting it: the Dockerfile verifies the install with a
+            # PREFIX match (`[[ "${actual}" == "${ver}"* ]]`), so "0.5" would
+            # also accept a hypothetical 0.50.0. Prefer X.Y.Z in new entries.
+            assert re.fullmatch(r"\d+\.\d+(\.\d+)?", pin), \
+                f"{ver}/{pkg}: pin {pin!r} is not X.Y or X.Y.Z"

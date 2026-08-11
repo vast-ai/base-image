@@ -17,6 +17,8 @@ QA gate).
 |---|---|
 | One patch per minor line — a new patch SUPERSEDES the old one | `test_each_minor_line_carries_exactly_one_patch` |
 | Mini and config agree on the patch | `test_mini_and_config_agree_on_the_patch` |
+| **Every built version has a `torch-companions.json` entry** | `test_every_built_torch_version_has_a_companions_entry` |
+| No stale companions entry for a retired version | `test_companions_has_no_entries_for_versions_we_no_longer_build` |
 | Nothing below the support floor is still built | `test_nothing_below_the_support_floor_is_still_built` |
 | **A version a derivative pins can never be retired** | `test_no_pinned_version_is_retired` |
 | A retired version does not come back by accident | `test_a_retired_minor_does_not_come_back_by_accident` |
@@ -90,7 +92,57 @@ Things that bite:
   derivatives pin a mini base; a config-only version is unreachable by the
   estate.
 
-Then edit `configs/pytorch.json` — the only source of truth — and run the tests.
+### There are TWO files, not one
+
+`configs/pytorch.json` decides *which* images are built. **`derivatives/pytorch/torch-companions.json` decides what goes inside them** — the pinned
+torchvision/torchcodec/torchaudio for each torch version. Both need an entry.
+
+This is not optional and it fails late: the Dockerfile reads the companions file
+with
+
+```
+jq '... if .[$v] == null then error("version not found") ...'
+```
+
+so a missing entry kills the build with `jq: error: version not found` and exit
+code **5**, *after* pulling the base image, with nothing in the message naming
+the file that is actually wrong. It cost a full CI run to diagnose the first
+time. `test_every_built_torch_version_has_a_companions_entry` now catches it
+before dispatch.
+
+**Pick the companion versions by INTERSECTION, not by pattern.** The pin is per
+torch version but must resolve on *every backend that version builds on*, and
+availability is uneven:
+
+- **torchcodec is sparse on cu129** — it has 0.6, 0.7, 0.10, 0.11.x and 0.15,
+  with nothing in 0.12–0.14. When torch 2.13.0 was added on cu126/cu129/cu130/cu132,
+  **0.15.0 was the only version present on all four**.
+- The apparent "torchcodec minor tracks torch minor" pattern (2.11 → 0.11,
+  2.12 → 0.12) is coincidence. Upstream's own table says 0.12 through 0.15 all
+  require `torch>=2.11`, so there is no strict pairing to follow.
+- **torchaudio no longer exists past 2.11** — cu130 stops at 2.11.0 and cu132
+  has none at all. New entries simply omit it.
+
+Compute the intersection rather than guessing:
+
+```bash
+for pkg in torchvision torchcodec; do
+  for be in cu126 cu129 cu130 cu132; do
+    curl -s "https://download.pytorch.org/whl/$be/$pkg/" \
+      | grep -oE "$pkg-[0-9]+\.[0-9]+\.[0-9]+\+$be-cp312-cp312-manylinux[^\"<]*x86_64\.whl" \
+      | grep -oE "^$pkg-[0-9]+\.[0-9]+\.[0-9]+" | sed "s/$pkg-//" | sort -u > /tmp/${pkg}_${be}.txt
+  done
+  echo "$pkg on all four:"; comm -12 <(comm -12 /tmp/${pkg}_cu126.txt /tmp/${pkg}_cu129.txt) \
+    <(comm -12 /tmp/${pkg}_cu130.txt /tmp/${pkg}_cu132.txt) | tr '\n' ' '; echo
+done
+```
+
+Prefer a full `X.Y.Z` pin. The Dockerfile verifies the install with a PREFIX
+match (`[[ "${actual}" == "${ver}"* ]]`), so a two-component pin like `0.5`
+would also accept a hypothetical `0.50.0`. One such pin survives on 2.7.1 and is
+left alone because five derivatives depend on that image.
+
+Then edit both files and run the tests.
 
 ## 3. Adding a new CUDA backend
 
@@ -136,9 +188,11 @@ Order matters:
    that derivative's build with no warning. `test_no_pinned_version_is_retired`
    stops you, but the fix is to bump, not to work around the test.
 2. Remove its `configs[]` and `mini[]` entries from `configs/pytorch.json`.
-3. Add the minor to `RETIRED` in `tools/imagegen/tests/test_pytorch_version_lifecycle.py`.
-4. Note it in ADR 0022's "applied" list, with the reason.
-5. Run the tests.
+3. Remove its entry from `derivatives/pytorch/torch-companions.json` — both
+   files, always together.
+4. Add the minor to `RETIRED` in `tools/imagegen/tests/test_pytorch_version_lifecycle.py`.
+5. Note it in ADR 0022's "applied" list, with the reason.
+6. Run the tests.
 
 Nothing is deleted from the registry. If you actually want to delete published
 tags, that is a different decision with a different blast radius and needs its
