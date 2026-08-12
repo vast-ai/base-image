@@ -24,7 +24,26 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
     return 0
 }
 
+# Breadcrumb for the abort paths below. Without it the safe abort is INVISIBLE:
+# nothing is written, nothing is logged past this script's stdout, and the
+# instance simply runs on the image-default toolkit — which base/60-gpu-cuda only
+# notices by luck (it needs the image to ship an INDIRECT /usr/local/cuda for the
+# symlink assertion to catch it). Detection should be designed, not accidental.
+#
+# Cleared at the top of every run, not just written on failure: /run is part of
+# the container's own overlay here (docker does not tmpfs-mount it), so a stale
+# breadcrumb from a previous boot would fail the QA test forever.
+CUDA_CONFIG_FAILED_MARKER=/run/vast-cuda-config-failed
+
+cuda_config_failed() {
+    mkdir -p "$(dirname "$CUDA_CONFIG_FAILED_MARKER")" 2>/dev/null
+    printf '%s\n' "$1" > "$CUDA_CONFIG_FAILED_MARKER" 2>/dev/null
+    echo "Error: $1"
+    echo "       — leaving the existing CUDA configuration untouched (nothing changed)."
+}
+
 configure_cuda() {
+    rm -f "$CUDA_CONFIG_FAILED_MARKER"
     command -v nvidia-smi &> /dev/null || return 0
 
     # ── GATHER AND VALIDATE BEFORE MUTATING ANYTHING ────────────────────
@@ -45,19 +64,20 @@ configure_cuda() {
     # load libnppicc — three layers from the cause, and read at first as an
     # unrelated torchaudio failure on a flaky host.
     #
-    # base/60-gpu-cuda now asserts the toolkit is reachable, so the broken state
-    # can never again pass for healthy.
+    # base/60-gpu-cuda now asserts the toolkit is reachable and reads the driver
+    # version through the SAME helper and the same --native mode as this script,
+    # so the test cannot silently agree with a boot that got it wrong.
     # Driver API, not prose. See /opt/instance-tools/bin/cuda-driver-version for
     # why: driver 610 renamed nvidia-smi's "CUDA Version" field to "CUDA UMD
     # Version" and broke every scrape of it fleet-wide.
     #
-    # PINNED TO THE NATIVE DRIVER, and that pin is load-bearing.
+    # --native, and that is load-bearing.
     #
     # cuDriverGetVersion reports whichever libcuda.so.1 the loader resolves. If a
     # PREVIOUS boot enabled forward compat it wrote /etc/ld.so.conf.d/0-compat-cuda.conf
     # (named "0-" so it wins), and /etc and the loader cache persist across a
-    # stop/start — so an unpinned probe here would return the COMPAT version, not
-    # the driver's own.
+    # stop/start — so a plain probe here would return the COMPAT version, not the
+    # driver's own.
     #
     # That is not hypothetical: with the value inflated to the toolkit's own
     # version, try_forward_compat's "latest > max" test goes false, compat is NOT
@@ -68,41 +88,21 @@ configure_cuda() {
     # only ever boots an instance once.
     #
     # Reading it BEFORE the cleanup (which is what makes the abort path safe) is
-    # therefore only correct with the compat path excluded explicitly. Same bypass
-    # base/60-gpu-cuda uses to get its native reading.
-    # THE PIN MUST FAIL CLOSED. LD_LIBRARY_PATH is a search HINT, not a pin: if
-    # the directory named does not yield a loadable libcuda.so.1, the loader
-    # carries on to the ld.so cache — which on a second boot is the previous
-    # boot's compat entry, i.e. exactly the wrong answer, silently. So an empty
-    # or unusable pin is treated as "unknown", never as "probe it anyway".
-    #
-    # Current-ABI directory first, then a general search: a host with 32-bit
-    # driver libs mounted (NVIDIA_DRIVER_CAPABILITIES=all includes compat32)
-    # has two libcuda.so.1, and `find | head -1` is readdir order — a coin flip
-    # that a 64-bit python would skip, falling through to the cache.
-    local _native_libcuda_dir="" _libcuda_path MAX_CUDA
-    for _d in "/usr/lib/$(uname -m)-linux-gnu" /usr/lib64; do
-        if [[ -e "$_d/libcuda.so.1" ]]; then _native_libcuda_dir="$_d"; break; fi
-    done
-    if [[ -z "$_native_libcuda_dir" ]]; then
-        _libcuda_path=$(find /usr/lib /usr/lib64 -name 'libcuda.so.1' \
-                          -not -path '*/cuda*/compat/*' -not -path '*/stubs/*' 2>/dev/null | head -1)
-        [[ -n "$_libcuda_path" ]] && _native_libcuda_dir=$(dirname "$_libcuda_path")
-    fi
-    if [[ -z "$_native_libcuda_dir" || ! -e "$_native_libcuda_dir/libcuda.so.1" ]]; then
-        echo "Error: no native libcuda.so.1 found — refusing to probe unpinned, because an"
-        echo "       unpinned probe can silently return a previous boot's forward-compat"
-        echo "       version. Leaving the existing CUDA configuration untouched."
-        return 1
-    fi
-    MAX_CUDA=$(LD_LIBRARY_PATH="$_native_libcuda_dir" /opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
+    # therefore only correct with the compat libcuda excluded explicitly. The
+    # helper does that by dlopening an absolute path and then confirming, from
+    # /proc/self/maps, which file actually got mapped — and returns NOTHING if it
+    # cannot prove the reading is native. Deliberately not open-coded here: the
+    # earlier bash version of this (LD_LIBRARY_PATH=<dir>) was a search HINT, not
+    # a pin, and failed open to the compat lib. Two copies of that heuristic is
+    # how one defect ships twice.
+    local MAX_CUDA
+    MAX_CUDA=$(/opt/instance-tools/bin/cuda-driver-version --native 2>/dev/null || true)
 
     # Shape-checked, not merely non-empty: MAX_CUDA is interpolated unquoted into
     # three `awk "BEGIN {...}"` programs below, where a non-numeric value is an awk
     # syntax error that silently falls through to the wrong toolkit.
     if [[ ! "$MAX_CUDA" =~ ^[0-9]+\.[0-9]+$ ]]; then
-        echo "Error: could not determine the driver CUDA version (got '${MAX_CUDA}')"
-        echo "       — leaving the existing CUDA configuration untouched (nothing changed)."
+        cuda_config_failed "could not determine the driver CUDA version (got '${MAX_CUDA}')"
         return 1
     fi
 

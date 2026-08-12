@@ -12,17 +12,18 @@ gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head 
 compute_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1)
 driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
 
-# nvidia-smi reports the *effective* CUDA version, which includes compat libs if loaded.
-# To get the native driver CUDA max, we must bypass any compat libs in the linker path
-# by pointing LD_LIBRARY_PATH at the system libcuda directory.
-_libcuda_path=$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)
-system_libcuda_dir=""
-[[ -n "$_libcuda_path" ]] && system_libcuda_dir=$(dirname "$_libcuda_path")
-if [[ -n "$system_libcuda_dir" && -d "$system_libcuda_dir" ]]; then
-    native_driver_cuda=$(LD_LIBRARY_PATH="$system_libcuda_dir" /opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
-else
-    native_driver_cuda=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
-fi
+# nvidia-smi reports the *effective* CUDA version, which includes compat libs if
+# loaded. Every compat check below needs the driver's NATIVE maximum instead, so
+# it asks the helper for exactly that — the same call, in the same mode, that
+# 05-configure-cuda.sh used to pick the toolkit.
+#
+# Deliberately not re-derived here. Both files used to open-code the bypass as
+# `LD_LIBRARY_PATH=<dir>`, which is a search hint: name a directory with no
+# loadable libcuda.so.1 and the loader carries on to the ld.so cache — i.e. to a
+# previous boot's compat lib, silently, and this test would then AGREE with a
+# boot that got it wrong. A mirrored heuristic is not an independent check.
+# --native answers or it fails; it never guesses.
+native_driver_cuda=$(/opt/instance-tools/bin/cuda-driver-version --native 2>/dev/null || true)
 # Also grab the effective (possibly compat-enhanced) version for reference
 effective_cuda=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
 
@@ -44,7 +45,19 @@ echo "  native driver CUDA: ${native_driver_cuda}, effective: ${effective_cuda}"
 if [[ ! "$native_driver_cuda" =~ ^[0-9]+\.[0-9]+$ ]]; then
     fail_later "driver-cuda-version" \
         "could not determine the driver CUDA version (got '${native_driver_cuda}') — \
-libcuda is unreadable AND nvidia-smi is unparseable, so every compat check below is vacuous"
+no libcuda could be proven native, so every compat check below is vacuous"
+fi
+
+# 05-configure-cuda.sh aborts SAFELY when it cannot determine the driver version:
+# it changes nothing, which is right, but it also means the instance runs on the
+# image-default toolkit with no compat and nothing chose it. That state used to
+# be caught only by accident — the symlink assertion below notices it just when
+# the image happens to ship an indirect /usr/local/cuda. The boot script now
+# leaves a breadcrumb, so the abort is asserted directly rather than inferred.
+if [[ -f /run/vast-cuda-config-failed ]]; then
+    fail_later "cuda-config" \
+        "05-configure-cuda.sh aborted this boot: $(head -1 /run/vast-cuda-config-failed) \
+— the CUDA toolkit in use was never validated against this host's driver"
 fi
 
 # ── CUDA toolkit selection ────────────────────────────────────────────
@@ -129,7 +142,9 @@ if [[ -L /usr/local/cuda ]]; then
     # silently reads "correct fallback" and the three test_fail assertions
     # become unreachable. Guarding native_driver_cuda alone was not enough: this
     # is the value the incident actually produced.
+    selected_cuda_is_version=true
     if [[ ! "$selected_cuda" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        selected_cuda_is_version=false
         fail_later "cuda-symlink" \
             "/usr/local/cuda does not resolve to a cuda-X.Y directory (got '${selected_cuda}') — \
 05-configure-cuda.sh did not run to completion, so no toolkit selection was validated"
@@ -173,6 +188,12 @@ if [[ "$toolkit_needs_compat" == "1" ]]; then
         echo "  DISABLE_FORWARD_COMPAT=true — forward compat intentionally disabled"
         if [[ "$native_major" == "$latest_major" ]]; then
             echo "  same major version (${native_major}) — minor compat sufficient"
+        elif [[ "$selected_cuda_is_version" != true ]]; then
+            # version_gt rejects a non-numeric operand, so "not greater" here would
+            # be an artefact of the bad value, not a correct fallback. The
+            # cuda-symlink failure above already carries the verdict; do not print
+            # a reassurance on top of it.
+            echo "  selected CUDA '${selected_cuda}' is not a version — see cuda-symlink above"
         elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
@@ -213,6 +234,12 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
             echo "  (consumer GPU or cuInit failed — expected on non-datacenter hardware)"
             if [[ "$native_major" == "$latest_major" ]]; then
                 echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
+            elif [[ "$selected_cuda_is_version" != true ]]; then
+                # version_gt rejects a non-numeric operand, so "not greater" here would
+                # be an artefact of the bad value, not a correct fallback. The
+                # cuda-symlink failure above already carries the verdict; do not print
+                # a reassurance on top of it.
+                echo "  selected CUDA '${selected_cuda}' is not a version — see cuda-symlink above"
             elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
                 echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
             else
@@ -224,6 +251,12 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
         echo "  no compat libs in ${compat_dir}"
         if [[ "$native_major" == "$latest_major" ]]; then
             echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
+        elif [[ "$selected_cuda_is_version" != true ]]; then
+            # version_gt rejects a non-numeric operand, so "not greater" here would
+            # be an artefact of the bad value, not a correct fallback. The
+            # cuda-symlink failure above already carries the verdict; do not print
+            # a reassurance on top of it.
+            echo "  selected CUDA '${selected_cuda}' is not a version — see cuda-symlink above"
         elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else

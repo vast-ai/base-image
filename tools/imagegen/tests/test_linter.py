@@ -822,6 +822,193 @@ def test_L062_report_before_every_exit_is_clean(tmp_path):
     assert "L062" not in errs(img, tmp_path)
 
 
+# The walk is a control-flow approximation. These pin down both directions of
+# that approximation, because the linear version got BOTH wrong: it let a
+# conditional report clear a pending failure (certifying the rule's own bug) and
+# it flagged an exit in the arm that never deferred (a defect report on correct
+# code). Every fixture below was checked against real bash before being asserted.
+
+def test_L062_report_inside_an_untaken_branch_does_not_clear(tmp_path):
+    """`fail_later` … `if x; then report_failures; fi` … `test_pass` exits 0 with
+    a printed FAIL whenever the condition is false. A linear walk called it clean."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\n'
+                     'if [[ "$MODE" == strict ]]; then\n    report_failures\nfi\n'
+                     'test_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_guarded_report_does_not_clear(tmp_path):
+    """Same hole, one-line spelling: `[[ -n "$Q" ]] && report_failures`."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\n'
+                     '[[ -n "$Q" ]] && report_failures\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_exit_in_the_arm_that_never_deferred_is_clean(tmp_path):
+    """The false positive: the `else` arm cannot have a failure pending, because
+    the `then` arm — the only thing that defers — did not run."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nif [[ -n "$PORT" ]]; then\n'
+                     '    http_check "http://x:$PORT" 200 "svc"\n    report_failures\n'
+                     'else\n    test_pass "no service configured"\nfi\n'
+                     'report_failures\ntest_pass "ok"\n')
+    assert "L062" not in errs(img, tmp_path)
+
+
+def test_L062_a_helper_function_that_reports_then_exits_is_clean(tmp_path):
+    """`finish() { report_failures; test_pass "ok"; }` is correct. Not treating
+    `{` as a command position reported it as never calling report_failures."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfinish() { report_failures; test_pass "ok"; }\n'
+                     'fail_later "x" "broke"\nfinish\n')
+    assert "L062" not in errs(img, tmp_path)
+
+
+def test_L062_a_helper_function_that_exits_without_reporting_fires(tmp_path):
+    """The same machinery in the other direction: the discard is one call away."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nbail() { test_pass "early"; }\n'
+                     'fail_later "x" "broke"\nbail\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_test_skip_discards_a_pending_failure_too(tmp_path):
+    """test_skip exits 77 and drops FAILURES exactly as test_pass drops it, so a
+    rule that only knows test_pass leaves the same hole one keyword over."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\ntest_skip "nothing to do"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_a_hash_inside_an_expansion_is_not_a_comment(tmp_path):
+    """`${v#"${p}"}` truncated by a naive comment strip unbalanced the brace
+    count, swallowed the rest of 26-caddy-auth.sh, and hid its report_failures —
+    a false positive on a real, correct, shipped test."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/26-caddy-auth",
+                     'source lib.sh\ncheck() {\n    local v="${varname#"${prefix}"}"\n'
+                     '    fail_later "x" "broke"\n}\ncheck\nreport_failures\ntest_pass "ok"\n')
+    assert "L062" not in errs(img, tmp_path)
+
+
+# ---- L064: one native-libcuda resolver, not one per caller ----------------
+#
+# `LD_LIBRARY_PATH=<dir> cuda-driver-version` is a search HINT: name a directory
+# with no loadable libcuda.so.1 and the loader continues to the ld.so cache — on
+# a second boot, a previous boot's forward-compat library. It fails OPEN, to
+# exactly the wrong answer. Worse, the same six lines lived in the boot script
+# AND in the test meant to check it, so the test agreed rather than verified.
+
+def test_L064_ld_library_path_wrapper_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       'MAX=$(LD_LIBRARY_PATH="$d" /opt/instance-tools/bin/cuda-driver-version)\n')
+    assert has(img, tmp_path, "L064", "search hint, not a pin")
+
+
+def test_L064_open_coded_libcuda_search_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/60-gpu-cuda.sh",
+                       "p=$(find /usr/lib -name 'libcuda.so.1' | head -1)\n")
+    assert has(img, tmp_path, "L064", "cuda-driver-version --native")
+
+
+def test_L064_the_native_mode_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       'MAX=$(/opt/instance-tools/bin/cuda-driver-version --native || true)\n')
+    assert "L064" not in errs(img, tmp_path)
+
+
+def test_L064_probing_for_compat_libs_is_a_different_question(tmp_path):
+    """try_forward_compat asks "does this toolkit ship compat libs" with
+    `compgen -G .../libcuda.so.*`. Legitimate, and not a native-driver probe —
+    the rule keyed on the bare name fired on both shipped callers."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       'compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null || return 1\n')
+    assert "L064" not in errs(img, tmp_path)
+
+
+def test_L064_extensionless_shipped_tools_are_scanned(tmp_path):
+    """10 of the 12 tools in ROOT/opt/instance-tools/bin have no extension, so an
+    *.sh/*.py glob exempts the directory most likely to re-introduce this."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/vast-capabilities",
+                       '#!/bin/bash\nMAX=$(LD_LIBRARY_PATH="$d" '
+                       '/opt/instance-tools/bin/cuda-driver-version)\n')
+    assert "L064" in errs(img, tmp_path)
+
+
+def test_mut_L062_dropping_the_real_final_report_fires(tmp_path):
+    """Mutation against the REAL file: base/60-gpu-cuda defers three failures and
+    reports before each of its two exits. Remove either report and the exit below
+    it discards whatever was recorded."""
+    repo, img = _real("base-image")
+    src = repo / "ROOT/opt/instance-tools/tests/base/60-gpu-cuda.sh"
+    original = src.read_text()
+    assert original.count("\nreport_failures\n") >= 1
+    for target in ("\nreport_failures\n", "\n    report_failures\n"):
+        assert target in original, target
+        try:
+            src.write_text(original.replace(target, "\n", 1))
+            assert "L062" in errs(img, repo), f"removing {target!r} did not fire L062"
+        finally:
+            src.write_text(original)
+
+
+def test_mut_L064_the_real_boot_script_reverted_fires(tmp_path):
+    """Mutation against the REAL file: restore the bash probe this change removed
+    and the rule must fire. Without this the rule could be a no-op."""
+    repo, img = _real("base-image")
+    src = repo / "ROOT/etc/vast_boot.d/05-configure-cuda.sh"
+    original = src.read_text()
+    assert "cuda-driver-version --native" in original
+    mutated = original.replace(
+        "MAX_CUDA=$(/opt/instance-tools/bin/cuda-driver-version --native 2>/dev/null || true)",
+        "_p=$(find /usr/lib -name 'libcuda.so.1' | head -1)\n"
+        '    MAX_CUDA=$(LD_LIBRARY_PATH="$(dirname "$_p")" '
+        "/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)",
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        codes = errs(img, repo)
+        assert "L064" in codes
+    finally:
+        src.write_text(original)
+
+
+def test_mut_L064_the_real_gpu_test_reverted_fires(tmp_path):
+    """The second copy — the one a human review had to catch by hand."""
+    repo, img = _real("base-image")
+    src = repo / "ROOT/opt/instance-tools/tests/base/60-gpu-cuda.sh"
+    original = src.read_text()
+    assert "cuda-driver-version --native" in original
+    mutated = original.replace(
+        "native_driver_cuda=$(/opt/instance-tools/bin/cuda-driver-version --native "
+        "2>/dev/null || true)",
+        "_p=$(find /usr/lib -name 'libcuda.so.1' | head -1)\n"
+        'native_driver_cuda=$(LD_LIBRARY_PATH="$(dirname "$_p")" '
+        "/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)",
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        codes = errs(img, repo)
+        assert "L064" in codes
+    finally:
+        src.write_text(original)
+
+
 # ---- L063: never scrape nvidia-smi's table for the CUDA version -----------
 #
 # Driver 610 renamed the field ("CUDA Version" -> "CUDA UMD Version"), so every

@@ -76,10 +76,11 @@ RULES: list[tuple[str, str, str]] = [
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
-    ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
-    ("L062", ERROR, "A shipped test that calls fail_later MUST also call report_failures — fail_later only RECORDS a deferred failure, so without the report the test prints `FAIL: ...` and then exits 0 via test_pass. The failure is silently discarded and the suite goes green, which is the exact skip-as-pass shape the QA gate exists to close (found while adding the CUDA-libpath check to base/60-gpu-cuda)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
+    ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
+    ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
+    ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
 ]
 
 
@@ -596,20 +597,246 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
 
 
 def _line_calls(line: str, fn: str) -> bool:
-    """True if `fn` is invoked at a command position on THIS line."""
-    return bool(re.search(rf"(^|[;&|]|\b(?:then|else|do|;)\s)\s*{fn}\b", line))
+    """True if `fn` is invoked at a command position on THIS line.
+
+    `{` counts: `finish() { report_failures; test_pass "ok"; }` is a call, and
+    omitting it made the rule report a *correct* helper as never calling
+    report_failures.
+    """
+    return bool(re.search(rf"(^|[;&|{{(]|\b(?:then|else|do|;)\s)\s*{fn}\b", line))
+
+
+def _line_calls_unconditionally(line: str, fn: str) -> bool:
+    """True if `fn` runs whenever this line is reached.
+
+    `report_failures` only clears a pending failure if it is not itself guarded:
+    `[[ -n "$Q" ]] && report_failures` and `... ; then report_failures` run only
+    sometimes, so treating them as a clear is how the rule certifies the very bug
+    it exists to catch. A statement STARTING with the name is unguarded; one
+    reached through `&&`, `||` or `then` is not — so the split is on `;`, `{` and
+    `}`, which end a statement, and never on `&&`/`||`, which do not.
+
+    Block structure (a `report_failures` inside an if that may not run) is a
+    separate question, handled by the frame stack in _scan_shell_flow.
+    """
+    for stmt in re.split(r"[;{}]", line):
+        if re.match(rf"\s*{fn}\b", stmt):
+            return True
+    return False
 
 
 def _calls(text: str, fn: str) -> bool:
     """True if `fn` is INVOKED at a command position (not merely mentioned)."""
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0]
-        if re.search(rf"(^|[;&|]|\b(?:then|else|do|;)\s)\s*{fn}\b", line):
+        if _line_calls(_strip_comment(raw), fn):
             return True
     return False
 
 
+# Exits that DISCARD pending deferred failures: both leave the runner with a
+# non-failing status (test_pass exits 0, test_skip exits 77), so reaching either
+# with a recorded failure throws it away. test_fail is not here — it exits
+# non-zero, so the failure is not lost.
+_DISCARDING_EXITS = ("test_pass", "test_skip")
+_DEFERRING_CALLS = ("fail_later", "http_check")
+
+_FN_DEF = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{")
+_BLOCK_OPEN = re.compile(r"^\s*(if|for|while|until|case)\b")
+_BLOCK_CLOSE = re.compile(r"^\s*(fi|done|esac)\b")
+_BLOCK_ALT = re.compile(r"^\s*(else|elif)\b")
+
+
+def _scan_shell_flow(text: str):
+    """Walk a shell test, tracking whether a deferred failure is pending.
+
+    Returns (line-number-of-first-discarding-exit-while-pending, ever_deferred,
+    ever_reported).
+
+    This is a control-flow approximation, not a bash parser, and it is
+    deliberately asymmetric: it is CONSERVATIVE about what clears a pending
+    failure (only an unguarded `report_failures`) and GENEROUS about what
+    defers one (any branch that could run). The alternative — a linear walk —
+    got both directions wrong: a `report_failures` inside an untaken `if`
+    cleared the state for the rest of the file (the rule certifying its own
+    bug), while a `test_pass` in the `else` arm of the branch that deferred was
+    reported as a defect on correct code.
+
+    Branch handling: entering `if`/`for`/`while`/`case` snapshots the pending
+    state; `else`/`elif` restarts the alternative from that snapshot; closing
+    merges every arm by OR, including the fall-through arm when there is no
+    `else` (a loop body or an unelsed `if` may not run at all).
+
+    Function bodies are analysed separately and their effect applied at the
+    CALL site, so `finish() { report_failures; test_pass "ok"; }` reads as
+    "clears, then exits" wherever `finish` is invoked.
+
+    Known limit: a `fail_later` inside a subshell or a pipeline loses its record
+    at RUNTIME (the array is written in a child), which this cannot see — that
+    is a different defect needing a different check.
+    """
+    lines = [_strip_comment(raw) for raw in text.splitlines()]
+
+    # Pass 1: function bodies. Brace-depth counted from the definition line.
+    fns: dict[str, dict] = {}
+    body_lines: set[int] = set()
+    i = 0
+    while i < len(lines):
+        m = _FN_DEF.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        # End the body at a closing brace in column 0 (house style, and what
+        # every shipped test uses) OR when brace depth returns to zero,
+        # whichever comes first. Either alone is brittle: an indented `}` never
+        # matches the first, and an unbalanced brace inside a string or regex
+        # (`grep -E '[{]'`) breaks the second — and a body that never ends
+        # swallows the rest of the file, taking its report_failures with it.
+        depth = lines[i].count("{") - lines[i].count("}")
+        body = [lines[i]]
+        body_lines.add(i)
+        j = i
+        while depth > 0 and j + 1 < len(lines):
+            j += 1
+            body.append(lines[j])
+            body_lines.add(j)
+            if lines[j].startswith("}"):
+                break
+            depth += lines[j].count("{") - lines[j].count("}")
+        fns[m.group(1)] = {
+            "clears": any(_line_calls_unconditionally(b, "report_failures") for b in body),
+            "exits": any(_line_calls(b, e) for b in body for e in _DISCARDING_EXITS),
+            "defers": any(_line_calls(b, d) for b in body for d in _DEFERRING_CALLS),
+        }
+        i = j + 1
+
+    pending = False
+    ever_deferred = False
+    ever_reported = False
+    stack: list[dict] = []
+    bad_exit = None
+
+    for n, line in enumerate(lines, 1):
+        if (n - 1) in body_lines:
+            continue
+        if _BLOCK_CLOSE.match(line) and stack:
+            frame = stack.pop()
+            frame["arms"].append(pending)
+            if not frame["has_else"]:
+                frame["arms"].append(frame["entry"])
+            pending = any(frame["arms"])
+            continue
+        if _BLOCK_ALT.match(line) and stack:
+            stack[-1]["arms"].append(pending)
+            stack[-1]["has_else"] = True
+            pending = stack[-1]["entry"]
+            # `elif cond; then` may itself call things; fall through to the
+            # call handling below rather than `continue`.
+        elif _BLOCK_OPEN.match(line) and not _BLOCK_CLOSE.search(line):
+            stack.append({"entry": pending, "arms": [], "has_else": False})
+
+        for name, info in fns.items():
+            if not _line_calls(line, name):
+                continue
+            if info["defers"]:
+                pending = True
+                ever_deferred = True
+            if info["clears"]:
+                ever_reported = True
+                pending = False
+            if info["exits"] and pending and bad_exit is None:
+                bad_exit = n
+
+        if any(_line_calls(line, d) for d in _DEFERRING_CALLS):
+            pending = True
+            ever_deferred = True
+        if _line_calls(line, "report_failures"):
+            ever_reported = True
+            if _line_calls_unconditionally(line, "report_failures"):
+                pending = False
+        if pending and bad_exit is None and any(
+            _line_calls(line, e) for e in _DISCARDING_EXITS
+        ):
+            bad_exit = n
+
+    return bad_exit, ever_deferred, ever_reported
+
+
 _SMI_TEXT_PARSE = re.compile(r"CUDA[A-Za-z ]*Version[:\\]")
+
+def _strip_comment(line: str) -> str:
+    """Drop a trailing shell comment without mangling code.
+
+    Splitting on the first `#` is wrong often enough to matter: it truncates
+    `${varname#"${prefix}"}` mid-expansion (which unbalanced the brace count in
+    26-caddy-auth.sh and swallowed the rest of the file, hiding its
+    report_failures) and `sed 's#a#b#'`. In bash a `#` starts a comment only at
+    the start of a word and only outside quotes.
+    """
+    out: list[str] = []
+    quote = None
+    escaped = False
+    for ch in line:
+        if quote:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        elif ch == "#" and (not out or out[-1] in " \t"):
+            break
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+_CUDA_HELPER = "cuda-driver-version"
+# `LD_LIBRARY_PATH=<anything> ... cuda-driver-version` — the fail-open wrapper.
+_LDPATH_PROBE = re.compile(r"LD_LIBRARY_PATH=.*" + _CUDA_HELPER)
+# A hand-rolled hunt for the driver library, which only ever feeds such a wrapper.
+# The exact SONAME, deliberately: probing for `libcuda.so.*` is how a script asks
+# "are there compat libs in this directory" — a legitimate, different question
+# that 05-configure-cuda.sh and base/60-gpu-cuda both ask.
+_LIBCUDA_SEARCH = re.compile(r"(find|ls|compgen|glob|rglob|iglob)\b[^\n]*libcuda\.so\.1\b")
+
+
+def _shipped_scripts(repo: Path):
+    """Yield (path, repo-relative-path, [(lineno, code-without-comment)]) for
+    every script that ships INSIDE an image.
+
+    Extension is not the boundary: 10 of the 12 tools in
+    ROOT/opt/instance-tools/bin are extensionless by convention, including the
+    CUDA helper itself, so an `*.sh`/`*.py` glob silently exempts the directory
+    most likely to re-introduce these bugs. Derivative and external overlays
+    ship into images too and are included for the same reason.
+    """
+    roots = [repo / "ROOT", repo / "portal-aio"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT"))
+    roots += sorted((repo / "external").glob("*/ROOT"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*")):
+            if not f.is_file() or f.is_symlink():
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue                       # binary or unreadable: not a script
+            if f.suffix not in (".sh", ".py") and not text.startswith("#!"):
+                continue
+            lines = [(n, _strip_comment(raw))
+                     for n, raw in enumerate(text.splitlines(), 1)]
+            try:
+                rel = str(f.relative_to(repo))
+            except ValueError:
+                rel = f.name
+            yield f, rel, lines
 
 
 def check_fail_later_is_reported(img: Image, repo: Path) -> Iterable[Finding]:
@@ -642,42 +869,33 @@ def check_fail_later_is_reported(img: Image, repo: Path) -> Iterable[Finding]:
                 continue
             for f in sorted(sub.glob("*.sh")):
                 text = f.read_text(encoding="utf-8", errors="replace")
+                # ORDER MATTERS, not mere presence. `report_failures` somewhere in
+                # the file is not enough: an EARLIER test_pass/test_skip exits
+                # without failing and throws the deferred failures away. That is
+                # not hypothetical — the driver-version assertion added to
+                # base/60-gpu-cuda was discarded on its "no CUDA toolkit installed"
+                # early exit while this rule, in its presence-only form, certified
+                # the file as compliant.
+                #
                 # http_check (lib.sh) calls fail_later INTERNALLY, so a test using
                 # only http_check defers failures without ever naming fail_later.
                 # Gating on the literal name alone would let the most common
-                # deferring shape through — which it did, until this line.
-                if not (_calls(text, "fail_later") or _calls(text, "http_check")):
+                # deferring shape through — which it did, until it was added to
+                # the deferring set.
+                bad_exit, ever_deferred, ever_reported = _scan_shell_flow(text)
+                if not ever_deferred:
                     continue
-                # ORDER MATTERS, not mere presence. `report_failures` somewhere in
-                # the file is not enough: an EARLIER `test_pass` exits 0 and throws
-                # the deferred failures away. That is not hypothetical — the
-                # driver-version assertion added to base/60-gpu-cuda was discarded
-                # on its "no CUDA toolkit installed" early exit while this rule,
-                # in its presence-only form, certified the file as compliant.
-                #
-                # So: walk the file and fail on the first test_pass that is reached
-                # after a fail_later without an intervening report_failures.
-                deferred = False
-                bad_exit = None
-                for n, raw in enumerate(text.splitlines(), 1):
-                    line = raw.split("#", 1)[0]
-                    if _line_calls(line, "fail_later") or _line_calls(line, "http_check"):
-                        deferred = True
-                    if _line_calls(line, "report_failures"):
-                        deferred = False
-                    if deferred and _line_calls(line, "test_pass"):
-                        bad_exit = n
-                        break
                 if bad_exit is not None:
                     try:
                         rel = str(f.relative_to(repo))
                     except ValueError:
                         rel = f.name
                     yield Finding("L062", ERROR, img.name, f"{rel}:{bad_exit}",
-                                  "test_pass exits 0 here while a deferred failure is "
-                                  "pending — call report_failures before every exit path")
+                                  "test_pass/test_skip exits without failing here while a "
+                                  "deferred failure is pending — call report_failures "
+                                  "before every exit path")
                     continue
-                if not _calls(text, "report_failures"):
+                if not ever_reported:
                     try:
                         rel = str(f.relative_to(repo))
                     except ValueError:
@@ -701,24 +919,53 @@ def check_no_nvidia_smi_text_parse(img: Image, repo: Path) -> Iterable[Finding]:
     """
     if img.cls != "base":
         return
-    roots = [repo / "ROOT", repo / "portal-aio"]
-    helper = "cuda-driver-version"
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for f in sorted(list(root.rglob("*.sh")) + list(root.rglob("*.py"))):
-            if helper in f.name:
-                continue                       # the one sanctioned implementation
-            for n, raw in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                line = raw.split("#", 1)[0]
-                if _SMI_TEXT_PARSE.search(line):
-                    try:
-                        rel = str(f.relative_to(repo))
-                    except ValueError:
-                        rel = f.name
-                    yield Finding("L063", ERROR, img.name, f"{rel}:{n}",
-                                  "parses nvidia-smi's table for the CUDA version — "
-                                  "use /opt/instance-tools/bin/cuda-driver-version instead")
+    for f, rel, lines in _shipped_scripts(repo):
+        if _CUDA_HELPER in f.name:
+            continue                           # the one sanctioned implementation
+        for n, line in lines:
+            if _SMI_TEXT_PARSE.search(line):
+                yield Finding("L063", ERROR, img.name, f"{rel}:{n}",
+                              "parses nvidia-smi's table for the CUDA version — "
+                              "use /opt/instance-tools/bin/cuda-driver-version instead")
+
+
+def check_no_open_coded_native_libcuda(img: Image, repo: Path) -> Iterable[Finding]:
+    """L064 — do not re-derive the native libcuda; ask the helper.
+
+    `cuDriverGetVersion` reports whichever libcuda.so.1 the loader resolved, so
+    any code deciding *whether forward compat is needed* must exclude a compat
+    library explicitly. Both callers used to do that themselves, in bash:
+
+        _libcuda_path=$(find /usr/lib -name 'libcuda.so.1' ... | head -1)
+        LD_LIBRARY_PATH="$(dirname "$_libcuda_path")" cuda-driver-version
+
+    which fails OPEN. LD_LIBRARY_PATH is a search hint: if the named directory
+    yields nothing loadable the loader continues to the ld.so cache — on a
+    second boot, the previous boot's `0-compat-cuda.conf`. The two copies also
+    drifted, so base/60-gpu-cuda agreed with the boot script rather than
+    checking it, and a review had to catch by hand what a rule should catch.
+
+    `cuda-driver-version --native` dlopens an absolute path (a name containing
+    "/" performs no search at all) and then verifies from /proc/self/maps which
+    file was actually mapped, refusing rather than guessing. One implementation,
+    tested in both directions by tools/imagegen/tests/test_cuda_driver_version.py.
+    """
+    if img.cls != "base":
+        return
+    for f, rel, lines in _shipped_scripts(repo):
+        if _CUDA_HELPER in f.name:
+            continue                           # the one sanctioned implementation
+        for n, line in lines:
+            if _LDPATH_PROBE.search(line):
+                yield Finding("L064", ERROR, img.name, f"{rel}:{n}",
+                              "wraps cuda-driver-version in LD_LIBRARY_PATH — that is a "
+                              "search hint, not a pin, and falls through to a compat "
+                              "libcuda; use `cuda-driver-version --native`")
+            elif _LIBCUDA_SEARCH.search(line):
+                yield Finding("L064", ERROR, img.name, f"{rel}:{n}",
+                              "searches for libcuda.so.1 to pick a native driver library — "
+                              "use `cuda-driver-version --native`, which resolves it once "
+                              "and verifies what the loader actually mapped")
 
 
 def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
@@ -1015,6 +1262,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_require_pass(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))
     out.extend(check_no_nvidia_smi_text_parse(img, repo))
+    out.extend(check_no_open_coded_native_libcuda(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))
