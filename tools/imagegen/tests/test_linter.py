@@ -763,7 +763,9 @@ def test_L062_fail_later_without_report_failures_fires(tmp_path):
     img = make(tmp_path, cls="base")
     _write_base_test(tmp_path, "base/60-gpu-cuda",
                      'source lib.sh\nif ! thing; then\n    fail_later "x" "broke"\nfi\ntest_pass "ok"\n')
-    assert has(img, tmp_path, "L062", "never report_failures")
+    # The ORDERING branch now reports it, with a more precise message: the
+    # fixture's test_pass is reached while a failure is pending.
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
 
 
 def test_L062_with_report_failures_is_clean(tmp_path):
@@ -789,7 +791,35 @@ def test_L062_a_mention_in_a_comment_does_not_satisfy_the_rule(tmp_path):
     _write_base_test(tmp_path, "base/60-gpu-cuda",
                      'source lib.sh\nfail_later "x" "broke"\n'
                      '# report_failures would go here one day\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_fail_later_with_no_exit_at_all_still_fires(tmp_path):
+    """The presence-only branch, which the ordering walk does not reach: a file
+    that defers a failure and simply ends, never calling report_failures."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\necho done\n')
     assert has(img, tmp_path, "L062", "never report_failures")
+
+
+def test_L062_http_check_counts_as_deferring(tmp_path):
+    """http_check calls fail_later internally, so a test using only http_check
+    has the identical bug. Gating on the literal name let this through."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nhttp_check "http://x" "y"\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_report_before_every_exit_is_clean(tmp_path):
+    """Two exit paths, each preceded by a report — the shape 60-gpu-cuda now has."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\n'
+                     'if thing; then\n    report_failures\n    test_pass "early"\nfi\n'
+                     'report_failures\ntest_pass "late"\n')
+    assert "L062" not in errs(img, tmp_path)
 
 
 # ---- L063: never scrape nvidia-smi's table for the CUDA version -----------
