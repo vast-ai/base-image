@@ -103,12 +103,31 @@ forever. Retiring a version only stops new ones being minted, so nothing anyone
 already runs can break. A retired version can be un-retired by adding it back
 with a reason.
 
+**3. A CUDA BACKEND is retired when nothing points at it.** The two rules above
+govern torch *versions*; this covers the other axis. A backend earns its place by
+being reachable — an `-auto` tag in `AUTO_TAG_MAP`, a mini variant, or a
+derivative pin. A backend with none of those builds artifacts nobody can arrive
+at except by typing a dated tag by hand.
+
+*(Added 2026-08-12. The gap was found when cu129 failed QA on Blackwell hardware
+and the obvious question — "what does cu129 actually serve?" — turned out to be
+"nothing": no auto tag, no mini, no derivative pin. It had also just been brought
+current from torch 2.8.0 to 2.13.0 on the reasoning that it should not be an
+anomaly, which added 15 images nothing points at. Rule 3 is what stops that
+happening again by inattention.)*
+
 ### Applied at adoption
 
 - **torch 2.6 retired** — below the floor, no derivative pin, no `-auto` tag.
 - **torch 2.12.0 retired** — superseded by 2.12.1 within the same minor.
+- **backend cu129 retired (2026-08-12)** — no auto tag (`cuda-12.9.2-auto` has
+  always pointed at cu128), no mini, no derivative pin. Its three torch versions
+  (2.8.0, 2.12.1, 2.13.0) all remain on other backends, so nothing is lost.
+  Removing it also removes the only backend whose upstream torchvision has no
+  Blackwell kernels while its torch does — a split that would have needed a
+  per-backend workaround to keep testing something nobody used.
 
-Effect: 178 images to 151, and the QA matrix from 78 cells to about 58.
+Effect at adoption: 178 images to 151. With cu129 also retired, 144.
 
 ---
 

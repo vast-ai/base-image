@@ -62,21 +62,6 @@
       ]
     },
     {
-      "torch": "2.8.0",
-      "key": "cu129",
-      "cuda_ver": "12.9.2-cudnn-devel",
-      "backend": "cu129",
-      "arches": [
-        "linux/amd64"
-      ],
-      "python_versions": [
-        "310",
-        "311",
-        "312",
-        "313"
-      ]
-    },
-    {
       "torch": "2.9.1",
       "key": "cu126",
       "cuda_ver": "12.6.3-cudnn-devel",
@@ -225,23 +210,6 @@
       "key": "cu126",
       "cuda_ver": "12.6.3-cudnn-devel",
       "backend": "cu126",
-      "arches": [
-        "linux/amd64",
-        "linux/arm64"
-      ],
-      "python_versions": [
-        "310",
-        "311",
-        "312",
-        "313",
-        "314"
-      ]
-    },
-    {
-      "torch": "2.12.1",
-      "key": "cu129",
-      "cuda_ver": "12.9.2-cudnn-devel",
-      "backend": "cu129",
       "arches": [
         "linux/amd64",
         "linux/arm64"
@@ -276,23 +244,6 @@
       "key": "cu126",
       "cuda_ver": "12.6.3-cudnn-devel",
       "backend": "cu126",
-      "arches": [
-        "linux/amd64",
-        "linux/arm64"
-      ],
-      "python_versions": [
-        "310",
-        "311",
-        "312",
-        "313",
-        "314"
-      ]
-    },
-    {
-      "torch": "2.13.0",
-      "key": "cu129",
-      "cuda_ver": "12.9.2-cudnn-devel",
-      "backend": "cu129",
       "arches": [
         "linux/amd64",
         "linux/arm64"

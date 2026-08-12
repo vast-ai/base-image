@@ -22,6 +22,9 @@ QA gate).
 | Nothing below the support floor is still built | `test_nothing_below_the_support_floor_is_still_built` |
 | **A version a derivative pins can never be retired** | `test_no_pinned_version_is_retired` |
 | A retired version does not come back by accident | `test_a_retired_minor_does_not_come_back_by_accident` |
+| **Every built backend is reachable** (auto tag, mini, or derivative pin) | `test_every_built_backend_is_reachable` |
+| A retired backend does not come back by accident | `test_a_retired_backend_does_not_come_back_by_accident` |
+| A cu126 cell caps GPU architecture at sm_90 | `test_cu126_cells_cap_the_gpu_architecture` |
 | Every built mini artifact is QA-gated | `test_every_mini_artifact_the_build_produces_is_gated` |
 | Every backend an `-auto` tag points at has a QA cell | `test_every_backend_an_auto_tag_points_at_is_gated` |
 
@@ -158,7 +161,17 @@ Additionally:
   The base installs uv unpinned, so a build gets whatever is current.
 - **Confirm the CUDA base exists** in `configs/base-image.json`.
 - **Decide the `-auto` mapping deliberately** — see §4. Adding a backend does not
-  by itself change what customers are served; the `AUTO_TAG_MAP` does.
+  by itself change what customers are served; the `AUTO_TAG_MAP` does. A backend
+  with no auto tag, no mini and no derivative pin is unreachable and will fail
+  `test_every_built_backend_is_reachable` (ADR 0022 rule 3) — that is what
+  retired cu129.
+- **Know which GPU architectures its wheels cover, and cap QA accordingly.**
+  `cuda_max_good` bounds the host DRIVER from below; it says nothing about the
+  GPU. cu126 wheels stop at sm_90, so a cu126 cell renting a Blackwell card gets
+  `cudaErrorNoKernelImageForDevice` — which reads as a broken image and is not.
+  The per-cell `cap` in `resolve-digests` adds `compute_cap.lte` for such a
+  backend. Note the split can differ between torch and its companions: cu129's
+  torch had Blackwell kernels while its torchvision did not.
 
 ## 4. Repointing an `-auto` tag — read this before you do it
 

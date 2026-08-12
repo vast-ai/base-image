@@ -302,8 +302,11 @@ jobs:
             # and reusing it would work only by accident of the loop having ended.
             ptorch=$(jq -r --arg k "$key" '.multi[] | select(.key==$k) | .primary_torch' \
               "$GITHUB_WORKSPACE/configs/pytorch.json")
-            e=$(jq -nc --arg k "$key" --arg c "$cm" --arg v "$venvs" --arg p "$ptorch" --argjson d "$d_map" \
-                  '{key:$k, cuda_minor:$c, venvs:$v, primary_torch:$p, digests:$d}')
+            pbackend=$(jq -r --arg k "$key" '.multi[] | select(.key==$k) | .primary_backend' \
+              "$GITHUB_WORKSPACE/configs/pytorch.json")
+            e=$(jq -nc --arg k "$key" --arg c "$cm" --arg v "$venvs" --arg p "$ptorch" \
+                  --arg pb "$pbackend" --argjson d "$d_map" \
+                  '{key:$k, cuda_minor:$c, venvs:$v, primary_torch:$p, primary_backend:$pb, digests:$d}')
             jq --argjson e "$e" '.multi += [$e]' manifest.json > m.tmp && mv m.tmp manifest.json
           done
 
@@ -350,6 +353,23 @@ jobs:
             | def base_req: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries "
                           + "pytorch.d/05-venv-manifest pytorch.d/10-torch-core "
                           + "pytorch.d/20-torchvision pytorch.d/40-nccl-init";
+              # ARCHITECTURE CEILING, the counterpart to the cuda_max_good FLOOR.
+              #
+              # cuda_max_good bounds the host DRIVER from below. Nothing bounded
+              # the GPU ARCHITECTURE from above, so a cu126 cell could rent a
+              # Blackwell card (sm_120) whose wheels contain no kernels for it.
+              # Run 31591093625 hit that on six different RTX 5070 offers:
+              # cudaErrorNoKernelImageForDevice, torch matmul and conv2d failing,
+              # reproducible across hosts. The image was fine; it was tested on
+              # hardware it is never served, since a Blackwell host needs a 12.8+
+              # driver and so is never matched by the 12.x auto tags pointing at
+              # cu126.
+              #
+              # PyTorch cu126 wheels target up to sm_90 (Hopper); cu128 was the
+              # first backend with Blackwell kernels, so only cu126 needs a cap.
+              # 900 = sm_90. An lte TIGHTENS under create.py raise-only rules, so
+              # it can never widen selection.
+              def cap(backend): if backend == "cu126" then " compute_cap.lte=900" else "" end;
               def req(vers): base_req
                 + (if (vers | any(. as $v | $has_audio | index($v)))
                    then " pytorch.d/30-torchaudio" else "" end);
@@ -364,6 +384,7 @@ jobs:
                       kind: "auto",
                       digest: .digests[$dpy],
                       floor: (.cuda_short | split(".")[0:2] | join(".")),
+                      cap: cap(.key),
                       venvs: "main",
                       require_tests: req([.torch]),
                       describe: (.torch + "-cuda-" + .cuda_short + "-" + $dpy) })
@@ -376,6 +397,7 @@ jobs:
                              kind: "mini",
                              digest: .value,
                              floor: $m.cuda_minor,
+                             cap: cap($m.backend),
                              venvs: "main",
                              require_tests: req([$m.torch]),
                              describe: ($m.torch + "-" + $m.backend + "-cuda-" + $m.cuda_minor + "-mini-" + .key) }) )
@@ -389,6 +411,7 @@ jobs:
                              kind: "multi",
                              digest: .value,
                              floor: $u.cuda_minor,
+                             cap: cap($u.primary_backend),
                              venvs: $u.venvs,
                              # A multi requires torchaudio if ANY of its venvs
                              # ships it — 30-torchaudio iterates every venv and
@@ -482,7 +505,7 @@ jobs:
       # the runner's own gate and this one agree — they fail differently, which
       # is the point, but they must not disagree about WHAT is required.
       require_tests: ${{ matrix.require_tests }}
-      set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
+      set_filters: "cuda_max_good.gte=${{ matrix.floor }}${{ matrix.cap }}"
       retries: 2
       # Mini is 5-6 GB and the full config images 8-12 GB; no cell downloads a
       # model. 15 min is well clear of the slowest observed base cell and stops a

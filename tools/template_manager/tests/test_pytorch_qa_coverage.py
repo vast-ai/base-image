@@ -83,6 +83,7 @@ def _fake_manifest() -> dict:
             # program pass the test and fail in CI.
             "venvs": " ".join(c["venvs"]),
             "primary_torch": c["primary_torch"],
+            "primary_backend": c["primary_backend"],
             "digests": {f"py{p}": f"sha256:multi-{c['key']}-{p}"
                         for p in c["python_versions"]},
         })
@@ -386,3 +387,78 @@ def test_no_cell_requires_the_multi_gpu_collectives_matrix(tmp_path):
     requiring it would fail all of them."""
     for c in build_matrix(tmp_path):
         assert "41-nccl-collectives" not in c["require_tests"], c["cell"]
+
+
+# --- the architecture ceiling (run 31591093625) ----------------------------
+#
+# cuda_max_good bounds the host DRIVER from below. Nothing bounded the GPU
+# ARCHITECTURE from above, so cu126 cells rented Blackwell cards (sm_120) whose
+# wheels contain no kernels for them: cudaErrorNoKernelImageForDevice, torch
+# matmul and conv2d failing, reproducible across six different RTX 5070 offers.
+# The image was fine — it was being tested on hardware it is never served,
+# because a Blackwell host needs a 12.8+ driver and so is never matched by the
+# 12.x auto tags that point at cu126.
+
+BLACKWELL_LESS = {"cu126"}      # backends whose wheels stop at sm_90
+
+
+def _backend_of(cell):
+    if cell["kind"] == "auto":
+        return cell["cell"].removeprefix("auto-")
+    for b in ("cu126", "cu128", "cu129", "cu130", "cu132"):
+        if f"-{b}-" in cell["describe"] or cell["describe"].startswith(f"{b}-"):
+            return b
+    return None
+
+
+def test_cu126_cells_cap_the_gpu_architecture(tmp_path):
+    for c in build_matrix(tmp_path):
+        if _backend_of(c) in BLACKWELL_LESS:
+            assert "compute_cap.lte=900" in c["cap"], (
+                f"{c['cell']} can rent a Blackwell card its wheels have no "
+                f"kernels for — the failure looks like a bad image and is not")
+
+
+def test_blackwell_capable_backends_are_not_capped(tmp_path):
+    """The cap costs offers, so it must not spread to backends that do not need
+    it. cu128 was the first with Blackwell kernels."""
+    for c in build_matrix(tmp_path):
+        b = _backend_of(c)
+        if b and b not in BLACKWELL_LESS:
+            assert c["cap"] == "", f"{c['cell']} ({b}) is capped but supports Blackwell"
+
+
+def test_the_cap_is_a_tightening_not_a_widening(tmp_path):
+    """create.py's --set-filter is raise-only: `lte` lowers a ceiling, which
+    tightens. A `gte` here would try to WIDEN and be rejected at rent time —
+    after the plan is built."""
+    for c in build_matrix(tmp_path):
+        if c["cap"]:
+            assert ".lte=" in c["cap"], f"{c['cell']}: cap {c['cap']!r} does not tighten"
+
+
+def test_every_cell_declares_a_cap_field(tmp_path):
+    """Absent would interpolate as the literal string 'null' into set_filters
+    and fail create.py's parser at rent time."""
+    for c in build_matrix(tmp_path):
+        assert "cap" in c and isinstance(c["cap"], str), c["cell"]
+
+
+def test_set_filters_concatenation_is_well_formed(tmp_path):
+    """The workflow builds `cuda_max_good.gte=X${cap}` and the gate splits on
+    whitespace. A missing leading space would glue the two filters together."""
+    for c in build_matrix(tmp_path):
+        spec = f"cuda_max_good.gte={c['floor']}{c['cap']}"
+        parts = spec.split()
+        assert all("=" in p and "." in p.split("=")[0] for p in parts), spec
+        assert len(parts) == (2 if c["cap"] else 1), spec
+
+
+# --- cu129 is retired ------------------------------------------------------
+
+def test_cu129_is_gone(tmp_path):
+    """Retired: no auto tag, no mini, no derivative pin — it served nothing, and
+    its torchvision has no Blackwell kernels either. Its torch versions all
+    remain on other backends."""
+    assert "cu129" not in {c["key"] for c in TABLE["configs"]}
+    assert all("cu129" not in c["cell"] for c in build_matrix(tmp_path))

@@ -220,3 +220,60 @@ def test_every_companions_entry_is_well_formed():
             # also accept a hypothetical 0.50.0. Prefer X.Y.Z in new entries.
             assert re.fullmatch(r"\d+\.\d+(\.\d+)?", pin), \
                 f"{ver}/{pkg}: pin {pin!r} is not X.Y or X.Y.Z"
+
+
+# --- rule 3: a backend must be reachable (ADR 0022, added 2026-08-12) ------
+#
+# Rules 1 and 2 govern torch VERSIONS. This is the other axis, and the gap was
+# found the expensive way: cu129 failed QA on Blackwell hardware, and the obvious
+# question — what does cu129 actually serve? — turned out to be "nothing". No
+# auto tag (cuda-12.9.2-auto has always pointed at cu128), no mini, no derivative
+# pin. It had also just been brought current from torch 2.8.0 to 2.13.0 on the
+# reasoning that it should not be an anomaly, which added 15 images nothing
+# points at.
+
+WORKFLOW = REPO / ".github/workflows/promote-pytorch.yml"
+
+
+def mapped_backends() -> set[str]:
+    """Backends an `-auto` tag points at, read from AUTO_TAG_MAP itself."""
+    body = WORKFLOW.read_text(encoding="utf-8")
+    blk = body[body.index("AUTO_TAG_MAP=("):]
+    blk = blk[:blk.index(")")]
+    return {m[1] for m in re.findall(r'"([^"|]+)\|([^"]+)"', blk)}
+
+
+def test_the_auto_tag_map_is_readable_for_the_backend_rule():
+    """Guard the guard: an empty map would make the rule below vacuous."""
+    assert len(mapped_backends()) >= 3, f"parsed only {mapped_backends()}"
+
+
+def test_every_built_backend_is_reachable():
+    """A backend with no auto tag, no mini and no derivative pin builds
+    artifacts nobody can arrive at except by typing a dated tag by hand."""
+    built = {c["key"] for c in TABLE["configs"]}
+    minis = {m["backend"] for m in TABLE["mini"]}
+    pinned = set()
+    for pat in ("derivatives/pytorch/derivatives/*/Dockerfile",
+                ".github/workflows/build-*.yml"):
+        for f in sorted(REPO.glob(pat)):
+            for _v, b in re.findall(r"vastai/pytorch:([0-9.]+)-([a-z0-9]+)-cuda",
+                                    f.read_text(encoding="utf-8", errors="replace")):
+                pinned.add(b)
+    reachable = mapped_backends() | minis | pinned
+    orphans = sorted(built - reachable)
+    assert not orphans, (
+        f"backend(s) {orphans} build images but nothing points at them: no "
+        f"-auto tag, no mini, no derivative pin. Retire them (ADR 0022 rule 3) "
+        f"or give them a consumer.")
+
+
+RETIRED_BACKENDS = {"cu129"}   # ADR 0022; extend deliberately
+
+
+@pytest.mark.parametrize("b", sorted(RETIRED_BACKENDS))
+def test_a_retired_backend_does_not_come_back_by_accident(b):
+    assert b not in {c["key"] for c in TABLE["configs"]}, (
+        f"backend {b} was retired (ADR 0022) but is in the table again. If that "
+        f"is intended, remove it from RETIRED_BACKENDS and say why in the ADR.")
+    assert b not in {m["backend"] for m in TABLE["mini"]}
