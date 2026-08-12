@@ -595,6 +595,11 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
 
 
 
+def _line_calls(line: str, fn: str) -> bool:
+    """True if `fn` is invoked at a command position on THIS line."""
+    return bool(re.search(rf"(^|[;&|]|\b(?:then|else|do|;)\s)\s*{fn}\b", line))
+
+
 def _calls(text: str, fn: str) -> bool:
     """True if `fn` is INVOKED at a command position (not merely mentioned)."""
     for raw in text.splitlines():
@@ -637,7 +642,42 @@ def check_fail_later_is_reported(img: Image, repo: Path) -> Iterable[Finding]:
                 continue
             for f in sorted(sub.glob("*.sh")):
                 text = f.read_text(encoding="utf-8", errors="replace")
-                if _calls(text, "fail_later") and not _calls(text, "report_failures"):
+                # http_check (lib.sh) calls fail_later INTERNALLY, so a test using
+                # only http_check defers failures without ever naming fail_later.
+                # Gating on the literal name alone would let the most common
+                # deferring shape through — which it did, until this line.
+                if not (_calls(text, "fail_later") or _calls(text, "http_check")):
+                    continue
+                # ORDER MATTERS, not mere presence. `report_failures` somewhere in
+                # the file is not enough: an EARLIER `test_pass` exits 0 and throws
+                # the deferred failures away. That is not hypothetical — the
+                # driver-version assertion added to base/60-gpu-cuda was discarded
+                # on its "no CUDA toolkit installed" early exit while this rule,
+                # in its presence-only form, certified the file as compliant.
+                #
+                # So: walk the file and fail on the first test_pass that is reached
+                # after a fail_later without an intervening report_failures.
+                deferred = False
+                bad_exit = None
+                for n, raw in enumerate(text.splitlines(), 1):
+                    line = raw.split("#", 1)[0]
+                    if _line_calls(line, "fail_later") or _line_calls(line, "http_check"):
+                        deferred = True
+                    if _line_calls(line, "report_failures"):
+                        deferred = False
+                    if deferred and _line_calls(line, "test_pass"):
+                        bad_exit = n
+                        break
+                if bad_exit is not None:
+                    try:
+                        rel = str(f.relative_to(repo))
+                    except ValueError:
+                        rel = f.name
+                    yield Finding("L062", ERROR, img.name, f"{rel}:{bad_exit}",
+                                  "test_pass exits 0 here while a deferred failure is "
+                                  "pending — call report_failures before every exit path")
+                    continue
+                if not _calls(text, "report_failures"):
                     try:
                         rel = str(f.relative_to(repo))
                     except ValueError:

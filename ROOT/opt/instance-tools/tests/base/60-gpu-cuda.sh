@@ -62,6 +62,12 @@ if [[ ${#cuda_versions[@]} -eq 0 ]]; then
     python3 -c "import ctypes; ctypes.CDLL('libcuda.so.1')" 2>/dev/null \
         && echo "  python ctypes: libcuda.so.1 loadable" \
         || echo "  WARN: python cannot load libcuda.so.1"
+    # EVERY exit path must report deferred failures first. This early exit is a
+    # second `test_pass`, and anything fail_later recorded above (the
+    # driver-version assertion) would be silently dropped here — the same bug
+    # that made the first version of the reachability check print FAIL and exit
+    # 0. Reached on the stock-* configs, which ship no CUDA toolkit at all.
+    report_failures
     test_pass "GPU present, no CUDA toolkit installed"
 fi
 
@@ -116,6 +122,18 @@ echo "  installed CUDA: ${cuda_versions[*]} (latest: ${latest_cuda})"
 # /usr/local/cuda must be a symlink (created by 05-configure-cuda.sh)
 if [[ -L /usr/local/cuda ]]; then
     selected_cuda=$(readlink /usr/local/cuda | sed 's|.*/cuda-||')
+    # The sed is a no-op when the symlink is INDIRECT (e.g. the distro's
+    # /etc/alternatives/cuda), so selected_cuda can be a path rather than X.Y —
+    # which is verbatim what the driver-610 incident logged. version_gt rejects
+    # a non-numeric operand, so without this every cross-major comparison below
+    # silently reads "correct fallback" and the three test_fail assertions
+    # become unreachable. Guarding native_driver_cuda alone was not enough: this
+    # is the value the incident actually produced.
+    if [[ ! "$selected_cuda" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        fail_later "cuda-symlink" \
+            "/usr/local/cuda does not resolve to a cuda-X.Y directory (got '${selected_cuda}') — \
+05-configure-cuda.sh did not run to completion, so no toolkit selection was validated"
+    fi
     cuda_target=$(readlink -f /usr/local/cuda)
     [[ -d "$cuda_target" ]] || test_fail "/usr/local/cuda symlink target does not exist: $cuda_target"
     echo "  selected CUDA: ${selected_cuda} (symlink → ${cuda_target})"

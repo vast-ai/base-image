@@ -70,9 +70,31 @@ configure_cuda() {
     # Reading it BEFORE the cleanup (which is what makes the abort path safe) is
     # therefore only correct with the compat path excluded explicitly. Same bypass
     # base/60-gpu-cuda uses to get its native reading.
-    local _libcuda_path _native_libcuda_dir="" MAX_CUDA
-    _libcuda_path=$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)
-    [[ -n "$_libcuda_path" ]] && _native_libcuda_dir=$(dirname "$_libcuda_path")
+    # THE PIN MUST FAIL CLOSED. LD_LIBRARY_PATH is a search HINT, not a pin: if
+    # the directory named does not yield a loadable libcuda.so.1, the loader
+    # carries on to the ld.so cache — which on a second boot is the previous
+    # boot's compat entry, i.e. exactly the wrong answer, silently. So an empty
+    # or unusable pin is treated as "unknown", never as "probe it anyway".
+    #
+    # Current-ABI directory first, then a general search: a host with 32-bit
+    # driver libs mounted (NVIDIA_DRIVER_CAPABILITIES=all includes compat32)
+    # has two libcuda.so.1, and `find | head -1` is readdir order — a coin flip
+    # that a 64-bit python would skip, falling through to the cache.
+    local _native_libcuda_dir="" _libcuda_path MAX_CUDA
+    for _d in "/usr/lib/$(uname -m)-linux-gnu" /usr/lib64; do
+        if [[ -e "$_d/libcuda.so.1" ]]; then _native_libcuda_dir="$_d"; break; fi
+    done
+    if [[ -z "$_native_libcuda_dir" ]]; then
+        _libcuda_path=$(find /usr/lib /usr/lib64 -name 'libcuda.so.1' \
+                          -not -path '*/cuda*/compat/*' -not -path '*/stubs/*' 2>/dev/null | head -1)
+        [[ -n "$_libcuda_path" ]] && _native_libcuda_dir=$(dirname "$_libcuda_path")
+    fi
+    if [[ -z "$_native_libcuda_dir" || ! -e "$_native_libcuda_dir/libcuda.so.1" ]]; then
+        echo "Error: no native libcuda.so.1 found — refusing to probe unpinned, because an"
+        echo "       unpinned probe can silently return a previous boot's forward-compat"
+        echo "       version. Leaving the existing CUDA configuration untouched."
+        return 1
+    fi
     MAX_CUDA=$(LD_LIBRARY_PATH="$_native_libcuda_dir" /opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
 
     # Shape-checked, not merely non-empty: MAX_CUDA is interpolated unquoted into
