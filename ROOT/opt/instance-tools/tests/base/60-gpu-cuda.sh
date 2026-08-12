@@ -29,6 +29,24 @@ effective_cuda=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true
 echo "  GPU: ${gpu_name} (CC ${compute_cap}, Driver ${driver_ver})"
 echo "  native driver CUDA: ${native_driver_cuda}, effective: ${effective_cuda}"
 
+# UNKNOWN IS A FAILURE, not a quiet pass.
+#
+# Every forward-compat check below compares against native_driver_cuda. When it is
+# empty, version_gt returns false (correctly — "unknown" must not assert that
+# compat is needed), toolkit_needs_compat becomes 0, and the ENTIRE validation
+# block is skipped. The test then prints
+#
+#   GPU/CUDA verified (selected: ..., native: , effective: )
+#
+# and exits 0 — which is verbatim the log line the driver-610 incident left
+# behind. Without this assertion the change that hardened version_gt would have
+# made that state quieter than it was before, not louder.
+if [[ ! "$native_driver_cuda" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    fail_later "driver-cuda-version" \
+        "could not determine the driver CUDA version (got '${native_driver_cuda}') — \
+libcuda is unreadable AND nvidia-smi is unparseable, so every compat check below is vacuous"
+fi
+
 # ── CUDA toolkit selection ────────────────────────────────────────────
 
 # Collect installed CUDA versions (same logic as 05-configure-cuda.sh)
@@ -75,7 +93,12 @@ readarray -t cuda_versions < <(printf '%s\n' "${cuda_versions[@]}" | sort -t. -k
 # reported EVERY image as broken, healthy ones included. It was only caught by
 # checking the passing direction as well as the failing one.)
 _cuda_lib_dir_reachable=false
-if ldconfig -p 2>/dev/null | grep -qE "=> +/usr/local/cuda"; then
+# Match a real TOOLKIT library, not merely any path under the tree. The bare
+# "=> /usr/local/cuda" form was also satisfied by /usr/local/cuda/lib64/stubs
+# (shipped by unsloth-studio and aio-studio) and by .../compat/ — neither of
+# which contains libnppicc or any other toolkit runtime, i.e. both would report
+# "reachable" in exactly the broken state this exists to catch.
+if ldconfig -p 2>/dev/null | grep -qE "libcudart\.so[^ ]* .*=> +/usr/local/cuda"; then
     _cuda_lib_dir_reachable=true
 fi
 

@@ -50,11 +50,37 @@ configure_cuda() {
     # Driver API, not prose. See /opt/instance-tools/bin/cuda-driver-version for
     # why: driver 610 renamed nvidia-smi's "CUDA Version" field to "CUDA UMD
     # Version" and broke every scrape of it fleet-wide.
-    local MAX_CUDA
-    MAX_CUDA=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
-    if [[ -z "$MAX_CUDA" ]]; then
-        echo "Error: Could not determine driver CUDA version — leaving the existing"
-        echo "       CUDA library configuration untouched (nothing was changed)."
+    #
+    # PINNED TO THE NATIVE DRIVER, and that pin is load-bearing.
+    #
+    # cuDriverGetVersion reports whichever libcuda.so.1 the loader resolves. If a
+    # PREVIOUS boot enabled forward compat it wrote /etc/ld.so.conf.d/0-compat-cuda.conf
+    # (named "0-" so it wins), and /etc and the loader cache persist across a
+    # stop/start — so an unpinned probe here would return the COMPAT version, not
+    # the driver's own.
+    #
+    # That is not hypothetical: with the value inflated to the toolkit's own
+    # version, try_forward_compat's "latest > max" test goes false, compat is NOT
+    # re-enabled, and the cleanup below has already deleted the conf that was
+    # making the instance work. A cross-major instance would come back from a
+    # restart with a newer toolkit, an older driver and no compat — worse than the
+    # bug this file was changed to fix, and invisible to CI because the QA gate
+    # only ever boots an instance once.
+    #
+    # Reading it BEFORE the cleanup (which is what makes the abort path safe) is
+    # therefore only correct with the compat path excluded explicitly. Same bypass
+    # base/60-gpu-cuda uses to get its native reading.
+    local _libcuda_path _native_libcuda_dir="" MAX_CUDA
+    _libcuda_path=$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)
+    [[ -n "$_libcuda_path" ]] && _native_libcuda_dir=$(dirname "$_libcuda_path")
+    MAX_CUDA=$(LD_LIBRARY_PATH="$_native_libcuda_dir" /opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
+
+    # Shape-checked, not merely non-empty: MAX_CUDA is interpolated unquoted into
+    # three `awk "BEGIN {...}"` programs below, where a non-numeric value is an awk
+    # syntax error that silently falls through to the wrong toolkit.
+    if [[ ! "$MAX_CUDA" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: could not determine the driver CUDA version (got '${MAX_CUDA}')"
+        echo "       — leaving the existing CUDA configuration untouched (nothing changed)."
         return 1
     fi
 
