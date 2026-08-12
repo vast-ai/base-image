@@ -899,6 +899,49 @@ def test_L062_a_hash_inside_an_expansion_is_not_a_comment(tmp_path):
     assert "L062" not in errs(img, tmp_path)
 
 
+def test_L062_a_case_arm_defers_and_is_seen(tmp_path):
+    """`)` is a command position. Missing it did worse than miss the call: with
+    no deferring call found anywhere, the file was treated as non-deferring and
+    skipped entirely — the never-reports check went with it."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\ncase "$MODE" in\n    a) fail_later "x" "broke" ;;\nesac\n'
+                     'test_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_an_elif_chain_with_no_else_is_not_exhaustive(tmp_path):
+    """Neither arm need run, so the failure recorded before the chain survives it.
+    Treating `elif` as an `else` suppressed the fall-through arm at close."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\n'
+                     'if [[ "$A" ]]; then\n    report_failures\n'
+                     'elif [[ "$B" ]]; then\n    report_failures\nfi\n'
+                     'test_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_a_guarded_helper_call_does_not_clear(tmp_path):
+    """One-line `if Z; then fin; fi`. Two bugs met here: the helper's clearing
+    effect was applied regardless of the guard, and a block that opened and
+    closed on one line pushed a frame nothing ever popped."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfin() { report_failures; }\nfail_later "x" "broke"\n'
+                     'if [[ "$Z" ]]; then fin; fi\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_a_helper_that_reports_after_exiting_is_not_a_report(tmp_path):
+    """Order inside the body matters: the report is unreachable past test_pass."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nbad() {\n    fail_later "x" "broke"\n'
+                     '    test_pass "ok"\n    report_failures\n}\nbad\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
 # ---- L064: one native-libcuda resolver, not one per caller ----------------
 #
 # `LD_LIBRARY_PATH=<dir> cuda-driver-version` is a search HINT: name a directory
@@ -936,6 +979,26 @@ def test_L064_probing_for_compat_libs_is_a_different_question(tmp_path):
     _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
                        'compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null || return 1\n')
     assert "L064" not in errs(img, tmp_path)
+
+
+def test_L064_a_path_component_ending_in_ls_is_not_a_search(tmp_path):
+    """The alternation had a trailing \\b but no leading one, so `tools` supplied
+    the `ls` and a plain CDLL of an absolute path fired an ERROR-level rule."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/some-tool",
+                       "#!/usr/bin/env python3\n"
+                       "import ctypes; ctypes.CDLL('/opt/tools/libcuda.so.1')\n")
+    assert "L064" not in errs(img, tmp_path)
+
+
+def test_L064_a_lookalike_filename_is_not_exempt(tmp_path):
+    """The exemption was a substring test, so cuda-driver-version.bak — or a
+    wrapper — inherited the one sanctioned implementation's licence to scrape."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/cuda-driver-version-wrapper",
+                       '#!/bin/bash\nMAX=$(LD_LIBRARY_PATH="$d" '
+                       '/opt/instance-tools/bin/cuda-driver-version)\n')
+    assert "L064" in errs(img, tmp_path)
 
 
 def test_L064_extensionless_shipped_tools_are_scanned(tmp_path):

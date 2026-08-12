@@ -203,11 +203,15 @@ is not enough, and neither is textual order: a `report_failures` that runs only
 inside a conditional does not clear a failure recorded outside it. **L062**
 (`check_fail_later_is_reported`) walks each shipped test under
 `ROOT/opt/instance-tools/tests/**` and `derivatives/*/ROOT/…/tests/**`, tracking
-branch structure — it merges `if`/`else` arms by OR, restarts each alternative
-from the state at the branch, applies a helper function's effect at its call
-site, and treats only an unguarded `report_failures` as a clear. Found the honest
-way, twice, while adding the CUDA-libpath check to `base/60-gpu-cuda`: once for a
-missing report, once for an early exit that discarded it.
+branch structure — it merges `if`/`else` arms by OR (an `elif` chain with no
+`else` still merges the fall-through arm), restarts each alternative from the
+state at the branch, applies a helper function's effect at its call site in body
+order, and treats only an unguarded `report_failures` as a clear. Found the
+honest way, twice, while adding the CUDA-libpath check to `base/60-gpu-cuda`:
+once for a missing report, once for an early exit that discarded it. **Two known
+blind spots**, both on the conservative side: a `fail_later` inside a subshell or
+pipeline loses its record at runtime and nothing static can see it; and `case`
+arms are detected as command positions but not merged as alternatives.
 
 ### No script parses nvidia-smi's table for the CUDA version — **GATED (L063)**
 

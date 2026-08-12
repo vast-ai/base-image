@@ -32,12 +32,19 @@ mkdir -p /build "$ARCH_DIR" "$DECOY_DIR" "$COMPAT_DIR" "$STUBS_DIR" "$LEGACY_DIR
 cat > /build/fake.c <<'EOF'
 int cuDriverGetVersion(int *v) { *v = FAKEVER; return 0; }
 EOF
+# A library that LOADS but cannot answer — a partially-injected or placeholder
+# driver stub. Calling the missing symbol raises in ctypes.
+cat > /build/nosym.c <<'EOF'
+int not_the_symbol_you_want(void) { return 0; }
+EOF
 
 mk() { gcc -shared -fPIC -DFAKEVER="$2" -o "$1" /build/fake.c; }
+mk_nosym() { gcc -shared -fPIC -o "$1" /build/nosym.c; }
 
 reset() {
     rm -f "$ARCH_DIR/libcuda.so.1" "$DECOY_DIR/libcuda.so.1" /usr/lib64/libcuda.so.1 \
           "$LEGACY_DIR/libcuda.so.1" "$COMPAT_DIR/libcuda.so.1" "$STUBS_DIR/libcuda.so.1" \
+          "$ARCH_DIR"/libcuda.so.[0-9]* \
           /etc/ld.so.conf.d/0-compat-cuda.conf /etc/ld.so.conf.d/9-nvidia.conf \
           /usr/bin/nvidia-smi
     ldconfig
@@ -101,6 +108,41 @@ mk "$STUBS_DIR/libcuda.so.1" 13030
 echo "$STUBS_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
 ldconfig
 run "a stub must not answer --native" "" "13.3"
+
+echo
+echo "=== S7: first candidate loads but has no cuDriverGetVersion ==="
+# A candidate that fails to ANSWER must not abandon the search. An unguarded
+# raise here killed the interpreter mid-loop, so a good library one directory
+# over was never tried and the boot script aborted on a healthy host.
+reset
+mk_nosym "$ARCH_DIR/libcuda.so.1"
+mk "$LEGACY_DIR/libcuda.so.1" 12080
+echo "$LEGACY_DIR" > /etc/ld.so.conf.d/9-nvidia.conf
+ldconfig
+run "a dud candidate does not end the search" "12.8" "12.8"
+
+echo
+echo "=== S8: driver-version cross-check (nvidia-smi CSV query api) ==="
+# Path shape is a convention, not a proof: a compat library copied into the arch
+# directory passes the /compat/ test. When the filename carries a driver version,
+# it is checked against the driver's own — a contradiction is a refusal.
+reset
+printf '#!/bin/sh\ncase "$1" in --query-gpu=driver_version) echo "610.57.04";; *) echo "| CUDA UMD Version: 13.3 |";; esac\n' \
+    > /usr/bin/nvidia-smi
+chmod +x /usr/bin/nvidia-smi
+mk "$ARCH_DIR/libcuda.so.580.65.06" 13030          # a compat lib wearing a driver name
+ln -sf "$ARCH_DIR/libcuda.so.580.65.06" "$ARCH_DIR/libcuda.so.1"
+ldconfig
+run "a lib claiming another driver version is refused" "" "13.3"
+
+reset
+printf '#!/bin/sh\ncase "$1" in --query-gpu=driver_version) echo "610.57.04";; *) echo "| CUDA UMD Version: 13.3 |";; esac\n' \
+    > /usr/bin/nvidia-smi
+chmod +x /usr/bin/nvidia-smi
+mk "$ARCH_DIR/libcuda.so.610.57.04" 13030          # the real thing, as shipped
+ln -sf "$ARCH_DIR/libcuda.so.610.57.04" "$ARCH_DIR/libcuda.so.1"
+ldconfig
+run "the real driver layout still answers" "13.3" "13.3"
 
 echo
 if [[ $rc -eq 0 ]]; then echo "ALL SCENARIOS OK"; else echo "SCENARIOS FAILED"; fi

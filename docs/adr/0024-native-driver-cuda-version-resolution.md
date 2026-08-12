@@ -116,23 +116,58 @@ modes.**
   compat. It `dlopen`s an absolute path (a name containing `/` performs no
   search at all), preferring the current-ABI directory, then **verifies from
   `/proc/self/maps` which file was actually mapped** and refuses if it is under
-  a `compat/` or `stubs/` directory. Only when no absolute candidate exists does
-  it fall back to an unpinned load — and applies the same post-hoc check, so
-  option D's regression does not occur while the compat hole stays shut. It has
-  no text fallback: nvidia-smi renders the effective version, and a caller that
-  asked for the native reading gets the native reading or nothing.
+  a `compat/` or `stubs/` directory, or if the file names a driver version that
+  contradicts `nvidia-smi --query-gpu=driver_version` — the machine-readable CSV
+  *query* interface, which the 610 rename did not touch, and which is a different
+  thing from the rendered table L063 bans. Path shape is a packaging convention;
+  a version contradiction is evidence. Only a contradiction between two
+  recognisable driver versions rejects: the bare SONAME `libcuda.so.1` names no
+  version, and an unparseable nvidia-smi reading means no cross-check rather than
+  a refusal.
+
+  A final unpinned load is always tried, not only when no absolute candidate
+  exists — a candidate can be *rejected* as well as absent, and the loader's own
+  answer is still worth checking. It is safe to try because the verdict never
+  depends on how the file was found: every candidate faces the same post-hoc
+  check on what was actually mapped. So option D's regression does not occur
+  while the compat hole stays shut.
+
+  `--native` has no text fallback: nvidia-smi renders the effective version, and
+  a caller that asked for the native reading gets the native reading or nothing.
+  A candidate that loads but cannot answer (a placeholder `.so` without the
+  symbol) is skipped, not fatal — one bad file must not end the search.
 
 Both callers — `05-configure-cuda.sh` and `base/60-gpu-cuda` — use `--native`.
 Neither re-derives it.
 
 **The boot script validates before it mutates.** The version is read and
-shape-checked before a single loader entry is touched; a failure returns 1 with
-the existing configuration intact.
+shape-checked before a single loader entry is touched; a failure on *that* path
+returns 1 with the existing configuration intact. This is scoped deliberately:
+the loader cleanup still runs before `try_forward_compat`, so the compat
+decision is not covered by it — see the next paragraph, which addresses that
+path by detection rather than by ordering.
+
+**A lost forward-compat is recorded, not smoothed over.** `try_forward_compat`
+returns 1 for several unrelated reasons — not needed, disabled, no compat
+libraries shipped, or its `cuInit` probe failed — and the selection that follows
+cannot tell them apart. On a *restart* the last one is not benign: an instance
+running CUDA 13.0 through compat comes back on 12.4 because a probe failed at
+boot stage 05, where nothing has waited for the driver, and everything the
+customer compiled against `libcudart.so.13` breaks. `configure_cuda` therefore
+captures whether `0-compat-cuda.conf` was present *before* the cleanup, and if
+compat was active, is still required, and could not be re-established, it records
+the condition and the boot continues (a fallback has already been chosen;
+aborting would leave nothing configured). First boot on a consumer GPU takes the
+same code path and is explicitly not this — compat was never carrying that
+instance, so nothing was lost.
 
 **The abort is detected on purpose.** `configure_cuda` clears
 `/run/vast-cuda-config-failed` at the start of every run and writes the reason
-there on abort; `base/60-gpu-cuda` asserts on it. Previously the state was
-caught only when the image happened to ship an *indirect* `/usr/local/cuda`.
+there on abort or downgrade; `base/60-gpu-cuda` asserts on it. Previously the
+state was caught only when the image happened to ship an *indirect*
+`/usr/local/cuda`. A failure to write the marker is announced rather than
+swallowed — an unwritable `/run` would otherwise restore the invisibility this
+exists to end.
 
 **Three runtime assertions in `base/60-gpu-cuda`**, each verified in both
 directions: the toolkit's libraries are reachable through `ldconfig`; the driver
@@ -177,8 +212,9 @@ Positive:
   and cannot be reworded by a driver bump.
 * A probe that cannot prove its answer is native returns nothing, and nothing is
   a value every caller already handles safely.
-* The boot script's failure mode changed from "destroy then abort" to "abort
-  having changed nothing", and that abort is now asserted rather than inferred.
+* The driver-version read changed from "destroy then abort" to "abort having
+  changed nothing", and both that abort and a lost forward-compat are now
+  asserted rather than inferred.
 * The test that gates promotion no longer shares an implementation with the
   thing it tests.
 
@@ -193,9 +229,16 @@ Accepted negatives:
   a customer, not by CI.
 * L062's walk is a control-flow approximation, not a bash parser. It is
   deliberately asymmetric — conservative about what clears a pending failure,
-  generous about what defers one — and it still cannot see a `fail_later` inside
-  a subshell or pipeline, where the record is lost at runtime. That remains
-  uncovered.
+  generous about what defers one. Two blind spots remain and are known: a
+  `fail_later` inside a subshell or pipeline, where the record is lost at runtime
+  and nothing static can see it; and per-arm merging of a `case`, which is
+  linear rather than branch-aware (arms are detected, but not treated as
+  alternatives — the conservative direction).
+* `--native` refuses without retrying, on the first boot script, at the moment
+  the driver is least reliable. That is deliberate — `NVIDIA_DRIVER_CAPABILITIES`
+  is baked and asserted by `base/55-environment.sh`, so libcuda is always
+  injected — but it means a systemic failure (a container-runtime change
+  relocating the driver libraries) would fail every host at once. See below.
 
 ## What would reverse this
 
@@ -204,6 +247,11 @@ Accepted negatives:
 * Evidence that `--native`'s refusal path fires on healthy production hosts —
   the QA gate makes that visible as held tags rather than silent breakage, and
   would argue for widening the candidate search rather than reopening the
-  unverified probe.
+  unverified probe. Note the correlated-failure shape this implies: because
+  refusal is both a hard boot abort *and* a QA failure, a change in how the
+  container runtime injects driver libraries would fail every host simultaneously
+  and hold every `-auto` tag — including the tag carrying the fix. Retrying the
+  probe, or degrading to a warning on the promotion path only, is the response if
+  that ever happens.
 * A shipped, stable machine-readable driver-capability interface from NVIDIA
   that supersedes both the C ABI call and the text fallback.

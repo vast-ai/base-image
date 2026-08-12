@@ -79,11 +79,22 @@ for _arg in "$@"; do
     esac
 done
 
+# The driver's own version, from nvidia-smi's machine-readable CSV QUERY api —
+# a different interface from the rendered table that L063 bans, and one the 610
+# rename did not touch. Used only to CONTRADICT a candidate library whose
+# filename claims a different driver version; absent, nothing is cross-checked
+# and nothing is refused for it.
+_smi_driver=""
+if [[ "$_native" -eq 1 ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    _smi_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
+fi
+
 # 1. Driver API. No text, no formatting, no locale.
-_v=$(NATIVE_ONLY="$_native" python3 - <<'PY' 2>/dev/null
-import ctypes, os, sys
+_v=$(NATIVE_ONLY="$_native" SMI_DRIVER_VERSION="$_smi_driver" python3 - <<'PY' 2>/dev/null
+import ctypes, os, re, sys
 
 native_only = os.environ.get("NATIVE_ONLY") == "1"
+smi_driver = os.environ.get("SMI_DRIVER_VERSION", "").strip()
 
 
 def libcuda_mappings():
@@ -117,18 +128,47 @@ def load(name):
 
 
 def version_from(lib):
-    ver = ctypes.c_int()
-    # cuDriverGetVersion needs no cuInit and works even with no usable device.
-    if lib.cuDriverGetVersion(ctypes.byref(ver)) != 0 or ver.value <= 0:
+    # Guarded, because a candidate that LOADS is not a candidate that ANSWERS: a
+    # placeholder or partially-injected .so without the symbol raises here, and
+    # an unguarded raise would abandon the whole candidate loop — one bad file in
+    # the arch directory would make a host with a perfectly good driver library
+    # elsewhere report "unknown", which the boot script treats as a hard abort.
+    try:
+        ver = ctypes.c_int()
+        # cuDriverGetVersion needs no cuInit and works even with no usable device.
+        if lib.cuDriverGetVersion(ctypes.byref(ver)) != 0 or ver.value <= 0:
+            return None
+        return f"{ver.value // 1000}.{(ver.value % 1000) // 10}"
+    except Exception:
         return None
-    return f"{ver.value // 1000}.{(ver.value % 1000) // 10}"
 
 
 def is_compat(path):
     # A forward-compat or stub libcuda must never answer "what does the driver
     # itself support" — the first reports the compat package's version, the
     # second is a link-time placeholder with no driver behind it.
-    return path is None or "/compat/" in path or "/stubs/" in path
+    if path is None or "/compat/" in path or "/stubs/" in path:
+        return True
+    # Path shape is a convention, not a proof: a compat library copied into the
+    # arch directory would pass the test above. When the file carries a driver
+    # version in its name, cross-check it against the driver's own — a genuine
+    # driver library is libcuda.so.<driver_version>; a compat one never is.
+    #
+    # The source is `nvidia-smi --query-gpu=driver_version`, the machine-readable
+    # CSV QUERY api — not the rendered table whose "CUDA Version" field driver 610
+    # renamed and which L063 bans.
+    #
+    # Only a CONTRADICTION rejects, and only between two things that are both
+    # recognisably driver versions. Everything else abstains:
+    #   * the bare SONAME (libcuda.so.1) is a single component and names no
+    #     driver version at all — matching it here refused every ordinary layout;
+    #   * a driver version has at least major.minor, so the two are never confused;
+    #   * an unparseable nvidia-smi reading means no cross-check, never a refusal.
+    if re.fullmatch(r"\d+\.\d[\d.]*", smi_driver):
+        m = re.fullmatch(r"libcuda\.so\.(\d+\.\d[\d.]*)", os.path.basename(path))
+        if m and m.group(1) != smi_driver:
+            return True
+    return False
 
 
 def native_candidates():
@@ -161,8 +201,12 @@ if not native_only:
     sys.exit(0)
 
 # --native: absolute paths first (dlopen of a name containing "/" performs no
-# search at all), then an unpinned load as a last resort. Either way the file
-# that actually got mapped is checked before its answer is trusted.
+# search at all), then an unpinned load — tried unconditionally rather than only
+# when the list is empty, because a candidate can also be REJECTED (compat, stub,
+# wrong driver version, no symbol), and in that case the loader's own answer is
+# still worth checking. It is safe to try because the verdict does not depend on
+# how the file was found: every candidate, pinned or not, must survive the same
+# post-hoc check on what actually got mapped.
 for cand in native_candidates() + ["libcuda.so.1"]:
     lib, path = load(cand)
     if lib is None or is_compat(path):

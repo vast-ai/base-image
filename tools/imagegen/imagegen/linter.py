@@ -602,8 +602,14 @@ def _line_calls(line: str, fn: str) -> bool:
     `{` counts: `finish() { report_failures; test_pass "ok"; }` is a call, and
     omitting it made the rule report a *correct* helper as never calling
     report_failures.
+
+    `)` counts too, for `case` arms — `a) fail_later "x" "y" ;;`. Omitting it did
+    worse than miss the call: with no deferring call seen anywhere, the whole
+    file was treated as non-deferring and skipped, taking the never-reports check
+    with it. A blind spot that silently exempts the file is not a blind spot, it
+    is a hole.
     """
-    return bool(re.search(rf"(^|[;&|{{(]|\b(?:then|else|do|;)\s)\s*{fn}\b", line))
+    return bool(re.search(rf"(^|[;&|{{()]|\b(?:then|else|do|;)\s)\s*{fn}\b", line))
 
 
 def _line_calls_unconditionally(line: str, fn: str) -> bool:
@@ -643,7 +649,15 @@ _DEFERRING_CALLS = ("fail_later", "http_check")
 _FN_DEF = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{")
 _BLOCK_OPEN = re.compile(r"^\s*(if|for|while|until|case)\b")
 _BLOCK_CLOSE = re.compile(r"^\s*(fi|done|esac)\b")
+# `elif` restarts an alternative but does NOT mean the chain is exhaustive —
+# an if/elif with no else can fall through all of them, so only a literal `else`
+# may suppress the fall-through arm at close.
 _BLOCK_ALT = re.compile(r"^\s*(else|elif)\b")
+_BLOCK_ELSE = re.compile(r"^\s*else\b")
+# A block that opens and closes on ONE line (`if Z; then fin; fi`) is a statement,
+# not a frame. Pushing a frame for it leaks: nothing ever pops it, so every later
+# close pops the wrong frame and the merge is silently wrong from there on.
+_BLOCK_CLOSE_ANYWHERE = re.compile(r"(^|[;&|]\s*)(fi|done|esac)\b")
 
 
 def _scan_shell_flow(text: str):
@@ -702,10 +716,25 @@ def _scan_shell_flow(text: str):
             if lines[j].startswith("}"):
                 break
             depth += lines[j].count("{") - lines[j].count("}")
+        # ORDER within the body matters, so walk it rather than testing for
+        # presence: `bad() { fail_later x y; test_pass ok; report_failures; }`
+        # contains a report but discards the failure before reaching it.
+        cleared = False
+        exits_dirty = False
+        defers = False
+        for b in body:
+            if any(_line_calls(b, d) for d in _DEFERRING_CALLS):
+                defers = True
+                cleared = False
+            if _line_calls_unconditionally(b, "report_failures"):
+                cleared = True
+            if any(_line_calls(b, e) for e in _DISCARDING_EXITS) and not cleared:
+                exits_dirty = True
         fns[m.group(1)] = {
-            "clears": any(_line_calls_unconditionally(b, "report_failures") for b in body),
+            "clears": cleared,
             "exits": any(_line_calls(b, e) for b in body for e in _DISCARDING_EXITS),
-            "defers": any(_line_calls(b, d) for b in body for d in _DEFERRING_CALLS),
+            "exits_dirty": exits_dirty,
+            "defers": defers,
         }
         i = j + 1
 
@@ -727,11 +756,15 @@ def _scan_shell_flow(text: str):
             continue
         if _BLOCK_ALT.match(line) and stack:
             stack[-1]["arms"].append(pending)
-            stack[-1]["has_else"] = True
+            # Only a literal `else` makes the chain exhaustive. An `elif` with no
+            # `else` after it can fall through every arm, so the entry state must
+            # still be merged at close.
+            if _BLOCK_ELSE.match(line):
+                stack[-1]["has_else"] = True
             pending = stack[-1]["entry"]
             # `elif cond; then` may itself call things; fall through to the
             # call handling below rather than `continue`.
-        elif _BLOCK_OPEN.match(line) and not _BLOCK_CLOSE.search(line):
+        elif _BLOCK_OPEN.match(line) and not _BLOCK_CLOSE_ANYWHERE.search(line):
             stack.append({"entry": pending, "arms": [], "has_else": False})
 
         for name, info in fns.items():
@@ -740,10 +773,19 @@ def _scan_shell_flow(text: str):
             if info["defers"]:
                 pending = True
                 ever_deferred = True
-            if info["clears"]:
+            # A helper only CLEARS when the call itself is unguarded — the same
+            # rule as an inline report_failures. `if Z; then fin; fi` runs `fin`
+            # only sometimes, so it cannot be trusted to have reported.
+            if info["clears"] and _line_calls_unconditionally(line, name):
                 ever_reported = True
                 pending = False
+            elif info["clears"]:
+                ever_reported = True
             if info["exits"] and pending and bad_exit is None:
+                bad_exit = n
+            elif info["exits_dirty"] and info["defers"] and bad_exit is None:
+                # The helper discards its OWN deferred failure, regardless of
+                # what was pending at the call site.
                 bad_exit = n
 
         if any(_line_calls(line, d) for d in _DEFERRING_CALLS):
@@ -801,7 +843,7 @@ _LDPATH_PROBE = re.compile(r"LD_LIBRARY_PATH=.*" + _CUDA_HELPER)
 # The exact SONAME, deliberately: probing for `libcuda.so.*` is how a script asks
 # "are there compat libs in this directory" — a legitimate, different question
 # that 05-configure-cuda.sh and base/60-gpu-cuda both ask.
-_LIBCUDA_SEARCH = re.compile(r"(find|ls|compgen|glob|rglob|iglob)\b[^\n]*libcuda\.so\.1\b")
+_LIBCUDA_SEARCH = re.compile(r"\b(?:find|ls|compgen|glob|rglob|iglob)\b[^\n]*libcuda\.so\.1\b")
 
 
 def _shipped_scripts(repo: Path):
@@ -920,7 +962,7 @@ def check_no_nvidia_smi_text_parse(img: Image, repo: Path) -> Iterable[Finding]:
     if img.cls != "base":
         return
     for f, rel, lines in _shipped_scripts(repo):
-        if _CUDA_HELPER in f.name:
+        if f.name == _CUDA_HELPER:
             continue                           # the one sanctioned implementation
         for n, line in lines:
             if _SMI_TEXT_PARSE.search(line):
@@ -953,7 +995,7 @@ def check_no_open_coded_native_libcuda(img: Image, repo: Path) -> Iterable[Findi
     if img.cls != "base":
         return
     for f, rel, lines in _shipped_scripts(repo):
-        if _CUDA_HELPER in f.name:
+        if f.name == _CUDA_HELPER:
             continue                           # the one sanctioned implementation
         for n, line in lines:
             if _LDPATH_PROBE.search(line):

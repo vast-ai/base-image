@@ -33,12 +33,30 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
 # Cleared at the top of every run, not just written on failure: /run is part of
 # the container's own overlay here (docker does not tmpfs-mount it), so a stale
 # breadcrumb from a previous boot would fail the QA test forever.
+#
+# The path is duplicated in base/60-gpu-cuda (the assertion) and in
+# tools/imagegen/tests/harness/cuda-boot-and-test-harness.sh (which pins both
+# ends against each other, so a divergence fails the suite rather than going
+# quiet — the same "two copies" hazard L064 exists to forbid).
 CUDA_CONFIG_FAILED_MARKER=/run/vast-cuda-config-failed
 
-cuda_config_failed() {
+# Record a condition base/60-gpu-cuda must fail on. Not every caller aborts:
+# a toolkit downgrade is recorded and the boot CONTINUES, because by then a
+# fallback has already been selected and stopping would leave nothing configured.
+cuda_config_record() {
     mkdir -p "$(dirname "$CUDA_CONFIG_FAILED_MARKER")" 2>/dev/null
-    printf '%s\n' "$1" > "$CUDA_CONFIG_FAILED_MARKER" 2>/dev/null
+    if ! printf '%s\n' "$1" > "$CUDA_CONFIG_FAILED_MARKER" 2>/dev/null; then
+        # The whole point of the marker is that this state stops being invisible.
+        # If it cannot be written, say so on stdout rather than silently reverting
+        # to detection-by-luck.
+        echo "Warning: could not write $CUDA_CONFIG_FAILED_MARKER — the condition below"
+        echo "         will not be visible to base/60-gpu-cuda."
+    fi
     echo "Error: $1"
+}
+
+cuda_config_failed() {
+    cuda_config_record "$1"
     echo "       — leaving the existing CUDA configuration untouched (nothing changed)."
 }
 
@@ -106,6 +124,23 @@ configure_cuda() {
         return 1
     fi
 
+    # Was forward compat active when this boot started? Must be read BEFORE the
+    # cleanup below deletes the evidence.
+    #
+    # try_forward_compat returns 1 for several unrelated reasons — not needed,
+    # disabled, no compat libs shipped, or its cuInit probe failed — and the
+    # selection below cannot tell them apart. The last one is not benign on a
+    # RESTART: an instance that was running CUDA 13.0 through compat comes back on
+    # 12.4 because a probe failed at boot stage 05, where nothing has waited for
+    # the driver. Everything the customer compiled against libcudart.so.13 breaks,
+    # and until this flag existed the log line read "correct fallback".
+    #
+    # First boot on a consumer GPU is the same code path and is NOT this: compat
+    # was never active, so there is nothing to lose. The distinction is entirely
+    # in whether the conf was there when we arrived.
+    local COMPAT_WAS_ACTIVE=false
+    [[ -f /etc/ld.so.conf.d/0-compat-cuda.conf ]] && COMPAT_WAS_ACTIVE=true
+
     # Clean up ALL cuda ldconfig entries - we'll add back only what we need
     rm -f /etc/ld.so.conf.d/*cuda*.conf
 
@@ -150,6 +185,21 @@ configure_cuda() {
         SELECTED_CUDA="${CUDA_VERSIONS[0]}"
         FORWARD_COMPAT_ENABLED=true
         echo "CUDA forward compatibility enabled"
+    elif [[ "$COMPAT_WAS_ACTIVE" == true \
+            && "${DISABLE_FORWARD_COMPAT:-false}" != "true" ]] \
+         && awk "BEGIN {exit !(${CUDA_VERSIONS[0]} > $MAX_CUDA)}"; then
+        # Compat was carrying this instance when the boot started, it is still
+        # needed (the newest toolkit still exceeds the driver's maximum), and it
+        # could not be re-established. The fallback below will silently move the
+        # instance to an older toolkit; record it so base/60-gpu-cuda fails
+        # instead of printing "correct fallback".
+        #
+        # Excluded on purpose: DISABLE_FORWARD_COMPAT (the operator asked for
+        # this), and the case where the toolkit no longer exceeds the driver
+        # maximum (a driver upgrade made compat unnecessary — not a loss).
+        cuda_config_record "forward compat was active on a previous boot and could not be \
+re-enabled, but CUDA ${CUDA_VERSIONS[0]} still exceeds the driver maximum ${MAX_CUDA} — \
+this boot falls back to an older toolkit, changing it under a running instance"
     fi
 
     # Fallback: find highest compatible CUDA version

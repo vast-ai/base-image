@@ -29,9 +29,12 @@ GPU_TEST = REPO / "ROOT/opt/instance-tools/tests/base/60-gpu-cuda.sh"
 LIB = REPO / "ROOT/opt/instance-tools/tests/lib.sh"
 
 IMAGE = "ubuntu:24.04"
+# Setup output is kept and its failure is distinguishable. Swallowing it made an
+# apt or registry hiccup arrive as a bare AssertionError with an empty message,
+# indistinguishable from a real regression in a gating test.
 SETUP = (
-    "apt-get update -qq >/dev/null 2>&1 && "
-    "apt-get install -y -qq gcc python3 >/dev/null 2>&1 && "
+    "{ apt-get update -qq && apt-get install -y -qq gcc python3 ; } "
+    "|| { echo 'HARNESS SETUP FAILED'; exit 99; }; "
     "bash /harness.sh"
 )
 
@@ -63,6 +66,8 @@ def _run_harness(harness: str, mounts: dict[Path, str]) -> str:
         capture_output=True, text=True, timeout=600,
     )
     output = proc.stdout + proc.stderr
+    if proc.returncode == 99 or "HARNESS SETUP FAILED" in output:
+        pytest.fail(f"container setup failed (not a code regression):\n{output}")
     assert proc.returncode == 0, output
     assert "ALL SCENARIOS OK" in output, output
     return output

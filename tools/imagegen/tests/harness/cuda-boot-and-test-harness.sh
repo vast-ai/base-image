@@ -20,8 +20,12 @@ rc=0
 
 mkdir -p /build "$ARCH_DIR" "$COMPAT_13" /usr/local/cuda-12.4 /usr/local/cuda-13.0/lib64 /run
 cat > /build/fake.c <<'EOF'
+#include <stdlib.h>
 int cuDriverGetVersion(int *v) { *v = FAKEVER; return 0; }
-int cuInit(unsigned int f) { return 0; }
+/* try_forward_compat probes the compat library with cuInit. FAKE_CUINIT_FAIL
+   makes that probe fail the way a not-yet-ready device does at boot stage 05 —
+   the case where "compat unavailable" is a transient fault, not a verdict. */
+int cuInit(unsigned int f) { return getenv("FAKE_CUINIT_FAIL") ? 1 : 0; }
 EOF
 mk() { gcc -shared -fPIC -DFAKEVER="$2" -o "$1" /build/fake.c; }
 
@@ -126,6 +130,91 @@ else
     echo "unreachable toolkit was NOT caught (rc=$trc)              [FAIL]"
     rc=1
     sed 's/^/    test| /' <<<"$out"
+fi
+
+echo
+echo "=== S6: a stale breadcrumb must not outlive the boot that fixed it ==="
+# /run is part of the container's own overlay (docker does not tmpfs-mount it),
+# so a marker written by one bad boot would fail the QA gate forever after unless
+# it is cleared at the START of every run. Nothing else pins that.
+reset
+mk "$ARCH_DIR/libcuda.so.1" 13030
+echo "a previous boot failed" > /run/vast-cuda-config-failed
+bash "$BOOT" >/dev/null 2>&1
+out=$(bash "$TEST" 2>&1); trc=$?
+if [[ ! -f /run/vast-cuda-config-failed && $trc -eq 0 ]]; then
+    echo "healthy boot cleared the stale marker                     [OK]"
+else
+    echo "stale marker survived a healthy boot (test rc=$trc)       [FAIL]"
+    rc=1
+    sed 's/^/    test| /' <<<"$out"
+fi
+
+echo
+echo "=== S7: compat active, still required, cannot be re-enabled ==="
+# The regression a restart can cause: boot 1 runs CUDA 13.0 through forward
+# compat; on boot 2 the compat cuInit probe fails, the fallback silently moves
+# the instance to 12.4, and everything the customer built against libcudart.so.13
+# breaks. It used to log "correct fallback" and exit 0.
+reset
+mk "$ARCH_DIR/libcuda.so.1" 12040
+mk "$COMPAT_13/libcuda.so.1" 13030
+bash "$BOOT" >/dev/null 2>&1
+boot1=$(readlink -f /usr/local/cuda)
+export FAKE_CUINIT_FAIL=1
+boot2_out=$(bash "$BOOT" 2>&1)
+boot2=$(readlink -f /usr/local/cuda)
+test_out=$(bash "$TEST" 2>&1); trc=$?
+unset FAKE_CUINIT_FAIL
+if [[ "$boot1" == /usr/local/cuda-13.0 && "$boot2" == /usr/local/cuda-12.4 ]]; then
+    if [[ $trc -eq 1 ]] && grep -qF "cuda-config" <<<"$test_out"; then
+        echo "silent toolkit downgrade is recorded and fails         [OK]"
+    else
+        echo "downgrade 13.0 -> 12.4 went UNDETECTED (rc=$trc)       [FAIL]"
+        rc=1
+        sed 's/^/    boot2| /' <<<"$boot2_out"
+        sed 's/^/    test | /' <<<"$test_out"
+    fi
+else
+    echo "setup did not reproduce the downgrade ($boot1 -> $boot2)  [FAIL]"
+    rc=1
+fi
+
+echo
+echo "=== S8: compat active and STILL WORKING must stay silent ==="
+# The other direction of S7, and the one that decides whether this is shippable:
+# a normal datacenter restart re-enables compat, and nothing may fail.
+reset
+mk "$ARCH_DIR/libcuda.so.1" 12040
+mk "$COMPAT_13/libcuda.so.1" 13030
+bash "$BOOT" >/dev/null 2>&1
+bash "$BOOT" >/dev/null 2>&1
+selected=$(readlink -f /usr/local/cuda)
+test_out=$(bash "$TEST" 2>&1); trc=$?
+if [[ "$selected" == /usr/local/cuda-13.0 && $trc -eq 0 && ! -f /run/vast-cuda-config-failed ]]; then
+    echo "a healthy compat restart is silent                        [OK]"
+else
+    echo "false positive on a healthy compat restart (rc=$trc)      [FAIL]"
+    rc=1
+    sed 's/^/    test| /' <<<"$test_out"
+fi
+
+echo
+echo "=== S9: consumer GPU, compat never active — not a downgrade ==="
+# Same fallback code path as S7 and it must NOT be flagged: compat was never
+# carrying this instance, so nothing was lost. The distinction is entirely in
+# whether the conf was present when the boot started.
+reset
+mk "$ARCH_DIR/libcuda.so.1" 12040
+mk "$COMPAT_13/libcuda.so.1" 13030
+export FAKE_CUINIT_FAIL=1
+bash "$BOOT" >/dev/null 2>&1
+unset FAKE_CUINIT_FAIL
+if [[ "$(readlink -f /usr/local/cuda)" == /usr/local/cuda-12.4 && ! -f /run/vast-cuda-config-failed ]]; then
+    echo "first-boot fallback is not recorded as a regression       [OK]"
+else
+    echo "consumer-GPU first boot was flagged                       [FAIL]"
+    rc=1
 fi
 
 echo
