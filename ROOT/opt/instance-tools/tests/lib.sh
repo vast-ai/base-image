@@ -78,10 +78,24 @@ service_running() {
 
 # Compare dotted version strings as integers (e.g. "12.10" > "12.9").
 # Returns 0 (true) if $1 > $2, 1 (false) otherwise.
+# Non-numeric or empty input returns FALSE rather than crashing. Bash arithmetic
+# on a non-numeric word raises "syntax error: operand expected" on stderr and
+# yields a non-zero status, so the caller silently got "false" plus a confusing
+# error in the log. Observed on a driver-610 host, where the CUDA version could
+# not be parsed and a PATH ("/etc/alternatives/cuda") reached this function:
+#
+#   lib.sh: line 84: ((: /etc/alternatives/cuda: syntax error: operand expected
+#
+# False is the right answer for "unknown" here — every caller uses this to decide
+# whether a NEWER toolkit needs compat, and "we do not know" must not assert that
+# it does. Returning it explicitly, without the stderr noise, is the whole fix.
 version_gt() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1
+    [[ "$2" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1
     local IFS=.
     local a=($1) b=($2)
-    (( a[0] > b[0] || (a[0] == b[0] && a[1] > b[1]) ))
+    # A single-component version ("13") has no a[1]; default to 0 so "13" == "13.0".
+    (( ${a[0]:-0} > ${b[0]:-0} || (${a[0]:-0} == ${b[0]:-0} && ${a[1]:-0} > ${b[1]:-0}) ))
 }
 
 # ── Deferred failure pattern ─────────────────────────────────────────
