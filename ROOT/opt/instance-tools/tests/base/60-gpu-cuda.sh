@@ -66,21 +66,19 @@ readarray -t cuda_versions < <(printf '%s\n' "${cuda_versions[@]}" | sort -t. -k
 # — was the only trace.
 #
 # Cheap and unambiguous: ask the loader, not the filesystem.
+# Ask the loader directly: does its cache resolve ANY library out of the CUDA
+# toolkit tree? That is precisely the property at stake, and it needs no guess
+# about which soname to probe.
+#
+# (An earlier version probed a specific soname with `grep -F " libfoo.so"`. The
+# leading space never matched, because `ldconfig -p` indents with a TAB — so it
+# reported EVERY image as broken, healthy ones included. It was only caught by
+# checking the passing direction as well as the failing one.)
 _cuda_lib_dir_reachable=false
-for _d in "${cuda_versions[@]}"; do
-    _libdir="/usr/local/cuda-${_d}/targets/$(uname -m)-linux/lib"
-    [[ -d "$_libdir" ]] || _libdir="/usr/local/cuda-${_d}/lib64"
-    [[ -d "$_libdir" ]] || continue
-    # Any real .so from the toolkit will do; take the first and ask ldconfig.
-    _probe=$(find "$_libdir" -maxdepth 1 -name 'lib*.so.*' -printf '%f\n' 2>/dev/null | head -1)
-    [[ -n "$_probe" ]] || continue
-    _soname="${_probe%%.so.*}.so.${_probe#*.so.}"
-    _soname="${_soname%%.*.*.*}"    # libfoo.so.12.4.1.87 -> libfoo.so.12
-    if ldconfig -p 2>/dev/null | grep -qF " ${_probe%%.so.*}.so"; then
-        _cuda_lib_dir_reachable=true
-        break
-    fi
-done
+if ldconfig -p 2>/dev/null | grep -qE "=> +/usr/local/cuda"; then
+    _cuda_lib_dir_reachable=true
+fi
+
 if ! $_cuda_lib_dir_reachable; then
     fail_later "cuda-libpath" \
         "a CUDA toolkit is installed but NONE of its libraries are on the loader path — \
