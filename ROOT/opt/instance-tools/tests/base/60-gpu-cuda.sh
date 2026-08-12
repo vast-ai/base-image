@@ -19,12 +19,12 @@ _libcuda_path=$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*'
 system_libcuda_dir=""
 [[ -n "$_libcuda_path" ]] && system_libcuda_dir=$(dirname "$_libcuda_path")
 if [[ -n "$system_libcuda_dir" && -d "$system_libcuda_dir" ]]; then
-    native_driver_cuda=$(LD_LIBRARY_PATH="$system_libcuda_dir" nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+    native_driver_cuda=$(LD_LIBRARY_PATH="$system_libcuda_dir" /opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
 else
-    native_driver_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+    native_driver_cuda=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
 fi
 # Also grab the effective (possibly compat-enhanced) version for reference
-effective_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+effective_cuda=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
 
 echo "  GPU: ${gpu_name} (CC ${compute_cap}, Driver ${driver_ver})"
 echo "  native driver CUDA: ${native_driver_cuda}, effective: ${effective_cuda}"
@@ -48,6 +48,47 @@ if [[ ${#cuda_versions[@]} -eq 0 ]]; then
 fi
 
 readarray -t cuda_versions < <(printf '%s\n' "${cuda_versions[@]}" | sort -t. -k1,1nr -k2,2nr)
+
+# ── The CUDA toolkit's libraries must be REACHABLE, not merely present ──
+#
+# A toolkit on disk that the dynamic loader cannot find is invisible to every
+# check below, because they all go through the driver API or through torch —
+# and torch ships its OWN CUDA libraries in the venv, so it keeps working while
+# the system toolkit is unreachable. The only casualties are the few things that
+# link the system libs (torchcodec via libnppicc, for one), which surface much
+# later and look like an unrelated application bug.
+#
+# That is not hypothetical: 05-configure-cuda.sh deleted every CUDA entry from
+# ld.so.conf.d and then aborted before writing the replacement whenever it could
+# not parse a CUDA version out of nvidia-smi. Instances booted with no system
+# CUDA library path at all, and this test passed anyway. The verdict it produced
+# — "GPU/CUDA verified (selected: /etc/alternatives/cuda, native: , effective: )"
+# — was the only trace.
+#
+# Cheap and unambiguous: ask the loader, not the filesystem.
+_cuda_lib_dir_reachable=false
+for _d in "${cuda_versions[@]}"; do
+    _libdir="/usr/local/cuda-${_d}/targets/$(uname -m)-linux/lib"
+    [[ -d "$_libdir" ]] || _libdir="/usr/local/cuda-${_d}/lib64"
+    [[ -d "$_libdir" ]] || continue
+    # Any real .so from the toolkit will do; take the first and ask ldconfig.
+    _probe=$(find "$_libdir" -maxdepth 1 -name 'lib*.so.*' -printf '%f\n' 2>/dev/null | head -1)
+    [[ -n "$_probe" ]] || continue
+    _soname="${_probe%%.so.*}.so.${_probe#*.so.}"
+    _soname="${_soname%%.*.*.*}"    # libfoo.so.12.4.1.87 -> libfoo.so.12
+    if ldconfig -p 2>/dev/null | grep -qF " ${_probe%%.so.*}.so"; then
+        _cuda_lib_dir_reachable=true
+        break
+    fi
+done
+if ! $_cuda_lib_dir_reachable; then
+    fail_later "cuda-libpath" \
+        "a CUDA toolkit is installed but NONE of its libraries are on the loader path — \
+ld.so.conf.d has no working CUDA entry (see 05-configure-cuda.sh). torch will still work \
+from its bundled libs, so this stays invisible until something links the system toolkit."
+else
+    echo "  system CUDA libraries: reachable via ldconfig"
+fi
 latest_cuda="${cuda_versions[0]}"
 echo "  installed CUDA: ${cuda_versions[*]} (latest: ${latest_cuda})"
 
@@ -186,5 +227,11 @@ if [[ -f /etc/OpenCL/vendors/nvidia.icd ]]; then
 else
     echo "  absent (ok): OpenCL ICD"
 fi
+
+# Deferred failures (fail_later) are DISCARDED unless this is called: the helper
+# only records them, and test_pass exits 0 regardless. Adding the reachability
+# check above without this line made it print a FAIL and still pass the test —
+# caught by running it, not by reading it. Gated by L062.
+report_failures
 
 test_pass "GPU/CUDA verified (selected: ${selected_cuda}, native: ${native_driver_cuda}, effective: ${effective_cuda})"

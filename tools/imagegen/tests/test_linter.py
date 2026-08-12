@@ -740,3 +740,98 @@ def test_L050_L054_now_apply_to_base(tmp_path):
                          f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {_TRIO}\n"
                          "extra_filters:\n  gpu_ram:\n    gte: 8192\n")
     assert "L050" in errs(img, tmp_path)
+
+
+# ---- L062: a deferred failure must actually be reported -------------------
+#
+# `fail_later` only RECORDS a failure; `report_failures` is what turns the
+# record into a failing test. Without it a test prints `FAIL: ...` and then
+# exits 0 via test_pass — a visible failure in the log and a green suite.
+#
+# Found the honest way: adding the CUDA-libpath check to base/60-gpu-cuda with
+# fail_later produced exactly that. Reading the change did not catch it; running
+# it did.
+
+def _write_base_test(repo, name, body):
+    p = repo / "ROOT/opt/instance-tools/tests" / f"{name}.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+
+
+def test_L062_fail_later_without_report_failures_fires(tmp_path):
+    """THE mutation, and a reproduction of the real defect."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nif ! thing; then\n    fail_later "x" "broke"\nfi\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "never report_failures")
+
+
+def test_L062_with_report_failures_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nif ! thing; then\n    fail_later "x" "broke"\nfi\n'
+                     'report_failures\ntest_pass "ok"\n')
+    assert "L062" not in errs(img, tmp_path)
+
+
+def test_L062_a_test_using_only_test_fail_is_clean(tmp_path):
+    """test_fail exits immediately, so it needs no report step. The rule must
+    not demand report_failures from tests that never defer."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nif ! thing; then\n    test_fail "broke"\nfi\ntest_pass "ok"\n')
+    assert "L062" not in errs(img, tmp_path)
+
+
+def test_L062_a_mention_in_a_comment_does_not_satisfy_the_rule(tmp_path):
+    """Same trap as L056/L059: the call must be real, not described."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\n'
+                     '# report_failures would go here one day\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "never report_failures")
+
+
+# ---- L063: never scrape nvidia-smi's table for the CUDA version -----------
+#
+# Driver 610 renamed the field ("CUDA Version" -> "CUDA UMD Version"), so every
+# scrape returned empty on every 610 host at once. In 05-configure-cuda.sh the
+# empty value aborted AFTER the CUDA ld.so.conf entries had been deleted.
+
+def _write_root_script(repo, rel, body):
+    p = repo / "ROOT" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+
+
+def test_L063_scraping_the_smi_table_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       'MAX=$(nvidia-smi | grep -oP "CUDA Version: \\K[0-9]+\\.[0-9]+")\n')
+    assert has(img, tmp_path, "L063", "cuda-driver-version")
+
+
+def test_L063_catches_the_renamed_field_too(tmp_path):
+    """Chasing the new spelling is the tempting wrong fix — it breaks again at
+    the next rename. The rule rejects both."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       'MAX=$(nvidia-smi | grep -oP "CUDA UMD Version: \\K[0-9]+\\.[0-9]+")\n')
+    assert "L063" in errs(img, tmp_path)
+
+
+def test_L063_using_the_helper_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       'MAX=$(/opt/instance-tools/bin/cuda-driver-version || true)\n')
+    assert "L063" not in errs(img, tmp_path)
+
+
+def test_L063_ignores_a_comment_explaining_the_history(tmp_path):
+    """The fix's own comments name the old field; the rule must not fire on
+    prose or it becomes impossible to document."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/05-configure-cuda.sh",
+                       '# driver 610 renamed "CUDA Version:" to "CUDA UMD Version:"\n'
+                       'MAX=$(/opt/instance-tools/bin/cuda-driver-version || true)\n')
+    assert "L063" not in errs(img, tmp_path)

@@ -76,6 +76,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
+    ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
+    ("L062", ERROR, "A shipped test that calls fail_later MUST also call report_failures — fail_later only RECORDS a deferred failure, so without the report the test prints `FAIL: ...` and then exits 0 via test_pass. The failure is silently discarded and the suite goes green, which is the exact skip-as-pass shape the QA gate exists to close (found while adding the CUDA-libpath check to base/60-gpu-cuda)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
 ]
@@ -593,6 +595,92 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
 
 
 
+def _calls(text: str, fn: str) -> bool:
+    """True if `fn` is INVOKED at a command position (not merely mentioned)."""
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0]
+        if re.search(rf"(^|[;&|]|\b(?:then|else|do|;)\s)\s*{fn}\b", line):
+            return True
+    return False
+
+
+_SMI_TEXT_PARSE = re.compile(r"CUDA[A-Za-z ]*Version[:\\]")
+
+
+def check_fail_later_is_reported(img: Image, repo: Path) -> Iterable[Finding]:
+    """L062 — a test that defers a failure must also report it.
+
+    `fail_later` only RECORDS a failure; `report_failures` is what turns the
+    record into a failing test. Without it the test prints `FAIL: ...` and then
+    exits 0 via `test_pass`, so the suite goes green with a visible failure in
+    the log — the skip-as-pass shape the gate exists to close, wearing a
+    different hat.
+
+    Found the honest way: adding the CUDA-libpath check to base/60-gpu-cuda with
+    `fail_later` produced exactly that. It printed FAIL and passed. Only running
+    it caught that; reading it did not.
+
+    Scoped to base, following L057/L059. Every image's tests are read from the
+    base overlay plus any derivative tests dir, and the check runs once per
+    repo rather than per template — a shipped test is wrong regardless of which
+    template happens to name it.
+    """
+    if img.cls != "base":
+        return
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sub in sorted(root.iterdir()):
+            if not sub.is_dir() or (sub.name != "base" and not sub.name.endswith(".d")):
+                continue
+            for f in sorted(sub.glob("*.sh")):
+                text = f.read_text(encoding="utf-8", errors="replace")
+                if _calls(text, "fail_later") and not _calls(text, "report_failures"):
+                    try:
+                        rel = str(f.relative_to(repo))
+                    except ValueError:
+                        rel = f.name
+                    yield Finding("L062", ERROR, img.name, rel,
+                                  "calls fail_later but never report_failures — the deferred "
+                                  "failure is discarded and the test exits 0 via test_pass")
+
+
+def check_no_nvidia_smi_text_parse(img: Image, repo: Path) -> Iterable[Finding]:
+    """L063 — do not scrape nvidia-smi's table for the driver CUDA version.
+
+    NVIDIA renamed the field in driver 610 ("CUDA Version" -> "CUDA UMD
+    Version"). Every scrape of it returned empty on every 610 host
+    simultaneously — a deterministic fleet-wide break, not a flaky box. The
+    stable answer is cuDriverGetVersion via libcuda, wrapped by
+    /opt/instance-tools/bin/cuda-driver-version.
+
+    Scoped to base (which owns these scripts) and to shipped runtime code: the
+    helper itself is exempt, as is any comment explaining the history.
+    """
+    if img.cls != "base":
+        return
+    roots = [repo / "ROOT", repo / "portal-aio"]
+    helper = "cuda-driver-version"
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for f in sorted(list(root.rglob("*.sh")) + list(root.rglob("*.py"))):
+            if helper in f.name:
+                continue                       # the one sanctioned implementation
+            for n, raw in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                line = raw.split("#", 1)[0]
+                if _SMI_TEXT_PARSE.search(line):
+                    try:
+                        rel = str(f.relative_to(repo))
+                    except ValueError:
+                        rel = f.name
+                    yield Finding("L063", ERROR, img.name, f"{rel}:{n}",
+                                  "parses nvidia-smi's table for the CUDA version — "
+                                  "use /opt/instance-tools/bin/cuda-driver-version instead")
+
+
 def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
     """L058 — a QA template's disk floor must FILTER offers, not just size the request.
 
@@ -885,6 +973,8 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_fail_later_is_reported(img, repo))
+    out.extend(check_no_nvidia_smi_text_parse(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))

@@ -1,0 +1,66 @@
+#!/bin/bash
+# Print the maximum CUDA version this host's DRIVER supports, as "X.Y".
+# Exit 0 with the version on stdout, or exit 1 printing nothing.
+#
+# WHY THIS EXISTS
+# ---------------
+# Every caller used to scrape `nvidia-smi`'s human-readable table for
+#
+#     CUDA Version: 13.3
+#
+# In driver branch 610 NVIDIA renamed that field:
+#
+#     | NVIDIA-SMI 610.57.04   KMD Version: 610.57.04   CUDA UMD Version: 13.3 |
+#
+# so every one of those greps silently returned nothing on any 610 host — a
+# deterministic, fleet-wide breakage, not a flaky box. In 05-configure-cuda.sh
+# that empty value aborted CUDA configuration AFTER it had already deleted every
+# CUDA entry from ld.so.conf.d, leaving instances with no system CUDA library
+# path. It stayed invisible because torch ships its own CUDA libs in the venv;
+# the first casualty was torchcodec failing to find libnppicc, three layers away.
+#
+# THE FIX IS TO STOP PARSING PROSE. `cuDriverGetVersion` is a stable C ABI in
+# libcuda.so.1 — the same number nvidia-smi renders, obtained from the driver
+# itself. It cannot be reworded by a release-note-free driver bump. It returns
+# 1000*major + 10*minor (13030 -> 13.3).
+#
+# The text parse is kept ONLY as a fallback for the case where libcuda cannot be
+# loaded but nvidia-smi still answers, and it now accepts both spellings. Order
+# matters: the API is authoritative, the scrape is a courtesy.
+#
+# Callers MUST treat a non-zero exit as "unknown" and do nothing destructive —
+# see 05-configure-cuda.sh, which validates before it mutates.
+
+set -uo pipefail
+
+# 1. Driver API. No text, no formatting, no locale.
+_v=$(python3 - <<'PY' 2>/dev/null
+import ctypes, sys
+try:
+    lib = ctypes.CDLL("libcuda.so.1")
+    ver = ctypes.c_int()
+    # cuDriverGetVersion needs no cuInit and works even with no usable device.
+    if lib.cuDriverGetVersion(ctypes.byref(ver)) != 0 or ver.value <= 0:
+        sys.exit(1)
+    print(f"{ver.value // 1000}.{(ver.value % 1000) // 10}")
+except Exception:
+    sys.exit(1)
+PY
+)
+if [[ -n "${_v}" ]]; then
+    echo "${_v}"
+    exit 0
+fi
+
+# 2. Fallback: nvidia-smi's table, tolerating both the historical field name and
+#    the 610-era rename. Deliberately loose about what sits between "CUDA" and
+#    "Version" so the next rename has a chance of still matching.
+if command -v nvidia-smi >/dev/null 2>&1; then
+    _v=$(nvidia-smi 2>/dev/null | grep -oP "CUDA[A-Za-z ]*Version:\s*\K[0-9]+\.[0-9]+" | head -1)
+    if [[ -n "${_v}" ]]; then
+        echo "${_v}"
+        exit 0
+    fi
+fi
+
+exit 1

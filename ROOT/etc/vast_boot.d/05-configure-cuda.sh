@@ -27,6 +27,37 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
 configure_cuda() {
     command -v nvidia-smi &> /dev/null || return 0
 
+    # ── GATHER AND VALIDATE BEFORE MUTATING ANYTHING ────────────────────
+    #
+    # Everything below is destructive: it deletes every CUDA entry from
+    # ld.so.conf.d and rebuilds the loader cache. Until 2026-08-12 that deletion
+    # happened FIRST and the driver-version parse was validated after, with a
+    # bare `return 1` on failure — so a boot where `nvidia-smi` did not print its
+    # "CUDA Version: X.Y" banner left the container with NO system CUDA library
+    # path at all, and nothing put it back.
+    #
+    # Not a rare parse quirk: this is the FIRST boot script, nothing waits for
+    # the driver, and nvidia-smi is at its least reliable that early.
+    #
+    # Also near-invisible. torch ships its own CUDA libraries in the venv, so
+    # torch, the GPU tests and CUDA compute all keep working; only something
+    # linking the SYSTEM toolkit notices. It surfaced as torchcodec failing to
+    # load libnppicc — three layers from the cause, and read at first as an
+    # unrelated torchaudio failure on a flaky host.
+    #
+    # base/60-gpu-cuda now asserts the toolkit is reachable, so the broken state
+    # can never again pass for healthy.
+    # Driver API, not prose. See /opt/instance-tools/bin/cuda-driver-version for
+    # why: driver 610 renamed nvidia-smi's "CUDA Version" field to "CUDA UMD
+    # Version" and broke every scrape of it fleet-wide.
+    local MAX_CUDA
+    MAX_CUDA=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
+    if [[ -z "$MAX_CUDA" ]]; then
+        echo "Error: Could not determine driver CUDA version — leaving the existing"
+        echo "       CUDA library configuration untouched (nothing was changed)."
+        return 1
+    fi
+
     # Clean up ALL cuda ldconfig entries - we'll add back only what we need
     rm -f /etc/ld.so.conf.d/*cuda*.conf
 
@@ -50,12 +81,8 @@ configure_cuda() {
     local GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
     local CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1)
     local DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
-    local MAX_CUDA=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
-
-    if [[ -z "$MAX_CUDA" ]]; then
-        echo "Error: Could not determine driver CUDA version"
-        return 1
-    fi
+    # MAX_CUDA was resolved and validated at the top of this function, BEFORE
+    # anything destructive ran. Deliberately not re-read here.
 
     # Find all installed CUDA versions, sorted descending
     local CUDA_VERSIONS=()
