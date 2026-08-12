@@ -111,8 +111,13 @@ jobs:
           # Base tag (v0.14.0) is CUDA 12.9, -cu130 is CUDA 13.0
           MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
             map(
-              # Skip arch-specific tags (we use multi-arch builds)
-              select(test("-(x86_64|aarch64)") | not)
+              # Skip arch-specific tags (we use multi-arch builds). Upstream
+              # is inconsistent about the arm suffix -- some releases use
+              # "aarch64", others "arm64" (see build-vllm.yml, which hit this
+              # for real on the muse-glimmer release: an arm64-only
+              # "-arm64-" tag slipped through and the amd64 leg pulled an
+              # arm64 image, failing with "exec format error").
+              select(test("-(x86_64|aarch64|arm64)") | not)
             )
             | map(
               if . == $ver then
