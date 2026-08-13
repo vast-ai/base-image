@@ -22,8 +22,16 @@
 # never does.
 source "$(dirname "$0")/../lib.sh"
 
+# No skip guard. Every image that carries this test also builds the provisioner:
+# the base Dockerfile does it directly, and external images get it from
+# tools/convert-non-vast-image.sh, which runs the same `uv venv` + requirements
+# install. The test suite itself arrives the same way — external images
+# `COPY --from=base_image_source /ROOT /` from the build context, so they get the
+# whole overlay. A missing provisioner is therefore a broken image, not a
+# configuration we support, and a skip here would be a skip-as-pass path that can
+# never legitimately fire.
 PROVISIONER=/opt/instance-tools/bin/provisioner
-[[ -x "$PROVISIONER" ]] || test_skip "provisioner not shipped in this image"
+[[ -x "$PROVISIONER" ]] || test_fail "provisioner not found at ${PROVISIONER} — every image carrying this suite ships it"
 
 _tmp=$(mktemp -d)
 _srv_pid=""

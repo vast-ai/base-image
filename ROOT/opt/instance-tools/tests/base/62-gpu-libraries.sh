@@ -132,24 +132,35 @@ else
     echo "  absent (ok): libnccl"
 fi
 
-# ── Libraries this image installs unconditionally MUST be present ─────
+# ── Libraries the image installs unconditionally MUST be present ──────
 #
-# "absent is fine" is the right rule for hardware-conditional things, and the
-# wrong one for packages the Dockerfile installs on every build. Without this,
-# an image that accidentally stopped shipping the RDMA/OpenCL/NCCL packages
-# passes a REQUIRED test: check_lib returns 0 for absent, so every probe above
-# reports "absent (ok)" and the suite goes green on an image missing the lot.
+# "absent is fine" is right for hardware-conditional things and wrong for
+# packages we always install: without this, an image that dropped them passes a
+# REQUIRED test, because check_lib returns 0 for absent.
 #
-# Scoped by is_vast_image (a non-vast base does not owe us these) and, for NCCL,
-# by the presence of a CUDA toolkit — Dockerfile.runtime installs libnccl2 with
-# the CUDA packages, so a stock ubuntu config legitimately has none.
-if is_vast_image; then
-    for _req in libibverbs.so.1 librdmacm.so.1 libOpenCL.so.1; do
-        lib_installed "$_req" \
-            || fail_later "missing-${_req%%.*}" \
-                "${_req} is not installed — this image is built to ship it, so it \
+# Each assertion is keyed on WHO INSTALLS IT, not on a blanket image-class check.
+# That distinction matters because external images run this same suite — they
+# copy the whole ROOT overlay from the build context — while being built by
+# tools/convert-non-vast-image.sh rather than by our Dockerfile, and the two
+# install different sets.
+#
+#   libibverbs / librdmacm : Dockerfile:127,130 AND convert-non-vast-image.sh:54,57
+#                            -> every image carrying this test has them.
+#   libOpenCL              : Dockerfile:180 only -> vast images only.
+#   libnccl                : Dockerfile.runtime, with the CUDA packages -> vast
+#                            images that actually have a CUDA toolkit.
+for _req in libibverbs.so.1 librdmacm.so.1; do
+    lib_installed "$_req" \
+        || fail_later "missing-${_req%%.*}" \
+            "${_req} is not installed — every image shipping this test installs it, so it \
 was dropped from the image rather than being unavailable on this host"
-    done
+done
+
+if is_vast_image; then
+    lib_installed libOpenCL.so.1 \
+        || fail_later "missing-libOpenCL" \
+            "libOpenCL.so.1 is not installed — the base image installs ocl-icd-libopencl1 \
+unconditionally"
     if compgen -G "/usr/local/cuda-*/" > /dev/null; then
         lib_installed libnccl.so.2 \
             || fail_later "missing-libnccl" \
