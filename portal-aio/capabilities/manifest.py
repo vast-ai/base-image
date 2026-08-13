@@ -307,10 +307,14 @@ def _cuda_info() -> Optional[dict]:
     if compat:
         info["forward_compat"] = compat
     try:  # max CUDA the host driver supports (best-effort)
-        out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5).stdout
-        m = re.search(r"CUDA Version:\s*([0-9.]+)", out)
-        if m:
-            info["driver_max_cuda"] = m.group(1)
+        # Driver API via the shared helper, NOT a scrape of nvidia-smi's table:
+        # driver branch 610 renamed that field from "CUDA Version" to "CUDA UMD
+        # Version", so the old regex returned nothing on every 610 host. See
+        # /opt/instance-tools/bin/cuda-driver-version.
+        out = subprocess.run(["/opt/instance-tools/bin/cuda-driver-version"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        if re.fullmatch(r"[0-9]+\.[0-9]+", out):
+            info["driver_max_cuda"] = out
     except Exception:
         pass
     try:  # GPU compute capability (e.g. "10.0"/"12.0" = Blackwell) — best-effort

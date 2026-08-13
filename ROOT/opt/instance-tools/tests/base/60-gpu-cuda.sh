@@ -12,22 +12,53 @@ gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head 
 compute_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1)
 driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
 
-# nvidia-smi reports the *effective* CUDA version, which includes compat libs if loaded.
-# To get the native driver CUDA max, we must bypass any compat libs in the linker path
-# by pointing LD_LIBRARY_PATH at the system libcuda directory.
-_libcuda_path=$(find /usr/lib -name 'libcuda.so.1' -not -path '*/cuda*/compat/*' 2>/dev/null | head -1)
-system_libcuda_dir=""
-[[ -n "$_libcuda_path" ]] && system_libcuda_dir=$(dirname "$_libcuda_path")
-if [[ -n "$system_libcuda_dir" && -d "$system_libcuda_dir" ]]; then
-    native_driver_cuda=$(LD_LIBRARY_PATH="$system_libcuda_dir" nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
-else
-    native_driver_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
-fi
+# nvidia-smi reports the *effective* CUDA version, which includes compat libs if
+# loaded. Every compat check below needs the driver's NATIVE maximum instead, so
+# it asks the helper for exactly that — the same call, in the same mode, that
+# 05-configure-cuda.sh used to pick the toolkit.
+#
+# Deliberately not re-derived here. Both files used to open-code the bypass as
+# `LD_LIBRARY_PATH=<dir>`, which is a search hint: name a directory with no
+# loadable libcuda.so.1 and the loader carries on to the ld.so cache — i.e. to a
+# previous boot's compat lib, silently, and this test would then AGREE with a
+# boot that got it wrong. A mirrored heuristic is not an independent check.
+# --native answers or it fails; it never guesses.
+native_driver_cuda=$(/opt/instance-tools/bin/cuda-driver-version --native 2>/dev/null || true)
 # Also grab the effective (possibly compat-enhanced) version for reference
-effective_cuda=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+effective_cuda=$(/opt/instance-tools/bin/cuda-driver-version 2>/dev/null || true)
 
 echo "  GPU: ${gpu_name} (CC ${compute_cap}, Driver ${driver_ver})"
 echo "  native driver CUDA: ${native_driver_cuda}, effective: ${effective_cuda}"
+
+# UNKNOWN IS A FAILURE, not a quiet pass.
+#
+# Every forward-compat check below compares against native_driver_cuda. When it is
+# empty, version_gt returns false (correctly — "unknown" must not assert that
+# compat is needed), toolkit_needs_compat becomes 0, and the ENTIRE validation
+# block is skipped. The test then prints
+#
+#   GPU/CUDA verified (selected: ..., native: , effective: )
+#
+# and exits 0 — which is verbatim the log line the driver-610 incident left
+# behind. Without this assertion the change that hardened version_gt would have
+# made that state quieter than it was before, not louder.
+if [[ ! "$native_driver_cuda" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    fail_later "driver-cuda-version" \
+        "could not determine the driver CUDA version (got '${native_driver_cuda}') — \
+no libcuda could be proven native, so every compat check below is vacuous"
+fi
+
+# 05-configure-cuda.sh aborts SAFELY when it cannot determine the driver version:
+# it changes nothing, which is right, but it also means the instance runs on the
+# image-default toolkit with no compat and nothing chose it. That state used to
+# be caught only by accident — the symlink assertion below notices it just when
+# the image happens to ship an indirect /usr/local/cuda. The boot script now
+# leaves a breadcrumb, so the abort is asserted directly rather than inferred.
+if [[ -f /run/vast-cuda-config-failed ]]; then
+    fail_later "cuda-config" \
+        "05-configure-cuda.sh aborted this boot: $(head -1 /run/vast-cuda-config-failed) \
+— the CUDA toolkit in use was never validated against this host's driver"
+fi
 
 # ── CUDA toolkit selection ────────────────────────────────────────────
 
@@ -44,16 +75,80 @@ if [[ ${#cuda_versions[@]} -eq 0 ]]; then
     python3 -c "import ctypes; ctypes.CDLL('libcuda.so.1')" 2>/dev/null \
         && echo "  python ctypes: libcuda.so.1 loadable" \
         || echo "  WARN: python cannot load libcuda.so.1"
+    # EVERY exit path must report deferred failures first. This early exit is a
+    # second `test_pass`, and anything fail_later recorded above (the
+    # driver-version assertion) would be silently dropped here — the same bug
+    # that made the first version of the reachability check print FAIL and exit
+    # 0. Reached on the stock-* configs, which ship no CUDA toolkit at all.
+    report_failures
     test_pass "GPU present, no CUDA toolkit installed"
 fi
 
 readarray -t cuda_versions < <(printf '%s\n' "${cuda_versions[@]}" | sort -t. -k1,1nr -k2,2nr)
+
+# ── The CUDA toolkit's libraries must be REACHABLE, not merely present ──
+#
+# A toolkit on disk that the dynamic loader cannot find is invisible to every
+# check below, because they all go through the driver API or through torch —
+# and torch ships its OWN CUDA libraries in the venv, so it keeps working while
+# the system toolkit is unreachable. The only casualties are the few things that
+# link the system libs (torchcodec via libnppicc, for one), which surface much
+# later and look like an unrelated application bug.
+#
+# That is not hypothetical: 05-configure-cuda.sh deleted every CUDA entry from
+# ld.so.conf.d and then aborted before writing the replacement whenever it could
+# not parse a CUDA version out of nvidia-smi. Instances booted with no system
+# CUDA library path at all, and this test passed anyway. The verdict it produced
+# — "GPU/CUDA verified (selected: /etc/alternatives/cuda, native: , effective: )"
+# — was the only trace.
+#
+# Cheap and unambiguous: ask the loader, not the filesystem.
+# Ask the loader directly: does its cache resolve ANY library out of the CUDA
+# toolkit tree? That is precisely the property at stake, and it needs no guess
+# about which soname to probe.
+#
+# (An earlier version probed a specific soname with `grep -F " libfoo.so"`. The
+# leading space never matched, because `ldconfig -p` indents with a TAB — so it
+# reported EVERY image as broken, healthy ones included. It was only caught by
+# checking the passing direction as well as the failing one.)
+_cuda_lib_dir_reachable=false
+# Match a real TOOLKIT library, not merely any path under the tree. The bare
+# "=> /usr/local/cuda" form was also satisfied by /usr/local/cuda/lib64/stubs
+# (shipped by unsloth-studio and aio-studio) and by .../compat/ — neither of
+# which contains libnppicc or any other toolkit runtime, i.e. both would report
+# "reachable" in exactly the broken state this exists to catch.
+if ldconfig -p 2>/dev/null | grep -qE "libcudart\.so[^ ]* .*=> +/usr/local/cuda"; then
+    _cuda_lib_dir_reachable=true
+fi
+
+if ! $_cuda_lib_dir_reachable; then
+    fail_later "cuda-libpath" \
+        "a CUDA toolkit is installed but NONE of its libraries are on the loader path — \
+ld.so.conf.d has no working CUDA entry (see 05-configure-cuda.sh). torch will still work \
+from its bundled libs, so this stays invisible until something links the system toolkit."
+else
+    echo "  system CUDA libraries: reachable via ldconfig"
+fi
 latest_cuda="${cuda_versions[0]}"
 echo "  installed CUDA: ${cuda_versions[*]} (latest: ${latest_cuda})"
 
 # /usr/local/cuda must be a symlink (created by 05-configure-cuda.sh)
 if [[ -L /usr/local/cuda ]]; then
     selected_cuda=$(readlink /usr/local/cuda | sed 's|.*/cuda-||')
+    # The sed is a no-op when the symlink is INDIRECT (e.g. the distro's
+    # /etc/alternatives/cuda), so selected_cuda can be a path rather than X.Y —
+    # which is verbatim what the driver-610 incident logged. version_gt rejects
+    # a non-numeric operand, so without this every cross-major comparison below
+    # silently reads "correct fallback" and the three test_fail assertions
+    # become unreachable. Guarding native_driver_cuda alone was not enough: this
+    # is the value the incident actually produced.
+    selected_cuda_is_version=true
+    if [[ ! "$selected_cuda" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        selected_cuda_is_version=false
+        fail_later "cuda-symlink" \
+            "/usr/local/cuda does not resolve to a cuda-X.Y directory (got '${selected_cuda}') — \
+05-configure-cuda.sh did not run to completion, so no toolkit selection was validated"
+    fi
     cuda_target=$(readlink -f /usr/local/cuda)
     [[ -d "$cuda_target" ]] || test_fail "/usr/local/cuda symlink target does not exist: $cuda_target"
     echo "  selected CUDA: ${selected_cuda} (symlink → ${cuda_target})"
@@ -93,6 +188,12 @@ if [[ "$toolkit_needs_compat" == "1" ]]; then
         echo "  DISABLE_FORWARD_COMPAT=true — forward compat intentionally disabled"
         if [[ "$native_major" == "$latest_major" ]]; then
             echo "  same major version (${native_major}) — minor compat sufficient"
+        elif [[ "$selected_cuda_is_version" != true ]]; then
+            # version_gt rejects a non-numeric operand, so "not greater" here would
+            # be an artefact of the bad value, not a correct fallback. The
+            # cuda-symlink failure above already carries the verdict; do not print
+            # a reassurance on top of it.
+            echo "  selected CUDA '${selected_cuda}' is not a version — see cuda-symlink above"
         elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
@@ -133,6 +234,12 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
             echo "  (consumer GPU or cuInit failed — expected on non-datacenter hardware)"
             if [[ "$native_major" == "$latest_major" ]]; then
                 echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
+            elif [[ "$selected_cuda_is_version" != true ]]; then
+                # version_gt rejects a non-numeric operand, so "not greater" here would
+                # be an artefact of the bad value, not a correct fallback. The
+                # cuda-symlink failure above already carries the verdict; do not print
+                # a reassurance on top of it.
+                echo "  selected CUDA '${selected_cuda}' is not a version — see cuda-symlink above"
             elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
                 echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
             else
@@ -144,6 +251,12 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
         echo "  no compat libs in ${compat_dir}"
         if [[ "$native_major" == "$latest_major" ]]; then
             echo "  same major version (${native_major}) — minor compat sufficient, no compat libs needed"
+        elif [[ "$selected_cuda_is_version" != true ]]; then
+            # version_gt rejects a non-numeric operand, so "not greater" here would
+            # be an artefact of the bad value, not a correct fallback. The
+            # cuda-symlink failure above already carries the verdict; do not print
+            # a reassurance on top of it.
+            echo "  selected CUDA '${selected_cuda}' is not a version — see cuda-symlink above"
         elif ! version_gt "$selected_cuda" "$native_driver_cuda"; then
             echo "  selected CUDA ${selected_cuda} <= native max ${native_driver_cuda}: correct fallback"
         else
@@ -186,5 +299,11 @@ if [[ -f /etc/OpenCL/vendors/nvidia.icd ]]; then
 else
     echo "  absent (ok): OpenCL ICD"
 fi
+
+# Deferred failures (fail_later) are DISCARDED unless this is called: the helper
+# only records them, and test_pass exits 0 regardless. Adding the reachability
+# check above without this line made it print a FAIL and still pass the test —
+# caught by running it, not by reading it. Gated by L062.
+report_failures
 
 test_pass "GPU/CUDA verified (selected: ${selected_cuda}, native: ${native_driver_cuda}, effective: ${effective_cuda})"

@@ -1,0 +1,233 @@
+#!/bin/bash
+# Print the maximum CUDA version this host's DRIVER supports, as "X.Y".
+# Exit 0 with the version on stdout, or exit non-zero printing nothing.
+#
+#   cuda-driver-version            EFFECTIVE version — whatever the loader
+#                                  resolves, which INCLUDES a forward-compat
+#                                  libcuda if one is on the path. Falls back to
+#                                  nvidia-smi's table.
+#
+#   cuda-driver-version --native   The driver's OWN version, read through a
+#                                  libcuda proven not to be a forward-compat
+#                                  one. No text fallback: it answers or it
+#                                  fails. Use this for any decision ABOUT
+#                                  forward compat.
+#
+# WHY THIS EXISTS
+# ---------------
+# Every caller used to scrape `nvidia-smi`'s human-readable table for
+#
+#     CUDA Version: 13.3
+#
+# In driver branch 610 NVIDIA renamed that field:
+#
+#     | NVIDIA-SMI 610.57.04   KMD Version: 610.57.04   CUDA UMD Version: 13.3 |
+#
+# so every one of those greps silently returned nothing on any 610 host — a
+# deterministic, fleet-wide breakage, not a flaky box. In 05-configure-cuda.sh
+# that empty value aborted CUDA configuration AFTER it had already deleted every
+# CUDA entry from ld.so.conf.d, leaving instances with no system CUDA library
+# path. It stayed invisible because torch ships its own CUDA libs in the venv;
+# the first casualty was torchcodec failing to find libnppicc, three layers away.
+#
+# THE FIX IS TO STOP PARSING PROSE. `cuDriverGetVersion` is a stable C ABI in
+# libcuda.so.1 — the same number nvidia-smi renders, obtained from the driver
+# itself. It cannot be reworded by a release-note-free driver bump. It returns
+# 1000*major + 10*minor (13030 -> 13.3).
+#
+# The text parse is kept ONLY as a fallback for the case where libcuda cannot be
+# loaded but nvidia-smi still answers, and it now accepts both spellings. Order
+# matters: the API is authoritative, the scrape is a courtesy.
+#
+# WHY --native IS A MODE HERE AND NOT A CALLER'S JOB
+# --------------------------------------------------
+# cuDriverGetVersion reports whichever libcuda.so.1 the loader resolved. If a
+# previous boot enabled forward compat it wrote /etc/ld.so.conf.d/0-compat-cuda.conf
+# (named "0-" so it wins) and /etc persists across a stop/start — so a plain probe
+# returns the COMPAT version. Any code deciding *whether compat is needed* that
+# reads the compat value has already lost: "latest > max" goes false, compat is
+# not re-enabled, and the instance comes back with a newer toolkit on an older
+# driver.
+#
+# Both callers (05-configure-cuda.sh at boot, base/60-gpu-cuda at test time) used
+# to re-derive this in bash with `LD_LIBRARY_PATH=<dir>`. That is a search HINT,
+# not a pin: if the named directory yields no loadable libcuda.so.1 the loader
+# carries on to the ld.so cache — back to the compat lib, silently. Two copies of
+# a heuristic that fails OPEN is how the same defect ships twice, so the
+# resolution lives here, once, and is done properly:
+#
+#   * dlopen an ABSOLUTE path (a name containing "/" bypasses every search path),
+#     preferring the current-ABI directory — a host with 32-bit driver libs
+#     mounted (NVIDIA_DRIVER_CAPABILITIES=all includes compat32) has two
+#     libcuda.so.1, and picking by readdir order is a coin flip;
+#   * verify AFTER loading, from /proc/self/maps, that the file actually mapped
+#     is not under a compat/ or stubs/ directory — a post-hoc check of what
+#     happened, not a prediction of what should have;
+#   * try an unpinned load last as well, under the SAME post-hoc check, which
+#     keeps hosts that mount driver libs somewhere unusual working while still
+#     refusing to return a compat reading. Note it only helps when it resolves a
+#     file no earlier candidate mapped — re-opening an already-mapped file adds
+#     no mapping, so there is nothing new to check and it is refused;
+#   * on any failure, print nothing and exit non-zero. No answer beats a wrong
+#     one — every caller must treat that as "unknown" and do nothing destructive.
+
+set -uo pipefail
+
+_native=0
+for _arg in "$@"; do
+    case "$_arg" in
+        --native) _native=1 ;;
+        *) echo "usage: $(basename "$0") [--native]" >&2; exit 2 ;;
+    esac
+done
+
+# 1. Driver API. No text, no formatting, no locale.
+_v=$(NATIVE_ONLY="$_native" python3 - <<'PY' 2>/dev/null
+import ctypes, os, sys
+
+native_only = os.environ.get("NATIVE_ONLY") == "1"
+
+
+def libcuda_mappings():
+    """Every libcuda file currently mapped into this process, by absolute path."""
+    found = set()
+    try:
+        with open("/proc/self/maps") as fh:
+            for line in fh:
+                path = line.rstrip("\n").split(" ", 5)[-1].strip()
+                if path.startswith("/") and os.path.basename(path).startswith("libcuda.so"):
+                    found.add(path)
+    except OSError:
+        pass
+    return found
+
+
+def load(name):
+    """dlopen `name`, returning (handle, path-actually-mapped).
+
+    The path is taken from the mappings that appeared as a RESULT of this load,
+    so it is what the loader really opened — after symlink resolution, and
+    regardless of which search path (if any) it came from.
+    """
+    before = libcuda_mappings()
+    try:
+        lib = ctypes.CDLL(name)
+    except Exception:
+        return None, None
+    added = libcuda_mappings() - before
+    return lib, (sorted(added)[0] if added else None)
+
+
+def version_from(lib):
+    # Guarded, because a candidate that LOADS is not a candidate that ANSWERS: a
+    # placeholder or partially-injected .so without the symbol raises here, and
+    # an unguarded raise would abandon the whole candidate loop — one bad file in
+    # the arch directory would make a host with a perfectly good driver library
+    # elsewhere report "unknown", which the boot script treats as a hard abort.
+    try:
+        ver = ctypes.c_int()
+        # cuDriverGetVersion needs no cuInit and works even with no usable device.
+        if lib.cuDriverGetVersion(ctypes.byref(ver)) != 0 or ver.value <= 0:
+            return None
+        return f"{ver.value // 1000}.{(ver.value % 1000) // 10}"
+    except Exception:
+        return None
+
+
+def is_compat(path):
+    """True if this mapping must not be trusted to report the DRIVER's version.
+
+    A forward-compat or stub libcuda must never answer "what does the driver
+    itself support" — the first reports the compat package's version, the second
+    is a link-time placeholder with no driver behind it.
+
+    `path is None` means the dlopen added no new mapping, i.e. the loader
+    resolved to a file this process already opened and already judged. Treating
+    that as untrusted is deliberate: it is the conservative direction, and the
+    only way to reach it is a candidate that was already considered.
+
+    DELIBERATELY NOT ALSO CROSS-CHECKED against
+    `nvidia-smi --query-gpu=driver_version`. That was tried and removed — see
+    ADR 0024's rejected alternatives. It refused a healthy `libcuda.so.1 ->
+    libcuda.so.1.1` layout (the `1.1` parses as a driver version), it did not
+    catch a compat library copied in under the plain SONAME, and NVIDIA's own
+    compat packages ARE named with a driver version — so it bought a fleet-wide
+    abort risk for a hole it left open.
+    """
+    return path is None or "/compat/" in path or "/stubs/" in path
+
+
+def native_candidates():
+    seen = []
+    machine = os.uname().machine
+    for d in (f"/usr/lib/{machine}-linux-gnu", "/usr/lib64", "/usr/lib"):
+        p = os.path.join(d, "libcuda.so.1")
+        if os.path.exists(p) and p not in seen:
+            seen.append(p)
+    if seen:
+        return seen
+    # Nothing in the conventional places: search, excluding the two directory
+    # kinds that must never answer.
+    for root in ("/usr/lib", "/usr/lib64", "/usr/local/lib", "/usr/local/nvidia"):
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames[:] = [d for d in dirnames if d not in ("compat", "stubs")]
+            if "libcuda.so.1" in filenames:
+                seen.append(os.path.join(dirpath, "libcuda.so.1"))
+        if seen:
+            break
+    return seen
+
+
+if not native_only:
+    lib, _ = load("libcuda.so.1")
+    v = version_from(lib) if lib else None
+    if not v:
+        sys.exit(1)
+    print(v)
+    sys.exit(0)
+
+# --native: absolute paths first (dlopen of a name containing "/" performs no
+# search at all), then an unpinned load — tried unconditionally rather than only
+# when the list is empty, because a candidate can also be REJECTED (compat, stub,
+# wrong driver version, no symbol), and in that case the loader's own answer is
+# still worth checking. It is safe to try because the verdict does not depend on
+# how the file was found: every candidate, pinned or not, must survive the same
+# post-hoc check on what actually got mapped.
+for cand in native_candidates() + ["libcuda.so.1"]:
+    lib, path = load(cand)
+    if lib is None or is_compat(path):
+        continue
+    v = version_from(lib)
+    if v:
+        print(v)
+        sys.exit(0)
+
+sys.exit(1)
+PY
+)
+if [[ -n "${_v}" ]]; then
+    echo "${_v}"
+    exit 0
+fi
+
+# 2. Fallback: nvidia-smi's table, tolerating both the historical field name and
+#    the 610-era rename. Deliberately loose about what sits between "CUDA" and
+#    "Version" so the next rename has a chance of still matching.
+#
+#    NOT available under --native: nvidia-smi renders the effective version, and
+#    on a compat-enabled instance we cannot prove otherwise. A caller that asked
+#    for the native reading gets the native reading or nothing.
+#
+#    Time-bounded: this helper runs from the FIRST boot script, which is sourced,
+#    so a wedged driver that makes nvidia-smi hang would stop the instance ever
+#    becoming ready. A timeout produces no reading, and no reading is already a
+#    handled outcome.
+if [[ "$_native" -eq 0 ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    _v=$(timeout 10 nvidia-smi 2>/dev/null | grep -oP "CUDA[A-Za-z ]*Version:\s*\K[0-9]+\.[0-9]+" | head -1)
+    if [[ -n "${_v}" ]]; then
+        echo "${_v}"
+        exit 0
+    fi
+fi
+
+exit 1

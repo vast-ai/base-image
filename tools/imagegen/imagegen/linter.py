@@ -78,6 +78,9 @@ RULES: list[tuple[str, str, str]] = [
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
+    ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
+    ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
+    ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
 ]
 
 
@@ -593,6 +596,483 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
 
 
 
+def _line_calls(line: str, fn: str) -> bool:
+    """True if `fn` is invoked at a command position on THIS line.
+
+    `{` counts: `finish() { report_failures; test_pass "ok"; }` is a call, and
+    omitting it made the rule report a *correct* helper as never calling
+    report_failures.
+
+    `)` counts too, for `case` arms — `a) fail_later "x" "y" ;;`. Omitting it did
+    worse than miss the call: with no deferring call seen anywhere, the whole
+    file was treated as non-deferring and skipped, taking the never-reports check
+    with it. A blind spot that silently exempts the file is not a blind spot, it
+    is a hole.
+    """
+    return bool(re.search(rf"(^|[;&|{{()]|\b(?:then|else|do|;)\s)\s*{fn}\b", line))
+
+
+def _line_calls_unconditionally(line: str, fn: str) -> bool:
+    """True if `fn` runs whenever this line is reached.
+
+    `report_failures` only clears a pending failure if it is not itself guarded:
+    `[[ -n "$Q" ]] && report_failures` and `... ; then report_failures` run only
+    sometimes, so treating them as a clear is how the rule certifies the very bug
+    it exists to catch. A statement STARTING with the name is unguarded; one
+    reached through `&&`, `||` or `then` is not — so the split is on `;`, `{` and
+    `}`, which end a statement, and never on `&&`/`||`, which do not.
+
+    Block structure (a `report_failures` inside an if that may not run) is a
+    separate question, handled by the frame stack in _scan_shell_flow.
+    """
+    for stmt in re.split(r"[;{}]", line):
+        if re.match(rf"\s*{fn}\b", stmt):
+            return True
+    return False
+
+
+def _blank_quoted(line: str) -> str:
+    """Replace quoted spans with spaces, preserving length.
+
+    Structure detection must not read shell keywords out of string literals:
+    `grep -qE "a|done"` and `echo "; fi"` are data, not control flow, and a
+    close keyword found inside one suppresses a frame that should have been
+    pushed. Length is preserved so reported columns stay meaningful.
+    """
+    out = []
+    quote = None
+    escaped = False
+    for ch in line:
+        if quote:
+            out.append(" " if ch != quote or escaped else ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+                out[-1] = ch
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _calls(text: str, fn: str) -> bool:
+    """True if `fn` is INVOKED at a command position (not merely mentioned)."""
+    for raw in text.splitlines():
+        if _line_calls(_strip_comment(raw), fn):
+            return True
+    return False
+
+
+# Exits that DISCARD pending deferred failures: both leave the runner with a
+# non-failing status (test_pass exits 0, test_skip exits 77), so reaching either
+# with a recorded failure throws it away. test_fail is not here — it exits
+# non-zero, so the failure is not lost.
+_DISCARDING_EXITS = ("test_pass", "test_skip")
+_DEFERRING_CALLS = ("fail_later", "http_check")
+
+_FN_DEF = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{")
+_BLOCK_OPEN = re.compile(r"^\s*(if|for|while|until|case)\b")
+_BLOCK_CLOSE = re.compile(r"^\s*(fi|done|esac)\b")
+# `elif` restarts an alternative but does NOT mean the chain is exhaustive —
+# an if/elif with no else can fall through all of them, so only a literal `else`
+# may suppress the fall-through arm at close.
+_BLOCK_ALT = re.compile(r"^\s*(else|elif)\b")
+_BLOCK_ELSE = re.compile(r"^\s*else\b")
+# A block that opens and closes on ONE line (`if Z; then fin; fi`) is a statement,
+# not a frame. Pushing a frame for it leaks: nothing ever pops it, so every later
+# close pops the wrong frame and the merge is silently wrong from there on.
+#
+# Anchored to a real statement boundary — `;`, `&&`, `||` or line start. A bare
+# `|` must NOT count: `grep -qE "a|done"` contains `|done`, and treating that as
+# a close suppressed the frame push for the whole block, making every conditional
+# inside it read as unconditional. That turned this fix into the very
+# false-negative L062 exists to prevent.
+_BLOCK_CLOSE_ANYWHERE = re.compile(r"(^|;|&&|\|\|)\s*(fi|done|esac)\b")
+
+
+def _walk(lines, pending, fns):
+    """Frame-aware walk over a list of already-stripped shell lines.
+
+    Shared by the file-level scan and by function-body analysis so a guard
+    closed at one level cannot stay open at the other — which is exactly how the
+    guarded-helper hole survived being fixed at the call site.
+
+    Returns (first-bad-exit-index, ever_deferred, ever_reported, pending-at-end).
+    The index is 1-based into `lines`, so a caller passing a filtered list must
+    map it back to the real file line itself.
+    """
+    ever_deferred = False
+    ever_reported = False
+    stack: list[dict] = []
+    bad_exit = None
+
+    for n, line in enumerate(lines, 1):
+        if _BLOCK_CLOSE.match(line) and stack:
+            frame = stack.pop()
+            frame["arms"].append(pending)
+            if not frame["has_else"]:
+                frame["arms"].append(frame["entry"])
+            pending = any(frame["arms"])
+            continue
+        if _BLOCK_ALT.match(line) and stack:
+            stack[-1]["arms"].append(pending)
+            # Only a literal `else` makes the chain exhaustive. An `elif` with no
+            # `else` after it can fall through every arm, so the entry state must
+            # still be merged at close.
+            if _BLOCK_ELSE.match(line):
+                stack[-1]["has_else"] = True
+            pending = stack[-1]["entry"]
+            # `elif cond; then` may itself call things; fall through to the
+            # call handling below rather than `continue`.
+        elif _BLOCK_OPEN.match(line) and not _BLOCK_CLOSE_ANYWHERE.search(line):
+            stack.append({"entry": pending, "arms": [], "has_else": False})
+
+        for name, info in fns.items():
+            if not _line_calls(line, name):
+                continue
+            if info["defers"]:
+                pending = True
+                ever_deferred = True
+            # A helper only CLEARS when the call itself is unguarded — the same
+            # rule as an inline report_failures. `if Z; then fin; fi` runs `fin`
+            # only sometimes, so it cannot be trusted to have reported.
+            if info["clears"] and _line_calls_unconditionally(line, name):
+                ever_reported = True
+                pending = False
+            elif info["reports"]:
+                # It reports, but not in a way that can be trusted to have run —
+                # enough to satisfy "this file does call report_failures", not
+                # enough to clear.
+                ever_reported = True
+            if info["exits"] and pending and bad_exit is None:
+                bad_exit = n
+            elif info["exits_dirty"] and info["defers"] and bad_exit is None:
+                # The helper discards its OWN deferred failure, regardless of
+                # what was pending at the call site.
+                bad_exit = n
+
+        if any(_line_calls(line, d) for d in _DEFERRING_CALLS):
+            pending = True
+            ever_deferred = True
+        if _line_calls(line, "report_failures"):
+            ever_reported = True
+            if _line_calls_unconditionally(line, "report_failures"):
+                pending = False
+        if pending and bad_exit is None and any(
+            _line_calls(line, e) for e in _DISCARDING_EXITS
+        ):
+            bad_exit = n
+
+    return bad_exit, ever_deferred, ever_reported, pending
+
+
+def _scan_shell_flow(text: str):
+    """Walk a shell test, tracking whether a deferred failure is pending.
+
+    Returns (line-number-of-first-discarding-exit-while-pending, ever_deferred,
+    ever_reported).
+
+    This is a control-flow approximation, not a bash parser, and it is
+    deliberately asymmetric: it is CONSERVATIVE about what clears a pending
+    failure (only an unguarded `report_failures`) and GENEROUS about what
+    defers one (any branch that could run). The alternative — a linear walk —
+    got both directions wrong: a `report_failures` inside an untaken `if`
+    cleared the state for the rest of the file (the rule certifying its own
+    bug), while a `test_pass` in the `else` arm of the branch that deferred was
+    reported as a defect on correct code.
+
+    Branch handling: entering `if`/`for`/`while`/`case` snapshots the pending
+    state; `else`/`elif` restarts the alternative from that snapshot; closing
+    merges every arm by OR, including the fall-through arm when there is no
+    `else` (a loop body or an unelsed `if` may not run at all).
+
+    Function bodies are analysed by the SAME walk and their effect applied at
+    the CALL site, so `finish() { report_failures; test_pass "ok"; }` reads as
+    "clears, then exits" wherever `finish` is invoked — while
+    `fin() { if x; then report_failures; fi; }` does not clear, because the
+    frame merge inside the body says it might not have run. Analysing bodies
+    with a flat presence scan left exactly that hole one level down from the
+    call-site guard.
+
+    Known limit: a `fail_later` inside a subshell or a pipeline loses its record
+    at RUNTIME (the array is written in a child), which this cannot see — that
+    is a different defect needing a different check.
+    """
+    lines = [_blank_quoted(_strip_comment(raw)) for raw in text.splitlines()]
+
+    # Pass 1: function bodies. Brace-depth counted from the definition line.
+    fns: dict[str, dict] = {}
+    body_lines: set[int] = set()
+    i = 0
+    while i < len(lines):
+        m = _FN_DEF.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        # End the body at a closing brace in column 0 (house style, and what
+        # every shipped test uses) OR when brace depth returns to zero,
+        # whichever comes first. Either alone is brittle: an indented `}` never
+        # matches the first, and an unbalanced brace inside a string or regex
+        # (`grep -E '[{]'`) breaks the second — and a body that never ends
+        # swallows the rest of the file, taking its report_failures with it.
+        depth = lines[i].count("{") - lines[i].count("}")
+        body = [lines[i]]
+        body_lines.add(i)
+        j = i
+        while depth > 0 and j + 1 < len(lines):
+            j += 1
+            body.append(lines[j])
+            body_lines.add(j)
+            if lines[j].startswith("}"):
+                break
+            depth += lines[j].count("{") - lines[j].count("}")
+        # The body goes through the same walk, twice, because two different
+        # questions are being asked and each needs its own starting state:
+        #   * seeded PENDING, does the body clear it? Only an unconditional
+        #     report does; a report inside an unelsed `if` leaves the merge
+        #     pending, which is the correct answer.
+        #   * seeded CLEAN, does the body reach a discarding exit with its own
+        #     deferral outstanding? That is a defect wherever it is called.
+        # Order matters for both, which a presence scan cannot express:
+        # `bad() { fail_later x y; test_pass ok; report_failures; }` contains a
+        # report but discards the failure before reaching it.
+        _, _, _, pending_after = _walk(body, True, fns)
+        dirty_exit, body_defers, body_reports, _ = _walk(body, False, fns)
+        fns[m.group(1)] = {
+            "clears": not pending_after,
+            "reports": body_reports,
+            "exits": any(_line_calls(b, e) for b in body for e in _DISCARDING_EXITS),
+            "exits_dirty": dirty_exit is not None,
+            "defers": body_defers,
+        }
+        i = j + 1
+
+    # Function bodies are analysed above and skipped here, so the walk sees only
+    # top-level flow. Real file line numbers are carried alongside, because a
+    # finding that points at the wrong line is a finding nobody can act on.
+    outer, outer_lineno = [], []
+    for k, ln in enumerate(lines):
+        if k not in body_lines:
+            outer.append(ln)
+            outer_lineno.append(k + 1)
+    bad_exit, ever_deferred, ever_reported, _ = _walk(outer, False, fns)
+    if bad_exit is not None:
+        bad_exit = outer_lineno[bad_exit - 1]
+    return bad_exit, ever_deferred, ever_reported
+
+
+_SMI_TEXT_PARSE = re.compile(r"CUDA[A-Za-z ]*Version[:\\]")
+
+def _strip_comment(line: str) -> str:
+    """Drop a trailing shell comment without mangling code.
+
+    Splitting on the first `#` is wrong often enough to matter: it truncates
+    `${varname#"${prefix}"}` mid-expansion (which unbalanced the brace count in
+    26-caddy-auth.sh and swallowed the rest of the file, hiding its
+    report_failures) and `sed 's#a#b#'`. In bash a `#` starts a comment only at
+    the start of a word and only outside quotes.
+    """
+    out: list[str] = []
+    quote = None
+    escaped = False
+    for ch in line:
+        if quote:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        elif ch == "#" and (not out or out[-1] in " \t"):
+            break
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+_CUDA_HELPER = "cuda-driver-version"
+# `LD_LIBRARY_PATH=<anything> ... cuda-driver-version` — the fail-open wrapper.
+_LDPATH_PROBE = re.compile(r"LD_LIBRARY_PATH=.*" + _CUDA_HELPER)
+# A hand-rolled hunt for the driver library, which only ever feeds such a wrapper.
+# The exact SONAME, deliberately: probing for `libcuda.so.*` is how a script asks
+# "are there compat libs in this directory" — a legitimate, different question
+# that 05-configure-cuda.sh and base/60-gpu-cuda both ask.
+_LIBCUDA_SEARCH = re.compile(r"\b(?:find|ls|compgen|glob|rglob|iglob)\b[^\n]*libcuda\.so\.1\b")
+
+
+def _shipped_scripts(repo: Path):
+    """Yield (path, repo-relative-path, [(lineno, code-without-comment)]) for
+    every script that ships INSIDE an image.
+
+    Extension is not the boundary: 10 of the 12 tools in
+    ROOT/opt/instance-tools/bin are extensionless by convention, including the
+    CUDA helper itself, so an `*.sh`/`*.py` glob silently exempts the directory
+    most likely to re-introduce these bugs. Derivative and external overlays
+    ship into images too and are included for the same reason.
+    """
+    roots = [repo / "ROOT", repo / "portal-aio"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT"))
+    roots += sorted((repo / "external").glob("*/ROOT"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*")):
+            if not f.is_file() or f.is_symlink():
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue                       # binary or unreadable: not a script
+            if f.suffix not in (".sh", ".py") and not text.startswith("#!"):
+                continue
+            lines = [(n, _strip_comment(raw))
+                     for n, raw in enumerate(text.splitlines(), 1)]
+            try:
+                rel = str(f.relative_to(repo))
+            except ValueError:
+                rel = f.name
+            yield f, rel, lines
+
+
+def check_fail_later_is_reported(img: Image, repo: Path) -> Iterable[Finding]:
+    """L062 — a test that defers a failure must also report it.
+
+    `fail_later` only RECORDS a failure; `report_failures` is what turns the
+    record into a failing test. Without it the test prints `FAIL: ...` and then
+    exits 0 via `test_pass`, so the suite goes green with a visible failure in
+    the log — the skip-as-pass shape the gate exists to close, wearing a
+    different hat.
+
+    Found the honest way: adding the CUDA-libpath check to base/60-gpu-cuda with
+    `fail_later` produced exactly that. It printed FAIL and passed. Only running
+    it caught that; reading it did not.
+
+    Scoped to base, following L057/L059. Every image's tests are read from the
+    base overlay plus any derivative tests dir, and the check runs once per
+    repo rather than per template — a shipped test is wrong regardless of which
+    template happens to name it.
+    """
+    if img.cls != "base":
+        return
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sub in sorted(root.iterdir()):
+            if not sub.is_dir() or (sub.name != "base" and not sub.name.endswith(".d")):
+                continue
+            for f in sorted(sub.glob("*.sh")):
+                text = f.read_text(encoding="utf-8", errors="replace")
+                # ORDER MATTERS, not mere presence. `report_failures` somewhere in
+                # the file is not enough: an EARLIER test_pass/test_skip exits
+                # without failing and throws the deferred failures away. That is
+                # not hypothetical — the driver-version assertion added to
+                # base/60-gpu-cuda was discarded on its "no CUDA toolkit installed"
+                # early exit while this rule, in its presence-only form, certified
+                # the file as compliant.
+                #
+                # http_check (lib.sh) calls fail_later INTERNALLY, so a test using
+                # only http_check defers failures without ever naming fail_later.
+                # Gating on the literal name alone would let the most common
+                # deferring shape through — which it did, until it was added to
+                # the deferring set.
+                bad_exit, ever_deferred, ever_reported = _scan_shell_flow(text)
+                if not ever_deferred:
+                    continue
+                if bad_exit is not None:
+                    try:
+                        rel = str(f.relative_to(repo))
+                    except ValueError:
+                        rel = f.name
+                    yield Finding("L062", ERROR, img.name, f"{rel}:{bad_exit}",
+                                  "test_pass/test_skip exits without failing here while a "
+                                  "deferred failure is pending — call report_failures "
+                                  "before every exit path")
+                    continue
+                if not ever_reported:
+                    try:
+                        rel = str(f.relative_to(repo))
+                    except ValueError:
+                        rel = f.name
+                    yield Finding("L062", ERROR, img.name, rel,
+                                  "calls fail_later but never report_failures — the deferred "
+                                  "failure is discarded and the test exits 0 via test_pass")
+
+
+def check_no_nvidia_smi_text_parse(img: Image, repo: Path) -> Iterable[Finding]:
+    """L063 — do not scrape nvidia-smi's table for the driver CUDA version.
+
+    NVIDIA renamed the field in driver 610 ("CUDA Version" -> "CUDA UMD
+    Version"). Every scrape of it returned empty on every 610 host
+    simultaneously — a deterministic fleet-wide break, not a flaky box. The
+    stable answer is cuDriverGetVersion via libcuda, wrapped by
+    /opt/instance-tools/bin/cuda-driver-version.
+
+    Scoped to base (which owns these scripts) and to shipped runtime code: the
+    helper itself is exempt, as is any comment explaining the history.
+    """
+    if img.cls != "base":
+        return
+    for f, rel, lines in _shipped_scripts(repo):
+        if f.name == _CUDA_HELPER:
+            continue                           # the one sanctioned implementation
+        for n, line in lines:
+            if _SMI_TEXT_PARSE.search(line):
+                yield Finding("L063", ERROR, img.name, f"{rel}:{n}",
+                              "parses nvidia-smi's table for the CUDA version — "
+                              "use /opt/instance-tools/bin/cuda-driver-version instead")
+
+
+def check_no_open_coded_native_libcuda(img: Image, repo: Path) -> Iterable[Finding]:
+    """L064 — do not re-derive the native libcuda; ask the helper.
+
+    `cuDriverGetVersion` reports whichever libcuda.so.1 the loader resolved, so
+    any code deciding *whether forward compat is needed* must exclude a compat
+    library explicitly. Both callers used to do that themselves, in bash:
+
+        _libcuda_path=$(find /usr/lib -name 'libcuda.so.1' ... | head -1)
+        LD_LIBRARY_PATH="$(dirname "$_libcuda_path")" cuda-driver-version
+
+    which fails OPEN. LD_LIBRARY_PATH is a search hint: if the named directory
+    yields nothing loadable the loader continues to the ld.so cache — on a
+    second boot, the previous boot's `0-compat-cuda.conf`. The two copies also
+    drifted, so base/60-gpu-cuda agreed with the boot script rather than
+    checking it, and a review had to catch by hand what a rule should catch.
+
+    `cuda-driver-version --native` dlopens an absolute path (a name containing
+    "/" performs no search at all) and then verifies from /proc/self/maps which
+    file was actually mapped, refusing rather than guessing. One implementation,
+    tested in both directions by tools/imagegen/tests/test_cuda_driver_version.py.
+    """
+    if img.cls != "base":
+        return
+    for f, rel, lines in _shipped_scripts(repo):
+        if f.name == _CUDA_HELPER:
+            continue                           # the one sanctioned implementation
+        for n, line in lines:
+            if _LDPATH_PROBE.search(line):
+                yield Finding("L064", ERROR, img.name, f"{rel}:{n}",
+                              "wraps cuda-driver-version in LD_LIBRARY_PATH — that is a "
+                              "search hint, not a pin, and falls through to a compat "
+                              "libcuda; use `cuda-driver-version --native`")
+            elif _LIBCUDA_SEARCH.search(line):
+                yield Finding("L064", ERROR, img.name, f"{rel}:{n}",
+                              "searches for libcuda.so.1 to pick a native driver library — "
+                              "use `cuda-driver-version --native`, which resolves it once "
+                              "and verifies what the loader actually mapped")
+
+
 def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
     """L058 — a QA template's disk floor must FILTER offers, not just size the request.
 
@@ -885,6 +1365,9 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_fail_later_is_reported(img, repo))
+    out.extend(check_no_nvidia_smi_text_parse(img, repo))
+    out.extend(check_no_open_coded_native_libcuda(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))

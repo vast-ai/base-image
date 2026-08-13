@@ -18,6 +18,11 @@ on:
       - ".github/workflows/build-base-image.yml"
       - ".github/workflows/extend-base-image.yml"
       - "ROOT/opt/instance-tools/tests/**"
+      # cuda-driver-version and the boot script that calls it are covered by
+      # test_cuda_driver_version.py and by L063/L064 — the tests are worthless
+      # if they do not run on the PR that edits what they guard.
+      - "ROOT/opt/instance-tools/bin/**"
+      - "ROOT/etc/vast_boot.d/**"
       - "configs/**"
       - "templates/**"
   push:
@@ -34,6 +39,11 @@ on:
       - ".github/workflows/build-base-image.yml"
       - ".github/workflows/extend-base-image.yml"
       - "ROOT/opt/instance-tools/tests/**"
+      # cuda-driver-version and the boot script that calls it are covered by
+      # test_cuda_driver_version.py and by L063/L064 — the tests are worthless
+      # if they do not run on the PR that edits what they guard.
+      - "ROOT/opt/instance-tools/bin/**"
+      - "ROOT/etc/vast_boot.d/**"
       - "configs/**"
       - "templates/**"
 

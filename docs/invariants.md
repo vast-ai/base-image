@@ -192,6 +192,59 @@ wrappers) for an explicit internal-prefix set — extend `_INTERNAL_TRACKERS` as
 internal projects appear. Precedent: the CON-/HOST-/CLN- references scrubbed from
 docs, workflows, templates, and tooling when this rule landed (ADR 0012).
 
+### A deferred failure is reported before every non-failing exit — **GATED (L062)**
+
+`fail_later` (and `http_check`, which calls it internally) only **records** a
+failure; `report_failures` is what turns the record into a failing test. Reach
+`test_pass` or `test_skip` with one pending and the runner exits 0 (or 77) with a
+`FAIL: …` line in the log and a green verdict — skip-as-pass wearing a different
+hat, on the gate that exists to close exactly that. Presence anywhere in the file
+is not enough, and neither is textual order: a `report_failures` that runs only
+inside a conditional does not clear a failure recorded outside it. **L062**
+(`check_fail_later_is_reported`) walks each shipped test under
+`ROOT/opt/instance-tools/tests/**` and `derivatives/*/ROOT/…/tests/**`, tracking
+branch structure — it merges `if`/`else` arms by OR (an `elif` chain with no
+`else` still merges the fall-through arm), restarts each alternative from the
+state at the branch, applies a helper function's effect at its call site in body
+order, and treats only an unguarded `report_failures` as a clear. Found the
+honest way, twice, while adding the CUDA-libpath check to `base/60-gpu-cuda`:
+once for a missing report, once for an early exit that discarded it. **Two known
+blind spots**, both on the conservative side: a `fail_later` inside a subshell or
+pipeline loses its record at runtime and nothing static can see it; and `case`
+arms are detected as command positions but not merged as alternatives.
+
+### No script parses nvidia-smi's table for the CUDA version — **GATED (L063)**
+
+Driver branch 610 renamed nvidia-smi's `CUDA Version:` field to
+`CUDA UMD Version:`, so every scrape of it returned empty on every 610 host at
+once — deterministic and fleet-wide, not a flaky box. `cuDriverGetVersion` is a
+stable C ABI that returns the same number from the driver itself. **L063**
+(`check_no_nvidia_smi_text_parse`) scans every script that ships inside an image
+— `ROOT/`, `portal-aio/`, derivative and external overlays, including the
+extensionless tools in `ROOT/opt/instance-tools/bin` — and exempts only
+`/opt/instance-tools/bin/cuda-driver-version`, which owns the one sanctioned
+text fallback. Comments explaining the history are fine; code is not.
+
+### One native-libcuda resolver, not one per caller — **GATED (L064)**
+
+`cuDriverGetVersion` reports whichever `libcuda.so.1` the loader resolved, so any
+code deciding *whether forward compat is needed* must exclude a forward-compat
+library — otherwise a stop/start reads the compat version, concludes compat is
+unnecessary, and the instance comes back with a newer toolkit on an older driver.
+Doing that with `LD_LIBRARY_PATH=<dir> cuda-driver-version` fails **open**:
+`LD_LIBRARY_PATH` is a search hint, so a directory with no loadable
+`libcuda.so.1` sends the loader on to the ld.so cache — to the compat library,
+silently. `cuda-driver-version --native` instead dlopens an absolute path (a name
+containing `/` performs no search) and then verifies from `/proc/self/maps` which
+file was actually mapped, refusing rather than guessing. **L064**
+(`check_no_open_coded_native_libcuda`) forbids re-deriving that anywhere else;
+probing for `libcuda.so.*` to ask "does this toolkit ship compat libs" is a
+different question and stays legal. The rule exists because the same six lines
+lived in both `05-configure-cuda.sh` and `base/60-gpu-cuda`, so the test agreed
+with the boot script instead of checking it — and only a manual review caught it.
+Behaviour is pinned in both directions by
+`tools/imagegen/tests/test_cuda_driver_version.py`.
+
 ### Copyleft licence compliance (proposed)
 
 An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in
