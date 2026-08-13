@@ -103,6 +103,30 @@ Rejected as stated: hosts that mount driver libraries elsewhere (the legacy
 layout", it is "the answer came from a compat library" — so the refusal is keyed
 on that, verified after the fact, rather than on where the file was found.
 
+### E. Cross-check the library against `nvidia-smi --query-gpu=driver_version`
+
+Path shape (`/compat/`, `/stubs/`) is a packaging convention, not proof. Since a
+genuine driver library is named `libcuda.so.<driver version>`, reject any
+candidate whose filename names a *different* version than the CSV query API
+reports — a different interface from the table the 610 rename touched.
+
+Built, reviewed, and removed the same day. Three executed results killed it:
+
+* it refused a healthy `libcuda.so.1 -> libcuda.so.1.1` chain, which ships on
+  real hosts — `1.1` parses as a driver version, and the guard's own comment
+  reasoned about `libcuda.so.1` and stopped one dot short;
+* it did **not** catch the threat it was written for — a compat library copied
+  into the arch directory under the plain SONAME passes untouched;
+* NVIDIA's compat packages *are* named with a driver version, so the premise
+  ("a compat one never is") was simply false.
+
+The direction of failure decided it. A refusal is a hard boot abort *and* a QA
+failure, so a wrong rejection is fleet-wide and holds every `-auto` tag —
+including the one carrying this fix. That is the shape of the incident being
+fixed, re-created by its fix. Demoting instead of vetoing was considered and
+rejected too: it keeps the complexity and the false premise while closing
+nothing. Verification stops at what the loader actually mapped.
+
 ## Decision
 
 **One resolver, in `/opt/instance-tools/bin/cuda-driver-version`, with two
@@ -116,14 +140,9 @@ modes.**
   compat. It `dlopen`s an absolute path (a name containing `/` performs no
   search at all), preferring the current-ABI directory, then **verifies from
   `/proc/self/maps` which file was actually mapped** and refuses if it is under
-  a `compat/` or `stubs/` directory, or if the file names a driver version that
-  contradicts `nvidia-smi --query-gpu=driver_version` — the machine-readable CSV
-  *query* interface, which the 610 rename did not touch, and which is a different
-  thing from the rendered table L063 bans. Path shape is a packaging convention;
-  a version contradiction is evidence. Only a contradiction between two
-  recognisable driver versions rejects: the bare SONAME `libcuda.so.1` names no
-  version, and an unparseable nvidia-smi reading means no cross-check rather than
-  a refusal.
+  a `compat/` or `stubs/` directory. Verification stops there, deliberately —
+  option E above explains why a filename-versus-`nvidia-smi` cross-check was
+  built and then removed.
 
   A final unpinned load is always tried, not only when no absolute candidate
   exists — a candidate can be *rejected* as well as absent, and the loader's own
@@ -147,19 +166,32 @@ the loader cleanup still runs before `try_forward_compat`, so the compat
 decision is not covered by it — see the next paragraph, which addresses that
 path by detection rather than by ordering.
 
-**A lost forward-compat is recorded, not smoothed over.** `try_forward_compat`
+**A lost forward-compat is retried, then recorded.** `try_forward_compat`
 returns 1 for several unrelated reasons — not needed, disabled, no compat
 libraries shipped, or its `cuInit` probe failed — and the selection that follows
 cannot tell them apart. On a *restart* the last one is not benign: an instance
 running CUDA 13.0 through compat comes back on 12.4 because a probe failed at
 boot stage 05, where nothing has waited for the driver, and everything the
-customer compiled against `libcudart.so.13` breaks. `configure_cuda` therefore
-captures whether `0-compat-cuda.conf` was present *before* the cleanup, and if
-compat was active, is still required, and could not be re-established, it records
-the condition and the boot continues (a fallback has already been chosen;
-aborting would leave nothing configured). First boot on a consumer GPU takes the
-same code path and is explicitly not this — compat was never carrying that
-instance, so nothing was lost.
+customer compiled against `libcudart.so.13` breaks. So the probe is attempted
+three times with a pause — a device that is merely not ready yet must not be
+mistaken for a consumer GPU that can never use compat — and only then does the
+fallback stand.
+
+If it does, `configure_cuda` records the condition and the boot continues (a
+fallback has already been chosen; aborting would leave nothing configured). Two
+properties of that record were learned the hard way:
+
+* it is keyed on a **durable** marker (`/etc/vast-cuda-compat-established`),
+  not on `0-compat-cuda.conf`, because the cleanup deletes the conf — so the
+  condition was reported on exactly the boot it occurred and every later boot
+  called the still-degraded instance healthy;
+* it fires only when the selection **actually changed**. Every shipped config
+  installs a single toolkit, where nothing can move; claiming it "fell back to
+  an older toolkit" there is false, and that state is already caught correctly
+  by `base/60-gpu-cuda`'s compat assertions.
+
+First boot on a consumer GPU takes the same code path and is explicitly not
+this — compat was never carrying that instance, so nothing was lost.
 
 **The abort is detected on purpose.** `configure_cuda` clears
 `/run/vast-cuda-config-failed` at the start of every run and writes the reason
@@ -168,6 +200,18 @@ state was caught only when the image happened to ship an *indirect*
 `/usr/local/cuda`. A failure to write the marker is announced rather than
 swallowed — an unwritable `/run` would otherwise restore the invisibility this
 exists to end.
+
+**Version comparison is component-wise, not `awk`'s.**
+`awk "BEGIN {exit !(13.10 > 13.9)}"` is false — awk reads both as decimals — and
+every comparison in the boot script feeds toolkit selection. The config table
+already reaches 13.3, so the first double-digit minor would have selected the
+wrong toolkit silently, which is the failure class this change exists to remove.
+
+**There is an escape hatch.** `--native` refuses rather than guessing, and a
+refusal aborts CUDA configuration for the session. `VAST_CUDA_MAX_OVERRIDE=X.Y`
+lets an operator supply the value directly, shape-checked exactly like a probed
+one and announced loudly, so a host class we got wrong is fixable from a template
+env rather than by a rebuild.
 
 **Three runtime assertions in `base/60-gpu-cuda`**, each verified in both
 directions: the toolkit's libraries are reachable through `ldconfig`; the driver
@@ -203,6 +247,17 @@ including the helper itself.
    made it fire on correct shipped code.
 4. **`imagegen lint --all` stays clean** (27 images, 0 errors) and every new rule
    has a mutation test against a real file.
+5. **Nothing in the boot path calls `nvidia-smi` without a timeout.** This
+   helper runs from the first boot script, which is *sourced*, so a wedged driver
+   would stop the instance ever becoming ready. An empty reading is already a
+   handled outcome; a hang is not.
+6. **The live QA gate cannot reach either of the two conditions above.** It boots
+   each instance exactly once, so the restart-only compat loss is structurally
+   out of reach, and it does not filter for a 610-branch driver. Before
+   promotion, run one gate pass filtered to `driver_version.gte=610` and one on a
+   datacenter host where forward compat is genuinely active (a `cuda-13.x` config
+   on a 12.x driver). The container harnesses cover the mechanism; only a live
+   run covers the host.
 
 ## Consequences
 

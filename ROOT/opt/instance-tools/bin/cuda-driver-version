@@ -63,9 +63,11 @@
 #   * verify AFTER loading, from /proc/self/maps, that the file actually mapped
 #     is not under a compat/ or stubs/ directory — a post-hoc check of what
 #     happened, not a prediction of what should have;
-#   * if no absolute candidate exists at all, fall back to an unpinned load and
-#     apply the SAME post-hoc check, which keeps hosts that mount driver libs
-#     somewhere unusual working while still refusing to return a compat reading;
+#   * try an unpinned load last as well, under the SAME post-hoc check, which
+#     keeps hosts that mount driver libs somewhere unusual working while still
+#     refusing to return a compat reading. Note it only helps when it resolves a
+#     file no earlier candidate mapped — re-opening an already-mapped file adds
+#     no mapping, so there is nothing new to check and it is refused;
 #   * on any failure, print nothing and exit non-zero. No answer beats a wrong
 #     one — every caller must treat that as "unknown" and do nothing destructive.
 
@@ -79,22 +81,11 @@ for _arg in "$@"; do
     esac
 done
 
-# The driver's own version, from nvidia-smi's machine-readable CSV QUERY api —
-# a different interface from the rendered table that L063 bans, and one the 610
-# rename did not touch. Used only to CONTRADICT a candidate library whose
-# filename claims a different driver version; absent, nothing is cross-checked
-# and nothing is refused for it.
-_smi_driver=""
-if [[ "$_native" -eq 1 ]] && command -v nvidia-smi >/dev/null 2>&1; then
-    _smi_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
-fi
-
 # 1. Driver API. No text, no formatting, no locale.
-_v=$(NATIVE_ONLY="$_native" SMI_DRIVER_VERSION="$_smi_driver" python3 - <<'PY' 2>/dev/null
-import ctypes, os, re, sys
+_v=$(NATIVE_ONLY="$_native" python3 - <<'PY' 2>/dev/null
+import ctypes, os, sys
 
 native_only = os.environ.get("NATIVE_ONLY") == "1"
-smi_driver = os.environ.get("SMI_DRIVER_VERSION", "").strip()
 
 
 def libcuda_mappings():
@@ -144,31 +135,26 @@ def version_from(lib):
 
 
 def is_compat(path):
-    # A forward-compat or stub libcuda must never answer "what does the driver
-    # itself support" — the first reports the compat package's version, the
-    # second is a link-time placeholder with no driver behind it.
-    if path is None or "/compat/" in path or "/stubs/" in path:
-        return True
-    # Path shape is a convention, not a proof: a compat library copied into the
-    # arch directory would pass the test above. When the file carries a driver
-    # version in its name, cross-check it against the driver's own — a genuine
-    # driver library is libcuda.so.<driver_version>; a compat one never is.
-    #
-    # The source is `nvidia-smi --query-gpu=driver_version`, the machine-readable
-    # CSV QUERY api — not the rendered table whose "CUDA Version" field driver 610
-    # renamed and which L063 bans.
-    #
-    # Only a CONTRADICTION rejects, and only between two things that are both
-    # recognisably driver versions. Everything else abstains:
-    #   * the bare SONAME (libcuda.so.1) is a single component and names no
-    #     driver version at all — matching it here refused every ordinary layout;
-    #   * a driver version has at least major.minor, so the two are never confused;
-    #   * an unparseable nvidia-smi reading means no cross-check, never a refusal.
-    if re.fullmatch(r"\d+\.\d[\d.]*", smi_driver):
-        m = re.fullmatch(r"libcuda\.so\.(\d+\.\d[\d.]*)", os.path.basename(path))
-        if m and m.group(1) != smi_driver:
-            return True
-    return False
+    """True if this mapping must not be trusted to report the DRIVER's version.
+
+    A forward-compat or stub libcuda must never answer "what does the driver
+    itself support" — the first reports the compat package's version, the second
+    is a link-time placeholder with no driver behind it.
+
+    `path is None` means the dlopen added no new mapping, i.e. the loader
+    resolved to a file this process already opened and already judged. Treating
+    that as untrusted is deliberate: it is the conservative direction, and the
+    only way to reach it is a candidate that was already considered.
+
+    DELIBERATELY NOT ALSO CROSS-CHECKED against
+    `nvidia-smi --query-gpu=driver_version`. That was tried and removed — see
+    ADR 0024's rejected alternatives. It refused a healthy `libcuda.so.1 ->
+    libcuda.so.1.1` layout (the `1.1` parses as a driver version), it did not
+    catch a compat library copied in under the plain SONAME, and NVIDIA's own
+    compat packages ARE named with a driver version — so it bought a fleet-wide
+    abort risk for a hole it left open.
+    """
+    return path is None or "/compat/" in path or "/stubs/" in path
 
 
 def native_candidates():
@@ -231,8 +217,13 @@ fi
 #    NOT available under --native: nvidia-smi renders the effective version, and
 #    on a compat-enabled instance we cannot prove otherwise. A caller that asked
 #    for the native reading gets the native reading or nothing.
+#
+#    Time-bounded: this helper runs from the FIRST boot script, which is sourced,
+#    so a wedged driver that makes nvidia-smi hang would stop the instance ever
+#    becoming ready. A timeout produces no reading, and no reading is already a
+#    handled outcome.
 if [[ "$_native" -eq 0 ]] && command -v nvidia-smi >/dev/null 2>&1; then
-    _v=$(nvidia-smi 2>/dev/null | grep -oP "CUDA[A-Za-z ]*Version:\s*\K[0-9]+\.[0-9]+" | head -1)
+    _v=$(timeout 10 nvidia-smi 2>/dev/null | grep -oP "CUDA[A-Za-z ]*Version:\s*\K[0-9]+\.[0-9]+" | head -1)
     if [[ -n "${_v}" ]]; then
         echo "${_v}"
         exit 0

@@ -61,13 +61,20 @@ def _run_harness(harness: str, mounts: dict[Path, str]) -> str:
     for src, dest in mounts.items():
         assert src.is_file(), src
         args += ["-v", f"{src}:{dest}:ro"]
-    proc = subprocess.run(
-        args + [IMAGE, "bash", "-c", SETUP],
-        capture_output=True, text=True, timeout=600,
-    )
-    output = proc.stdout + proc.stderr
-    if proc.returncode == 99 or "HARNESS SETUP FAILED" in output:
-        pytest.fail(f"container setup failed (not a code regression):\n{output}")
+    # Retried once, because the setup step reaches the Ubuntu archive on every
+    # PR that touches ROOT/**: an apt or registry blip would otherwise turn a
+    # required check red for a reason that has nothing to do with the change.
+    for attempt in (1, 2):
+        proc = subprocess.run(
+            args + [IMAGE, "bash", "-c", SETUP],
+            capture_output=True, text=True, timeout=600,
+        )
+        output = proc.stdout + proc.stderr
+        setup_failed = proc.returncode == 99 or "HARNESS SETUP FAILED" in output
+        if not setup_failed:
+            break
+    if setup_failed:
+        pytest.fail(f"container setup failed twice (not a code regression):\n{output}")
     assert proc.returncode == 0, output
     assert "ALL SCENARIOS OK" in output, output
     return output

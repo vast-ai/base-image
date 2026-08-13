@@ -3,25 +3,64 @@
 # CUDA Forward Compatibility: datacenter GPUs with Volta+ and compat libs present
 # Consumer class GPUs can rely on minor version compatibility, but forward compatibility must be removed first
 
+# Component-wise, NOT awk's float comparison.
+#
+# `awk "BEGIN {exit !(13.10 > 13.9)}"` is FALSE: awk reads both as decimals, so
+# 13.10 is 13.1. Every comparison in this file feeds toolkit selection, so at the
+# first double-digit minor the wrong toolkit would be chosen silently — the same
+# failure class this file was rewritten to remove, waiting on a version bump.
+# tools/template_manager already refuses double-digit minors for this reason;
+# here the fix is to compare properly. Non-numeric input returns false rather
+# than crashing (an unknown version must not assert anything).
+cuda_version_gt() {
+    local a b
+    IFS=. read -r -a a <<< "${1:-}"
+    IFS=. read -r -a b <<< "${2:-}"
+    [[ "${a[0]:-x}" =~ ^[0-9]+$ && "${a[1]:-0}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${b[0]:-x}" =~ ^[0-9]+$ && "${b[1]:-0}" =~ ^[0-9]+$ ]] || return 1
+    (( 10#${a[0]} != 10#${b[0]} )) && return $(( 10#${a[0]} > 10#${b[0]} ? 0 : 1 ))
+    (( 10#${a[1]:-0} > 10#${b[1]:-0} )) && return 0
+    return 1
+}
+
+# Where a successful forward-compat enable is remembered ACROSS boots.
+#
+# The obvious signal — /etc/ld.so.conf.d/0-compat-cuda.conf — cannot serve: the
+# very next boot deletes it in the cleanup below, so a compat loss is visible for
+# exactly one boot and every boot after that reports the degraded instance as
+# healthy. /etc persists on the container's overlay, so a record written here
+# survives as long as the instance does.
+CUDA_COMPAT_ESTABLISHED_MARKER=/etc/vast-cuda-compat-established
+
 try_forward_compat() {
     local LATEST_CUDA="$1" MAX_CUDA="$2"
 
     [[ -z "$LATEST_CUDA" || -z "$MAX_CUDA" ]] && return 1
-    
+
     [[ "${DISABLE_FORWARD_COMPAT:-false}" == "true" ]] && return 1
-    awk "BEGIN {exit !($LATEST_CUDA > $MAX_CUDA)}" || return 1
-    
+    cuda_version_gt "$LATEST_CUDA" "$MAX_CUDA" || return 1
+
     local COMPAT_DIR="/usr/local/cuda-${LATEST_CUDA}/compat"
     [[ -d "$COMPAT_DIR" ]] || return 1
     compgen -G "$COMPAT_DIR/libcuda.so.*" > /dev/null || return 1
     
-    LD_LIBRARY_PATH="$COMPAT_DIR" python3 -c "
+    # Retried, because this runs in the FIRST boot script and nothing before it
+    # has waited for the driver. A device that is not ready yet fails cuInit and
+    # would otherwise be indistinguishable from a consumer GPU that can never use
+    # forward compat — permanently downgrading the toolkit over a transient fault.
+    local _try
+    for _try in 1 2 3; do
+        if LD_LIBRARY_PATH="$COMPAT_DIR" python3 -c "
 import sys, ctypes
 sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
-" 2>/dev/null || return 1
-    
-    echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
-    return 0
+" 2>/dev/null; then
+            echo "$COMPAT_DIR" > /etc/ld.so.conf.d/0-compat-cuda.conf
+            printf '%s\n' "$LATEST_CUDA" > "$CUDA_COMPAT_ESTABLISHED_MARKER" 2>/dev/null
+            return 0
+        fi
+        [[ "$_try" -lt 3 ]] && sleep 2
+    done
+    return 1
 }
 
 # Breadcrumb for the abort paths below. Without it the safe abort is INVISIBLE:
@@ -116,6 +155,17 @@ configure_cuda() {
     local MAX_CUDA
     MAX_CUDA=$(/opt/instance-tools/bin/cuda-driver-version --native 2>/dev/null || true)
 
+    # Escape hatch. --native refuses rather than guessing, and a refusal aborts
+    # CUDA configuration for the whole session — correct, but it leaves an
+    # operator facing a host class we got wrong with nothing to do but rebuild.
+    # An explicit override is shape-checked exactly like a probed value and
+    # announced loudly, so it can never be mistaken for a reading.
+    if [[ -n "${VAST_CUDA_MAX_OVERRIDE:-}" ]]; then
+        echo "Notice: VAST_CUDA_MAX_OVERRIDE=${VAST_CUDA_MAX_OVERRIDE} overrides the probed"
+        echo "        driver maximum (probe returned '${MAX_CUDA:-nothing}')."
+        MAX_CUDA="$VAST_CUDA_MAX_OVERRIDE"
+    fi
+
     # Shape-checked, not merely non-empty: MAX_CUDA is interpolated unquoted into
     # three `awk "BEGIN {...}"` programs below, where a non-numeric value is an awk
     # syntax error that silently falls through to the wrong toolkit.
@@ -124,22 +174,22 @@ configure_cuda() {
         return 1
     fi
 
-    # Was forward compat active when this boot started? Must be read BEFORE the
-    # cleanup below deletes the evidence.
+    # Which toolkit forward compat was carrying, if it ever was. Read from the
+    # durable record, not from 0-compat-cuda.conf, which the cleanup below is
+    # about to delete.
     #
     # try_forward_compat returns 1 for several unrelated reasons — not needed,
-    # disabled, no compat libs shipped, or its cuInit probe failed — and the
-    # selection below cannot tell them apart. The last one is not benign on a
-    # RESTART: an instance that was running CUDA 13.0 through compat comes back on
-    # 12.4 because a probe failed at boot stage 05, where nothing has waited for
-    # the driver. Everything the customer compiled against libcudart.so.13 breaks,
-    # and until this flag existed the log line read "correct fallback".
+    # disabled, no compat libs shipped, or its cuInit probe failed after retries —
+    # and the selection below cannot tell them apart. The last one is not benign
+    # on a RESTART: an instance that was running CUDA 13.0 through compat comes
+    # back on 12.4, everything the customer compiled against libcudart.so.13
+    # breaks, and until this record existed the log line read "correct fallback".
     #
-    # First boot on a consumer GPU is the same code path and is NOT this: compat
-    # was never active, so there is nothing to lose. The distinction is entirely
-    # in whether the conf was there when we arrived.
-    local COMPAT_WAS_ACTIVE=false
-    [[ -f /etc/ld.so.conf.d/0-compat-cuda.conf ]] && COMPAT_WAS_ACTIVE=true
+    # First boot on a consumer GPU takes the same code path and is NOT this:
+    # compat was never established, so there is nothing to lose.
+    local COMPAT_ESTABLISHED_FOR=""
+    [[ -f "$CUDA_COMPAT_ESTABLISHED_MARKER" ]] && \
+        COMPAT_ESTABLISHED_FOR=$(head -1 "$CUDA_COMPAT_ESTABLISHED_MARKER" 2>/dev/null)
 
     # Clean up ALL cuda ldconfig entries - we'll add back only what we need
     rm -f /etc/ld.so.conf.d/*cuda*.conf
@@ -185,28 +235,13 @@ configure_cuda() {
         SELECTED_CUDA="${CUDA_VERSIONS[0]}"
         FORWARD_COMPAT_ENABLED=true
         echo "CUDA forward compatibility enabled"
-    elif [[ "$COMPAT_WAS_ACTIVE" == true \
-            && "${DISABLE_FORWARD_COMPAT:-false}" != "true" ]] \
-         && awk "BEGIN {exit !(${CUDA_VERSIONS[0]} > $MAX_CUDA)}"; then
-        # Compat was carrying this instance when the boot started, it is still
-        # needed (the newest toolkit still exceeds the driver's maximum), and it
-        # could not be re-established. The fallback below will silently move the
-        # instance to an older toolkit; record it so base/60-gpu-cuda fails
-        # instead of printing "correct fallback".
-        #
-        # Excluded on purpose: DISABLE_FORWARD_COMPAT (the operator asked for
-        # this), and the case where the toolkit no longer exceeds the driver
-        # maximum (a driver upgrade made compat unnecessary — not a loss).
-        cuda_config_record "forward compat was active on a previous boot and could not be \
-re-enabled, but CUDA ${CUDA_VERSIONS[0]} still exceeds the driver maximum ${MAX_CUDA} — \
-this boot falls back to an older toolkit, changing it under a running instance"
     fi
 
     # Fallback: find highest compatible CUDA version
     if [[ -z "$SELECTED_CUDA" ]]; then
         for ver in "${CUDA_VERSIONS[@]}"; do
             [[ -z $ver ]] && continue
-            if awk "BEGIN {exit !($ver <= $MAX_CUDA)}"; then
+            if ! cuda_version_gt "$ver" "$MAX_CUDA"; then
                 SELECTED_CUDA="$ver"
                 break
             fi
@@ -217,6 +252,29 @@ this boot falls back to an older toolkit, changing it under a running instance"
             SELECTED_CUDA="${CUDA_VERSIONS[-1]}"
             echo "Warning: Driver reports CUDA $MAX_CUDA but no compatible toolkit found; using ${SELECTED_CUDA:-image default}"
         fi
+    fi
+
+    # A forward compat that this instance ONCE HAD and no longer has, where the
+    # selection actually moved as a result. Both halves matter:
+    #
+    #   * keyed on the durable record, not on 0-compat-cuda.conf, so the condition
+    #     is reported on every subsequent boot rather than only the first — the
+    #     instance stays broken, so the signal must too;
+    #   * keyed on the selection actually CHANGING, so a single-toolkit image (the
+    #     shape every shipped config has) is not told it "fell back to an older
+    #     toolkit" when there is no older toolkit and nothing moved. That state is
+    #     already caught, correctly, by base/60-gpu-cuda's compat assertions.
+    #
+    # Not re-derived from try_forward_compat's conditions — comparing the outcome
+    # to what was recorded needs none of them, and mirroring them here would be a
+    # second copy to drift.
+    if [[ -n "$COMPAT_ESTABLISHED_FOR" && "$FORWARD_COMPAT_ENABLED" == false \
+          && "${DISABLE_FORWARD_COMPAT:-false}" != "true" \
+          && -n "$SELECTED_CUDA" && "$SELECTED_CUDA" != "$COMPAT_ESTABLISHED_FOR" ]]; then
+        cuda_config_record "forward compat previously carried CUDA ${COMPAT_ESTABLISHED_FOR} on \
+this instance and could not be re-established; this boot selected ${SELECTED_CUDA} instead — the \
+toolkit changed under a running instance, so anything built against the previous one will fail \
+to load"
     fi
 
     if [[ -n "$SELECTED_CUDA" ]]; then

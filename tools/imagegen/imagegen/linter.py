@@ -631,6 +631,35 @@ def _line_calls_unconditionally(line: str, fn: str) -> bool:
     return False
 
 
+def _blank_quoted(line: str) -> str:
+    """Replace quoted spans with spaces, preserving length.
+
+    Structure detection must not read shell keywords out of string literals:
+    `grep -qE "a|done"` and `echo "; fi"` are data, not control flow, and a
+    close keyword found inside one suppresses a frame that should have been
+    pushed. Length is preserved so reported columns stay meaningful.
+    """
+    out = []
+    quote = None
+    escaped = False
+    for ch in line:
+        if quote:
+            out.append(" " if ch != quote or escaped else ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+                out[-1] = ch
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _calls(text: str, fn: str) -> bool:
     """True if `fn` is INVOKED at a command position (not merely mentioned)."""
     for raw in text.splitlines():
@@ -657,96 +686,32 @@ _BLOCK_ELSE = re.compile(r"^\s*else\b")
 # A block that opens and closes on ONE line (`if Z; then fin; fi`) is a statement,
 # not a frame. Pushing a frame for it leaks: nothing ever pops it, so every later
 # close pops the wrong frame and the merge is silently wrong from there on.
-_BLOCK_CLOSE_ANYWHERE = re.compile(r"(^|[;&|]\s*)(fi|done|esac)\b")
+#
+# Anchored to a real statement boundary — `;`, `&&`, `||` or line start. A bare
+# `|` must NOT count: `grep -qE "a|done"` contains `|done`, and treating that as
+# a close suppressed the frame push for the whole block, making every conditional
+# inside it read as unconditional. That turned this fix into the very
+# false-negative L062 exists to prevent.
+_BLOCK_CLOSE_ANYWHERE = re.compile(r"(^|;|&&|\|\|)\s*(fi|done|esac)\b")
 
 
-def _scan_shell_flow(text: str):
-    """Walk a shell test, tracking whether a deferred failure is pending.
+def _walk(lines, pending, fns):
+    """Frame-aware walk over a list of already-stripped shell lines.
 
-    Returns (line-number-of-first-discarding-exit-while-pending, ever_deferred,
-    ever_reported).
+    Shared by the file-level scan and by function-body analysis so a guard
+    closed at one level cannot stay open at the other — which is exactly how the
+    guarded-helper hole survived being fixed at the call site.
 
-    This is a control-flow approximation, not a bash parser, and it is
-    deliberately asymmetric: it is CONSERVATIVE about what clears a pending
-    failure (only an unguarded `report_failures`) and GENEROUS about what
-    defers one (any branch that could run). The alternative — a linear walk —
-    got both directions wrong: a `report_failures` inside an untaken `if`
-    cleared the state for the rest of the file (the rule certifying its own
-    bug), while a `test_pass` in the `else` arm of the branch that deferred was
-    reported as a defect on correct code.
-
-    Branch handling: entering `if`/`for`/`while`/`case` snapshots the pending
-    state; `else`/`elif` restarts the alternative from that snapshot; closing
-    merges every arm by OR, including the fall-through arm when there is no
-    `else` (a loop body or an unelsed `if` may not run at all).
-
-    Function bodies are analysed separately and their effect applied at the
-    CALL site, so `finish() { report_failures; test_pass "ok"; }` reads as
-    "clears, then exits" wherever `finish` is invoked.
-
-    Known limit: a `fail_later` inside a subshell or a pipeline loses its record
-    at RUNTIME (the array is written in a child), which this cannot see — that
-    is a different defect needing a different check.
+    Returns (first-bad-exit-index, ever_deferred, ever_reported, pending-at-end).
+    The index is 1-based into `lines`, so a caller passing a filtered list must
+    map it back to the real file line itself.
     """
-    lines = [_strip_comment(raw) for raw in text.splitlines()]
-
-    # Pass 1: function bodies. Brace-depth counted from the definition line.
-    fns: dict[str, dict] = {}
-    body_lines: set[int] = set()
-    i = 0
-    while i < len(lines):
-        m = _FN_DEF.match(lines[i])
-        if not m:
-            i += 1
-            continue
-        # End the body at a closing brace in column 0 (house style, and what
-        # every shipped test uses) OR when brace depth returns to zero,
-        # whichever comes first. Either alone is brittle: an indented `}` never
-        # matches the first, and an unbalanced brace inside a string or regex
-        # (`grep -E '[{]'`) breaks the second — and a body that never ends
-        # swallows the rest of the file, taking its report_failures with it.
-        depth = lines[i].count("{") - lines[i].count("}")
-        body = [lines[i]]
-        body_lines.add(i)
-        j = i
-        while depth > 0 and j + 1 < len(lines):
-            j += 1
-            body.append(lines[j])
-            body_lines.add(j)
-            if lines[j].startswith("}"):
-                break
-            depth += lines[j].count("{") - lines[j].count("}")
-        # ORDER within the body matters, so walk it rather than testing for
-        # presence: `bad() { fail_later x y; test_pass ok; report_failures; }`
-        # contains a report but discards the failure before reaching it.
-        cleared = False
-        exits_dirty = False
-        defers = False
-        for b in body:
-            if any(_line_calls(b, d) for d in _DEFERRING_CALLS):
-                defers = True
-                cleared = False
-            if _line_calls_unconditionally(b, "report_failures"):
-                cleared = True
-            if any(_line_calls(b, e) for e in _DISCARDING_EXITS) and not cleared:
-                exits_dirty = True
-        fns[m.group(1)] = {
-            "clears": cleared,
-            "exits": any(_line_calls(b, e) for b in body for e in _DISCARDING_EXITS),
-            "exits_dirty": exits_dirty,
-            "defers": defers,
-        }
-        i = j + 1
-
-    pending = False
     ever_deferred = False
     ever_reported = False
     stack: list[dict] = []
     bad_exit = None
 
     for n, line in enumerate(lines, 1):
-        if (n - 1) in body_lines:
-            continue
         if _BLOCK_CLOSE.match(line) and stack:
             frame = stack.pop()
             frame["arms"].append(pending)
@@ -779,7 +744,10 @@ def _scan_shell_flow(text: str):
             if info["clears"] and _line_calls_unconditionally(line, name):
                 ever_reported = True
                 pending = False
-            elif info["clears"]:
+            elif info["reports"]:
+                # It reports, but not in a way that can be trusted to have run —
+                # enough to satisfy "this file does call report_failures", not
+                # enough to clear.
                 ever_reported = True
             if info["exits"] and pending and bad_exit is None:
                 bad_exit = n
@@ -800,6 +768,101 @@ def _scan_shell_flow(text: str):
         ):
             bad_exit = n
 
+    return bad_exit, ever_deferred, ever_reported, pending
+
+
+def _scan_shell_flow(text: str):
+    """Walk a shell test, tracking whether a deferred failure is pending.
+
+    Returns (line-number-of-first-discarding-exit-while-pending, ever_deferred,
+    ever_reported).
+
+    This is a control-flow approximation, not a bash parser, and it is
+    deliberately asymmetric: it is CONSERVATIVE about what clears a pending
+    failure (only an unguarded `report_failures`) and GENEROUS about what
+    defers one (any branch that could run). The alternative — a linear walk —
+    got both directions wrong: a `report_failures` inside an untaken `if`
+    cleared the state for the rest of the file (the rule certifying its own
+    bug), while a `test_pass` in the `else` arm of the branch that deferred was
+    reported as a defect on correct code.
+
+    Branch handling: entering `if`/`for`/`while`/`case` snapshots the pending
+    state; `else`/`elif` restarts the alternative from that snapshot; closing
+    merges every arm by OR, including the fall-through arm when there is no
+    `else` (a loop body or an unelsed `if` may not run at all).
+
+    Function bodies are analysed by the SAME walk and their effect applied at
+    the CALL site, so `finish() { report_failures; test_pass "ok"; }` reads as
+    "clears, then exits" wherever `finish` is invoked — while
+    `fin() { if x; then report_failures; fi; }` does not clear, because the
+    frame merge inside the body says it might not have run. Analysing bodies
+    with a flat presence scan left exactly that hole one level down from the
+    call-site guard.
+
+    Known limit: a `fail_later` inside a subshell or a pipeline loses its record
+    at RUNTIME (the array is written in a child), which this cannot see — that
+    is a different defect needing a different check.
+    """
+    lines = [_blank_quoted(_strip_comment(raw)) for raw in text.splitlines()]
+
+    # Pass 1: function bodies. Brace-depth counted from the definition line.
+    fns: dict[str, dict] = {}
+    body_lines: set[int] = set()
+    i = 0
+    while i < len(lines):
+        m = _FN_DEF.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        # End the body at a closing brace in column 0 (house style, and what
+        # every shipped test uses) OR when brace depth returns to zero,
+        # whichever comes first. Either alone is brittle: an indented `}` never
+        # matches the first, and an unbalanced brace inside a string or regex
+        # (`grep -E '[{]'`) breaks the second — and a body that never ends
+        # swallows the rest of the file, taking its report_failures with it.
+        depth = lines[i].count("{") - lines[i].count("}")
+        body = [lines[i]]
+        body_lines.add(i)
+        j = i
+        while depth > 0 and j + 1 < len(lines):
+            j += 1
+            body.append(lines[j])
+            body_lines.add(j)
+            if lines[j].startswith("}"):
+                break
+            depth += lines[j].count("{") - lines[j].count("}")
+        # The body goes through the same walk, twice, because two different
+        # questions are being asked and each needs its own starting state:
+        #   * seeded PENDING, does the body clear it? Only an unconditional
+        #     report does; a report inside an unelsed `if` leaves the merge
+        #     pending, which is the correct answer.
+        #   * seeded CLEAN, does the body reach a discarding exit with its own
+        #     deferral outstanding? That is a defect wherever it is called.
+        # Order matters for both, which a presence scan cannot express:
+        # `bad() { fail_later x y; test_pass ok; report_failures; }` contains a
+        # report but discards the failure before reaching it.
+        _, _, _, pending_after = _walk(body, True, fns)
+        dirty_exit, body_defers, body_reports, _ = _walk(body, False, fns)
+        fns[m.group(1)] = {
+            "clears": not pending_after,
+            "reports": body_reports,
+            "exits": any(_line_calls(b, e) for b in body for e in _DISCARDING_EXITS),
+            "exits_dirty": dirty_exit is not None,
+            "defers": body_defers,
+        }
+        i = j + 1
+
+    # Function bodies are analysed above and skipped here, so the walk sees only
+    # top-level flow. Real file line numbers are carried alongside, because a
+    # finding that points at the wrong line is a finding nobody can act on.
+    outer, outer_lineno = [], []
+    for k, ln in enumerate(lines):
+        if k not in body_lines:
+            outer.append(ln)
+            outer_lineno.append(k + 1)
+    bad_exit, ever_deferred, ever_reported, _ = _walk(outer, False, fns)
+    if bad_exit is not None:
+        bad_exit = outer_lineno[bad_exit - 1]
     return bad_exit, ever_deferred, ever_reported
 
 

@@ -122,27 +122,51 @@ ldconfig
 run "a dud candidate does not end the search" "12.8" "12.8"
 
 echo
-echo "=== S8: driver-version cross-check (nvidia-smi CSV query api) ==="
-# Path shape is a convention, not a proof: a compat library copied into the arch
-# directory passes the /compat/ test. When the filename carries a driver version,
-# it is checked against the driver's own — a contradiction is a refusal.
+echo "=== S8: the real SONAME-to-versioned-file layout ==="
+# What the container runtime actually injects: a versioned file plus a
+# libcuda.so.1 symlink, so /proc/self/maps yields the versioned name. This must
+# simply answer — a version cross-check against nvidia-smi was tried here and
+# removed (ADR 0024, rejected alternatives): it refused healthy layouts whose
+# SONAME chain ends in libcuda.so.1.1, and did not catch a compat library copied
+# in under the plain SONAME, so it bought an abort risk for a hole it left open.
 reset
 printf '#!/bin/sh\ncase "$1" in --query-gpu=driver_version) echo "610.57.04";; *) echo "| CUDA UMD Version: 13.3 |";; esac\n' \
     > /usr/bin/nvidia-smi
 chmod +x /usr/bin/nvidia-smi
-mk "$ARCH_DIR/libcuda.so.580.65.06" 13030          # a compat lib wearing a driver name
-ln -sf "$ARCH_DIR/libcuda.so.580.65.06" "$ARCH_DIR/libcuda.so.1"
-ldconfig
-run "a lib claiming another driver version is refused" "" "13.3"
-
-reset
-printf '#!/bin/sh\ncase "$1" in --query-gpu=driver_version) echo "610.57.04";; *) echo "| CUDA UMD Version: 13.3 |";; esac\n' \
-    > /usr/bin/nvidia-smi
-chmod +x /usr/bin/nvidia-smi
-mk "$ARCH_DIR/libcuda.so.610.57.04" 13030          # the real thing, as shipped
+mk "$ARCH_DIR/libcuda.so.610.57.04" 13030
 ln -sf "$ARCH_DIR/libcuda.so.610.57.04" "$ARCH_DIR/libcuda.so.1"
 ldconfig
-run "the real driver layout still answers" "13.3" "13.3"
+run "the shipped driver layout answers" "13.3" "13.3"
+
+echo
+echo "=== S9: a SONAME chain that names no driver version ==="
+# libcuda.so.1 -> libcuda.so.1.1, which ships on some hosts. The filename says
+# nothing about the driver and must not be read as if it did.
+reset
+printf '#!/bin/sh\ncase "$1" in --query-gpu=driver_version) echo "580.65.06";; *) echo "| CUDA UMD Version: 13.3 |";; esac\n' \
+    > /usr/bin/nvidia-smi
+chmod +x /usr/bin/nvidia-smi
+mk "$ARCH_DIR/libcuda.so.1.1" 13030
+ln -sf "$ARCH_DIR/libcuda.so.1.1" "$ARCH_DIR/libcuda.so.1"
+ldconfig
+run "an unversioned SONAME chain still answers" "13.3" "13.3"
+
+echo
+echo "=== S10: nvidia-smi wedged — the text fallback must not hang the boot ==="
+# This helper runs from the FIRST boot script, which is sourced, so an
+# nvidia-smi that never returns would stop the instance ever becoming ready.
+reset
+printf '#!/bin/sh\nsleep 300\n' > /usr/bin/nvidia-smi
+chmod +x /usr/bin/nvidia-smi
+_t0=$SECONDS
+$CDV >/dev/null 2>&1
+_elapsed=$(( SECONDS - _t0 ))
+if [[ $_elapsed -lt 30 ]]; then
+    printf '%-56s returned in %ss                       [OK]\n' "a wedged nvidia-smi is time-bounded" "$_elapsed"
+else
+    printf '%-56s still running after %ss               [FAIL]\n' "a wedged nvidia-smi is time-bounded" "$_elapsed"
+    rc=1
+fi
 
 echo
 if [[ $rc -eq 0 ]]; then echo "ALL SCENARIOS OK"; else echo "SCENARIOS FAILED"; fi

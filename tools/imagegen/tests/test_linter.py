@@ -942,6 +942,56 @@ def test_L062_a_helper_that_reports_after_exiting_is_not_a_report(tmp_path):
     assert has(img, tmp_path, "L062", "deferred failure is pending")
 
 
+def test_L062_a_shell_keyword_inside_a_string_is_not_control_flow(tmp_path):
+    """`grep -qE "a|done"` contains `|done`. Reading that as a block close
+    suppressed the frame push, so every conditional in the block read as
+    unconditional — the fix for one false negative introducing another."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfail_later "x" "broke"\n'
+                     'if grep -qE "a|done" /etc/hosts; then\n    report_failures\nfi\n'
+                     'test_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_a_guarded_report_inside_a_helper_body_does_not_clear(tmp_path):
+    """The call-site guard was closed and the identical guard one level down —
+    inside the body — was left open. Both go through the same walk now."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfin() {\n    if [[ -n "$Q" ]]; then\n'
+                     '        report_failures\n    fi\n}\n'
+                     'fail_later "x" "broke"\nfin\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L062", "deferred failure is pending")
+
+
+def test_L062_an_unguarded_report_inside_a_helper_body_still_clears(tmp_path):
+    """The other direction of the same change: a helper that always reports is
+    still a report, and must not be flagged."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\nfin() {\n    report_failures\n}\n'
+                     'fail_later "x" "broke"\nfin\ntest_pass "ok"\n')
+    assert "L062" not in errs(img, tmp_path)
+
+
+def test_L062_reports_the_real_file_line(tmp_path):
+    """Function bodies are skipped during the walk, so the offending line has to
+    be mapped back — a finding pointing at the wrong line is unactionable."""
+    img = make(tmp_path, cls="base")
+    _write_base_test(tmp_path, "base/60-gpu-cuda",
+                     'source lib.sh\n'          # 1
+                     'noop() {\n'               # 2
+                     '    echo hi\n'            # 3
+                     '    echo there\n'         # 4
+                     '}\n'                      # 5
+                     'fail_later "x" "broke"\n' # 6
+                     'test_pass "ok"\n')        # 7
+    found = [f for f in lint_image(img, tmp_path) if f.code == "L062"]
+    assert found, "expected L062"
+    assert found[0].path.endswith(":7"), found[0].path
+
+
 # ---- L064: one native-libcuda resolver, not one per caller ----------------
 #
 # `LD_LIBRARY_PATH=<dir> cuda-driver-version` is a search HINT: name a directory

@@ -49,7 +49,7 @@ mk /usr/local/cuda-13.0/lib64/libcudart.so.13 13000
 reset() {
     rm -f "$ARCH_DIR/libcuda.so.1" "$COMPAT_13/libcuda.so.1" \
           /etc/ld.so.conf.d/0-compat-cuda.conf /etc/ld.so.conf.d/10-cuda.conf \
-          /run/vast-cuda-config-failed /usr/local/cuda
+          /run/vast-cuda-config-failed /etc/vast-cuda-compat-established /usr/local/cuda
     # The image default is an INDIRECT symlink whose target exists — which is
     # what makes the post-abort state look healthy to a shallow check.
     mkdir -p /etc/alternatives
@@ -203,17 +203,92 @@ echo
 echo "=== S9: consumer GPU, compat never active — not a downgrade ==="
 # Same fallback code path as S7 and it must NOT be flagged: compat was never
 # carrying this instance, so nothing was lost. The distinction is entirely in
-# whether the conf was present when the boot started.
+# whether compat was ever established here.
+#
+# Carries a POSITIVE control as well as the negative one. An assertion that is
+# only "the marker is absent" passes in a botched run where the boot script was
+# never even invoked — so this also requires that the boot did its job.
 reset
 mk "$ARCH_DIR/libcuda.so.1" 12040
 mk "$COMPAT_13/libcuda.so.1" 13030
 export FAKE_CUINIT_FAIL=1
-bash "$BOOT" >/dev/null 2>&1
+bash "$BOOT" >/dev/null 2>&1; boot_rc=$?
 unset FAKE_CUINIT_FAIL
-if [[ "$(readlink -f /usr/local/cuda)" == /usr/local/cuda-12.4 && ! -f /run/vast-cuda-config-failed ]]; then
+if [[ "$(readlink -f /usr/local/cuda)" == /usr/local/cuda-12.4 && ! -f /run/vast-cuda-config-failed \
+      && $boot_rc -eq 0 && -f /etc/ld.so.conf.d/10-cuda.conf ]]; then
     echo "first-boot fallback is not recorded as a regression       [OK]"
 else
-    echo "consumer-GPU first boot was flagged                       [FAIL]"
+    echo "consumer-GPU first boot was flagged (boot rc=$boot_rc)    [FAIL]"
+    rc=1
+fi
+
+echo
+echo "=== S10: the downgrade stays reported on EVERY later boot ==="
+# The condition outlives the boot that caused it, so the signal must too. Keyed
+# on 0-compat-cuda.conf it did not: boot 2's own cleanup deletes that file, so
+# boot 3 found nothing, went quiet, and printed "correct fallback" while the
+# instance was still on the wrong toolkit.
+reset
+mk "$ARCH_DIR/libcuda.so.1" 12040
+mk "$COMPAT_13/libcuda.so.1" 13030
+bash "$BOOT" >/dev/null 2>&1                      # boot 1: compat carries 13.0
+export FAKE_CUINIT_FAIL=1
+bash "$BOOT" >/dev/null 2>&1                      # boot 2: compat lost
+bash "$BOOT" >/dev/null 2>&1                      # boot 3: still lost
+unset FAKE_CUINIT_FAIL
+test_out=$(bash "$TEST" 2>&1); trc=$?
+if [[ $trc -eq 1 ]] && grep -qF "cuda-config" <<<"$test_out"; then
+    echo "third boot still fails, not just the second              [OK]"
+else
+    echo "the signal did not survive a second restart (rc=$trc)    [FAIL]"
+    rc=1
+    sed 's/^/    test| /' <<<"$test_out"
+fi
+
+echo
+echo "=== S11: single-toolkit image — nothing moved, nothing claimed ==="
+# The shape every shipped config actually has. Compat is lost, but with one
+# toolkit installed the selection cannot change, so a message saying it "fell
+# back to an older toolkit" would be false. That state is already caught by the
+# compat assertions in base/60-gpu-cuda; this must not add a second, wrong one.
+reset
+rm -rf /usr/local/cuda-12.4
+mk "$ARCH_DIR/libcuda.so.1" 12040
+mk "$COMPAT_13/libcuda.so.1" 13030
+bash "$BOOT" >/dev/null 2>&1
+export FAKE_CUINIT_FAIL=1
+boot2_out=$(bash "$BOOT" 2>&1)
+unset FAKE_CUINIT_FAIL
+mkdir -p /usr/local/cuda-12.4/lib64 && mk /usr/local/cuda-12.4/lib64/libcudart.so.12 12040
+if [[ ! -f /run/vast-cuda-config-failed ]]; then
+    echo "no false downgrade claim on a single-toolkit image        [OK]"
+else
+    echo "claimed a fallback that cannot have happened              [FAIL]"
+    rc=1
+    sed 's/^/    marker| /' /run/vast-cuda-config-failed
+fi
+
+echo
+echo "=== S12: version comparison is not awk float arithmetic ==="
+# 13.10 > 13.9 is FALSE under awk, which reads both as decimals. Every
+# comparison here feeds toolkit selection, so the first double-digit minor would
+# pick the wrong toolkit silently.
+reset
+rm -rf /usr/local/cuda-13.0 /usr/local/cuda-12.4
+mkdir -p /usr/local/cuda-13.9/lib64 /usr/local/cuda-13.10/lib64
+mk /usr/local/cuda-13.9/lib64/libcudart.so.13 13090
+mk /usr/local/cuda-13.10/lib64/libcudart.so.13 13100
+mk "$ARCH_DIR/libcuda.so.1" 13100                 # driver supports 13.10
+bash "$BOOT" >/dev/null 2>&1
+selected=$(readlink -f /usr/local/cuda)
+rm -rf /usr/local/cuda-13.9 /usr/local/cuda-13.10
+mkdir -p /usr/local/cuda-12.4/lib64 /usr/local/cuda-13.0/lib64
+mk /usr/local/cuda-12.4/lib64/libcudart.so.12 12040
+mk /usr/local/cuda-13.0/lib64/libcudart.so.13 13000
+if [[ "$selected" == /usr/local/cuda-13.10 ]]; then
+    echo "13.10 correctly outranks 13.9                             [OK]"
+else
+    echo "picked ${selected} — decimal comparison struck            [FAIL]"
     rc=1
 fi
 
