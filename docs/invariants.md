@@ -218,8 +218,10 @@ listing against the collected list, which nobody does.
 their introducing commit and had therefore **never run once**. Confirmed against
 production QA evidence, which records 23 tests where the directory holds 25. Two
 consequences ran unnoticed for that whole period: `lib.sh`'s `instance_field()`
-reads a metadata file only test 11 writes, so it returned empty for every caller
-*while signalling success*; and `runner.sh`'s "no blind provisioning wait —
+reads a metadata file only test 11 writes, so it could only ever have returned
+empty *while signalling success* (nothing broke solely because it has no callers
+yet — `README.md` advertises it to derivative tests); and `runner.sh`'s
+"no blind provisioning wait —
 12-provisioning.sh handles monitoring" was false, so tests that document
 themselves as running after provisioning were racing it. **L065**
 (`check_instance_tests_executable`) is L051's shape applied to

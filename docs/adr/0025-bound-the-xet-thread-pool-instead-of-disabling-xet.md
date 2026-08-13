@@ -60,6 +60,16 @@ floor, which extrapolates to ~400 threads for one `hf` process on the 384-core
 host. **Bounded, the footprint is flat regardless of core count**, which is
 exactly the property the valve needs.
 
+Note what the columns are and are not. The valve sets `TOKIO_WORKER_THREADS` to
+the cap it already computes, and on the motivating host that is
+`min(quota 46, ceiling 16) = 16` — a setting neither column measures. The
+absolute numbers therefore under-report what ships: extrapolating the
+28→34.5 trend puts `=16` near 42. **That is fine, and it is worth being explicit
+about why.** The property the valve needs is not a small number, it is a number
+that does not grow with the host: 42 threads on a 384-core box is bounded, where
+the ~400 the same box produces unbounded is not. Do not read the "~28" figure as
+a description of production.
+
 For completeness, at 16 visible cores: `HF_HUB_DISABLE_XET=1` → 10 threads;
 `RAYON_NUM_THREADS=2` → 42 (no effect); `HF_XET_HIGH_PERFORMANCE=0` → 42;
 `HF_XET_FIXED_DOWNLOAD_CONCURRENCY=2` → 42;
@@ -146,10 +156,22 @@ Positive:
 
 Accepted negatives:
 
-- A bounded Xet download still costs ~28 threads against ~10 disabled.
-  Irrelevant against `pids.max=1024`; recorded so the comparison is honest.
+- A bounded Xet download costs more than a disabled one — ~28 threads at
+  `TOKIO_WORKER_THREADS=2`, and nearer 42 at the `=16` the valve actually
+  computes on the motivating host, against ~10 with Xet off. All three are
+  irrelevant against `pids.max=1024`; recorded so the comparison is honest
+  rather than flattering.
 - `TOKIO_WORKER_THREADS` reaches beyond Hugging Face (condition 2).
 - We now depend on a Tokio convention holding (condition 3).
+
+### Rollback leaves a residue
+
+Reverting to an image without this change restores a valve that has no migration
+loop, so `TOKIO_WORKER_THREADS=<cap>` stays exported in the boot shell of an
+already-capped instance until it is destroyed. Benign — `_vast_thread_cap`
+clamps to a minimum of 2, so there is no Tokio "core threads must be > 0" panic —
+but it is a one-way door in the same sense condition 1 describes, and worth
+knowing before a rollback rather than during one.
 
 ## What would reverse this
 

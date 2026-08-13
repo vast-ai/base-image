@@ -50,34 +50,6 @@ PROMOTE = REPO / ".github/workflows/promote-base-image.yml"
 MOVE = REPO / ".github/workflows/move-base-auto-tag.yml"
 QA_GATE = REPO / ".github/workflows/qa-gate.yml"
 
-# A stub standing in for `python` inside the QA retry loop. It scripts
-# test_template.py's exit codes attempt-by-attempt, and DELEGATES qa_verdict.py
-# to the real interpreter — the point of the exercise is whether the loop retries
-# what the real classifier calls inconclusive, so faking the classifier too would
-# leave the actual coupling untested.
-_PYTHON_STUB = r'''#!/usr/bin/env python3
-import json, os, subprocess, sys
-
-script = next((a for a in sys.argv[1:] if a.endswith(".py")), "")
-rest = sys.argv[sys.argv.index(script) + 1:] if script in sys.argv else []
-
-if script.endswith("qa_verdict.py"):
-    sys.exit(subprocess.run([os.environ["REAL_PYTHON"], script, *rest]).returncode)
-
-if script.endswith("test_template.py"):
-    plan = json.load(open(os.environ["ATTEMPT_PLAN"]))
-    n_file = os.environ["ATTEMPT_COUNT"]
-    n = int(open(n_file).read() or "0")
-    with open(n_file, "w") as fh:
-        fh.write(str(n + 1))
-    step = plan[min(n, len(plan) - 1)]
-    # --raw goes to stdout, which the loop redirects to /tmp/qa-raw.json
-    print(json.dumps(step["raw"]))
-    sys.exit(step["code"])
-
-print(f"python stub: unexpected script {script!r}", file=sys.stderr)
-sys.exit(97)
-'''
 
 # A stub standing in for crane, backed by a JSON file: {"ref": "sha256:..."}.
 # It implements only what the scripts under test actually call, and it fails
@@ -205,39 +177,6 @@ def step_script(workflow: Path, job: str, step_name: str) -> str:
     raise AssertionError(f"step {step_name!r} not found in {job}")
 
 
-def step_script_resolved(workflow: Path, job: str, step_name: str,
-                         subs: dict[str, str]) -> str:
-    """Like `step_script`, but for a REUSABLE workflow's step.
-
-    `qa-gate.yml` is called with `with:`/`uses:`, so its steps legitimately read
-    `${{ inputs.* }}` and `${{ steps.*.outputs.* }}`. Those are declared, typed
-    values supplied by another workflow in this repo — not the dispatch free text
-    that `step_script`'s blanket refusal exists to stop being spliced into bash.
-
-    The guard is kept, not dropped: every expression must be named explicitly in
-    `subs`. Anything left over still fails, so a NEW expression cannot appear in
-    a covered step without a test author looking at it and deciding it is safe.
-    """
-    wf = yaml.safe_load(workflow.read_text())
-    assert job in wf["jobs"], f"job {job!r} not in {workflow.name}"
-    for s in wf["jobs"][job]["steps"]:
-        if s.get("name") != step_name:
-            continue
-        run = s["run"]
-        for expr in set(re.findall(r"\$\{\{[^}]*\}\}", run)):
-            inner = expr[3:-2].strip()
-            if inner in subs:
-                run = run.replace(expr, subs[inner])
-            elif inner.startswith("secrets."):
-                run = run.replace(expr, "SECRET")
-        leftover = re.findall(r"\$\{\{[^}]*\}\}", run)
-        assert not leftover, (
-            f"{workflow.name}:{job}/{step_name} has unsubstituted expressions "
-            f"{leftover}. Add them to `subs` deliberately — an expression that "
-            f"appears without anyone deciding what it means is how an injection "
-            f"or a silently-disabled guard gets into a covered step.")
-        return run
-    raise AssertionError(f"step {step_name!r} not found in {job}")
 
 
 def run_step(script: str, workdir: Path, registry: dict, env: dict,
@@ -294,65 +233,6 @@ def run_step(script: str, workdir: Path, registry: dict, env: dict,
     }
 
 
-def run_retry_loop(workdir: Path, attempts: list, retries: int = 2,
-                   require_tests: str = "") -> dict:
-    """Execute qa-gate.yml's live-test step against a scripted attempt sequence.
-
-    `attempts` is a list of {"code": int, "raw": dict} — what test_template.py
-    returns on attempt 1, 2, ... (the last entry repeats if the loop runs on).
-    Returns the recorded exit_code/attempts outputs plus how many times the
-    client was actually invoked, which is the number the guard cares about:
-    a `block` must cost exactly one attempt, no matter how many retries are
-    budgeted.
-    """
-    import sys
-
-    workdir.mkdir(parents=True, exist_ok=True)
-    bindir = workdir / "bin"
-    bindir.mkdir(exist_ok=True)
-    (bindir / "python").write_text(_PYTHON_STUB)
-    (bindir / "python").chmod(0o755)
-
-    plan = workdir / "plan.json"
-    plan.write_text(json.dumps(attempts))
-    count = workdir / "count"
-    count.write_text("0")
-    gh_out = workdir / "github_output"
-    gh_out.write_text("")
-
-    script = step_script_resolved(QA_GATE, "qa", "Run live test (DESTROY the instance after)", {
-        "inputs.retries": str(retries),
-        "inputs.retry_delay": "0",
-        "inputs.require_tests": require_tests,
-        "inputs.require_floor": "false",
-        "inputs.label": "base-image-qa-test",
-        "inputs.max_price": "1.0",
-        "inputs.timeout": "60",
-        "steps.create.outputs.hash": "deadbeef",
-    })
-
-    env = {
-        "PATH": f"{bindir}:{os.environ['PATH']}",
-        "REAL_PYTHON": sys.executable,
-        "ATTEMPT_PLAN": str(plan),
-        "ATTEMPT_COUNT": str(count),
-        "TM": str(REPO / "tools/template_manager"),
-        "GITHUB_OUTPUT": str(gh_out),
-        "LOG_PATHS": "",
-        "EXTRA_ENV": "",
-        "HOME": str(workdir),
-    }
-    proc = subprocess.run(["bash", "-c", script], cwd=workdir, env=env,
-                          capture_output=True, text=True, timeout=120)
-    out = gh_out.read_text()
-    return {
-        "code": proc.returncode,
-        "out": proc.stdout,
-        "err": proc.stderr,
-        "invocations": int(count.read_text()),
-        "exit_code": _kv(out, "exit_code"),
-        "attempts": _kv(out, "attempts"),
-    }
 
 
 def _kv(text: str, key: str) -> str:

@@ -861,9 +861,12 @@ def test_L065_an_executable_test_is_clean(tmp_path):
     assert "L065" not in errs(img, tmp_path)
 
 
-def test_L065_lib_sh_is_sourced_not_executed_so_0644_is_correct(tmp_path):
-    """lib.sh sits at the tests root and is sourced. Demanding +x on it would be
-    a false positive on correct code, and the shipped file really is 0644."""
+def test_L065_lib_sh_is_exempt_because_it_is_sourced_not_executed(tmp_path):
+    """lib.sh is sourced by every test, so its mode is irrelevant and demanding +x
+    would be a false positive. (The shipped file happens to be 0755; the exemption
+    is about how it is USED, not about what mode it currently carries.) runner.sh
+    sits in the same directory and is deliberately NOT exempt — it is executed,
+    and losing +x on it disables the whole suite."""
     img = make(tmp_path, cls="base")
     p = tmp_path / "ROOT/opt/instance-tools/tests/lib.sh"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -873,16 +876,32 @@ def test_L065_lib_sh_is_sourced_not_executed_so_0644_is_correct(tmp_path):
 
 
 def test_mut_L065_the_real_suite_chmodded_back_fires(tmp_path):
-    """Mutation against the REAL files: the two tests that were 0644 for their
-    whole life must fire if anyone puts them back."""
+    """Mutation against a COPY of the real tree, not the tree itself.
+
+    The first version chmodded the real `12-provisioning.sh` and restored it in a
+    `finally`. A SIGKILL or a cancelled CI job between the two would leave that
+    file at 0644 — reintroducing precisely the defect this rule exists to catch,
+    via the test that guards it.
+    """
+    import shutil
     repo, img = _real("base-image")
-    src = repo / "ROOT/opt/instance-tools/tests/base/12-provisioning.sh"
-    original = src.stat().st_mode
-    try:
-        src.chmod(0o644)
-        assert "L065" in errs(img, repo)
-    finally:
-        src.chmod(original)
+    work = tmp_path / "repo"
+    shutil.copytree(repo / "ROOT", work / "ROOT")
+    (work / "Dockerfile").write_text((repo / "Dockerfile").read_text())
+    mut = replace(img, dir=work, root=work / "ROOT")
+    (work / "ROOT/opt/instance-tools/tests/base/12-provisioning.sh").chmod(0o644)
+    assert "L065" in errs(mut, work)
+
+
+def test_L065_runner_sh_is_not_exempt(tmp_path):
+    """The file whose losing +x disables the entire suite must be gated. The first
+    version of the rule exempted the whole tests root and left it out."""
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/runner.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("#!/bin/bash\necho runner\n")
+    p.chmod(0o644)
+    assert has(img, tmp_path, "L065", "never run")
 
 
 # ---- L062: a deferred failure must actually be reported -------------------

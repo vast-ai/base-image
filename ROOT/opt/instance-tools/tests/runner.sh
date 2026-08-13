@@ -107,8 +107,44 @@ discover_tests() {
     local tests=()
 
     # Base tests (always present)
+# INSTANCE_TEST_SKIP — the kill switch for a shipped test.
+#
+# A test lives in the image, so without this the only way to disable one that
+# turns out flaky in the field is to rebuild the base image and re-promote it
+# through the whole gate. With it, the same problem is a template edit.
+#
+# Space- or comma-separated test names as the runner reports them
+# (e.g. "base/13-provisioner-selftest base/11-instance-metadata").
+#
+# Deliberately LOUD, and it cannot silence a gate. The name is announced on
+# stdout, and because the test is never collected it is also never recorded — so
+# INSTANCE_TEST_REQUIRE_PASS hits its `missing from this image` branch and sets
+# has_failure. Using this on a required test therefore reds the cell rather than
+# quietly excusing it. Turning a gate off has to be visible in the evidence, or it
+# is just a quieter way of certifying nothing.
+_skipped_by_env() {
+    # `${INSTANCE_TEST_SKIP:-}` and the comma normalisation done separately:
+    # runner.sh runs under `set -u`, so a bare expansion of an unset variable
+    # aborts the entire run rather than skipping nothing.
+    [[ -z "${INSTANCE_TEST_SKIP:-}" ]] && return 1
+    local path="$1" name rel
+    rel="${path#${TESTS_DIR}/}"
+    name="${rel%.sh}"
+    name="${name/.d\//\/}"
+    local list="${INSTANCE_TEST_SKIP//,/ }"
+    local entry
+    for entry in $list; do
+        if [[ "$entry" == "$name" ]]; then
+            echo "SKIPPING ${name} (INSTANCE_TEST_SKIP)"
+            return 0
+        fi
+    done
+    return 1
+}
+
     if [[ -d "${TESTS_DIR}/base" ]]; then
         while IFS= read -r f; do
+            _skipped_by_env "$f" && continue
             tests+=("$f")
         done < <(find "${TESTS_DIR}/base" -name '*.sh' -executable | sort)
     fi
@@ -116,6 +152,7 @@ discover_tests() {
     # Derivative tests (*.d/ directories)
     while IFS= read -r d; do
         while IFS= read -r f; do
+            _skipped_by_env "$f" && continue
             tests+=("$f")
         done < <(find "$d" -name '*.sh' -executable | sort)
     done < <(find "${TESTS_DIR}" -maxdepth 1 -name '*.d' -type d | sort)

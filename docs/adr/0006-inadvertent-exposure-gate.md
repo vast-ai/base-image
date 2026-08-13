@@ -1,6 +1,8 @@
 # ADR 0006 — Inadvertent-exposure gate: a fail-closed, allowlist-based public-port scan
 
 - **Status:** Accepted (conditional — see Binding conditions). Ships ADVISORY first.
+- **Amended:** 2026-08-13 — condition 2's flip is taken for **base only**. See
+  "Amendment: enforcing for base-qa" below.
 - **Date:** 2026-06-25
 - **Decision owner:** Rob Ballantyne
 - **Process:** discussion → critical review of the design (which found the first-draft
@@ -130,3 +132,39 @@ Surviving conditions from the critical review. If any is refused, the decision i
 - If a runtime (not QA) bind defense is needed, this test does not provide it (it only
   runs under `INSTANCE_TEST=true`); that is a separate mechanism.
 - If Caddy gains layer-4 (TCP) auth, the raw-TCP warn category narrows.
+
+
+## Amendment: enforcing for base-qa (2026-08-13)
+
+Condition 2 made the scan advisory "until a clean baseline is demonstrated across
+all images", with promotion a deliberate later flip. This amendment takes that
+flip for **`templates/base-qa/` only**; every other image keeps the advisory
+default.
+
+**Why base first.** base owns `exposure-allowlist/00-base.conf`, so its baseline
+is the one that can be reasoned about without inheriting another image's
+listeners. Leaving the scan advisory everywhere had a cost that grew with time:
+the check ran on every gate cell, correctly identified violations, printed them,
+and then reported `passed`. An advisory gate nobody promotes is a permanent green,
+and the defect class it covers — an image inheriting an upstream `EXPOSE` and
+binding `0.0.0.0` past the auth proxy — has already reached customers once.
+
+**The evidence.** Three configs of the last successful promotion
+(`cuda-11.8`, `cuda-12.6`, `cuda-13.3`) each reported
+`summary: 0 violation(s), 3 warn(s)`. That is three of ten gated configs, from
+one run — enough to show the baseline is not obviously dirty, not enough to call
+it demonstrated across the matrix. The remaining configs are covered by the same
+`ROOT/` overlay and the same allowlist, so the risk is concentrated in
+config-specific listeners, of which there are none known.
+
+**Accepted risk, and why it is bounded.** If a config does carry a violation, its
+cell reds and its `-auto` tag holds — the safe direction, and the finding is real
+rather than spurious. `EXPOSURE_ENFORCE` is read from the template at dispatch
+time, not baked into the image, so disarming it is a one-line template revert and
+a re-dispatch with **no rebuild**. That is the cheapest rollback of anything in
+this release.
+
+**What this does not do.** It does not flip the default for derivative or
+external images, and it does not discharge condition 2 for them. Condition 4
+still applies: a green scan is point-in-time, and a listener that binds after the
+scan is not covered.

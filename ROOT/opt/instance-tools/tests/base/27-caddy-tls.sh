@@ -26,6 +26,17 @@ openssl rsa -in "$KEY_PATH" -check -noout 2>/dev/null \
     || test_fail "invalid key: ${KEY_PATH}"
 echo "  cert and key are valid"
 
+# Surface a self-signed fallback WITHOUT failing on it. 55-tls-cert-gen.sh
+# self-signs when the console signing service cannot be reached, which keeps TLS
+# working and keeps the assertions above true — but it means this cell never
+# exercised the signing path. Without this line the gate could certify a whole
+# promotion in which every instance quietly fell back, and nobody would know.
+# A WARN, not a failure: the console being down is not an image defect.
+if [[ -f /etc/.instance-cert-selfsigned ]]; then
+    echo "  WARN: certificate is SELF-SIGNED — the console signing service was"
+    echo "        unreachable at boot, so the signing path is untested on this cell"
+fi
+
 # wait_for_caddy comes from lib.sh
 
 # ── Find a test port ──────────────────────────────────────────────────

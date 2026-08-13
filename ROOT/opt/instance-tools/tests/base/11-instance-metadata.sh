@@ -30,14 +30,26 @@ METADATA_FILE="/tmp/instance-test-metadata.json"
 
 # ── Image-side facts: these are ours, so these are hard ───────────────
 
+# CONTAINER_ID is injected by the platform for every instance; without it nothing
+# downstream can identify this box, so it stays hard.
 [[ -n "${CONTAINER_ID:-}" ]] || test_fail "CONTAINER_ID is not set — instance has no identity"
-[[ -n "${CONTAINER_API_KEY:-}" ]] || test_fail "CONTAINER_API_KEY is not set — cannot authenticate with API"
 echo "  CONTAINER_ID=${CONTAINER_ID}"
 
+# CONTAINER_API_KEY is NOT hard. The repo's own provisioner treats it as optional
+# (lib/provisioner/failure.py logs and returns), so a template that does not inject
+# it is a supported configuration, not a broken image.
+[[ -n "${CONTAINER_API_KEY:-}" ]] || echo "  WARN: CONTAINER_API_KEY is not set — API metadata will be unavailable"
+
+# The wrapper is ours, so its presence is hard.
 command -v vastai &>/dev/null || test_fail "vastai command not found"
-# The CLI must at least be runnable — this catches the dependency-drift class
-# (a resolver change breaking an import) without depending on the network.
-vastai --help >/dev/null 2>&1 || test_fail "vastai is installed but will not run (--help failed)"
+
+# Running it is NOT hard. bin/vastai is `cd /opt/vast-cli && python3 vast.py`, and
+# first_boot/05-update-vast.sh does a `git pull` on that checkout with
+# update_vast_cli defaulting to true — so this executes UPSTREAM HEAD, not anything
+# this image pinned. An upstream break would red every QA cell simultaneously and
+# hold every -auto tag, for a defect no image change can fix. That is the exact
+# rule this file exists to honour: fail on a bad IMAGE, never on a bad host.
+vastai --help >/dev/null 2>&1 || echo "  WARN: vastai --help failed — upstream vast-cli may be broken (not an image fault)"
 
 # ── Platform-side: best effort, never a failure ───────────────────────
 
@@ -54,7 +66,11 @@ done
 if [[ -z "$raw" ]]; then
     echo "  WARN: could not retrieve instance metadata from the API after 3 attempts"
     echo "        (rate limit, egress or console availability — not an image fault)."
-    echo "        Tests calling instance_field() will see empty values."
+    echo "        instance_field() will return empty for anything that asks."
+    # Write an empty object rather than nothing: instance_field() then reads a
+    # valid-but-empty document instead of a missing file, so a caller sees the
+    # same "no value" either way rather than two different failure shapes.
+    echo "{}" > "$METADATA_FILE"
     test_pass "instance identity verified (API metadata unavailable)"
 fi
 

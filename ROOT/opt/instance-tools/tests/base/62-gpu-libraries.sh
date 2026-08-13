@@ -100,8 +100,10 @@ ib_libs=(
 # class of lie as a passing test that says it verified something.
 ib_ok=0
 for lib in "${ib_libs[@]}"; do
+    # check_lib already probed it; reuse that instead of a second interpreter start.
+    if lib_loads "$lib"; then _loaded=true; else _loaded=false; fi
     check_lib "$lib" RDMA "rdma-${lib%%.*}"
-    lib_loads "$lib" && ib_ok=$((ib_ok + 1))
+    [[ "$_loaded" == true ]] && ib_ok=$((ib_ok + 1))
 done
 echo "  RDMA libs: ${ib_ok}/${#ib_libs[@]} loadable"
 
@@ -147,9 +149,17 @@ fi
 #   libibverbs / librdmacm : Dockerfile:127,130 AND convert-non-vast-image.sh:54,57
 #                            -> every image carrying this test has them.
 #   libOpenCL              : Dockerfile:180 only -> vast images only.
-#   libnccl                : Dockerfile.runtime, with the CUDA packages -> vast
-#                            images that actually have a CUDA toolkit.
-for _req in libibverbs.so.1 librdmacm.so.1; do
+#   libibumad              : same apt block as the RDMA pair in both installers.
+#   libnccl                : ONLY where the package is actually installed. The
+#                            CUDA toolkit is not a proxy for it: Dockerfile.runtime
+#                            installs libnccl2 for the MINI variants, while the 11
+#                            non-mini configs build from nvidia/cuda:*-cudnn-devel
+#                            and inherit NCCL from upstream — which CUDA 13 does
+#                            not ship. Measured: nvidia/cuda:13.2.1 has no
+#                            libnccl2 package at all, so keying this on
+#                            /usr/local/cuda-*/ would have failed a REQUIRED test
+#                            on every 13.x config and held four -auto tags.
+for _req in libibverbs.so.1 librdmacm.so.1 libibumad.so.3; do
     lib_installed "$_req" \
         || fail_later "missing-${_req%%.*}" \
             "${_req} is not installed — every image shipping this test installs it, so it \
@@ -161,11 +171,14 @@ if is_vast_image; then
         || fail_later "missing-libOpenCL" \
             "libOpenCL.so.1 is not installed — the base image installs ocl-icd-libopencl1 \
 unconditionally"
-    if compgen -G "/usr/local/cuda-*/" > /dev/null; then
+    # "We installed the package, so the soname must be resolvable" — decidable,
+    # and true on every variant. An image that never shipped NCCL is not thereby
+    # broken; one that installed it and cannot load it is.
+    if dpkg-query -W libnccl2 >/dev/null 2>&1; then
         lib_installed libnccl.so.2 \
             || fail_later "missing-libnccl" \
-                "libnccl.so.2 is not installed on a CUDA image — multi-GPU and \
-torch.distributed would fail at init"
+                "libnccl2 is installed but libnccl.so.2 is not on the loader path — \
+multi-GPU and torch.distributed would fail at init"
     fi
 fi
 

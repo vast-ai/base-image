@@ -632,7 +632,8 @@ def check_instance_tests_executable(img: Image, repo: Path) -> Iterable[Finding]
     `base/12-provisioning.sh` were 0644 from their introducing commit and had
     never executed. Two consequences ran unnoticed for the whole of that period —
     `lib.sh`'s `instance_field()` reads a metadata file only test 11 writes, so it
-    returned empty for every caller while signalling success; and `runner.sh`'s
+    could only ever have returned empty (it has no callers today, which is the
+    only reason nothing broke); and `runner.sh`'s
     "no blind provisioning wait — 12-provisioning.sh handles monitoring" was
     false, so tests that document themselves as running after provisioning were
     racing it.
@@ -650,8 +651,11 @@ def check_instance_tests_executable(img: Image, repo: Path) -> Iterable[Finding]
         if not root.is_dir():
             continue
         for sh in sorted(root.rglob("*.sh")):
-            # lib.sh is sourced, never executed, and is correctly 0644.
-            if sh.name == "lib.sh" or sh.parent == root:
+            # lib.sh is SOURCED by every test, never executed. runner.sh is
+            # executed and is deliberately NOT exempt: exempting the whole tests
+            # root (the first version of this rule) would have left the one file
+            # whose losing +x disables the entire suite ungated.
+            if sh.name == "lib.sh":
                 continue
             if not (sh.stat().st_mode & 0o111):
                 try:

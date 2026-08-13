@@ -83,7 +83,7 @@ jobs:
       - name: Run template_manager test suite
         run: python -m pytest -q tools/template_manager
       # The provisioner ships 18 test files and, until this step, NOTHING ran
-      # them — not this workflow, not any other. 448 tests covering URL
+      # them — not this workflow, not any other. 450+ tests covering URL
       # classification, retry/backoff, civitai token scoping, manifest schema,
       # dedup and state, all green, all dead. They take ~2s.
       #

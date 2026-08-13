@@ -79,7 +79,15 @@ provisioner_children() {
 
 # Check for any common provisioning-related processes
 active_provisioning_processes() {
-    pgrep -af "(pip|uv pip|git clone|apt|wget|curl|conda|provisioner)" 2>/dev/null | grep -cv "pgrep" || echo "0"
+    # `grep -c` PRINTS the count and EXITS 1 when the count is zero, so the old
+    # `|| echo "0"` appended a second line and this returned "0\n0" — which made
+    # `[[ "$active_procs" -gt 0 ]]` throw a bash syntax error on every poll and be
+    # permanently false. One of three stall detectors was dead from the day it was
+    # written, and nobody saw it because the file was not executable and had never
+    # run. Count without the short-circuit.
+    local n
+    n=$(pgrep -af "(pip|uv pip|git clone|apt|wget|curl|conda|provisioner)" 2>/dev/null | grep -cv "pgrep")
+    echo "${n:-0}"
 }
 
 prev_log_size=$(get_log_size)

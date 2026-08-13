@@ -7,10 +7,23 @@ sleep 2
 # an instance that once received a bad cert kept it for its whole life — /etc
 # persists across stop/start, and nothing here ever looked at the contents.
 _cert_usable() {
-    [[ -s /etc/instance.crt ]] && openssl x509 -in /etc/instance.crt -noout >/dev/null 2>&1
+    [[ -s /etc/instance.crt ]] || return 1
+    openssl x509 -in /etc/instance.crt -noout >/dev/null 2>&1 || return 1
+    # Parseable is not the same as usable, and stopping at parseable would repeat
+    # the shape of the bug this file fixes one layer down. An EXPIRED cert parses;
+    # so does one whose key no longer matches, which is what a half-finished
+    # regeneration leaves behind. Both make Caddy serve a listener nothing will
+    # talk to, and neither would ever be replaced because the guard was happy.
+    openssl x509 -in /etc/instance.crt -noout -checkend 0 >/dev/null 2>&1 || return 1
+    [[ -s /etc/instance.key ]] || return 1
+    local c k
+    c=$(openssl x509 -in /etc/instance.crt -noout -modulus 2>/dev/null)
+    k=$(openssl rsa  -in /etc/instance.key -noout -modulus 2>/dev/null)
+    [[ -n "$c" && "$c" == "$k" ]]
 }
 
-if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! _cert_usable; }; then
+if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! _cert_usable \
+     || [[ -f /etc/.instance-cert-selfsigned ]]; }; then
     # This guard protects the CONFIG only. It used to wrap the signing too, so a
     # boot that had decided the cert needed replacing did nothing at all when
     # openssl-san.cnf was already present — which is every boot after the first.
@@ -58,6 +71,12 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
             -o "$_signed" \
        && openssl x509 -in "$_signed" -noout >/dev/null 2>&1; then
         mv "$_signed" /etc/instance.crt
+        # mktemp gives 0600; the self-signed branch writes 0644 under the boot
+        # shell's umask. The certificate is public data (the KEY is the secret),
+        # so make the two paths agree rather than leaving the mode dependent on
+        # which branch ran.
+        chmod 644 /etc/instance.crt
+        rm -f /etc/.instance-cert-selfsigned
         echo "Instance certificate signed by the Vast console"
     else
         # SELF-SIGN RATHER THAN GO WITHOUT.
@@ -70,7 +89,14 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
         # is what a signed-by-Vast cert for IP 0.0.0.0 largely gets anyway) and
         # keeps the assertion true.
         rm -f "$_signed"
+        # Marked, for two reasons. It makes the state greppable for an operator
+        # ("why is my Jupyter cert self-signed?"), and the regeneration guard at
+        # the top uses it to RETRY the signing on the next boot — otherwise one
+        # console blip at first boot downgrades that instance permanently, which
+        # is the same stickiness this file exists to end.
+        : > /etc/.instance-cert-selfsigned
         echo "Warning: could not obtain a signed certificate; using a self-signed one"
+        echo "         (marked at /etc/.instance-cert-selfsigned; will retry next boot)"
         openssl x509 -req -in /etc/instance.csr -signkey /etc/instance.key \
             -days 365 -sha256 -extensions v3_req -extfile /etc/openssl-san.cnf \
             -out /etc/instance.crt 2>/dev/null \

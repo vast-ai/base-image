@@ -57,8 +57,10 @@ else
 fi
 
 # ── 2. A manifest covering each download class parses and plans ───────
-cat > "$_tmp/m.yaml" <<'YAML'
+cat > "$_tmp/m.yaml" <<YAML
 version: 1
+settings:
+  log_file: ${_tmp}/prov.log
 downloads:
   - url: https://huggingface.co/org/repo/resolve/main/weights.safetensors
     dest: /tmp/selftest-hf-file/
@@ -72,10 +74,15 @@ dry_rc=$?
 if [[ $dry_rc -ne 0 ]]; then
     fail_later "provisioner-dry-run" "--dry-run over a valid manifest exited ${dry_rc}: ${dry_out}"
 else
-    planned=$(grep -c "DRY RUN" <<< "$dry_out")
-    if [[ "$planned" -lt 3 ]]; then
+    # Count the per-download marker, NOT "DRY RUN" — the provisioner also logs a
+    # `=== DRY RUN MODE ===` banner, so 3 downloads matched 4 lines and the old
+    # `-lt 3` guard passed with an entire URL class silently dropped. It even
+    # printed "planned 4 download(s)" for 3 downloads.
+    planned=$(grep -c '\[DRY RUN\] Would download' <<< "$dry_out")
+    if [[ "$planned" -ne 3 ]]; then
         fail_later "provisioner-plan" \
-            "--dry-run planned ${planned} of 3 downloads — a URL class stopped being recognised"
+            "--dry-run planned ${planned} downloads, expected exactly 3 — a URL class \
+stopped being recognised or one is being planned twice"
     else
         echo "  --dry-run planned ${planned} download(s) across hf-file, hf-repo and generic"
     fi
@@ -90,7 +97,13 @@ fi
 # identical usage-error discrimination.
 mkdir -p "$_tmp/srv" "$_tmp/out"
 head -c 4096 /dev/urandom > "$_tmp/srv/payload.bin"
-( cd "$_tmp/srv" && python3 -m http.server 18973 --bind 127.0.0.1 >/dev/null 2>&1 ) &
+# NO SUBSHELL. `( ... ) &` makes $! the subshell, not python, so the cleanup trap
+# killed the wrapper and left the server holding the port for the life of the
+# container — a stray listener in an image whose neighbouring test (28) exists to
+# find stray listeners. Worse, on a re-run in the same container the bind failed,
+# the probe hit the PREVIOUS run's server over a deleted docroot, and section 4
+# degraded to a WARN: a skip-as-pass inside the file written to close skip-as-pass.
+python3 -m http.server 18973 --bind 127.0.0.1 --directory "$_tmp/srv" >/dev/null 2>&1 &
 _srv_pid=$!
 
 _srv_up=false
@@ -165,7 +178,12 @@ contract moved under us: ${hf_out}"
         fi
     fi
 else
-    echo "  absent (ok): provisioner venv hf CLI"
+    # Not "absent (ok)": the provisioner venv always installs huggingface_hub[cli],
+    # in both installers. A missing hf is a broken image for the same reason a
+    # missing provisioner is.
+    fail_later "hf-cli-missing" \
+        "the provisioner venv has no hf CLI at ${_hf} — every image builds it with \
+huggingface_hub[cli]"
 fi
 
 # ── 4. A real download, end to end, over loopback ─────────────────────
@@ -178,16 +196,24 @@ if [[ "$_srv_up" != true ]]; then
     # blaming the provisioner for it.
     echo "  WARN: local HTTP fixture did not come up; skipping the end-to-end download"
 else
-    # retry.max_attempts=1: the default is 5 with exponential backoff, so a
-    # genuine failure here would spend ~90s retrying a loopback URL that is
-    # never going to start working. One attempt fails in under a second and
-    # says the same thing.
+    # TWO retry budgets, and bounding only the inner one was not enough.
+    # settings.retry governs the download; on_failure governs the whole
+    # provisioner run and defaults to max_retries=3 with retry_delay=30, so a
+    # genuine failure took ~60s, not "under a second" — three sections into a
+    # file with TEST_TIMEOUT=180.
+    #
+    # log_file also matters: it defaults to /var/log/portal/provisioning.log, the
+    # file the Instance Portal surfaces and 12-provisioning tails. A self-test has
+    # no business writing "Provisioning complete!" into a customer's log.
     cat > "$_tmp/dl.yaml" <<YAML
 version: 1
 settings:
+  log_file: ${_tmp}/prov.log
   retry:
     max_attempts: 1
     initial_delay: 0
+on_failure:
+  max_retries: 0
 downloads:
   - url: http://127.0.0.1:18973/payload.bin
     dest: ${_tmp}/out/payload.bin
