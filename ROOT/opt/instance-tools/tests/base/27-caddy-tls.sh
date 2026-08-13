@@ -19,12 +19,19 @@ KEY_PATH="/etc/instance.key"
 echo "  cert: ${CERT_PATH} (present)"
 echo "  key: ${KEY_PATH} (present)"
 
-# Validate cert and key are well-formed
-openssl x509 -in "$CERT_PATH" -noout 2>/dev/null \
-    || test_fail "invalid certificate: ${CERT_PATH}"
-openssl rsa -in "$KEY_PATH" -check -noout 2>/dev/null \
-    || test_fail "invalid key: ${KEY_PATH}"
-echo "  cert and key are valid"
+# Validate cert and key — the SAME predicate 55-tls-cert-gen.sh uses to decide
+# whether to regenerate, so the test and the boot script cannot disagree about
+# the same pair of files (L066).
+#
+# This used to be `openssl rsa -in KEY -check`, which is RSA-only: it exits
+# non-zero on a valid EC key, so an operator-supplied EC certificate hard-failed
+# this cell while working perfectly. It also never compared the cert to the key,
+# so a MISMATCHED pair — what a half-finished regeneration leaves behind, and the
+# exact state that makes Caddy serve a listener no client will complete a
+# handshake with — passed.
+cert_reason=$(/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" 2>&1) \
+    || test_fail "instance certificate is not usable: ${cert_reason}"
+echo "  cert and key are valid, unexpired and matched"
 
 # Surface a self-signed fallback WITHOUT failing on it. 55-tls-cert-gen.sh
 # self-signs when the console signing service cannot be reached, which keeps TLS

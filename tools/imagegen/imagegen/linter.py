@@ -83,6 +83,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
+    ("L066", ERROR, "No shipped script open-codes the TLS cert/key usability check — source /opt/instance-tools/lib/tls-cert.sh and call `cert_usable <crt> <key>`. Every hand-rolled version so far has failed OPEN or CLOSED on a case its author had no fixture for. `openssl rsa -in KEY -check` rejects a valid EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off (base/27-caddy-tls.sh). Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key (55-tls-cert-gen.sh, caught in review; a parse check above it made the fail-open unreachable, so it was a trap for the next edit rather than a live fault). The sanctioned form compares the PEM SubjectPublicKeyInfo directly with an explicit non-empty guard, so a failure on either side can never look like agreement"),
 ]
 
 
@@ -1057,6 +1058,30 @@ _LDPATH_PROBE = re.compile(r"LD_LIBRARY_PATH=.*" + _CUDA_HELPER)
 # that 05-configure-cuda.sh and base/60-gpu-cuda both ask.
 _LIBCUDA_SEARCH = re.compile(r"\b(?:find|ls|compgen|glob|rglob|iglob)\b[^\n]*libcuda\.so\.1\b")
 
+_CERT_HELPER = "cert-usable"
+
+# Two RSA-only forms, and the second does NOT mention rsa. `openssl rsa` cannot
+# load an EC key at all, so -check on it rejects correct keys. `-modulus` is the
+# other half of the classic matching idiom and exists only for RSA — on the CERT
+# side it is spelled `openssl x509 -modulus`, with no `rsa` token anywhere, so a
+# pattern keyed on the subcommand exempts exactly half of the idiom it targets.
+# Token boundaries tolerate surrounding quotes and commas so the argv-list form
+# the portal uses matches as well as the shell form.
+_OPENSSL_RSA_ONLY = re.compile(
+    r"\bopenssl\b[^\n]*?(?:"
+    r"(?<![\w-])rsa(?![\w-])[^\n]*?(?<![\w-])-check(?![\w-])"
+    r"|(?<![\w-])-modulus(?![\w-])"
+    r")"
+)
+
+# Narrow deliberately: piping a PUBLIC KEY out of openssl into a digest, which is
+# the shape in which an empty result stops looking empty. Hashing a whole cert for
+# a fingerprint is a different, legitimate thing and is not matched.
+_PUBKEY_DIGEST = re.compile(
+    r"\bopenssl\b[^\n]*(?:-pubkey|-pubout|-pubin|-modulus)[^\n]*\|[^\n]*"
+    r"\b(?:sha\d+sum|md5sum|cksum)\b"
+)
+
 
 def _shipped_scripts(repo: Path):
     """Yield (path, repo-relative-path, [(lineno, code-without-comment)]) for
@@ -1220,6 +1245,57 @@ def check_no_open_coded_native_libcuda(img: Image, repo: Path) -> Iterable[Findi
                               "searches for libcuda.so.1 to pick a native driver library — "
                               "use `cuda-driver-version --native`, which resolves it once "
                               "and verifies what the loader actually mapped")
+
+
+def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Finding]:
+    """L066 — do not re-implement "is this cert usable"; ask the helper.
+
+    Three sites had grown three different answers, and each was wrong in a
+    direction its author had no fixture for:
+
+      base/27-caddy-tls.sh   openssl rsa -in KEY -check
+      caddy_config_manager   ["openssl","rsa","-in",KEY,"-check","-noout"]
+      55-tls-cert-gen.sh     sha256sum of each side's DER public key
+
+    `openssl rsa` is the RSA-*only* entry point. On a valid EC key it exits
+    non-zero, so both -check callers reject a perfectly good keypair and turn
+    HTTPS off — and the portal one is not a test, it is what gates Caddy's TLS
+    listener. Neither -check caller compares the cert to the key at all, so a
+    mismatched pair passes.
+
+    The digest form fails the other way. `sha256sum` of EMPTY input is
+    e3b0c442… — a fixed, non-empty string — so two openssl invocations that both
+    failed produce identical digests and an unreadable cert and an unreadable key
+    are certified as a matching pair. `[[ -n "$c" ]]` does not save it: the
+    digest is what is non-empty, not the key. In the shipped script a parse check
+    above it made that unreachable, so this one was a trap for the next edit
+    rather than a live fault — which is precisely why a RULE and not just a fix:
+    the reasoning that made it safe lived nowhere.
+
+    One implementation, /opt/instance-tools/bin/cert-usable: it compares the
+    PEM SubjectPublicKeyInfo of each side directly, with no hashing step in
+    which emptiness can disappear, and it is exercised against real RSA, EC,
+    mismatched, expired and unreadable fixtures by
+    tools/imagegen/tests/test_cert_usable.py.
+    """
+    if img.cls != "base":
+        return
+    for f, rel, lines in _shipped_scripts(repo):
+        if f.name == _CERT_HELPER:
+            continue                           # the one sanctioned implementation
+        for n, line in lines:
+            if _OPENSSL_RSA_ONLY.search(line):
+                yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
+                              "validates or matches a TLS key with an RSA-only openssl "
+                              "form (`openssl rsa -check`, `-modulus`) — it rejects a "
+                              "valid EC key; call "
+                              "`/opt/instance-tools/bin/cert-usable <crt> <key>`")
+            elif _PUBKEY_DIGEST.search(line):
+                yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
+                              "hashes an openssl public key before comparing it — the "
+                              "digest of empty input is equal on both sides, so two "
+                              "failures read as a match; call "
+                              "`/opt/instance-tools/bin/cert-usable <crt> <key>`")
 
 
 def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
@@ -1519,6 +1595,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_fail_later_is_reported(img, repo))
     out.extend(check_no_nvidia_smi_text_parse(img, repo))
     out.extend(check_no_open_coded_native_libcuda(img, repo))
+    out.extend(check_one_cert_usability_predicate(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))

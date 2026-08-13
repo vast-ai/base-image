@@ -112,6 +112,19 @@ if ! which pip > /dev/null 2>&1 || ! which pip3 > /dev/null 2>&1; then
     apt-get install --no-install-recommends -y python3-pip
 fi
 
+# Ensure a SYSTEM python3 at the absolute path, not merely a python3 on PATH.
+# /opt/instance-tools/bin/vastai is `cd /opt/vast-cli && /usr/bin/python3 vast.py`
+# — hardcoded — so on a base whose only interpreter is elsewhere (a conda image,
+# say) the vastai CLI is broken, and with it the provisioner's failure/webhook
+# path. That is silent until something goes wrong, which is the worst time to
+# find out. The block above does not cover it: a conda base ships its own pip, so
+# the python3-pip install is skipped and /usr/bin/python3 never appears.
+# base/11-instance-metadata.sh asserts this; this is what makes the assertion
+# satisfiable rather than just a report.
+if [[ ! -x /usr/bin/python3 ]]; then
+    apt-get install --no-install-recommends -y python3
+fi
+
 # Ensure uv python is available
 if ! which uv > /dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh

@@ -26,6 +26,11 @@ on:
       # if they do not run on the PR that edits what they guard.
       - "ROOT/opt/instance-tools/bin/**"
       - "ROOT/etc/vast_boot.d/**"
+      # The portal ships inside the image (COPY ./portal-aio) and is linted by
+      # L066 alongside the boot script and the test that share its cert
+      # predicate — the rule is worthless if the PR that edits one of the three
+      # does not run it.
+      - "portal-aio/**"
       - "configs/**"
       - "templates/**"
   push:
@@ -50,6 +55,11 @@ on:
       # if they do not run on the PR that edits what they guard.
       - "ROOT/opt/instance-tools/bin/**"
       - "ROOT/etc/vast_boot.d/**"
+      # The portal ships inside the image (COPY ./portal-aio) and is linted by
+      # L066 alongside the boot script and the test that share its cert
+      # predicate — the rule is worthless if the PR that edits one of the three
+      # does not run it.
+      - "portal-aio/**"
       - "configs/**"
       - "templates/**"
 
@@ -73,6 +83,11 @@ jobs:
           # against the SAME version range the image installs. Without this it
           # skips, and a skipped contract test is a contract nobody is checking.
           pip install -r ROOT/opt/instance-tools/lib/provisioner/requirements.txt
+      # Includes three docker-backed functional gates (cuda-driver-version, the
+      # TLS cert boot script, and the provisioner self-test). They dominate the
+      # runtime of this job — each needs a throwaway root because the thing under
+      # test is absolute paths and persistent state, not a pure function. They
+      # SKIP where docker is absent, which on ubuntu-latest it is not.
       - name: Run imagegen test suite
         working-directory: tools/imagegen
         run: python -m pytest -q

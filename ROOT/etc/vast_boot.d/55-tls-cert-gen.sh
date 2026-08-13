@@ -2,32 +2,26 @@
 
 # Generate the Jupyter certificate if run in SSH/Args Jupyter mode
 sleep 2
-# Regenerate when the key or the cert is missing OR the cert on disk is not a
-# parseable certificate. The old condition required BOTH files to be absent, so
-# an instance that once received a bad cert kept it for its whole life — /etc
-# persists across stop/start, and nothing here ever looked at the contents.
-_cert_usable() {
-    [[ -s /etc/instance.crt ]] || return 1
-    openssl x509 -in /etc/instance.crt -noout >/dev/null 2>&1 || return 1
-    # Parseable is not the same as usable, and stopping at parseable would repeat
-    # the shape of the bug this file fixes one layer down. An EXPIRED cert parses;
-    # so does one whose key no longer matches, which is what a half-finished
-    # regeneration leaves behind. Both make Caddy serve a listener nothing will
-    # talk to, and neither would ever be replaced because the guard was happy.
-    openssl x509 -in /etc/instance.crt -noout -checkend 0 >/dev/null 2>&1 || return 1
-    [[ -s /etc/instance.key ]] || return 1
-    # Compare PUBLIC KEYS, not moduli. `openssl rsa -modulus` is RSA-only: on a
-    # valid EC keypair the cert yields "Modulus=No modulus for this public key
-    # type" and the key yields nothing, so they compare unequal and a perfectly
-    # good certificate is declared unusable — HTTPS silently off. We only ever
-    # generate RSA, so this bit only an operator-supplied cert, which is exactly
-    # the case nobody would have tested.
-    local c k
-    c=$(openssl x509 -in /etc/instance.crt -noout -pubkey 2>/dev/null \
-        | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)
-    k=$(openssl pkey -in /etc/instance.key -pubout -outform DER 2>/dev/null | sha256sum)
-    [[ -n "$c" && "$c" == "$k" ]]
-}
+
+# Regenerate when the key or the cert is missing OR the pair on disk is not
+# usable. The old condition required BOTH files to be absent, so an instance that
+# once received a bad cert kept it for its whole life — /etc persists across
+# stop/start, and nothing here ever looked at the contents.
+#
+# "Usable" is ONE predicate, shared with base/27-caddy-tls.sh and the portal's
+# caddy_config_manager, and it lives in the helper rather than here. Three
+# hand-rolled copies of this question had grown three different answers — two
+# of which reject a valid EC keypair and turn HTTPS off (see the helper's own
+# header, and linter rule L066). Do not re-implement it.
+_CERT_USABLE=/opt/instance-tools/bin/cert-usable
+_cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" "${2:-/etc/instance.key}" 2>/dev/null; }
+if [[ ! -x "$_CERT_USABLE" ]]; then
+    # Fails CLOSED, deliberately: without the predicate we cannot tell a good
+    # certificate from an HTML error page, and serving TLS over the latter is
+    # worse than serving none. Say so plainly — this is a broken image, not a
+    # host problem, and an operator should not have to infer it from the symptom.
+    echo "Error: ${_CERT_USABLE} is missing; cannot validate the instance certificate" >&2
+fi
 
 # Retry a self-signed fallback, but BOUNDEDLY. Re-entering on the marker alone
 # meant a host that can never reach console.vast.ai (blocked egress — the QA
@@ -36,11 +30,19 @@ _cert_usable() {
 # and every client that had accepted the previous self-signed cert had to accept
 # a new one each restart. After _CERT_RETRY_LIMIT attempts we keep what we have.
 _CERT_RETRY_LIMIT=3
-_cert_retry_due() {
-    [[ -f /etc/.instance-cert-selfsigned ]] || return 1
-    local n; n=$(head -1 /etc/.instance-cert-selfsigned 2>/dev/null)
+_CERT_MARKER=/etc/.instance-cert-selfsigned
+# Read the attempt count with an EXPLICIT RADIX. `$(( 08 + 1 ))` is a fatal
+# "value too great for base" error, not a 9: bash reads a leading zero as octal.
+# Nothing this file writes has a leading zero, but the marker is a plain file in
+# /etc that an operator is invited (by its own comment) to look at and reset.
+_cert_attempts() {
+    local n; n=$(head -1 "$_CERT_MARKER" 2>/dev/null)
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    (( n < _CERT_RETRY_LIMIT ))
+    echo $(( 10#$n ))
+}
+_cert_retry_due() {
+    [[ -f "$_CERT_MARKER" ]] || return 1
+    (( $(_cert_attempts) < _CERT_RETRY_LIMIT ))
 }
 
 if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! _cert_usable \
@@ -84,20 +86,29 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
     # afternoon.
     #
     # Fetch to a temp file, prove it is usable, and only then install it.
+    #
+    # AGAINST THE KEY WE JUST GENERATED, not merely parseable. Parse-only was the
+    # first version of this check and it is a NON-TERMINATING loop: a console that
+    # returns a well-formed certificate for some other key passes the parse, gets
+    # installed, and clears the marker — then the guard at the top finds the pair
+    # mismatched on the next boot and regenerates, forever, printing
+    # "signed by the Vast console" every time while HTTPS is off. Validating with
+    # the same predicate the guard uses is what closes it: the two can no longer
+    # disagree about the same file.
     _signed=$(mktemp)
     if curl -fsS --retry 3 --retry-connrefused --retry-delay 2 --max-time 30 \
             --header 'Content-Type: application/octet-stream' \
             --data-binary @//etc/instance.csr \
             -X POST "https://console.vast.ai/api/v0/sign_cert/?instance_id=${CONTAINER_ID:-${VAST_CONTAINERLABEL#C.}}" \
             -o "$_signed" \
-       && openssl x509 -in "$_signed" -noout >/dev/null 2>&1; then
+       && _cert_usable "$_signed" /etc/instance.key; then
         mv "$_signed" /etc/instance.crt
         # mktemp gives 0600; the self-signed branch writes 0644 under the boot
         # shell's umask. The certificate is public data (the KEY is the secret),
         # so make the two paths agree rather than leaving the mode dependent on
         # which branch ran.
         chmod 644 /etc/instance.crt
-        rm -f /etc/.instance-cert-selfsigned
+        rm -f "$_CERT_MARKER"
         echo "Instance certificate signed by the Vast console"
     else
         # SELF-SIGN RATHER THAN GO WITHOUT.
@@ -115,14 +126,21 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
         # the top uses it to RETRY the signing on the next boot — otherwise one
         # console blip at first boot downgrades that instance permanently, which
         # is the same stickiness this file exists to end.
-        _n=$(head -1 /etc/.instance-cert-selfsigned 2>/dev/null)
-        [[ "$_n" =~ ^[0-9]+$ ]] || _n=0
-        echo $(( _n + 1 )) > /etc/.instance-cert-selfsigned
+        #
+        # CLAMPED at the limit rather than left to grow. The counter only stops
+        # the loop while the self-sign below SUCCEEDS — if it fails we have no
+        # usable pair, the guard at the top re-enters on every boot regardless of
+        # the marker, and an uncapped counter climbs for the life of the instance
+        # while every message still reads "attempt N/3". Clamping keeps the file
+        # bounded and the message honest about which state we are actually in.
+        _n=$(( $(_cert_attempts) + 1 ))
+        (( _n > _CERT_RETRY_LIMIT )) && _n=$_CERT_RETRY_LIMIT
+        echo "$_n" > "$_CERT_MARKER"
         echo "Warning: could not obtain a signed certificate; using a self-signed one"
-        if (( _n + 1 < _CERT_RETRY_LIMIT )); then
-            echo "         (attempt $(( _n + 1 ))/${_CERT_RETRY_LIMIT}; will retry next boot)"
+        if (( _n < _CERT_RETRY_LIMIT )); then
+            echo "         (attempt ${_n}/${_CERT_RETRY_LIMIT}; will retry next boot)"
         else
-            echo "         (attempt $(( _n + 1 ))/${_CERT_RETRY_LIMIT}; giving up — keeping the self-signed cert)"
+            echo "         (attempt ${_n}/${_CERT_RETRY_LIMIT}; giving up — keeping the self-signed cert)"
         fi
         openssl x509 -req -in /etc/instance.csr -signkey /etc/instance.key \
             -days 365 -sha256 -extensions v3_req -extfile /etc/openssl-san.cnf \

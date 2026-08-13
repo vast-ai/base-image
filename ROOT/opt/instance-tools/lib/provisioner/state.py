@@ -14,7 +14,18 @@ import shutil
 
 log = logging.getLogger("provisioner")
 
-STATE_DIR = "/.provisioner_state"
+# Overridable so a caller can run the provisioner WITHOUT touching the state the
+# real provisioning run depends on. base/13-provisioner-selftest.sh needs exactly
+# that: the instance test suite runs at boot stage 70 and the customer's
+# provisioning at stage 75, so a self-test sharing this directory would mark
+# stages complete that the real run had not performed yet, and the real run would
+# then skip them. The hashes are content-keyed, so the collision needs matching
+# content to bite — but "usually the hashes differ" is not a property to rest a
+# customer's provisioning on when a separate directory costs one line.
+#
+# Deliberately not routed through _apply_env_overrides: that applies to a loaded
+# manifest, and this has to be known before any manifest is read.
+STATE_DIR = os.environ.get("PROVISIONER_STATE_DIR", "/.provisioner_state")
 
 
 def compute_stage_hash(stage_name: str, data: str) -> str:

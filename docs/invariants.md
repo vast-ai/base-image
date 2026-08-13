@@ -304,6 +304,51 @@ with the boot script instead of checking it — and only a manual review caught 
 Behaviour is pinned in both directions by
 `tools/imagegen/tests/test_cuda_driver_version.py`.
 
+### One TLS cert-usability predicate, not one per caller — **GATED (L066)**
+
+"Can Caddy serve TLS with this pair?" is asked in three places — the boot script
+that decides whether to regenerate (`55-tls-cert-gen.sh`), the portal component
+that decides whether TLS comes up at all
+(`portal-aio/caddy_manager/caddy_config_manager.py`), and the test that asserts
+on the result (`base/27-caddy-tls.sh`) — and each had grown a different answer.
+Two used `openssl rsa -in KEY -check`, the RSA-*only* entry point: it cannot load
+an EC key, so a correct operator-supplied EC pair made the portal give up on TLS
+after `MAX_RETRIES` and hard-failed the gate. Neither compared the certificate to
+the key, so a mismatched pair — what a half-finished regeneration leaves —
+passed both. The third hashed each side's public key before comparing, which
+inverts the risk: `sha256sum` of empty input is `e3b0c442…` on *both* sides, so
+two failed extractions compare equal and `[[ -n "$c" ]]` guards the digest
+rather than the key. (A parse check above it made that unreachable in the
+shipped script — a trap for the next edit rather than a live fault, and worth
+stating precisely.) All three now call
+`/opt/instance-tools/bin/cert-usable <crt> <key>`, which compares PEM SPKI
+directly. **L066** (`check_one_cert_usability_predicate`) forbids re-implementing
+it; generic openssl use — `rand`, `s_client`, `-checkend`, fingerprints — stays
+legal. Behaviour is pinned by `tools/imagegen/tests/test_cert_usable.py` against
+real RSA/EC/mismatched/expired/unreadable fixtures, and the boot script's
+across-boot convergence by `test_tls_cert_gen.py` (ADR 0026).
+
+### A test-invoked provisioner run does not touch the real one's state
+
+`base/13-provisioner-selftest.sh` executes the shipped provisioner at boot stage
+**70**; the customer's own provisioning runs at stage **75**. The provisioner
+treats the environment as authoritative over the manifest through two separate
+mechanisms (`_apply_env_overrides`, 8 × `PROVISIONER_*`; `apply_env_conventions`,
+6 × `PROVISIONING_*`) plus `PROVISIONING_SCRIPT`, `HF_TOKEN`, `CIVITAI_TOKEN`,
+`WORKSPACE` and the API credentials — and `load_manifest` expands `$VARS` in the
+manifest text, so the reachable surface is "the environment", not a list. A
+self-test that unsets the variables its author could name therefore runs the
+customer's `post_commands` as root five stages early, writes their provisioning
+log, validates their tokens against huggingface.co, and can reach
+`vastai destroy instance`. The invariant is the **direction**: `env -i` plus a
+named allowlist, which is complete by construction, and
+`PROVISIONER_STATE_DIR` pointed at a temp dir so stage hashes cannot mark a
+stage complete that the real run has not performed. Not gated by the linter —
+the property is about side effects, not syntax — but asserted directly by
+`tools/imagegen/tests/test_provisioner_selftest.py`, which runs the real test
+under a hostile environment and checks afterwards for the files, log lines,
+state entries and outbound connections that must not exist.
+
 ### Copyleft licence compliance (proposed)
 
 An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in

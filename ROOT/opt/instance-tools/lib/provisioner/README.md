@@ -207,6 +207,7 @@ Set `max_retries: 0` to skip the retry loop and go straight to the action on fir
 | `PROVISIONER_LOG_FILE` | `settings.log_file` | Redirect logs per-instance |
 | `PROVISIONER_VENV` | `settings.venv` | Different default venv per deployment |
 | `PROVISIONER_CONDA_ENV` | `settings.conda_env` | Different default conda env per deployment |
+| `PROVISIONER_STATE_DIR` | (state directory) | Relocate `/.provisioner_state/`. Read at import, not from the manifest — it must be known before one is loaded. Set it to run the provisioner without touching the state a real provisioning run depends on |
 
 ### write_files / write_files_late
 
@@ -688,7 +689,7 @@ Expansion happens on the raw YAML dict before dataclass construction, so every f
 
 Each phase computes a SHA-256 content hash of its inputs before execution. If the stored hash matches the one from the last successful run, the entire phase is skipped.
 
-**Storage:** `/.provisioner_state/{stage_name}.hash`
+**Storage:** `/.provisioner_state/{stage_name}.hash` (or `$PROVISIONER_STATE_DIR/…`)
 
 | Stage | Hash Inputs |
 |-------|-------------|

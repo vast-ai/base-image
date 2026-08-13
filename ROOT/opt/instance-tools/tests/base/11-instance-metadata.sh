@@ -44,7 +44,14 @@ echo "  CONTAINER_ID=${CONTAINER_ID}"
 # alone only proves the shim file exists — it would pass on an image where the
 # interpreter or the CLI itself was dropped, which is an image defect we own.
 command -v vastai &>/dev/null || test_fail "vastai command not found"
-[[ -x /usr/bin/python3 ]] || test_fail "/usr/bin/python3 missing — bin/vastai execs it"
+# The ABSOLUTE path, because that is what bin/vastai hardcodes — a python3 on
+# PATH somewhere else does not satisfy it. This is reachable on an external
+# image whose base ships its own interpreter (a conda base has pip, so
+# convert-non-vast-image.sh's python3-pip install is skipped); that script now
+# installs python3 explicitly for this reason.
+[[ -x /usr/bin/python3 ]] || test_fail \
+    "/usr/bin/python3 missing — bin/vastai hardcodes it, so the vastai CLI and the \
+provisioner's failure/webhook path are both broken on this image"
 [[ -f /opt/vast-cli/vast.py ]] || test_fail "/opt/vast-cli/vast.py missing — bin/vastai runs it"
 
 # Running it is NOT hard. bin/vastai is `cd /opt/vast-cli && python3 vast.py`, and

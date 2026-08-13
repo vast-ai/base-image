@@ -1326,3 +1326,144 @@ def test_L063_ignores_a_comment_explaining_the_history(tmp_path):
                        '# driver 610 renamed "CUDA Version:" to "CUDA UMD Version:"\n'
                        'MAX=$(/opt/instance-tools/bin/cuda-driver-version || true)\n')
     assert "L063" not in errs(img, tmp_path)
+
+
+# ---- L066: one cert-usability predicate -----------------------------------
+#
+# Three sites asked "is this cert usable" and gave three different wrong answers.
+# Two rejected a valid EC keypair (`openssl rsa` cannot load one at all) and
+# neither compared the cert to the key; the third hashed both public keys before
+# comparing them, and sha256sum of EMPTY input is the same fixed string on both
+# sides — so two failed extractions certified each other.
+
+def _write_portal_file(repo, rel, body):
+    p = repo / "portal-aio" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+
+
+def test_L066_openssl_rsa_check_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       'openssl rsa -in "$KEY_PATH" -check -noout || test_fail "bad key"\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_openssl_modulus_matching_fires(tmp_path):
+    """The other RSA-only shape: comparing moduli. On an EC pair the cert side
+    yields "Modulus=No modulus for this public key type" and the key side yields
+    nothing, so a correct pair reads as a mismatch."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/55-tls-cert-gen.sh",
+                       'c=$(openssl x509 -in "$CRT" -noout -modulus)\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_hashing_the_public_key_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/55-tls-cert-gen.sh",
+                       'k=$(openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | sha256sum)\n')
+    assert has(img, tmp_path, "L066", "digest of empty input")
+
+
+def test_L066_the_argv_list_form_fires(tmp_path):
+    """The portal calls openssl as a Python argv list, not a shell line. A rule
+    written only for shell syntax would have exempted the one site that actually
+    gates Caddy's TLS listener."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       'subprocess.run(["openssl", "rsa", "-in", KEY_PATH, '
+                       '"-check", "-noout"], check=True)\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_calling_the_helper_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       '/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" '
+                       '|| test_fail "unusable"\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_the_helper_itself_is_exempt(tmp_path):
+    """The sanctioned implementation necessarily contains openssl key handling."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/cert-usable",
+                       '#!/bin/bash\n_k=$(openssl pkey -in "$KEY" -pubout)\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_generic_openssl_use_is_not_matched(tmp_path):
+    """The rule must not fire on the many legitimate openssl calls the images
+    make — random tokens, s_client probes, plain parseability, expiry."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       'tok=$(openssl rand -hex 8)\n'
+                       'openssl x509 -in "$CRT" -noout -checkend 0\n'
+                       'issuer=$(echo "$info" | openssl x509 -noout -issuer)\n'
+                       'echo | openssl s_client -connect 127.0.0.1:1 2>/dev/null\n'
+                       'fp=$(openssl x509 -in "$CRT" -noout -fingerprint)\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_mut_L066_the_real_boot_script_reverted_fires(tmp_path):
+    """Mutation against the REAL file: restore the sha256sum comparison and the
+    rule must fire. That form certified an unreadable cert against an unreadable
+    key, because sha256sum of empty input is e3b0c442... on both sides."""
+    repo, img = _real("base-image")
+    src = repo / "ROOT/etc/vast_boot.d/55-tls-cert-gen.sh"
+    original = src.read_text()
+    assert "bin/cert-usable" in original
+    mutated = original.replace(
+        '_cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" '
+        '"${2:-/etc/instance.key}" 2>/dev/null; }',
+        "_cert_usable() {\n"
+        "    local c k\n"
+        "    c=$(openssl x509 -in /etc/instance.crt -noout -pubkey 2>/dev/null "
+        "| openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)\n"
+        "    k=$(openssl pkey -in /etc/instance.key -pubout -outform DER "
+        "2>/dev/null | sha256sum)\n"
+        '    [[ -n "$c" && "$c" == "$k" ]]\n'
+        "}",
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        assert "L066" in errs(img, repo)
+    finally:
+        src.write_text(original)
+
+
+def test_mut_L066_the_real_caddy_test_reverted_fires(tmp_path):
+    repo, img = _real("base-image")
+    src = repo / "ROOT/opt/instance-tools/tests/base/27-caddy-tls.sh"
+    original = src.read_text()
+    assert "bin/cert-usable" in original
+    mutated = original.replace(
+        'cert_reason=$(/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" 2>&1)',
+        'openssl rsa -in "$KEY_PATH" -check -noout 2>/dev/null',
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        assert "L066" in errs(img, repo)
+    finally:
+        src.write_text(original)
+
+
+def test_mut_L066_the_real_portal_validator_reverted_fires(tmp_path):
+    """The site that is not a test: this is what gates Caddy's TLS listener."""
+    repo, img = _real("base-image")
+    src = repo / "portal-aio/caddy_manager/caddy_config_manager.py"
+    original = src.read_text()
+    assert "CERT_USABLE" in original
+    mutated = original.replace(
+        "            [CERT_USABLE, CERT_PATH, KEY_PATH],",
+        '            ["openssl", "rsa", "-in", KEY_PATH, "-check", "-noout"],',
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        assert "L066" in errs(img, repo)
+    finally:
+        src.write_text(original)

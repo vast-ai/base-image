@@ -71,12 +71,38 @@ def load_config(yaml_path='/etc/portal.yaml'):
     return apps
 
 
+# The single cert-usability predicate, shared with 55-tls-cert-gen.sh (which
+# decides whether to regenerate) and base/27-caddy-tls.sh (which asserts on the
+# result). Enforced as the only implementation by linter rule L066; see the
+# helper's own header for why the three copies this replaced were each wrong.
+CERT_USABLE = "/opt/instance-tools/bin/cert-usable"
+
+
 def validate_cert_and_key():
+    """Is the instance certificate actually usable with the instance key?
+
+    This gates Caddy's TLS listener, so it is not a formality. The previous
+    version validated the key with the RSA-ONLY `openssl rsa` entry point and its
+    `-check` flag. A valid EC key cannot be loaded by it at all, so an
+    operator-supplied EC pair failed here, wait_for_valid_certs() spent
+    MAX_RETRIES x 5s on it, and HTTPS was then disabled on a certificate that
+    was completely fine. It also never compared the cert to the key, so a
+    mismatched pair was accepted and Caddy served a listener nothing could
+    complete a handshake with.
+    """
     try:
-        subprocess.run(["openssl", "x509", "-in", CERT_PATH, "-noout"], check=True, stderr=subprocess.DEVNULL)
-        subprocess.run(["openssl", "rsa", "-in", KEY_PATH, "-check", "-noout"], check=True, stderr=subprocess.DEVNULL)
-        return True
-    except subprocess.CalledProcessError:
+        return subprocess.run(
+            [CERT_USABLE, CERT_PATH, KEY_PATH],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    except OSError as e:
+        # Fails CLOSED. Without the predicate we cannot tell a certificate from
+        # an HTML error page, and serving TLS over the latter is worse than
+        # serving none. Every image that ships this file also ships the helper
+        # (both arrive by COPY in the same Dockerfile), so this is a broken-image
+        # signal, not a supported configuration — say which.
+        print(f"Cannot validate certificates: {CERT_USABLE} is unavailable "
+              f"({type(e).__name__}: {e}). Treating them as invalid.")
         return False
 
 

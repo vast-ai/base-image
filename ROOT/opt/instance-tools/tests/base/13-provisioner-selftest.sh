@@ -14,20 +14,41 @@
 # This file is the opposite shape: it configures nothing, waits for nothing, and
 # exercises the shipped code directly.
 #
-# EVERY INVOCATION SCRUBS THE PROVISIONER'S ENV, and that is load-bearing.
-# _apply_env_overrides (lib/provisioner/__main__.py) makes the environment
-# AUTHORITATIVE over the manifest, so `settings.log_file` and `on_failure` in the
-# manifests below are advisory until the matching PROVISIONER_* variables are
-# unset. Measured on a real image: with PROVISIONER_LOG_FILE exported, section 4
-# wrote 62 lines and two "Provisioning complete!" entries into the customer's
-# /var/log/portal/provisioning.log despite the manifest saying otherwise.
+# EVERY INVOCATION RUNS IN A BUILT ENVIRONMENT, NOT A CLEANED ONE, and that is
+# the single most load-bearing thing in this file.
 #
-# PROVISIONER_FAILURE_ACTION is the serious one: it reaches failure.py's
-# `vastai destroy instance`, so an unscrubbed failure in section 4 could DESTROY
-# THE INSTANCE UNDER TEST. PROVISIONING_SCRIPT is unset for two reasons — its
-# Phase 9 would download and execute the customer's script from a file that
-# claims to touch no external network, and its dry-run line matches the download
-# marker counted in section 2.
+# The provisioner treats the environment as AUTHORITATIVE over the manifest, in
+# two separate mechanisms that are easy to mistake for one:
+#
+#   _apply_env_overrides   (__main__.py)  8 x PROVISIONER_*  overrides settings
+#   apply_env_conventions  (manifest.py)  6 x PROVISIONING_*  INJECTS resources
+#
+# plus PROVISIONING_SCRIPT, HF_TOKEN, CIVITAI_TOKEN, WORKSPACE, CONTAINER_ID and
+# CONTAINER_API_KEY read elsewhere — and `load_manifest` expands $VARS in the
+# manifest text, so the reachable surface is "the environment", not a list.
+#
+# The first version of this file scrubbed six variables it could name. What that
+# missed is not academic:
+#
+#   PROVISIONING_POST_COMMANDS  runs the customer's shell commands, as root,
+#                               from a test that runs at boot stage 70 — BEFORE
+#                               the real provisioning at stage 75.
+#   PROVISIONING_DOWNLOADS      adds the customer's downloads to a manifest that
+#                               documents itself as touching no external network,
+#                               and defeats the plan count in section 2.
+#   PROVISIONER_FAILURE_ACTION  reaches failure.py's `vastai destroy instance`,
+#                               so a failure here could DESTROY THE INSTANCE.
+#   PROVISIONER_LOG_FILE        writes "Provisioning complete!" into the
+#                               customer's /var/log/portal/provisioning.log
+#                               (measured: 62 lines, twice).
+#   HF_TOKEN / CIVITAI_TOKEN    real outbound token validation, 30.2s of it.
+#
+# So the direction is inverted: `env -i` and then add back, by name, the few
+# variables the provisioner needs. A deny-list is only ever as complete as its
+# author's memory of a codebase that keeps growing new readers; an allowlist is
+# complete by construction. PROVISIONER_STATE_DIR is part of that construction —
+# without it this test shares /.provisioner_state with the real provisioning run
+# and can mark stages complete that the real run has not performed.
 #
 # NOTHING HERE TOUCHES THE EXTERNAL NETWORK. A test that downloads a real model
 # turns a HuggingFace outage, a rate limit, or a host with no egress into a held
@@ -55,6 +76,31 @@ cleanup() {
     rm -rf "$_tmp"
 }
 trap cleanup EXIT
+mkdir -p "$_tmp/home" "$_tmp/ws" "$_tmp/state" "$_tmp/hfhome"
+
+# THE allowlist. Everything the provisioner can read that is not named here is
+# absent, including anything added to it after this was written.
+#
+#   PATH        the shim activates its venv and then `exec python`
+#   HOME        uv/pip write caches; without it they fall back to '/' and warn
+#   LANG        python's stdio encoding; a C locale mangles log output
+#   WORKSPACE   manifest.py:187 defaults dest paths under it — pointed at our
+#               temp dir so a relative path in a manifest cannot land in the
+#               customer's workspace
+#   PROVISIONER_STATE_DIR   see above; keeps stage hashes out of the real run's
+#
+# CONTAINER_ID and CONTAINER_API_KEY are absent ON PURPOSE, not by oversight:
+# they are what failure.py needs to call the API, so without them the destroy
+# path cannot fire even if some future edit re-enables it.
+_prov() {
+    env -i \
+        PATH="$PATH" \
+        HOME="$_tmp/home" \
+        LANG="${LANG:-C.UTF-8}" \
+        WORKSPACE="$_tmp/ws" \
+        PROVISIONER_STATE_DIR="$_tmp/state" \
+        "$PROVISIONER" "$@"
+}
 
 # ── 1. The venv imports at all ────────────────────────────────────────
 #
@@ -62,7 +108,7 @@ trap cleanup EXIT
 # depends on (setuptools dropping pkg_resources, a click major under a pinned
 # typer). Those fail while the command object is being constructed, so --help is
 # a real check, not a formality.
-help_out=$(env -u PROVISIONING_SCRIPT -u PROVISIONER_FAILURE_ACTION -u PROVISIONER_RETRY_MAX -u PROVISIONER_RETRY_DELAY -u PROVISIONER_WEBHOOK_URL -u PROVISIONER_LOG_FILE "$PROVISIONER" --help 2>&1)
+help_out=$(_prov --help 2>&1)
 if [[ $? -ne 0 ]]; then
     fail_later "provisioner-help" "provisioner --help exited non-zero: ${help_out}"
 elif grep -q "Traceback (most recent call last)" <<< "$help_out"; then
@@ -84,9 +130,7 @@ downloads:
   - url: https://example.invalid/thing.bin
     dest: /tmp/selftest-generic/
 YAML
-dry_out=$(env -u PROVISIONING_SCRIPT -u PROVISIONER_FAILURE_ACTION -u PROVISIONER_RETRY_MAX \
-        -u PROVISIONER_RETRY_DELAY -u PROVISIONER_WEBHOOK_URL -u PROVISIONER_LOG_FILE \
-        "$PROVISIONER" --dry-run "$_tmp/m.yaml" 2>&1)
+dry_out=$(_prov --dry-run "$_tmp/m.yaml" 2>&1)
 dry_rc=$?
 if [[ $dry_rc -ne 0 ]]; then
     fail_later "provisioner-dry-run" "--dry-run over a valid manifest exited ${dry_rc}: ${dry_out}"
@@ -186,7 +230,15 @@ did not run in its own venv, which is itself a broken-image signal"
         # the mutation that re-added --cache-dir went green here while the CI half
         # caught it.)
         _cmd[0]="$_hf"
-        hf_out=$(HF_ENDPOINT=http://127.0.0.1:18973 "${_cmd[@]}" 2>&1)
+        # Same allowlist discipline as _prov, for the same reason and one more.
+        # A customer's HF_TOKEN would otherwise be sent to the loopback fixture,
+        # and HF_HUB_OFFLINE / HF_HOME / HF_HUB_DISABLE_XET / the proxy variables
+        # all change what the CLI does — so an inherited environment could make
+        # this contract check pass or fail for reasons that have nothing to do
+        # with the argv it exists to check.
+        hf_out=$(env -i PATH="$PATH" HOME="$_tmp/home" LANG="${LANG:-C.UTF-8}" \
+            HF_ENDPOINT=http://127.0.0.1:18973 HF_HOME="$_tmp/hfhome" \
+            "${_cmd[@]}" 2>&1)
         if grep -q "command not found\|No such file or directory" <<< "$hf_out"; then
             fail_later "hf-cli-missing" "could not execute the provisioner's hf: ${hf_out}"
         fi
@@ -240,9 +292,7 @@ downloads:
   - url: http://127.0.0.1:18973/payload.bin
     dest: ${_tmp}/out/payload.bin
 YAML
-    dl_out=$(env -u PROVISIONING_SCRIPT -u PROVISIONER_FAILURE_ACTION -u PROVISIONER_RETRY_MAX \
-        -u PROVISIONER_RETRY_DELAY -u PROVISIONER_WEBHOOK_URL -u PROVISIONER_LOG_FILE \
-        "$PROVISIONER" "$_tmp/dl.yaml" 2>&1)
+    dl_out=$(_prov "$_tmp/dl.yaml" 2>&1)
     dl_rc=$?
     if [[ $dl_rc -ne 0 ]]; then
         fail_later "provisioner-download" "a loopback download failed (rc=${dl_rc}): ${dl_out}"
