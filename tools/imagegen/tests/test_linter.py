@@ -742,6 +742,98 @@ def test_L050_L054_now_apply_to_base(tmp_path):
     assert "L050" in errs(img, tmp_path)
 
 
+# ---- L059: a REQUIRED test must be able to fail (ADR 0019) ----------------
+#
+# L057 makes the template name the tests that must pass. This is the next hole
+# down, and it was a live defect when the rule was written: base/62-gpu-libraries
+# was named in base-qa's INSTANCE_TEST_REQUIRE_PASS and contained no failure path
+# at all — every check was `echo WARN` — so it reported `passed` on every box and
+# the gate's third required test asserted nothing beyond `has_gpu`.
+
+def _write_test(repo: Path, name: str, body: str) -> None:
+    p = repo / "ROOT/opt/instance-tools/tests" / f"{name}.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+
+
+_CAN_FAIL = 'source lib.sh\nhas_gpu || test_skip "no gpu"\n' \
+            'if ! thing; then\n    fail_later "thing" "broke"\nfi\nreport_failures\ntest_pass "ok"\n'
+_CANNOT_FAIL = 'source lib.sh\nhas_gpu || test_skip "no gpu"\n' \
+               'if ! thing; then\n    echo "  WARN: thing broke"\nfi\ntest_pass "ok"\n'
+
+
+def _qa_requiring(img, repo, name, body):
+    _write_test(repo, name, body)
+    _base_qa(img, f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {name}\n")
+
+
+def test_L059_a_required_test_that_cannot_fail_fires(tmp_path):
+    """THE mutation, and a reproduction of the real defect: every check is a
+    warning, so the script always reaches test_pass."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries", _CANNOT_FAIL)
+    assert has(img, tmp_path, "L059", "cannot fail")
+
+
+def test_L059_a_required_test_with_a_failure_path_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries", _CAN_FAIL)
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_test_fail_also_counts(tmp_path):
+    """Both spellings are real failure paths: fail_later defers to
+    report_failures, test_fail exits immediately."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/60-gpu-cuda",
+                  'source lib.sh\nif ! thing; then\n    test_fail "broke"\nfi\ntest_pass "ok"\n')
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_a_comment_mentioning_fail_later_does_not_count(tmp_path):
+    """The exact trap the real file set. base/62-gpu-libraries carried
+
+        # FAILURES and fail_later/report_failures come from lib.sh
+
+    and no call — so a rule matching the substring would have been satisfied by
+    the comment describing machinery the file never used, and reported the
+    defect as clean. Same shape as L056's 'a bare mention does not count'."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries",
+                  "source lib.sh\n"
+                  "# FAILURES and fail_later/report_failures come from lib.sh\n"
+                  '# we could test_fail here one day\n'
+                  'echo "  WARN: thing broke"\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L059", "cannot fail")
+
+
+def test_L059_a_trailing_comment_does_not_mask_a_real_call(tmp_path):
+    """The inverse error: stripping comments must not eat a real call that
+    happens to have one after it."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/60-gpu-cuda",
+                  'source lib.sh\nfail_later "broke"   # deferred, see report_failures\n'
+                  "report_failures\ntest_pass \"ok\"\n")
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_ignores_a_required_test_absent_from_the_base_overlay(tmp_path):
+    """A derivative's own test (e.g. pytorch/10-torch-core) does not live in
+    ROOT/. The runner fails closed on a genuinely missing required test
+    ('missing from this image'), which is the right layer for that."""
+    img = make(tmp_path, cls="base")
+    _base_qa(img, "env:\n  INSTANCE_TEST_REQUIRE_PASS: pytorch/10-torch-core\n")
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_is_scoped_to_base(tmp_path):
+    """Follows L057's precedent: comfyui-qa and vllm-qa are live gates and
+    turning them red from a linter rule is a separate, re-validated change."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries", _CANNOT_FAIL)
+    assert "L059" not in errs(img, tmp_path)
+
+
 # ---- L062: a deferred failure must actually be reported -------------------
 #
 # `fail_later` only RECORDS a failure; `report_failures` is what turns the

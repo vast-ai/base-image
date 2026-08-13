@@ -6,6 +6,46 @@ source "$(dirname "$0")/../lib.sh"
 has_gpu || test_skip "no GPU detected"
 
 # FAILURES and fail_later/report_failures come from lib.sh
+#
+# THE RULE THIS FILE FOLLOWS (ADR 0019, enforced by L059): absent is fine,
+# INSTALLED-BUT-BROKEN is a failure.
+#
+# Until 2026-08-07 every check here was an `echo WARN` and the file contained no
+# fail_later call at all, so it reported `passed` on every box while being named
+# in base-qa's INSTANCE_TEST_REQUIRE_PASS — i.e. a required test that could not
+# fail, asserting nothing beyond `has_gpu`. The distinction below is what makes
+# it assertable: whether a library is SHIPPED is a property of the image (ours to
+# get right), whether the hardware exists is a property of the host (not ours,
+# and not something a QA cell should block on).
+
+# Is the dynamic linker aware of this library? Distinguishes "we never shipped
+# it" (fine) from "we shipped it and it will not load" (a real defect). CDLL
+# alone cannot tell those apart — it fails identically for both.
+lib_installed() {
+    ldconfig -p 2>/dev/null | grep -qF "$1"
+}
+
+lib_loads() {
+    python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" "$1" 2>/dev/null
+}
+
+# Shipped => must load. Not shipped => nothing to assert.
+check_lib() {
+    local lib="$1" what="$2" name="$3"
+    if lib_loads "$lib"; then
+        echo "  ${lib}: loadable"
+        return 0
+    fi
+    if lib_installed "$lib"; then
+        # fail_later is <name> <message>: the name is what the summary line and
+        # the QA verdict carry, so it has to stay short and greppable.
+        fail_later "$name" \
+            "${lib} is installed but will not load — broken ${what} stack"
+        return 1
+    fi
+    echo "  absent (ok): ${lib}"
+    return 0
+}
 
 # ── OpenCL ────────────────────────────────────────────────────────────
 
@@ -21,12 +61,7 @@ else
     echo "  absent (ok): clinfo"
 fi
 
-# Check OpenCL ICD loader is loadable
-if python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" libOpenCL.so.1 2>/dev/null; then
-    echo "  libOpenCL.so.1: loadable"
-else
-    echo "  WARN: libOpenCL.so.1 not loadable"
-fi
+check_lib libOpenCL.so.1 OpenCL "opencl-icd"
 
 # nvidia.icd present
 if [[ -f /etc/OpenCL/vendors/nvidia.icd ]]; then
@@ -59,15 +94,14 @@ ib_libs=(
     "libibumad.so.3"
 )
 
+# check_lib returns 0 for "absent" as well as "loadable" — that is right for the
+# verdict and wrong for a tally, so count what actually loaded rather than what
+# did not fail. Reporting "3/3 loadable" for three absent libraries is the same
+# class of lie as a passing test that says it verified something.
 ib_ok=0
-ib_missing=0
 for lib in "${ib_libs[@]}"; do
-    if python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" "$lib" 2>/dev/null; then
-        ib_ok=$((ib_ok + 1))
-    else
-        ib_missing=$((ib_missing + 1))
-        echo "  WARN: ${lib} not loadable"
-    fi
+    check_lib "$lib" RDMA "rdma-${lib%%.*}"
+    lib_loads "$lib" && ib_ok=$((ib_ok + 1))
 done
 echo "  RDMA libs: ${ib_ok}/${#ib_libs[@]} loadable"
 
@@ -83,10 +117,17 @@ fi
 
 # ── NCCL ──────────────────────────────────────────────────────────────
 
-if python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" libnccl.so.2 2>/dev/null; then
+# Two sonames because the base ships the versioned one and some CUDA layouts only
+# carry the unversioned symlink. Either loading is enough; only a shipped-but-
+# broken NCCL is a defect, and it is one that matters — torch.distributed dlopens
+# this at init, so a broken NCCL is invisible until a collective is attempted.
+if lib_loads libnccl.so.2; then
     echo "  libnccl.so.2: loadable"
-elif python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" libnccl.so 2>/dev/null; then
+elif lib_loads libnccl.so; then
     echo "  libnccl.so: loadable"
+elif lib_installed libnccl.so; then
+    fail_later "nccl" \
+        "libnccl is installed but will not load — torch.distributed would fail at init"
 else
     echo "  absent (ok): libnccl"
 fi

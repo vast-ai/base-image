@@ -205,6 +205,29 @@ wrappers) for an explicit internal-prefix set — extend `_INTERNAL_TRACKERS` as
 internal projects appear. Precedent: the CON-/HOST-/CLN- references scrubbed from
 docs, workflows, templates, and tooling when this rule landed (ADR 0012).
 
+### A required test must be able to fail — **GATED (L059)**
+
+L057 makes a gating QA template *name* the tests that must have PASSED. This
+closes the next hole down: a named test containing no failure path at all
+reports `passed` on every box, so requiring it asserts nothing beyond the script
+reaching its `test_pass`, and the gate reads as coverage while certifying
+nothing. Not hypothetical — `base/62-gpu-libraries.sh` was in base-qa's
+require-pass set with every branch an `echo`/`WARN` and zero `fail_later` calls,
+so the third of three gating tests asserted exactly `has_gpu`, which the other
+two already assert. **L059** (`check_required_tests_can_fail`) resolves each name
+in `INSTANCE_TEST_REQUIRE_PASS` against the base overlay and each derivative
+tests dir, and requires at least one real `test_fail`/`fail_later` **call** — a
+mention in a comment does not count, which is exactly how the defect hid.
+Deliberately weak: it asserts a failure path *exists*, not that it is a good one.
+Whether a test can fail at all is decidable by reading the file; whether it fails
+for the right reasons is a review question.
+
+The rule that makes such a test assertable without false-reddening images that
+legitimately ship less: **absent is fine, installed-but-broken is a failure.**
+Whether a library is shipped is a property of the image (ours); whether the
+hardware exists is a property of the host (not ours). `ldconfig -p` distinguishes
+them — `ctypes.CDLL` alone cannot, it fails identically for both.
+
 ### A deferred failure is reported before every non-failing exit — **GATED (L062)**
 
 `fail_later` (and `http_check`, which calls it internally) only **records** a

@@ -76,6 +76,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
+    ("L059", ERROR, "Every test named in a gating QA template's INSTANCE_TEST_REQUIRE_PASS contains at least one real test_fail/fail_later CALL (a mention in a comment does not count) — L057 makes the template name the tests that must pass, and this closes the next hole down: a named test with no failure path reports `passed` on every box, so requiring it asserts nothing beyond the script reaching its test_pass, and the gate reads as coverage while certifying nothing (ADR 0019)"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
@@ -594,6 +595,103 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
                               "env.INSTANCE_TEST_REQUIRE_PASS omits " + ", ".join(missing) +
                               " — these skip themselves when the GPU/driver is unavailable")
 
+
+
+def _has_failure_path(text: str) -> bool:
+    """True if the script can actually FAIL, not merely mention failing.
+
+    Counts invocations at a command position only. A bare mention does not count
+    — `62-gpu-libraries.sh` carried the comment
+
+        # FAILURES and fail_later/report_failures come from lib.sh
+
+    and no call, so any rule matching the substring would have been satisfied by
+    the comment describing the machinery the file never used. Same trap L056
+    documents for the libggml-cuda assertion.
+    """
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        for fn in ("test_fail", "fail_later"):
+            if _line_calls(line, fn):
+                return True
+    return False
+
+
+def check_required_tests_can_fail(img: Image, repo: Path) -> Iterable[Finding]:
+    """L059 — a test named in INSTANCE_TEST_REQUIRE_PASS must be able to fail.
+
+    L057 makes a gating template NAME the tests that must pass. This closes the
+    next hole down: a named test that contains no failure path at all reports
+    `passed` on every box, so requiring it asserts nothing beyond the fact that
+    the script ran to its `test_pass`. The gate then reads as coverage while
+    certifying nothing — the same skip-as-pass shape as an unnamed self-skipping
+    test, one level lower and harder to see (ADR 0019).
+
+    Not hypothetical: `base/62-gpu-libraries.sh` was named in base-qa's
+    require-pass set while every one of its branches was an `echo`/`WARN`. Under
+    the gate it asserted exactly `has_gpu`, which 60 and 61 already assert.
+
+    Scoped to base, following L057's precedent: comfyui-qa and vllm-qa are live
+    gates, and turning them red from a linter rule is a separate change that must
+    re-validate each first.
+
+    Deliberately weak by design: this asserts a failure path EXISTS, not that it
+    is a good one. A test that can fail for the wrong reasons is a review problem;
+    a test that cannot fail at all is a structural one, and only the second is
+    decidable by reading the file.
+    """
+    if img.cls != "base":
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    # A required test may live in the base overlay OR in a derivative's own tests
+    # dir. Looking only in ROOT/ would silently skip every derivative test — the
+    # rule would report clean precisely where the newest tests are.
+    test_roots = [repo / "ROOT/opt/instance-tools/tests"]
+    test_roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+
+    def _find(name: str) -> Path | None:
+        for root in test_roots:
+            p = root / f"{name}.sh"
+            if p.is_file():
+                return p
+            # derivatives name their dir `<img>.d` but declare `<img>/<test>`
+            head, _, tail = name.partition("/")
+            if tail:
+                p = root / f"{head}.d" / f"{tail}.sh"
+                if p.is_file():
+                    return p
+        return None
+
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            env = entry.get("env")
+            declared = env.get("INSTANCE_TEST_REQUIRE_PASS", "") if isinstance(env, dict) else ""
+            for name in str(declared).replace(",", " ").split():
+                path = _find(name)
+                if path is None:
+                    # Not resolvable in this repo at all — an external image's
+                    # test, or a typo. The runner fails closed on a required test
+                    # missing from the image, which is the right layer for that;
+                    # this rule only judges files it can actually read.
+                    continue
+                if not _has_failure_path(path.read_text(encoding="utf-8", errors="replace")):
+                    yield Finding("L059", ERROR, img.name, rel,
+                                  f"required test {name} contains no test_fail/fail_later "
+                                  "call — it cannot fail, so naming it in "
+                                  "INSTANCE_TEST_REQUIRE_PASS asserts nothing")
 
 
 def _line_calls(line: str, fn: str) -> bool:
@@ -1365,6 +1463,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_required_tests_can_fail(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))
     out.extend(check_no_nvidia_smi_text_parse(img, repo))
     out.extend(check_no_open_coded_native_libcuda(img, repo))

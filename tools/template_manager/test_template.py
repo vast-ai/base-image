@@ -794,6 +794,73 @@ def stream_sse(url, timeout, token=None):
     yield {"_timeout": True}
 
 
+def classify_verdict_marker(stripped):
+    """Map a runner.sh "→ ..." verdict line to a per-test state, or None.
+
+    Extracted from the stream loop so the COUPLING with runner.sh is testable:
+    the runner owns the wording, this owns the reading, and a marker the runner
+    emits that this does not recognise makes the test VANISH from tests[] rather
+    than fail — silently, because stream data overwrites the results JSON. That
+    is the precise shape of bug this gate exists to catch, so it is pinned by a
+    test that reads both files (test_verdict_marker_contract.py).
+
+    Order matters: "TIMED OUT" is checked first so it cannot be shadowed if the
+    wording ever gains one of the other words.
+    """
+    if "TIMED OUT" in stripped:
+        return "timedout"
+    if "PASSED" in stripped:
+        return "passed"
+    if "FAILED" in stripped:
+        return "failed"
+    if "SKIPPED" in stripped:
+        return "skipped"
+    return None
+
+
+class StreamTracker:
+    """Per-test state accumulated from the runner's output stream.
+
+    Extracted so the WIRING is testable, not just the marker matcher. The
+    matcher had unit tests and passed while this loop was broken: a refactor
+    moved the `tests.append(...)` out of the verdict-marker branch and into a
+    sibling one, so no per-test state was ever recorded. The results JSON's own
+    states have a write race and read "running", this data is what overwrites
+    them, and with it empty every cell reported `state=running` — qa_verdict
+    correctly called that untrustworthy and blocked all 71 cells of a live run.
+
+    Testing the extracted matcher could not have caught that. Testing this can.
+    """
+
+    def __init__(self):
+        self.current_test_name = None
+        self.tests = []                       # [{"name":..., "state":...}]
+        self.counts = {"passed": 0, "failed": 0, "skipped": 0, "timedout": 0}
+        self.skip_reasons = {}                # {test name: reason}
+
+    def feed(self, stripped):
+        """Consume one stripped output line."""
+        if stripped.startswith("\u2500\u2500\u2500 Running:") and stripped.endswith("\u2500\u2500\u2500"):
+            self.current_test_name = stripped.split("Running:")[1].strip().rstrip(" \u2500")
+        elif stripped.startswith("\u2192"):
+            state = classify_verdict_marker(stripped)
+            if state:
+                self.counts[state] += 1
+                # In THIS branch, always: it is what makes the stream
+                # authoritative over the racy JSON.
+                if self.current_test_name:
+                    self.tests.append({"name": self.current_test_name, "state": state})
+                    self.current_test_name = None
+        elif stripped.startswith("SKIP: "):
+            # `SKIP: <test>: <reason>` — split on the FIRST ": " so a reason
+            # containing ": " survives. Printed BEFORE the verdict marker, so
+            # this records only the REASON; the state comes from the branch above.
+            rest = stripped[len("SKIP: "):]
+            if ": " in rest:
+                name, reason = rest.split(": ", 1)
+                self.skip_reasons[name] = reason
+
+
 def format_summary(state, counts, elapsed=None, failed_names=None):
     """Format the final summary line."""
     color = "\033[32m" if state == "passed" else "\033[31m"
@@ -802,6 +869,10 @@ def format_summary(state, counts, elapsed=None, failed_names=None):
     summary = (f"{color}{state.upper()}{reset} — "
                f"{counts['passed']} passed, {counts['failed']} failed, "
                f"{counts['skipped']} skipped{dur_str}")
+    # .get(): a timed-out test is not the same as a failed one and folding them
+    # together in the human summary is how the distinction gets lost at 3am.
+    if counts.get("timedout"):
+        summary += f", {counts['timedout']} timed out"
     if failed_names:
         summary += f"\n  Failed: {', '.join(failed_names)}"
     return summary
@@ -1539,9 +1610,10 @@ def main():
     # This is more reliable than the JSON file (which has write-race issues).
     # COUPLING: uses Unicode chars ─ (U+2500) and → (U+2192) from runner.sh
     # output format.  Update both sides if the format ever changes.
-    stream_counts = {"passed": 0, "failed": 0, "skipped": 0}
-    stream_tests = []  # list of {"name": ..., "state": ...}
-    current_test_name = None
+    # All of it lives in StreamTracker so the per-line logic is testable on its
+    # own — see that class for the refactor that broke this loop while its
+    # matcher's unit tests kept passing.
+    tracker = StreamTracker()
 
     got_result_event = False
     stream_had_gap = False   # set if the SSE stream dropped and reconnected
@@ -1561,7 +1633,7 @@ def main():
             log(f"\nStream dropped ({event.get('_reason', '?')}); "
                 f"reconnecting (attempt {event['_reconnect']}/{MAX_STREAM_RECONNECTS})")
             stream_had_gap = True
-            current_test_name = None    # a partial test header is no longer valid
+            tracker.current_test_name = None   # a partial header is no longer valid
             continue
 
         if event.get("_timeout"):
@@ -1583,22 +1655,7 @@ def main():
             panel.write_output(line)
             stripped = line.strip()
             # Track current test name from runner's "── Running: base/XX ──" header
-            if stripped.startswith("\u2500\u2500\u2500 Running:") and stripped.endswith("\u2500\u2500\u2500"):
-                current_test_name = stripped.split("Running:")[1].strip().rstrip(" \u2500")
-            elif stripped.startswith("\u2192"):
-                state = None
-                if "PASSED" in stripped:
-                    state = "passed"
-                    stream_counts["passed"] += 1
-                elif "FAILED" in stripped:
-                    state = "failed"
-                    stream_counts["failed"] += 1
-                elif "SKIPPED" in stripped:
-                    state = "skipped"
-                    stream_counts["skipped"] += 1
-                if state and current_test_name:
-                    stream_tests.append({"name": current_test_name, "state": state})
-                    current_test_name = None
+            tracker.feed(stripped)
         elif event.get("_event") == "log":
             # Log events: {"src": "portal", "line": "..."} or plain string (compat)
             if "line" in event:
@@ -1657,6 +1714,8 @@ def main():
     # really describing. Images built before that fix still report the old way, so a
     # backfilled state may read "running": that fails a required-tests assertion
     # closed, which is the correct direction.
+    stream_tests = tracker.tests
+    stream_counts = tracker.counts
     if stream_tests:
         stream_test_map = {t["name"]: t["state"] for t in stream_tests}
         if final_result and "tests" in final_result:
