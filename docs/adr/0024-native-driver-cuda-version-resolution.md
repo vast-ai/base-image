@@ -251,13 +251,21 @@ including the helper itself.
    helper runs from the first boot script, which is *sourced*, so a wedged driver
    would stop the instance ever becoming ready. An empty reading is already a
    handled outcome; a hang is not.
-6. **The live QA gate cannot reach either of the two conditions above.** It boots
-   each instance exactly once, so the restart-only compat loss is structurally
-   out of reach, and it does not filter for a 610-branch driver. Before
-   promotion, run one gate pass filtered to `driver_version.gte=610` and one on a
-   datacenter host where forward compat is genuinely active (a `cuda-13.x` config
-   on a 12.x driver). The container harnesses cover the mechanism; only a live
-   run covers the host.
+6. **The live QA gate boots each instance exactly once**, so the restart-only
+   compat loss is structurally out of its reach. The container harness covers
+   that mechanism; a live run can only cover it by stopping and starting an
+   instance, which the gate does not do. Accepted, and stated here so the gate is
+   not mistaken for coverage it does not have.
+
+   Deliberately **not** a condition: filtering the QA draw to a 610-branch
+   driver. Such a filter is stale the day the next branch ships, and it would be
+   re-proving something the design makes true by construction — `--native` reads
+   `cuDriverGetVersion`, never the banner, and L063 forbids re-introducing a
+   scrape anywhere. The banner is now only reachable through the default mode's
+   courtesy fallback, whose tolerance for both spellings is pinned
+   deterministically by the harness. If a future driver breaks this change, it
+   will be by moving a *library*, not by renaming a field — and no driver-version
+   filter would have predicted that either.
 
 ## Consequences
 
