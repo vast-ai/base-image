@@ -235,9 +235,6 @@ def run_step(script: str, workdir: Path, registry: dict, env: dict,
 
 
 
-def _kv(text: str, key: str) -> str:
-    vals = [l.split("=", 1)[1] for l in text.splitlines() if l.startswith(key + "=")]
-    return vals[-1] if vals else ""
 
 
 def requires_tools():

@@ -883,7 +883,6 @@ def test_mut_L065_the_real_suite_chmodded_back_fires(tmp_path):
     file at 0644 — reintroducing precisely the defect this rule exists to catch,
     via the test that guards it.
     """
-    import shutil
     repo, img = _real("base-image")
     work = tmp_path / "repo"
     shutil.copytree(repo / "ROOT", work / "ROOT")

@@ -16,14 +16,35 @@ _cert_usable() {
     # talk to, and neither would ever be replaced because the guard was happy.
     openssl x509 -in /etc/instance.crt -noout -checkend 0 >/dev/null 2>&1 || return 1
     [[ -s /etc/instance.key ]] || return 1
+    # Compare PUBLIC KEYS, not moduli. `openssl rsa -modulus` is RSA-only: on a
+    # valid EC keypair the cert yields "Modulus=No modulus for this public key
+    # type" and the key yields nothing, so they compare unequal and a perfectly
+    # good certificate is declared unusable — HTTPS silently off. We only ever
+    # generate RSA, so this bit only an operator-supplied cert, which is exactly
+    # the case nobody would have tested.
     local c k
-    c=$(openssl x509 -in /etc/instance.crt -noout -modulus 2>/dev/null)
-    k=$(openssl rsa  -in /etc/instance.key -noout -modulus 2>/dev/null)
+    c=$(openssl x509 -in /etc/instance.crt -noout -pubkey 2>/dev/null \
+        | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)
+    k=$(openssl pkey -in /etc/instance.key -pubout -outform DER 2>/dev/null | sha256sum)
     [[ -n "$c" && "$c" == "$k" ]]
 }
 
+# Retry a self-signed fallback, but BOUNDEDLY. Re-entering on the marker alone
+# meant a host that can never reach console.vast.ai (blocked egress — the QA
+# selector already floors host reliability because such hosts get rented)
+# generated a fresh RSA keypair and paid a 3-retry curl on EVERY boot, forever,
+# and every client that had accepted the previous self-signed cert had to accept
+# a new one each restart. After _CERT_RETRY_LIMIT attempts we keep what we have.
+_CERT_RETRY_LIMIT=3
+_cert_retry_due() {
+    [[ -f /etc/.instance-cert-selfsigned ]] || return 1
+    local n; n=$(head -1 /etc/.instance-cert-selfsigned 2>/dev/null)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    (( n < _CERT_RETRY_LIMIT ))
+}
+
 if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! _cert_usable \
-     || [[ -f /etc/.instance-cert-selfsigned ]]; }; then
+     || _cert_retry_due; }; then
     # This guard protects the CONFIG only. It used to wrap the signing too, so a
     # boot that had decided the cert needed replacing did nothing at all when
     # openssl-san.cnf was already present — which is every boot after the first.
@@ -62,7 +83,7 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
     # Jupyter, for the duration of the instance, caused by someone else's bad
     # afternoon.
     #
-    # Fetch to a temp file, prove it parses, and only then install it.
+    # Fetch to a temp file, prove it is usable, and only then install it.
     _signed=$(mktemp)
     if curl -fsS --retry 3 --retry-connrefused --retry-delay 2 --max-time 30 \
             --header 'Content-Type: application/octet-stream' \
@@ -94,9 +115,15 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
         # the top uses it to RETRY the signing on the next boot — otherwise one
         # console blip at first boot downgrades that instance permanently, which
         # is the same stickiness this file exists to end.
-        : > /etc/.instance-cert-selfsigned
+        _n=$(head -1 /etc/.instance-cert-selfsigned 2>/dev/null)
+        [[ "$_n" =~ ^[0-9]+$ ]] || _n=0
+        echo $(( _n + 1 )) > /etc/.instance-cert-selfsigned
         echo "Warning: could not obtain a signed certificate; using a self-signed one"
-        echo "         (marked at /etc/.instance-cert-selfsigned; will retry next boot)"
+        if (( _n + 1 < _CERT_RETRY_LIMIT )); then
+            echo "         (attempt $(( _n + 1 ))/${_CERT_RETRY_LIMIT}; will retry next boot)"
+        else
+            echo "         (attempt $(( _n + 1 ))/${_CERT_RETRY_LIMIT}; giving up — keeping the self-signed cert)"
+        fi
         openssl x509 -req -in /etc/instance.csr -signkey /etc/instance.key \
             -days 365 -sha256 -extensions v3_req -extfile /etc/openssl-san.cnf \
             -out /etc/instance.crt 2>/dev/null \

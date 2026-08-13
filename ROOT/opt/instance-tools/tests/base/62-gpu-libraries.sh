@@ -100,10 +100,14 @@ ib_libs=(
 # class of lie as a passing test that says it verified something.
 ib_ok=0
 for lib in "${ib_libs[@]}"; do
-    # check_lib already probed it; reuse that instead of a second interpreter start.
-    if lib_loads "$lib"; then _loaded=true; else _loaded=false; fi
+    # Two probes per library: check_lib does its own. Deliberately left alone —
+    # an earlier version of this comment claimed the second call reused the
+    # first, which was simply untrue (measured: 6 invocations for 3 libraries,
+    # before and after). The tally needs "did it load", check_lib needs "load,
+    # or is it merely installed"; collapsing them is a refactor of check_lib's
+    # return contract, not a comment.
     check_lib "$lib" RDMA "rdma-${lib%%.*}"
-    [[ "$_loaded" == true ]] && ib_ok=$((ib_ok + 1))
+    lib_loads "$lib" && ib_ok=$((ib_ok + 1))
 done
 echo "  RDMA libs: ${ib_ok}/${#ib_libs[@]} loadable"
 
@@ -174,7 +178,12 @@ unconditionally"
     # "We installed the package, so the soname must be resolvable" — decidable,
     # and true on every variant. An image that never shipped NCCL is not thereby
     # broken; one that installed it and cannot load it is.
-    if dpkg-query -W libnccl2 >/dev/null 2>&1; then
+    # `dpkg-query -W` alone returns 0 for a package that was REMOVED but not
+    # purged — it stays in the database as `config-files`. Measured: after
+    # `dpkg -r`, `dpkg-query -W` gives rc=0 with no files on disk, which would
+    # false-red this REQUIRED test on any image that apt-get remove'd NCCL.
+    # Require the status word, not merely a database entry.
+    if [[ "$(dpkg-query -W -f='${db:Status-Status}' libnccl2 2>/dev/null)" == "installed" ]]; then
         lib_installed libnccl.so.2 \
             || fail_later "missing-libnccl" \
                 "libnccl2 is installed but libnccl.so.2 is not on the loader path — \

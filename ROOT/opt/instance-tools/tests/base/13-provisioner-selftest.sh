@@ -14,6 +14,21 @@
 # This file is the opposite shape: it configures nothing, waits for nothing, and
 # exercises the shipped code directly.
 #
+# EVERY INVOCATION SCRUBS THE PROVISIONER'S ENV, and that is load-bearing.
+# _apply_env_overrides (lib/provisioner/__main__.py) makes the environment
+# AUTHORITATIVE over the manifest, so `settings.log_file` and `on_failure` in the
+# manifests below are advisory until the matching PROVISIONER_* variables are
+# unset. Measured on a real image: with PROVISIONER_LOG_FILE exported, section 4
+# wrote 62 lines and two "Provisioning complete!" entries into the customer's
+# /var/log/portal/provisioning.log despite the manifest saying otherwise.
+#
+# PROVISIONER_FAILURE_ACTION is the serious one: it reaches failure.py's
+# `vastai destroy instance`, so an unscrubbed failure in section 4 could DESTROY
+# THE INSTANCE UNDER TEST. PROVISIONING_SCRIPT is unset for two reasons — its
+# Phase 9 would download and execute the customer's script from a file that
+# claims to touch no external network, and its dry-run line matches the download
+# marker counted in section 2.
+#
 # NOTHING HERE TOUCHES THE EXTERNAL NETWORK. A test that downloads a real model
 # turns a HuggingFace outage, a rate limit, or a host with no egress into a held
 # release tag — the exact class the gate must never produce. The download path is
@@ -47,7 +62,7 @@ trap cleanup EXIT
 # depends on (setuptools dropping pkg_resources, a click major under a pinned
 # typer). Those fail while the command object is being constructed, so --help is
 # a real check, not a formality.
-help_out=$("$PROVISIONER" --help 2>&1)
+help_out=$(env -u PROVISIONING_SCRIPT -u PROVISIONER_FAILURE_ACTION -u PROVISIONER_RETRY_MAX -u PROVISIONER_RETRY_DELAY -u PROVISIONER_WEBHOOK_URL -u PROVISIONER_LOG_FILE "$PROVISIONER" --help 2>&1)
 if [[ $? -ne 0 ]]; then
     fail_later "provisioner-help" "provisioner --help exited non-zero: ${help_out}"
 elif grep -q "Traceback (most recent call last)" <<< "$help_out"; then
@@ -69,7 +84,9 @@ downloads:
   - url: https://example.invalid/thing.bin
     dest: /tmp/selftest-generic/
 YAML
-dry_out=$("$PROVISIONER" --dry-run "$_tmp/m.yaml" 2>&1)
+dry_out=$(env -u PROVISIONING_SCRIPT -u PROVISIONER_FAILURE_ACTION -u PROVISIONER_RETRY_MAX \
+        -u PROVISIONER_RETRY_DELAY -u PROVISIONER_WEBHOOK_URL -u PROVISIONER_LOG_FILE \
+        "$PROVISIONER" --dry-run "$_tmp/m.yaml" 2>&1)
 dry_rc=$?
 if [[ $dry_rc -ne 0 ]]; then
     fail_later "provisioner-dry-run" "--dry-run over a valid manifest exited ${dry_rc}: ${dry_out}"
@@ -78,7 +95,11 @@ else
     # `=== DRY RUN MODE ===` banner, so 3 downloads matched 4 lines and the old
     # `-lt 3` guard passed with an entire URL class silently dropped. It even
     # printed "planned 4 download(s)" for 3 downloads.
-    planned=$(grep -c '\[DRY RUN\] Would download' <<< "$dry_out")
+    # Anchored to the two DOWNLOAD classes. `[DRY RUN] Would download` alone also
+    # matches "Would download and run PROVISIONING_SCRIPT" (__main__.py Phase 9) —
+    # the same off-by-one as the `=== DRY RUN MODE ===` banner it replaced, one
+    # line further along.
+    planned=$(grep -cE '\[DRY RUN\] Would download (HF|wget) ' <<< "$dry_out")
     if [[ "$planned" -ne 3 ]]; then
         fail_later "provisioner-plan" \
             "--dry-run planned ${planned} downloads, expected exactly 3 — a URL class \
@@ -195,6 +216,7 @@ if [[ "$_srv_up" != true ]]; then
     # Our own fixture failed to start. Not an image defect — say so rather than
     # blaming the provisioner for it.
     echo "  WARN: local HTTP fixture did not come up; skipping the end-to-end download"
+    _download_verified=false
 else
     # TWO retry budgets, and bounding only the inner one was not enough.
     # settings.retry governs the download; on_failure governs the whole
@@ -218,7 +240,9 @@ downloads:
   - url: http://127.0.0.1:18973/payload.bin
     dest: ${_tmp}/out/payload.bin
 YAML
-    dl_out=$("$PROVISIONER" "$_tmp/dl.yaml" 2>&1)
+    dl_out=$(env -u PROVISIONING_SCRIPT -u PROVISIONER_FAILURE_ACTION -u PROVISIONER_RETRY_MAX \
+        -u PROVISIONER_RETRY_DELAY -u PROVISIONER_WEBHOOK_URL -u PROVISIONER_LOG_FILE \
+        "$PROVISIONER" "$_tmp/dl.yaml" 2>&1)
     dl_rc=$?
     if [[ $dl_rc -ne 0 ]]; then
         fail_later "provisioner-download" "a loopback download failed (rc=${dl_rc}): ${dl_out}"
@@ -235,4 +259,11 @@ fi
 
 report_failures
 
-test_pass "provisioner verified (imports, manifest planning, hf argv contract, real download)"
+# The summary must describe what actually ran. Claiming "real download" after the
+# fixture failed to start is the same lie as a test reporting libraries verified
+# when it found none.
+if [[ "${_download_verified:-true}" == true ]]; then
+    test_pass "provisioner verified (imports, manifest planning, hf argv contract, real download)"
+else
+    test_pass "provisioner verified (imports, manifest planning, hf argv contract; download SKIPPED — fixture unavailable)"
+fi

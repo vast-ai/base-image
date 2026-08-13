@@ -40,8 +40,12 @@ echo "  CONTAINER_ID=${CONTAINER_ID}"
 # it is a supported configuration, not a broken image.
 [[ -n "${CONTAINER_API_KEY:-}" ]] || echo "  WARN: CONTAINER_API_KEY is not set — API metadata will be unavailable"
 
-# The wrapper is ours, so its presence is hard.
+# The wrapper AND what it execs are ours, so all three are hard. `command -v`
+# alone only proves the shim file exists — it would pass on an image where the
+# interpreter or the CLI itself was dropped, which is an image defect we own.
 command -v vastai &>/dev/null || test_fail "vastai command not found"
+[[ -x /usr/bin/python3 ]] || test_fail "/usr/bin/python3 missing — bin/vastai execs it"
+[[ -f /opt/vast-cli/vast.py ]] || test_fail "/opt/vast-cli/vast.py missing — bin/vastai runs it"
 
 # Running it is NOT hard. bin/vastai is `cd /opt/vast-cli && python3 vast.py`, and
 # first_boot/05-update-vast.sh does a `git pull` on that checkout with
@@ -54,6 +58,13 @@ vastai --help >/dev/null 2>&1 || echo "  WARN: vastai --help failed — upstream
 # ── Platform-side: best effort, never a failure ───────────────────────
 
 raw=""
+# No key, no round-trip: the loop below would spend three CLI startups and two
+# 5s sleeps proving something we already announced.
+if [[ -z "${CONTAINER_API_KEY:-}" ]]; then
+    echo "{}" > "$METADATA_FILE"
+    test_pass "instance identity verified (no API key; metadata unavailable)"
+fi
+
 for attempt in 1 2 3; do
     raw=$(vastai show instance "$CONTAINER_ID" --api-key "$CONTAINER_API_KEY" --raw 2>&1)
     if [[ $? -eq 0 && -n "$raw" ]] && echo "$raw" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
