@@ -10,7 +10,7 @@ from pathlib import Path
 import imagegen.linter as L
 from imagegen.discover import Image, discover, find_repo_root
 from imagegen.dockerfile import parse, stages
-from imagegen.linter import lint_image, ERROR, EXCEPTIONS
+from imagegen.linter import lint_image, ERROR, EXCEPTIONS, RULES
 
 VALID_DF = """\
 ARG PYTORCH_BASE=vastai/pytorch:test
@@ -1416,7 +1416,7 @@ def test_mut_L066_the_real_boot_script_reverted_fires(tmp_path):
     assert "bin/cert-usable" in original
     mutated = original.replace(
         '_cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" '
-        '"${2:-/etc/instance.key}" 2>/dev/null; }',
+        '"${2:-/etc/instance.key}"; }',
         "_cert_usable() {\n"
         "    local c k\n"
         "    c=$(openssl x509 -in /etc/instance.crt -noout -pubkey 2>/dev/null "
@@ -1467,3 +1467,96 @@ def test_mut_L066_the_real_portal_validator_reverted_fires(tmp_path):
         assert "L066" in errs(img, repo)
     finally:
         src.write_text(original)
+
+
+# ---- The rule CATALOGUE must not drift from the tree -----------------------
+
+# `/opt/...` paths that are deliberately illustrative rather than real. Adding to
+# this list is the explicit way to say "placeholder"; everything else must exist.
+_RULES_PATH_PLACEHOLDERS = {
+    "/opt/supervisor-scripts/NAME.sh",     # L010: NAME stands for the app name
+}
+
+
+def test_rules_text_cites_paths_that_exist():
+    """Every /opt path a RULES entry names must be real.
+
+    `imagegen rules` generates docs/lint-rules.md, which CLAUDE.md treats as
+    ground truth and which is what a developer reads when a rule fires and they
+    ask "what should I do instead". L066 shipped telling them to source
+    `/opt/instance-tools/lib/tls-cert.sh` — a file that does not exist, and the
+    design ADR 0026 explicitly REJECTED. Every L066 test passed, and the
+    doc-currency test kept the published catalogue in perfect sync with the
+    wrong text, because nothing compared the prose to the tree. The likely
+    reader response would have been to CREATE the named file: a second
+    implementation, which is the precise drift the rule exists to prevent.
+    """
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    root = repo / "ROOT"
+    pat = re.compile(r"/opt/[A-Za-z0-9_./-]*[A-Za-z0-9_-]")
+    missing = []
+    for code, _sev, text in RULES:
+        for p in sorted(set(pat.findall(text))):
+            if p in _RULES_PATH_PLACEHOLDERS:
+                continue
+            if not (root / p.lstrip("/")).exists():
+                missing.append(f"{code} cites {p}, which is not in ROOT/")
+    assert not missing, "\n".join(missing)
+
+
+def test_L066_a_wrapped_argv_does_not_escape_the_rule(tmp_path):
+    """ruff and black both wrap a 6-element list. The line-scoped regex exempted
+    the portal — the one caller that is NOT a test, and the one that gates
+    Caddy's TLS listener — while the mutation test kept passing because it only
+    ever mutated to the single-line form."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "subprocess.run(\n"
+                       '    [\n'
+                       '        "openssl", "rsa",\n'
+                       '        "-in", KEY_PATH,\n'
+                       '        "-check", "-noout",\n'
+                       '    ],\n'
+                       ")\n")
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_rsa_noout_without_output_fires(tmp_path):
+    """`openssl rsa -in K -noout` is the same RSA-only load with no flag at all;
+    it rejects a valid EC key exactly as `-check` does."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       'openssl rsa -in "$KEY_PATH" -noout || test_fail "bad key"\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_rsa_conversion_is_not_a_check(tmp_path):
+    """Producing output is a conversion, not a validity test — legitimate."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/some-tool",
+                       'openssl rsa -in "$KEY" -pubout -out "$PUB" -noout\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_python_docstrings_are_prose_not_code(tmp_path):
+    """The window join made explanatory prose dangerous: a docstring describing
+    the old code fired the rule on the file that had just been fixed. Blanking
+    ALL string literals would have been the obvious fix and is wrong — the
+    offending call IS a list of strings — so only docstrings are dropped."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "def validate():\n"
+                       '    """The previous version used the RSA-ONLY `openssl rsa`\n'
+                       '    entry point and its `-check` flag, which cannot load EC."""\n'
+                       "    return run([CERT_USABLE, CERT_PATH, KEY_PATH])\n")
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_a_string_literal_argv_is_still_code(tmp_path):
+    """The other side of the same coin — dropping prose must not drop data."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "def validate():\n"
+                       '    """Checks the key."""\n'
+                       '    return run(["openssl", "rsa", "-in", KEY, "-check"])\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")

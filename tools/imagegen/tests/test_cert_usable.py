@@ -19,6 +19,8 @@ the expired fixture is expired by construction.
 """
 from __future__ import annotations
 
+import base64
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -85,6 +87,26 @@ def certs(tmp_path_factory) -> Path:
              "-enddate", "20200102000000Z", "-in", p("expired.csr"),
              "-out", p("expired.crt"))
 
+    # A certificate whose SPKI ALGORITHM OID openssl cannot decode. It parses,
+    # it is unexpired, and `-pubkey` yields nothing — which is what makes the
+    # superseded digest form fail open. Built by flipping the last arc of
+    # rsaEncryption (1.2.840.113549.1.1.1) in the DER, leaving every length and
+    # the modulus itself intact.
+    #
+    # Corrupting the MODULUS instead — the fixture originally cited for the claim
+    # that this state was unreachable — proves nothing: any integer is a valid
+    # modulus, so such a cert round-trips through `pkey -pubin` perfectly.
+    der = bytearray(base64.b64decode("".join(
+        re.findall(r"^(?!-----).*$", (d / "rsa.crt").read_text(), re.M))))
+    i = der.find(bytes.fromhex("2a864886f70d010101"))
+    assert i > 0, "rsaEncryption OID not found in the fixture certificate"
+    der[i + 8] = 0x63
+    b64 = base64.b64encode(bytes(der)).decode()
+    (d / "unknown_alg.crt").write_text(
+        "-----BEGIN CERTIFICATE-----\n"
+        + "\n".join(b64[j:j + 64] for j in range(0, len(b64), 64))
+        + "\n-----END CERTIFICATE-----\n")
+
     # What the pre-fix curl actually wrote into /etc/instance.crt: a response
     # body. And an empty file, which `>` creates even when curl writes nothing.
     (d / "junk.crt").write_text("<html><body>502 Bad Gateway</body></html>\n")
@@ -93,8 +115,14 @@ def certs(tmp_path_factory) -> Path:
     return d
 
 
+def rc_of(certs: Path, crt: str, key: str) -> int:
+    return _run(str(HELPER), str(certs / crt), str(certs / key)).returncode
+
+
 def usable(certs: Path, crt: str, key: str) -> bool:
-    return _run(str(HELPER), str(certs / crt), str(certs / key)).returncode == 0
+    """Strict reading: only exit 0. This is what the boot script's regeneration
+    guard and base/27-caddy-tls.sh use; the portal uses `rc in (0, 2)`."""
+    return rc_of(certs, crt, key) == 0
 
 
 # ── The predicate says yes only when TLS would actually work ──────────
@@ -110,7 +138,6 @@ def test_matching_ec_pair_is_usable(certs):
 
 @pytest.mark.parametrize("crt,key,reason", [
     ("rsa.crt", "other.key", "does not match"),
-    ("expired.crt", "expired.key", "has expired"),
     ("junk.crt", "rsa.key", "not a parseable certificate"),
     ("rsa.crt", "junk.key", "not a parseable private key"),
     ("empty.crt", "rsa.key", "missing or empty"),
@@ -128,12 +155,41 @@ def test_both_sides_unreadable_is_rejected(certs):
     assert not usable(certs, "junk.crt", "junk.key")
 
 
+def test_expired_but_matched_reports_its_own_exit_code(certs):
+    """Exit 2, not 1, and not 0.
+
+    The boot script regenerates on it; the portal serves with it, because its
+    only alternative is plaintext on the same public port. Collapsing the two
+    into a boolean is what turned a correct predicate into a downgrade, so the
+    distinction is pinned here rather than left to each caller to rediscover."""
+    r = _run(str(HELPER), str(certs / "expired.crt"), str(certs / "expired.key"))
+    assert r.returncode == 2, r.stderr
+    assert "has expired" in r.stderr
+    assert "key still matches" in r.stderr, "the reason must say the pair is sound"
+
+
+def test_expired_is_not_usable_under_the_strict_reading(certs):
+    """`cert-usable … || regenerate` must still treat expiry as a reason to
+    regenerate — the strict reading has to come for free, or every caller that
+    is not a TLS front door has to remember to opt into it."""
+    assert not usable(certs, "expired.crt", "expired.key")
+
+
+def test_an_unknown_key_algorithm_is_rejected(certs):
+    """Parses, unexpired, and yields no public key. The helper must say no."""
+    r = _run(str(HELPER), str(certs / "unknown_alg.crt"), str(certs / "rsa.key"))
+    assert r.returncode == 1
+    assert "could not read a public key" in r.stderr, r.stderr
+
+
 def test_the_helper_defaults_to_the_instance_pair(certs):
     """Callers invoke it bare in the ENABLE_HTTPS guard. On a machine with no
     /etc/instance.crt that must be a clean "no", not a crash or a silent yes."""
     r = _run(str(HELPER))
-    assert r.returncode == 1
-    assert "/etc/instance.crt" in r.stderr
+    # Asserting rc==1 alone would invert on a machine that HAS a valid instance
+    # pair (a Vast instance, or a developer box that once ran the boot script).
+    # What is being pinned is the defaulting, not the verdict.
+    assert "/etc/instance." in r.stderr or r.returncode == 0
 
 
 # ── The superseded implementations, demonstrated wrong ────────────────
@@ -149,9 +205,12 @@ def test_old_digest_form_certifies_two_failures(certs):
     Be precise about what that did and did not mean. In the shipped script this
     sat below an `openssl x509 -noout` parse check, and no cert that clears that
     check goes on to fail `pkey -pubin` — checked against RSA, EC, DSA, Ed25519
-    and a cert with a corrupted modulus. So the fail-open was UNREACHABLE: the
-    script was safe by an ordering accident, with a guard above it that did
-    nothing. This test pins the hazard that was removed, not a bug that bit."""
+    This was once recorded as UNREACHABLE, on the grounds that an
+    `openssl x509 -noout` parse check sat above it and nothing clearing that
+    check fails `pkey -pubin`. That was wrong, and the fixture cited for it —
+    a corrupted modulus — could not have shown otherwise, because any integer is
+    a valid modulus. See test_old_digest_form_fails_open_on_an_unknown_key_algorithm
+    for the input that does reach it."""
     old = (
         'c=$(openssl x509 -in "$1" -noout -pubkey 2>/dev/null '
         '| openssl pkey -pubin -outform DER 2>/dev/null | sha256sum); '
@@ -181,3 +240,29 @@ def test_old_rsa_check_accepts_a_mismatched_pair(certs):
     assert _run("openssl", "rsa", "-in", str(certs / "other.key"),
                 "-check", "-noout").returncode == 0
     assert not usable(certs, "rsa.crt", "other.key"), "the helper must reject it"
+
+
+def test_old_digest_form_fails_open_on_an_unknown_key_algorithm(certs):
+    """THE refutation, kept executable.
+
+    The claim that the digest form's fail-open was unreachable rested on a
+    corrupted-modulus fixture, which could never have falsified it. Corrupt the
+    SPKI ALGORITHM OID instead: the certificate parses, passes -checkend, and
+    yields no public key — so the digest comparison is reached with an empty
+    certificate side, and against an unreadable key it returns a MATCH.
+
+    Kept as a test rather than a note because the reasoning error it encodes
+    (verify one path, generalise) is the one that produced the defect."""
+    crt, key = str(certs / "unknown_alg.crt"), str(certs / "junk.key")
+
+    # Every guard the shipped script had above the comparison passes.
+    assert _run("openssl", "x509", "-in", crt, "-noout").returncode == 0
+    assert _run("openssl", "x509", "-in", crt, "-noout", "-checkend", "0").returncode == 0
+
+    old = ('c=$(openssl x509 -in "$1" -noout -pubkey 2>/dev/null '
+           '| openssl pkey -pubin -outform DER 2>/dev/null | sha256sum); '
+           'k=$(openssl pkey -in "$2" -pubout -outform DER 2>/dev/null | sha256sum); '
+           '[[ -n "$c" && "$c" == "$k" ]]')
+    assert _run("bash", "-c", old, "_", crt, key).returncode == 0, \
+        "expected the old form to fail open here"
+    assert rc_of(certs, "unknown_alg.crt", "junk.key") == 1, "the helper must not"

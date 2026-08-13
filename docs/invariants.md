@@ -318,15 +318,23 @@ the key, so a mismatched pair — what a half-finished regeneration leaves —
 passed both. The third hashed each side's public key before comparing, which
 inverts the risk: `sha256sum` of empty input is `e3b0c442…` on *both* sides, so
 two failed extractions compare equal and `[[ -n "$c" ]]` guards the digest
-rather than the key. (A parse check above it made that unreachable in the
-shipped script — a trap for the next edit rather than a live fault, and worth
-stating precisely.) All three now call
+rather than the key — reachable with a certificate whose SPKI **algorithm OID**
+openssl cannot decode, which parses and passes `-checkend` but yields no public
+key. (This file previously called that unreachable, on the strength of a
+corrupted-*modulus* fixture that could not have falsified it — any integer is a
+valid modulus. Recorded because the bad inference, not the bug, is the reusable
+lesson.) All three now call
 `/opt/instance-tools/bin/cert-usable <crt> <key>`, which compares PEM SPKI
-directly. **L066** (`check_one_cert_usability_predicate`) forbids re-implementing
-it; generic openssl use — `rand`, `s_client`, `-checkend`, fingerprints — stays
-legal. Behaviour is pinned by `tools/imagegen/tests/test_cert_usable.py` against
-real RSA/EC/mismatched/expired/unreadable fixtures, and the boot script's
-across-boot convergence by `test_tls_cert_gen.py` (ADR 0026).
+directly and reports **0 usable / 2 matched-but-expired / 1 unusable** — expiry
+is a separate code because it means *regenerate* at boot and *serve anyway* at
+the portal, whose only fallback is plaintext on the same public port. **L066**
+(`check_one_cert_usability_predicate`) blocks the spellings that have already
+shipped wrong, across line breaks and in Python argv lists; it is not a proof
+that no fourth implementation exists, and generic openssl use — `rand`,
+`s_client`, `-checkend`, fingerprints, conversions — stays legal. Behaviour is
+pinned by `tools/imagegen/tests/test_cert_usable.py` against real
+RSA/EC/mismatched/expired/unreadable/unknown-algorithm fixtures, and the boot
+script's across-boot convergence by `test_tls_cert_gen.py` (ADR 0026).
 
 ### A test-invoked provisioner run does not touch the real one's state
 
@@ -341,13 +349,28 @@ self-test that unsets the variables its author could name therefore runs the
 customer's `post_commands` as root five stages early, writes their provisioning
 log, validates their tokens against huggingface.co, and can reach
 `vastai destroy instance`. The invariant is the **direction**: `env -i` plus a
-named allowlist, which is complete by construction, and
-`PROVISIONER_STATE_DIR` pointed at a temp dir so stage hashes cannot mark a
-stage complete that the real run has not performed. Not gated by the linter —
-the property is about side effects, not syntax — but asserted directly by
-`tools/imagegen/tests/test_provisioner_selftest.py`, which runs the real test
-under a hostile environment and checks afterwards for the files, log lines,
-state entries and outbound connections that must not exist.
+named allowlist with **pinned values** — `$PATH` forwarded verbatim would leave
+`wget`/`git`/`apt-get`/`vastai` resolvable from a template-set directory, so a
+name-only allowlist is just a shorter deny-list — plus `PROVISIONER_STATE_DIR`
+pointed at a temp dir so stage hashes cannot mark a stage complete that the real
+run has not performed. It covers the test's own **fixture** too: `curl` honours
+`http_proxy` and does not auto-bypass loopback, so an unscrubbed readiness probe
+let a customer-set proxy skip the download section into a pass.
+
+Not gated by the linter — the property is about side effects, not syntax — but
+asserted by `tools/imagegen/tests/test_provisioner_selftest.py`, which runs the
+real test under a hostile environment and then checks for the files, log lines,
+state entries and outbound connections that must not exist. **Every one of those
+canaries carries a positive control**, because three of the first seven were
+structurally unable to fire (an early-aborting `PROVISIONING_APT` shadowed
+`post_commands`; an unresolvable URL; an absolute dest that never consulted
+`$WORKSPACE`) and reported `ok` regardless. A canary without a proof that it can
+fire is decoration.
+
+`PROVISIONER_STATE_DIR` is validated rather than trusted: `clear_all_state()`
+does `shutil.rmtree` and is reachable from `--force`, so it refuses relative and
+system paths, writes an ownership marker and declines to delete a tree it did not
+create, and opens hash files `O_NOFOLLOW`.
 
 ### Copyleft licence compliance (proposed)
 

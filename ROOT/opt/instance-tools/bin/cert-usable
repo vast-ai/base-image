@@ -1,15 +1,39 @@
 #!/bin/bash
-# Decide whether a TLS certificate and private key are actually usable together.
+# Decide whether a TLS certificate and private key are usable together.
 #
-#   cert-usable [CRT] [KEY]     exit 0 = usable, 1 = not (reason on stderr)
+#   cert-usable [CRT] [KEY]
 #
-# Defaults to /etc/instance.crt and /etc/instance.key, the pair 55-tls-cert-gen.sh
-# produces and Caddy serves.
+#     exit 0   usable
+#     exit 2   MATCHED AND WELL-FORMED, BUT EXPIRED
+#     exit 1   unusable (missing, unparseable, or the pair does not match)
 #
-# WHY THIS EXISTS
-# ---------------
-# Three places asked this question and gave three different wrong answers, each
-# wrong in a direction its author had no fixture for.
+# Reason on stderr in every non-zero case. Defaults to /etc/instance.crt and
+# /etc/instance.key, the pair 55-tls-cert-gen.sh produces and Caddy serves.
+#
+# WHY EXPIRY IS ITS OWN EXIT CODE
+# -------------------------------
+# Because "usable" is not one question. The two callers want opposite things
+# from an expired-but-matched pair:
+#
+#   55-tls-cert-gen.sh   regenerate. It is at boot, a new keypair costs
+#                        milliseconds, and the console will sign a fresh one.
+#   caddy_config_manager serve it. Its ONLY fallback is no TLS at all — the
+#                        same public port in plaintext, carrying the portal auth
+#                        token in ?token=. An expired certificate still
+#                        encrypts; a missing one does not. And nothing repairs
+#                        the cert outside a boot, so a cert that expires while
+#                        the instance runs would silently downgrade the moment
+#                        supervisor restarts caddy (autorestart=unexpected).
+#
+# Collapsing those into one boolean is how a predicate that is right at one
+# caller becomes a downgrade at another. One implementation, two policies: the
+# exit code carries the fact, the caller owns the decision. A caller that does
+# `cert-usable … || regenerate` gets the strict reading for free, which is the
+# safe default for anything that is not a TLS front door.
+#
+# WHY THIS EXISTS AT ALL
+# ----------------------
+# Three places asked this question and gave three different wrong answers.
 #
 #   base/27-caddy-tls.sh    openssl rsa -in KEY -check
 #   caddy_config_manager    ["openssl","rsa","-in",KEY,"-check","-noout"]
@@ -20,30 +44,33 @@
 # portal one is not a test — it is what gates Caddy's TLS listener. Neither
 # compares the certificate to the key, so a MISMATCHED pair passes both.
 #
-# The digest form is latently unsafe rather than actively wrong, and the
-# distinction is worth stating precisely because it is easy to overstate.
-# `sha256sum` of empty input is e3b0c442…, a fixed NON-EMPTY string, so two
-# openssl invocations that both fail produce identical digests and the
-# comparison reports a match. The `[[ -n "$c" ]]` guard does not catch it: what
-# is non-empty is the digest, not the key. But in the shipped script that
-# expression sat below a `openssl x509 -noout` parse check, and every cert that
-# clears that check also survives `pkey -pubin` (verified against RSA, EC, DSA,
-# Ed25519, and a cert with a deliberately corrupted modulus). The fail-open was
-# therefore unreachable — safe by an accident of ordering, with an inert guard
-# above it claiming otherwise. That is a trap for the next edit, not a live bug.
+# The digest form fails the other way. `sha256sum` of empty input is e3b0c442…,
+# a fixed NON-EMPTY string, so two openssl invocations that both fail produce
+# identical digests and the comparison reports a match. `[[ -n "$c" ]]` does not
+# catch it: what is non-empty is the digest, not the key.
 #
-# So the comparison here has no hashing step at all: emptiness cannot stop
-# looking like emptiness, and the non-empty guards are load-bearing rather than
-# decorative, whatever order the checks are later put in.
+# That fail-open IS REACHABLE, and the record here previously said otherwise.
+# The claim was that an `openssl x509 -noout` parse check above it gated every
+# input, "verified against RSA, EC, DSA, Ed25519 and a cert with a corrupted
+# modulus". The modulus was the wrong thing to corrupt — any integer is a valid
+# modulus, so that sample could not have falsified the claim it was cited for.
+# Corrupt the SPKI ALGORITHM OID instead and the certificate still parses, still
+# passes -checkend, and `-pubkey` fails: the digest comparison is reached with
+# an empty cert side, and against an unreadable key it returns USABLE. Pinned by
+# test_old_digest_form_fails_open_on_an_unknown_key_algorithm.
+#
+# What actually made it improbable in the shipped script was narrower and worth
+# naming: /etc/instance.key is generated locally two lines earlier, so the key
+# side was rarely the one that failed. Not the check ordering.
 #
 # So: compare the PEM SubjectPublicKeyInfo of each side DIRECTLY. There is no
-# hashing step in which emptiness can stop looking empty, `openssl pkey -pubout`
-# is key-type agnostic, and the explicit non-empty guard means a failure on
-# either side can never read as agreement.
+# hashing step in which emptiness can stop looking like emptiness, `openssl pkey
+# -pubout` is key-type agnostic, and the non-empty guards are load-bearing
+# rather than decorative whatever order the checks are later put in.
 #
-# Exercised against real RSA, EC, mismatched, expired, and unreadable fixtures by
-# tools/imagegen/tests/test_cert_usable.py. Enforced as the single implementation
-# by linter rule L066.
+# Exercised against real RSA, EC, mismatched, expired, unreadable and
+# unknown-algorithm fixtures by tools/imagegen/tests/test_cert_usable.py.
+# Enforced as the single implementation by linter rule L066.
 
 CRT=${1:-/etc/instance.crt}
 KEY=${2:-/etc/instance.key}
@@ -57,19 +84,30 @@ _no() { echo "cert-usable: $1" >&2; exit 1; }
 openssl x509 -in "$CRT" -noout >/dev/null 2>&1 \
     || _no "${CRT} is not a parseable certificate"
 
-# Unexpired. An expired cert parses fine and makes Caddy serve a listener that
-# every client rejects, which is indistinguishable from "HTTPS is broken" without
-# being distinguishable from "HTTPS is fine" to a guard that only parses.
-openssl x509 -in "$CRT" -noout -checkend 0 >/dev/null 2>&1 \
-    || _no "${CRT} has expired"
-
 # Matching. This is what a half-finished regeneration breaks: a cert from before,
-# a key from after. `-pubout`/`-pubkey` both emit PEM SPKI, so RSA, EC and Ed25519
-# all compare on equal terms.
+# a key from after. `-pubout`/`-pubkey` both emit PEM SPKI, so RSA, EC and
+# Ed25519 all compare on equal terms — and an algorithm openssl cannot decode
+# yields an empty string here rather than a digest that looks like agreement.
+#
+# `</dev/null` so an encrypted private key is a clean failure rather than a
+# passphrase prompt against the boot console.
 _c=$(openssl x509 -in "$CRT" -noout -pubkey 2>/dev/null)
-_k=$(openssl pkey -in "$KEY" -pubout 2>/dev/null)
+_k=$(openssl pkey -in "$KEY" -pubout 2>/dev/null </dev/null)
 [[ -n "$_c" ]] || _no "could not read a public key out of ${CRT}"
 [[ -n "$_k" ]] || _no "${KEY} is not a parseable private key"
 [[ "$_c" == "$_k" ]] || _no "${CRT} does not match ${KEY}"
+
+# Expiry LAST, and separately, so the caller is told about a pair that is
+# otherwise entirely sound. An expired cert parses fine and makes Caddy serve a
+# listener every client rejects — but it is still a matched pair, and that
+# distinction is the whole point of exit 2.
+#
+# Deliberately no notBefore check: rented hosts have unreliable clocks, and
+# rejecting a not-yet-valid certificate every external client accepts would
+# reintroduce the regeneration loop for no gain.
+if ! openssl x509 -in "$CRT" -noout -checkend 0 >/dev/null 2>&1; then
+    echo "cert-usable: ${CRT} has expired (key still matches)" >&2
+    exit 2
+fi
 
 exit 0

@@ -43,12 +43,20 @@
 #                               (measured: 62 lines, twice).
 #   HF_TOKEN / CIVITAI_TOKEN    real outbound token validation, 30.2s of it.
 #
-# So the direction is inverted: `env -i` and then add back, by name, the few
-# variables the provisioner needs. A deny-list is only ever as complete as its
-# author's memory of a codebase that keeps growing new readers; an allowlist is
-# complete by construction. PROVISIONER_STATE_DIR is part of that construction —
-# without it this test shares /.provisioner_state with the real provisioning run
-# and can mark stages complete that the real run has not performed.
+# So the direction is inverted: `env -i` and then add back, by NAME and mostly by
+# VALUE, the few variables the provisioner needs. A deny-list is only ever as
+# complete as its author's memory of a codebase that keeps growing new readers.
+# An allowlist is complete in its names by construction — but only in its values
+# if the values are pinned too, which is why $PATH is not forwarded (see below).
+# PROVISIONER_STATE_DIR is part of the same discipline: without it this test
+# shares /.provisioner_state with the real provisioning run and can mark stages
+# complete that the real run has not performed.
+#
+# The discipline covers the FIXTURE as well, not just the provisioner. `curl`
+# honours http_proxy and does not auto-bypass loopback, so a template-set proxy
+# variable made the readiness probe fail and quietly skipped section 4 into a
+# pass — a skip-as-pass the customer could select remotely, in the one section
+# that exercises the real download path.
 #
 # NOTHING HERE TOUCHES THE EXTERNAL NETWORK. A test that downloads a real model
 # turns a HuggingFace outage, a rate limit, or a host with no egress into a held
@@ -78,27 +86,46 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$_tmp/home" "$_tmp/ws" "$_tmp/state" "$_tmp/hfhome"
 
-# THE allowlist. Everything the provisioner can read that is not named here is
-# absent, including anything added to it after this was written.
+# THE allowlist — allowlisted NAMES with PINNED VALUES. Both halves matter.
 #
-#   PATH        the shim activates its venv and then `exec python`
+# Forwarding $PATH through verbatim would have been an allowlist in name only:
+# the provisioner spawns wget, git, apt-get, bash and vastai by bare name, so a
+# template-set PATH=/workspace/bin:… runs attacker-chosen binaries as root at
+# boot stage 70. The same actor can do that at stage 75 through the provisioner
+# proper, so this is not a privilege boundary — but "complete by construction"
+# has to mean the values too, or it is just a shorter deny-list.
+#
+#   PATH        pinned. The shim prepends its own venv, so this only has to
+#               cover the system tools the provisioner shells out to.
 #   HOME        uv/pip write caches; without it they fall back to '/' and warn
 #   LANG        python's stdio encoding; a C locale mangles log output
-#   WORKSPACE   manifest.py:187 defaults dest paths under it — pointed at our
-#               temp dir so a relative path in a manifest cannot land in the
-#               customer's workspace
-#   PROVISIONER_STATE_DIR   see above; keeps stage hashes out of the real run's
+#   WORKSPACE   manifest.py defaults dest paths under it — pointed at our temp
+#               dir so a relative dest cannot land in the customer's workspace
+#   PROVISIONER_STATE_DIR   keeps stage hashes out of the real run's state
+#   OMP/MKL/…_NUM_THREADS, TOKIO_WORKER_THREADS
+#               forwarded, not pinned. These are the ADR 0014/0025 caps that
+#               12-cpu-thread-limits.sh sets on pid-starved high-core hosts, and
+#               they are exactly the hosts where an unbounded hf download dies
+#               with pthread_create EAGAIN. Production always has them; a
+#               self-test that drops them would run the one configuration the
+#               fleet never runs, and no CI runner has enough cores to notice.
 #
 # CONTAINER_ID and CONTAINER_API_KEY are absent ON PURPOSE, not by oversight:
 # they are what failure.py needs to call the API, so without them the destroy
 # path cannot fire even if some future edit re-enables it.
+_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 _prov() {
     env -i \
-        PATH="$PATH" \
+        PATH="$_PATH" \
         HOME="$_tmp/home" \
         LANG="${LANG:-C.UTF-8}" \
         WORKSPACE="$_tmp/ws" \
         PROVISIONER_STATE_DIR="$_tmp/state" \
+        ${OMP_NUM_THREADS:+OMP_NUM_THREADS="$OMP_NUM_THREADS"} \
+        ${MKL_NUM_THREADS:+MKL_NUM_THREADS="$MKL_NUM_THREADS"} \
+        ${OPENBLAS_NUM_THREADS:+OPENBLAS_NUM_THREADS="$OPENBLAS_NUM_THREADS"} \
+        ${NUMEXPR_NUM_THREADS:+NUMEXPR_NUM_THREADS="$NUMEXPR_NUM_THREADS"} \
+        ${TOKIO_WORKER_THREADS:+TOKIO_WORKER_THREADS="$TOKIO_WORKER_THREADS"} \
         "$PROVISIONER" "$@"
 }
 
@@ -162,18 +189,39 @@ fi
 # identical usage-error discrimination.
 mkdir -p "$_tmp/srv" "$_tmp/out"
 head -c 4096 /dev/urandom > "$_tmp/srv/payload.bin"
-# NO SUBSHELL. `( ... ) &` makes $! the subshell, not python, so the cleanup trap
-# killed the wrapper and left the server holding the port for the life of the
-# container — a stray listener in an image whose neighbouring test (28) exists to
-# find stray listeners. Worse, on a re-run in the same container the bind failed,
-# the probe hit the PREVIOUS run's server over a deleted docroot, and section 4
-# degraded to a WARN: a skip-as-pass inside the file written to close skip-as-pass.
-python3 -m http.server 18973 --bind 127.0.0.1 --directory "$_tmp/srv" >/dev/null 2>&1 &
+# THE FIXTURE AND ITS PROBE GET THE SAME TREATMENT AS THE PROVISIONER, and the
+# probe is the more important of the two. `curl` honours http_proxy/ALL_PROXY
+# and does NOT auto-bypass loopback, so a template-set proxy variable — which
+# the customer controls — makes this probe fail (rc=7, measured), _srv_up stays
+# false, and section 4 degrades to a WARN and then a PASS. That is a
+# remotely-selectable skip-as-pass in the one section that exercises the real
+# download path, reached without the provisioner ever being involved.
+# `--noproxy '*'` is belt and braces on top of the scrubbed environment.
+#
+# The server gets it too: `python3 -m http.server` would otherwise inherit
+# PYTHONPATH/PYTHONSTARTUP from the same untrusted environment.
+_env() { env -i PATH="$_PATH" HOME="$_tmp/home" LANG="${LANG:-C.UTF-8}" "$@"; }
+
+# NO SUBSHELL, AND THEREFORE NOT VIA _env EITHER. `( ... ) &` makes $! the
+# subshell rather than python, so the cleanup trap kills the wrapper and leaves
+# the server holding the port for the life of the container — a stray listener
+# in an image whose neighbouring test (28) exists to find stray listeners, and
+# on any re-run the bind then fails, the probe finds nothing, and section 4
+# degrades to a WARN and a PASS.
+#
+# `_env` is a shell FUNCTION, and `func args &` is a subshell too — so wrapping
+# the server in it reintroduced exactly that bug, which is how it was found:
+# running this file twice in one container skipped the download the second time.
+# `env` as a COMMAND execs, keeping the pid, so it is spelled out here instead.
+env -i PATH="$_PATH" HOME="$_tmp/home" LANG="${LANG:-C.UTF-8}" \
+    python3 -m http.server 18973 --bind 127.0.0.1 --directory "$_tmp/srv" >/dev/null 2>&1 &
 _srv_pid=$!
 
 _srv_up=false
 for _ in $(seq 1 30); do
-    if curl -sf -o /dev/null "http://127.0.0.1:18973/payload.bin"; then _srv_up=true; break; fi
+    if _env curl -sf --noproxy '*' -o /dev/null "http://127.0.0.1:18973/payload.bin"; then
+        _srv_up=true; break
+    fi
     sleep 0.2
 done
 
@@ -236,9 +284,9 @@ did not run in its own venv, which is itself a broken-image signal"
         # all change what the CLI does — so an inherited environment could make
         # this contract check pass or fail for reasons that have nothing to do
         # with the argv it exists to check.
-        hf_out=$(env -i PATH="$PATH" HOME="$_tmp/home" LANG="${LANG:-C.UTF-8}" \
-            HF_ENDPOINT=http://127.0.0.1:18973 HF_HOME="$_tmp/hfhome" \
-            "${_cmd[@]}" 2>&1)
+        hf_out=$(_env HF_ENDPOINT=http://127.0.0.1:18973 HF_HOME="$_tmp/hfhome" \
+            ${TOKIO_WORKER_THREADS:+TOKIO_WORKER_THREADS="$TOKIO_WORKER_THREADS"} \
+            no_proxy='*' NO_PROXY='*' "${_cmd[@]}" 2>&1)
         if grep -q "command not found\|No such file or directory" <<< "$hf_out"; then
             fail_later "hf-cli-missing" "could not execute the provisioner's hf: ${hf_out}"
         fi

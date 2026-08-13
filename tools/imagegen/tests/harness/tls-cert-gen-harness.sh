@@ -17,6 +17,13 @@ set -u
 BOOT=/etc/vast_boot.d/55-tls-cert-gen.sh
 FAIL=0
 
+# The helper is mounted at /src-cert-usable and COPIED into place, not mounted
+# there directly: scenario 14 has to be able to remove it, and a bind mount
+# cannot be moved out of the way from inside the container.
+mkdir -p /opt/instance-tools/bin
+cp /src-cert-usable /opt/instance-tools/bin/cert-usable
+chmod 755 /opt/instance-tools/bin/cert-usable
+
 mkdir -p /shim
 cat > /shim/curl <<'SHIM'
 #!/bin/bash
@@ -192,6 +199,82 @@ check "counter clamped at the limit" "3" "$(marker)"
 out=$(run_boot unreachable)
 check "and says so" "giving up" "$(grep -o 'giving up' <<< "$out")"
 rm -f /shim/break /shim/openssl; hash -r
+
+echo "=== 11. a present-but-unusable pair turns HTTPS OFF ==="
+# The final guard was reverted to existence-only under mutation and every
+# scenario still passed: 9 only ever tested states where the files were ABSENT,
+# so `-f` and "usable" agreed. This is the state where they disagree, and it is
+# the original bug — a zero-byte or HTML instance.crt satisfies -f, so HTTPS
+# stayed enabled over a certificate nothing could read.
+reset_state
+boot good
+cp /shim/wrong.crt /etc/instance.crt          # parses, unexpired, WRONG key
+check "mismatched pair, generation off => https off" "false" \
+      "$(ENABLE_HTTPS=true; generate_tls_cert=false; \
+         source "$BOOT" >/dev/null 2>&1; echo "$ENABLE_HTTPS")"
+echo "<html>502</html>" > /etc/instance.crt    # unparseable
+check "HTML cert, generation off => https off" "false" \
+      "$(ENABLE_HTTPS=true; generate_tls_cert=false; \
+         source "$BOOT" >/dev/null 2>&1; echo "$ENABLE_HTTPS")"
+
+echo "=== 12. an EXPIRED but matched pair is still SERVED ==="
+# Exit code 2. The guard that decides whether to regenerate treats it as a
+# reason to regenerate; the guard that decides whether supervisor serves TLS
+# treats it as yes — because its alternative is plaintext on the same public
+# port, and an expired certificate still encrypts. Mutating either guard to use
+# the other's policy must be visible here.
+reset_state
+openssl req -newkey rsa:2048 -nodes -subj "/CN=t" \
+    -keyout /etc/instance.key -out /tmp/e.csr 2>/dev/null
+mkdir -p /tmp/ca/newcerts; : > /tmp/ca/index.txt; echo 1000 > /tmp/ca/serial
+printf '[ca]\ndefault_ca=D\n[D]\ndir=/tmp/ca\ndatabase=$dir/index.txt\n'\
+'new_certs_dir=$dir/newcerts\nserial=$dir/serial\ndefault_md=sha256\npolicy=p\n'\
+'email_in_dn=no\nrand_serial=no\nunique_subject=no\n[p]\ncommonName=optional\n' > /tmp/ca.cnf
+openssl req -newkey rsa:2048 -nodes -subj "/CN=ca" -keyout /tmp/ca.key \
+    -x509 -days 3650 -out /tmp/ca.crt 2>/dev/null
+openssl ca -batch -config /tmp/ca.cnf -cert /tmp/ca.crt -keyfile /tmp/ca.key \
+    -startdate 20200101000000Z -enddate 20200102000000Z \
+    -in /tmp/e.csr -out /etc/instance.crt >/dev/null 2>&1
+check "helper reports expired-but-matched" "2" \
+      "$(/opt/instance-tools/bin/cert-usable >/dev/null 2>&1; echo $?)"
+check "generation off => https stays ON"  "true" \
+      "$(ENABLE_HTTPS=true; generate_tls_cert=false; \
+         source "$BOOT" >/dev/null 2>&1; echo "$ENABLE_HTTPS")"
+check "generation on  => replaced with a fresh cert" "0" \
+      "$(echo good > /shim/mode
+         ( export generate_tls_cert=true CONTAINER_ID=1; source "$BOOT" ) >/dev/null 2>&1
+         /opt/instance-tools/bin/cert-usable >/dev/null 2>&1; echo $?)"
+
+echo "=== 13. the marker is CLEARED once the console succeeds ==="
+# Dropping `rm -f "$_CERT_MARKER"` passed every scenario: none set up
+# "marker present + console healthy". Without it the instance keeps retrying —
+# a fresh keypair every boot until the counter reaches the limit — despite
+# holding a properly signed certificate.
+reset_state
+boot unreachable                               # marker = 1
+check "marked after a failure" "1" "$(marker)"
+boot good                                      # console recovers
+check "marker cleared on success" "-" "$(marker)"
+fp=$(keyfp)
+boot good
+check "and no further key churn" "$fp" "$(keyfp)"
+
+echo "=== 14. a MISSING helper stops, it does not churn keys ==="
+# "Fails closed" was a warning followed by carrying on. With the helper absent
+# every check returns 127, so the regeneration guard was true on every boot:
+# a new keypair, a CSR and up to four console POSTs, forever, with even a good
+# response rejected. Doing nothing is the conservative act here.
+reset_state
+boot good
+before=$(keyfp)
+mv /opt/instance-tools/bin/cert-usable /tmp/cert-usable-hidden
+out=$(run_boot good)
+check "says the image is broken" "Error:" "$(grep -o 'Error:' <<< "$out" | head -1)"
+check "key NOT regenerated"      "$before" "$(keyfp)"
+check "existing cert untouched"  "0" \
+      "$(openssl x509 -in /etc/instance.crt -noout >/dev/null 2>&1; echo $?)"
+check "https disabled"           "false" "$(boot_https good)"
+mv /tmp/cert-usable-hidden /opt/instance-tools/bin/cert-usable
 
 [[ $FAIL -eq 0 ]] && echo "ALL SCENARIOS OK" || echo "SCENARIOS FAILED"
 exit $FAIL

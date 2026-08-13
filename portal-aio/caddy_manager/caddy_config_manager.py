@@ -71,39 +71,77 @@ def load_config(yaml_path='/etc/portal.yaml'):
     return apps
 
 
-# The single cert-usability predicate, shared with 55-tls-cert-gen.sh (which
-# decides whether to regenerate) and base/27-caddy-tls.sh (which asserts on the
-# result). Enforced as the only implementation by linter rule L066; see the
-# helper's own header for why the three copies this replaced were each wrong.
+# The cert-usability predicate shared with 55-tls-cert-gen.sh (which decides
+# whether to REGENERATE) and base/27-caddy-tls.sh (which asserts on the result).
+# Exit codes: 0 usable, 2 matched-but-expired, 1 unusable. See its own header for
+# why the three hand-rolled copies this replaced were each wrong, and why expiry
+# is a separate code rather than a boolean.
 CERT_USABLE = "/opt/instance-tools/bin/cert-usable"
+CERT_EXPIRED = 2
+
+
+def _validate_without_helper():
+    """The predicate, in-process, for when the helper is not on disk.
+
+    NOT a fourth answer to the question — deliberately the same comparison the
+    helper makes (PEM SubjectPublicKeyInfo of each side, no hashing step in
+    which an empty result can stop looking empty), minus the expiry check, which
+    this caller tolerates anyway.
+
+    It exists because the portal does NOT ship only by `COPY`. release-portal.yml
+    publishes `portal-aio` as a tarball and first_boot/10-update-instance-portal.sh
+    untars it over /opt/portal-aio on any version mismatch — so a portal release
+    lands on already-published derivatives and on customer images built FROM
+    older vast bases, none of which have /opt/instance-tools/bin/cert-usable.
+    Failing closed there would disable HTTPS on instances whose certificate is
+    perfectly fine: an OLDER image is not a BROKEN one, and this is the one place
+    that distinction has to be made in code rather than in an ADR.
+    """
+    def spki(*args):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return r.stdout if r.returncode == 0 else ""
+
+    cert_pub = spki("openssl", "x509", "-in", CERT_PATH, "-noout", "-pubkey")
+    key_pub = spki("openssl", "pkey", "-in", KEY_PATH, "-pubout")
+    return bool(cert_pub) and cert_pub == key_pub
 
 
 def validate_cert_and_key():
-    """Is the instance certificate actually usable with the instance key?
+    """Is the instance certificate good enough for Caddy to serve TLS with?
 
-    This gates Caddy's TLS listener, so it is not a formality. The previous
-    version validated the key with the RSA-ONLY `openssl rsa` entry point and its
-    `-check` flag. A valid EC key cannot be loaded by it at all, so an
-    operator-supplied EC pair failed here, wait_for_valid_certs() spent
-    MAX_RETRIES x 5s on it, and HTTPS was then disabled on a certificate that
-    was completely fine. It also never compared the cert to the key, so a
-    mismatched pair was accepted and Caddy served a listener nothing could
-    complete a handshake with.
+    "Good enough" is not the same question 55-tls-cert-gen.sh asks. An EXPIRED
+    but matched pair is a regenerate at boot and a SERVE here, because the only
+    fallback available to this function is no TLS at all — the same public port
+    in plaintext, carrying the portal auth token in ?token=. An expired
+    certificate still encrypts. Nothing repairs certificates outside a boot, so
+    treating expiry as fatal would silently downgrade any long-lived instance
+    whose cert lapsed the moment supervisor restarted caddy.
+
+    The previous version validated the key with the RSA-ONLY `openssl rsa` entry
+    point and its `-check` flag. A valid EC key cannot be loaded by it at all, so
+    an operator-supplied EC pair failed here, wait_for_valid_certs() spent
+    MAX_RETRIES x 5s on it, and HTTPS was then disabled on a certificate that was
+    completely fine. It also never compared the cert to the key, so a mismatched
+    pair was accepted and Caddy served a listener nothing could complete a
+    handshake with.
     """
     try:
-        return subprocess.run(
+        rc = subprocess.run(
             [CERT_USABLE, CERT_PATH, KEY_PATH],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        ).returncode == 0
-    except OSError as e:
-        # Fails CLOSED. Without the predicate we cannot tell a certificate from
-        # an HTML error page, and serving TLS over the latter is worse than
-        # serving none. Every image that ships this file also ships the helper
-        # (both arrive by COPY in the same Dockerfile), so this is a broken-image
-        # signal, not a supported configuration — say which.
-        print(f"Cannot validate certificates: {CERT_USABLE} is unavailable "
-              f"({type(e).__name__}: {e}). Treating them as invalid.")
-        return False
+        ).returncode
+    except OSError:
+        return _validate_without_helper()
+
+    if rc == CERT_EXPIRED:
+        print("Instance certificate has EXPIRED but still matches its key; "
+              "serving TLS with it rather than falling back to plaintext. "
+              "Restart the instance to obtain a fresh certificate.")
+        return True
+    return rc == 0
 
 
 def wait_for_valid_certs():

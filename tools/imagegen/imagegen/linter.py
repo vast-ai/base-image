@@ -9,6 +9,7 @@ substring, not a whole check — so a *different* future break of the same code 
 NOT silently suppressed (tested by test_no_stale_exceptions).
 """
 from __future__ import annotations
+import ast
 import os
 import re
 from dataclasses import dataclass
@@ -83,7 +84,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
-    ("L066", ERROR, "No shipped script open-codes the TLS cert/key usability check — source /opt/instance-tools/lib/tls-cert.sh and call `cert_usable <crt> <key>`. Every hand-rolled version so far has failed OPEN or CLOSED on a case its author had no fixture for. `openssl rsa -in KEY -check` rejects a valid EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off (base/27-caddy-tls.sh). Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key (55-tls-cert-gen.sh, caught in review; a parse check above it made the fail-open unreachable, so it was a trap for the next edit rather than a live fault). The sanctioned form compares the PEM SubjectPublicKeyInfo directly with an explicit non-empty guard, so a failure on either side can never look like agreement"),
+    ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 2 matched-but-expired, 1 unusable). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key — reachable with a certificate whose SPKI algorithm OID openssl cannot decode, which parses and passes -checkend but yields no public key (ADR 0026)"),
 ]
 
 
@@ -1060,27 +1061,87 @@ _LIBCUDA_SEARCH = re.compile(r"\b(?:find|ls|compgen|glob|rglob|iglob)\b[^\n]*lib
 
 _CERT_HELPER = "cert-usable"
 
-# Two RSA-only forms, and the second does NOT mention rsa. `openssl rsa` cannot
-# load an EC key at all, so -check on it rejects correct keys. `-modulus` is the
-# other half of the classic matching idiom and exists only for RSA — on the CERT
-# side it is spelled `openssl x509 -modulus`, with no `rsa` token anywhere, so a
-# pattern keyed on the subcommand exempts exactly half of the idiom it targets.
-# Token boundaries tolerate surrounding quotes and commas so the argv-list form
-# the portal uses matches as well as the shell form.
+# RSA-only validity checks, in three spellings. `openssl rsa` cannot load an EC
+# key at all, so -check on it rejects correct keys. `-modulus` is the other half
+# of the classic matching idiom and exists only for RSA — on the CERT side it is
+# spelled `openssl x509 -modulus`, with no `rsa` token anywhere, so a pattern
+# keyed on the subcommand exempts exactly half of the idiom it targets. And
+# `openssl rsa -in K -noout` is the same RSA-only load with no flag at all,
+# unless it is producing output, in which case it is a conversion and legitimate.
+#
+# `.` rather than `[^\n]` throughout, because these are matched against JOINED
+# windows as well as single lines — see _logical_windows.
 _OPENSSL_RSA_ONLY = re.compile(
-    r"\bopenssl\b[^\n]*?(?:"
-    r"(?<![\w-])rsa(?![\w-])[^\n]*?(?<![\w-])-check(?![\w-])"
+    r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?:"
+    r"(?<![\w-])rsa(?![\w-])(?:(?!\bopenssl\b).)*?(?<![\w-])-check(?![\w-])"
     r"|(?<![\w-])-modulus(?![\w-])"
-    r")"
+    r")",
+    re.S,
 )
+_OPENSSL_RSA_NOOUT = re.compile(
+    r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?<![\w-])rsa(?![\w-])"
+    r"(?:(?!\bopenssl\b).)*?(?<![\w-])-noout(?![\w-])",
+    re.S,
+)
+_OPENSSL_PRODUCES_OUTPUT = re.compile(r"(?<![\w-])-(?:pubout|out|outform|text)(?![\w-])")
 
 # Narrow deliberately: piping a PUBLIC KEY out of openssl into a digest, which is
 # the shape in which an empty result stops looking empty. Hashing a whole cert for
 # a fingerprint is a different, legitimate thing and is not matched.
 _PUBKEY_DIGEST = re.compile(
-    r"\bopenssl\b[^\n]*(?:-pubkey|-pubout|-pubin|-modulus)[^\n]*\|[^\n]*"
-    r"\b(?:sha\d+sum|md5sum|cksum)\b"
+    r"\bopenssl\b.*?(?:-pubkey|-pubout|-pubin|-modulus).*?\|.*?"
+    r"\b(?:sha\d+sum|md5sum|cksum)\b",
+    re.S,
 )
+
+# How many following lines to fold into each window. The portal's call is a
+# Python argv list, and any formatter that wraps it (ruff and black both do, at
+# 6 elements) split `openssl`/`rsa` from `-check` across lines — which made the
+# single-line regexes exempt the one caller that gates Caddy's TLS listener,
+# while the mutation test kept passing because it only ever mutated to the
+# one-line form. Bounded at 4 so two unrelated statements cannot be stitched
+# into a match; the alternation also refuses to span a second `openssl`.
+_WINDOW = 4
+
+
+def _py_prose_lines(path: Path) -> set[int]:
+    """Line numbers occupied by Python DOCSTRINGS (and bare string statements).
+
+    `_shipped_scripts` strips `#` comments, which is all a shell script needs.
+    Python keeps its prose in string literals, and the window join above makes
+    that prose dangerous: an explanatory docstring saying the old code used
+    "`openssl rsa` … its `-check` flag" across two lines becomes a match. That
+    is not hypothetical — it fired on the very docstring explaining this rule.
+
+    Blanking ALL string literals would be the obvious move and is wrong: the
+    portal's offending call IS a list of string literals (`["openssl", "rsa", …]`),
+    so that would exempt the one site with the worst blast radius. Docstrings and
+    bare string statements are prose by construction and are never an argv, so
+    only those are dropped.
+    """
+    if path.suffix != ".py":
+        return set()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, ValueError, OSError):
+        return set()                           # not our business to diagnose
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            out.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return out
+
+
+def _logical_windows(lines):
+    """Yield (lineno, text) for each line and for each short join of it with the
+    lines that follow, so a statement broken across lines is still one string."""
+    for i, (n, line) in enumerate(lines):
+        yield n, line
+        joined = line
+        for _, nxt in lines[i + 1:i + _WINDOW]:
+            joined = f"{joined} {nxt.strip()}"
+            yield n, joined
 
 
 def _shipped_scripts(repo: Path):
@@ -1283,14 +1344,24 @@ def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Findi
     for f, rel, lines in _shipped_scripts(repo):
         if f.name == _CERT_HELPER:
             continue                           # the one sanctioned implementation
-        for n, line in lines:
-            if _OPENSSL_RSA_ONLY.search(line):
+        seen: set[int] = set()
+        prose = _py_prose_lines(f)
+        scan = [(n, line) for n, line in lines if n not in prose]
+        for n, text in _logical_windows(scan):
+            if n in seen:
+                continue
+            rsa_only = (_OPENSSL_RSA_ONLY.search(text)
+                        or (_OPENSSL_RSA_NOOUT.search(text)
+                            and not _OPENSSL_PRODUCES_OUTPUT.search(text)))
+            if rsa_only:
+                seen.add(n)
                 yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
                               "validates or matches a TLS key with an RSA-only openssl "
-                              "form (`openssl rsa -check`, `-modulus`) — it rejects a "
-                              "valid EC key; call "
+                              "form (`openssl rsa -check/-noout`, `-modulus`) — it "
+                              "rejects a valid EC key; call "
                               "`/opt/instance-tools/bin/cert-usable <crt> <key>`")
-            elif _PUBKEY_DIGEST.search(line):
+            elif _PUBKEY_DIGEST.search(text):
+                seen.add(n)
                 yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
                               "hashes an openssl public key before comparing it — the "
                               "digest of empty input is equal on both sides, so two "

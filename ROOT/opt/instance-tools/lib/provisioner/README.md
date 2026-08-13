@@ -207,7 +207,7 @@ Set `max_retries: 0` to skip the retry loop and go straight to the action on fir
 | `PROVISIONER_LOG_FILE` | `settings.log_file` | Redirect logs per-instance |
 | `PROVISIONER_VENV` | `settings.venv` | Different default venv per deployment |
 | `PROVISIONER_CONDA_ENV` | `settings.conda_env` | Different default conda env per deployment |
-| `PROVISIONER_STATE_DIR` | (state directory) | Relocate `/.provisioner_state/`. Read at import, not from the manifest — it must be known before one is loaded. Set it to run the provisioner without touching the state a real provisioning run depends on |
+| `PROVISIONER_STATE_DIR` | (state directory) | Relocate `/.provisioner_state/`. Read at import, not from the manifest — it must be known before one is loaded. Set it to run the provisioner without touching the state a real provisioning run depends on. **`--force` calls `rmtree` on this directory**, so relative paths and system directories (`/`, `/etc`, `/usr`, …) are refused, and a directory without the provisioner's ownership marker is never deleted |
 
 ### write_files / write_files_late
 

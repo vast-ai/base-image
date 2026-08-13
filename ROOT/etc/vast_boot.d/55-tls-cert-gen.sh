@@ -13,14 +13,36 @@ sleep 2
 # hand-rolled copies of this question had grown three different answers — two
 # of which reject a valid EC keypair and turn HTTPS off (see the helper's own
 # header, and linter rule L066). Do not re-implement it.
+# EXIT CODE 2 (matched but expired) is a regenerate HERE, unlike at the portal:
+# at boot a fresh keypair costs milliseconds and the console will sign it, so
+# there is no reason to keep a lapsed certificate. `! _cert_usable` therefore
+# means "0 is fine, anything else is not", which is the strict reading and the
+# right default for every caller that is not a TLS front door.
+#
+# stderr is NOT swallowed. The helper's whole output is the reason a pair was
+# rejected ("does not match", "has expired"), and the boot log is the only place
+# an operator will look.
 _CERT_USABLE=/opt/instance-tools/bin/cert-usable
-_cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" "${2:-/etc/instance.key}" 2>/dev/null; }
+_cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" "${2:-/etc/instance.key}"; }
+
+# A MISSING HELPER MUST STOP, NOT PROCEED.
+#
+# Printing a warning and carrying on looked like failing closed and was not.
+# With the helper absent every `_cert_usable` returns 127, so the guard below is
+# true on EVERY boot: a fresh 2048-bit keypair, a CSR, up to four POSTs to
+# console.vast.ai, a self-sign — forever, and a perfectly good console response
+# is rejected too, because the same broken predicate validates it. That is the
+# unbounded key churn this file exists to end, re-entered through a different
+# door, and fleet-wide it is sustained load on the signing endpoint.
+#
+# So: leave whatever is on disk alone, and let the final guard turn HTTPS off.
+# Doing nothing is the conservative act here; regenerating is not.
+_CERT_HELPER_OK=true
 if [[ ! -x "$_CERT_USABLE" ]]; then
-    # Fails CLOSED, deliberately: without the predicate we cannot tell a good
-    # certificate from an HTML error page, and serving TLS over the latter is
-    # worse than serving none. Say so plainly — this is a broken image, not a
-    # host problem, and an operator should not have to infer it from the symptom.
-    echo "Error: ${_CERT_USABLE} is missing; cannot validate the instance certificate" >&2
+    _CERT_HELPER_OK=false
+    echo "Error: ${_CERT_USABLE} is missing or not executable; cannot validate" >&2
+    echo "       the instance certificate. Leaving the existing pair untouched" >&2
+    echo "       and disabling HTTPS. This is a broken image, not a host fault." >&2
 fi
 
 # Retry a self-signed fallback, but BOUNDEDLY. Re-entering on the marker alone
@@ -45,8 +67,8 @@ _cert_retry_due() {
     (( $(_cert_attempts) < _CERT_RETRY_LIMIT ))
 }
 
-if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! _cert_usable \
-     || _cert_retry_due; }; then
+if [[ "$_CERT_HELPER_OK" = true ]] && [[ "${generate_tls_cert}" = "true" ]] \
+   && { [[ ! -f /etc/instance.key ]] || ! _cert_usable || _cert_retry_due; }; then
     # This guard protects the CONFIG only. It used to wrap the signing too, so a
     # boot that had decided the cert needed replacing did nothing at all when
     # openssl-san.cnf was already present — which is every boot after the first.
@@ -149,9 +171,20 @@ if [[ "${generate_tls_cert}" = "true" ]] && { [[ ! -f /etc/instance.key ]] || ! 
     fi
 fi
 
-# If there is no USABLE key and cert, supervisor must know. Checking existence
+# If there is no SERVABLE key and cert, supervisor must know. Checking existence
 # alone was the second half of the same defect: a zero-byte or HTML instance.crt
 # satisfies -f, so HTTPS stayed enabled over a certificate nothing could read.
-if [[ ! -s /etc/instance.key ]] || ! _cert_usable; then
+#
+# NOTE THE DIFFERENT POLICY FROM THE GUARD ABOVE, and that it is deliberate.
+# That guard asks "should I regenerate?" and takes the strict reading. This one
+# asks "can supervisor serve TLS with what is on disk?" — the same question
+# caddy_config_manager asks — and an expired-but-matched pair (exit 2) answers
+# yes. Its alternative is not a better certificate, it is plaintext on the same
+# public port with the portal token in ?token=, and an expired certificate still
+# encrypts. Reaching here with an expired pair means the block above declined to
+# regenerate (generate_tls_cert is not true, or the helper is missing), so there
+# is no fresher certificate on offer either way.
+_cert_usable; _cert_rc=$?
+if [[ ! -s /etc/instance.key ]] || { (( _cert_rc != 0 )) && (( _cert_rc != 2 )); }; then
     export ENABLE_HTTPS=false
 fi

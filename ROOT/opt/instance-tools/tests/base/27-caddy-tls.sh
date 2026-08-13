@@ -29,6 +29,11 @@ echo "  key: ${KEY_PATH} (present)"
 # so a MISMATCHED pair — what a half-finished regeneration leaves behind, and the
 # exact state that makes Caddy serve a listener no client will complete a
 # handshake with — passed.
+# STRICT here — exit 2 (matched but expired) fails this cell rather than warning.
+# The portal tolerates an expired pair because its alternative is plaintext; a
+# QA cell has no such dilemma. Reaching this test with an expired certificate
+# means 55-tls-cert-gen.sh declined to replace one it should have replaced, and
+# that IS the image defect this suite is looking for.
 cert_reason=$(/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" 2>&1) \
     || test_fail "instance certificate is not usable: ${cert_reason}"
 echo "  cert and key are valid, unexpired and matched"

@@ -26,6 +26,7 @@ are absolute and the state is the point. The alternative — a $VAST_CERT_DIR kn
 — would put a test seam in the customer's TLS path to save a docker run.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -57,8 +58,24 @@ def _docker_available() -> bool:
     ).returncode == 0
 
 
+# A SKIP IS NOT A PASS, and in CI it must not even be available.
+#
+# This repo has a whole test (test_harness_require_pass.py) devoted to making
+# "skipped != passed" enforceable in the instance suite, and then gates its own
+# functional tests on a bare skipif whose CI guarantee lives in a comment. Three
+# docker-backed gates now hinge on it. If docker ever stops being present on the
+# runner — a runner image change, a self-hosted migration — these go quietly
+# green having asserted nothing, which is precisely the shape they exist to stop.
+# Locally a skip is still the right behaviour; under CI it is a red build.
+_DOCKER_OK = _docker_available()
+if not _DOCKER_OK and os.environ.get("CI"):
+    raise RuntimeError(
+        "docker is unavailable but CI is set: these gates must not silently skip. "
+        "Fix the runner, or unset CI to skip them deliberately."
+    )
+
 requires_docker = pytest.mark.skipif(
-    not _docker_available(),
+    not _DOCKER_OK,
     reason="docker unavailable — cannot boot the script repeatedly against a real /etc",
 )
 
@@ -67,8 +84,10 @@ requires_docker = pytest.mark.skipif(
 def test_cert_generation_converges_across_boots():
     assert HARNESS.is_file(), HARNESS
     args = ["docker", "run", "--rm", "-v", f"{HARNESS}:/harness.sh:ro"]
+    # The helper goes to a staging path; the harness copies it into place so a
+    # scenario can remove it. A bind mount at the real path could not be hidden.
     for src, dest in ((BOOT, "/etc/vast_boot.d/55-tls-cert-gen.sh"),
-                      (HELPER, "/opt/instance-tools/bin/cert-usable")):
+                      (HELPER, "/src-cert-usable")):
         assert src.is_file(), src
         args += ["-v", f"{src}:{dest}:ro"]
 
