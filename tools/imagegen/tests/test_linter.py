@@ -834,6 +834,57 @@ def test_L059_is_scoped_to_base(tmp_path):
     assert "L059" not in errs(img, tmp_path)
 
 
+# ---- L065: a shipped instance test must be executable --------------------
+#
+# runner.sh collects with `find … -executable` and the Dockerfile ships the
+# overlay with a bare COPY, so a 0644 test is not skipped and not reported
+# missing — it emits no line at all. base/11 and base/12 shipped 0644 from their
+# first commit and had never run once; nothing in the suite, the runner or the
+# verdict could see it.
+
+def test_L065_a_non_executable_test_fires(tmp_path):
+    """THE mutation, and a reproduction of the real defect."""
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/base/99-thing.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("source lib.sh\ntest_pass ok\n")
+    p.chmod(0o644)
+    assert has(img, tmp_path, "L065", "never run")
+
+
+def test_L065_an_executable_test_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/base/99-thing.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("source lib.sh\ntest_pass ok\n")
+    p.chmod(0o755)
+    assert "L065" not in errs(img, tmp_path)
+
+
+def test_L065_lib_sh_is_sourced_not_executed_so_0644_is_correct(tmp_path):
+    """lib.sh sits at the tests root and is sourced. Demanding +x on it would be
+    a false positive on correct code, and the shipped file really is 0644."""
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/lib.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("test_pass() { exit 0; }\n")
+    p.chmod(0o644)
+    assert "L065" not in errs(img, tmp_path)
+
+
+def test_mut_L065_the_real_suite_chmodded_back_fires(tmp_path):
+    """Mutation against the REAL files: the two tests that were 0644 for their
+    whole life must fire if anyone puts them back."""
+    repo, img = _real("base-image")
+    src = repo / "ROOT/opt/instance-tools/tests/base/12-provisioning.sh"
+    original = src.stat().st_mode
+    try:
+        src.chmod(0o644)
+        assert "L065" in errs(img, repo)
+    finally:
+        src.chmod(original)
+
+
 # ---- L062: a deferred failure must actually be reported -------------------
 #
 # `fail_later` only RECORDS a failure; `report_failures` is what turns the

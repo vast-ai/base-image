@@ -77,6 +77,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
     ("L059", ERROR, "Every test named in a gating QA template's INSTANCE_TEST_REQUIRE_PASS contains at least one real test_fail/fail_later CALL (a mention in a comment does not count) — L057 makes the template name the tests that must pass, and this closes the next hole down: a named test with no failure path reports `passed` on every box, so requiring it asserts nothing beyond the script reaching its test_pass, and the gate reads as coverage while certifying nothing (ADR 0019)"),
+    ("L065", ERROR, "Every shipped instance test (ROOT/opt/instance-tools/tests/**/*.sh, and the same path under derivatives/external overlays) is executable — runner.sh discovers tests with `find … -executable`, so a 0644 test is not skipped, not reported missing, and emits no line at all: it silently does not exist. base/11-instance-metadata.sh and base/12-provisioning.sh shipped 0644 from their first commit and had therefore never run once, which also meant lib.sh's instance_field() always returned empty and nothing ever waited for provisioning to finish. Same failure and same fix as L051 for supervisor scripts"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
@@ -615,6 +616,52 @@ def _has_failure_path(text: str) -> bool:
             if _line_calls(line, fn):
                 return True
     return False
+
+
+def check_instance_tests_executable(img: Image, repo: Path) -> Iterable[Finding]:
+    """L065 — a shipped instance test must be executable.
+
+    `runner.sh` discovers with `find "${TESTS_DIR}/base" -name '*.sh' -executable`,
+    and the Dockerfile ships the overlay with a bare `COPY ./ROOT/ /`, which
+    preserves mode. So a test committed 0644 is not collected — and unlike a
+    skip or a missing required test, it produces NO output whatsoever. It does
+    not appear in the run, in the counts, or in the results JSON. The only way
+    to notice is to compare a directory listing against the collected list.
+
+    That is not hypothetical: `base/11-instance-metadata.sh` and
+    `base/12-provisioning.sh` were 0644 from their introducing commit and had
+    never executed. Two consequences ran unnoticed for the whole of that period —
+    `lib.sh`'s `instance_field()` reads a metadata file only test 11 writes, so it
+    returned empty for every caller while signalling success; and `runner.sh`'s
+    "no blind provisioning wait — 12-provisioning.sh handles monitoring" was
+    false, so tests that document themselves as running after provisioning were
+    racing it.
+
+    Repo-level (like L060/L061): the tests are shipped by whichever image owns
+    the overlay, and a mode is a property of the file, not of a build.
+    """
+    if img.cls != "base":
+        return
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").glob("*/ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sh in sorted(root.rglob("*.sh")):
+            # lib.sh is sourced, never executed, and is correctly 0644.
+            if sh.name == "lib.sh" or sh.parent == root:
+                continue
+            if not (sh.stat().st_mode & 0o111):
+                try:
+                    rel = str(sh.relative_to(repo))
+                except ValueError:
+                    rel = sh.name
+                yield Finding("L065", ERROR, img.name, rel,
+                              "instance test is not executable (chmod +x) — runner.sh "
+                              "collects with `find -executable`, so it would never run "
+                              "and would report nothing at all")
 
 
 def check_required_tests_can_fail(img: Image, repo: Path) -> Iterable[Finding]:
@@ -1463,6 +1510,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_instance_tests_executable(img, repo))
     out.extend(check_required_tests_can_fail(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))
     out.extend(check_no_nvidia_smi_text_parse(img, repo))

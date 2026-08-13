@@ -132,6 +132,32 @@ else
     echo "  absent (ok): libnccl"
 fi
 
+# ── Libraries this image installs unconditionally MUST be present ─────
+#
+# "absent is fine" is the right rule for hardware-conditional things, and the
+# wrong one for packages the Dockerfile installs on every build. Without this,
+# an image that accidentally stopped shipping the RDMA/OpenCL/NCCL packages
+# passes a REQUIRED test: check_lib returns 0 for absent, so every probe above
+# reports "absent (ok)" and the suite goes green on an image missing the lot.
+#
+# Scoped by is_vast_image (a non-vast base does not owe us these) and, for NCCL,
+# by the presence of a CUDA toolkit — Dockerfile.runtime installs libnccl2 with
+# the CUDA packages, so a stock ubuntu config legitimately has none.
+if is_vast_image; then
+    for _req in libibverbs.so.1 librdmacm.so.1 libOpenCL.so.1; do
+        lib_installed "$_req" \
+            || fail_later "missing-${_req%%.*}" \
+                "${_req} is not installed — this image is built to ship it, so it \
+was dropped from the image rather than being unavailable on this host"
+    done
+    if compgen -G "/usr/local/cuda-*/" > /dev/null; then
+        lib_installed libnccl.so.2 \
+            || fail_later "missing-libnccl" \
+                "libnccl.so.2 is not installed on a CUDA image — multi-GPU and \
+torch.distributed would fail at init"
+    fi
+fi
+
 # ── Report ────────────────────────────────────────────────────────────
 
 report_failures

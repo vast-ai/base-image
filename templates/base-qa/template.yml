@@ -49,6 +49,23 @@ env:
   # in-instance, and by qa_verdict.py in CI, so a template that lost this line still
   # cannot produce a passing verdict. Gated by linter rule L057.
   INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+  # Promote the exposure scan from advisory to gating, for base only (ADR 0006
+  # condition 2 always intended this flip once a clean baseline existed; base is
+  # the image that OWNS exposure-allowlist/00-base.conf, so its baseline is the
+  # one that can be shown clean).
+  #
+  # Until this line existed, 28-inadvertent-exposure ran on every cell, correctly
+  # identified a violation, printed it — and then PASSED, because
+  # EXPOSURE_ENFORCE defaults to false and no template set it. So the one field
+  # defect here with a customer-facing security consequence (an image inheriting
+  # an upstream EXPOSE and binding 0.0.0.0 past the auth proxy) was scanned for
+  # and reported as green. An advisory gate nobody ever promotes is a permanent
+  # pass.
+  #
+  # Costs no extra runtime: the scan already runs. Its own false-red source is
+  # already handled in the test — a platform-injected listener with no owning
+  # process degrades to WARN, not VIOLATION.
+  EXPOSURE_ENFORCE: "true"
 # QA gate floors (ADR 0005): smallest viable box above the declared floors, VRAM
 # bounded at 3x so a small claim is never tested on a huge box.
 extra_filters:
