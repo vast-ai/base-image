@@ -1,7 +1,13 @@
 # ADR 0014 — Container-aware CPU thread caps at boot (low-pids safety valve)
 
-- **Status:** Proposed
+- **Status:** Proposed (shipped; amended)
 - **Date:** 2026-07-13
+- **Amended by:** ADR 0025 — option J below (`HF_HUB_DISABLE_XET=1` on the
+  safety-valve path) is superseded. The valve now bounds hf_xet's Tokio pool
+  with `TOKIO_WORKER_THREADS` and leaves Xet enabled; option J's premise, that
+  the pool could not be bounded, was tested against `RAYON_NUM_THREADS` only.
+  Everything else here — the trigger, the arithmetic, the managed block, the
+  user-override rule — stands unchanged.
 - **Decision owner:** Rob Ballantyne
 
 ## Context

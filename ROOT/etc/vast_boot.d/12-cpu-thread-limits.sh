@@ -79,9 +79,20 @@ _vast_read_quota_cores() {
 }
 
 # ── Managed-block plumbing ────────────────────────────────────────────
+# TOKIO_WORKER_THREADS replaced HF_HUB_DISABLE_XET here (ADR 0025). hf_xet's pool
+# is Tokio's, not rayon's: measured on one `hf download`, RAYON_NUM_THREADS=2 left
+# it at 42 threads while TOKIO_WORKER_THREADS held it at 28 across 2, 8 and 16
+# visible cores — i.e. bounded, the footprint stops scaling with the host's core
+# count, which is the whole problem. Xet is a hard dependency of huggingface_hub
+# now, so disabling it removed the default download path from exactly the hosts
+# with the least CPU to spare.
+#
+# The variable is generic: it bounds every Tokio runtime in the instance, not
+# just hf_xet. Deliberate — on a host already capped to its CPU entitlement,
+# bounding Tokio to the same number is consistent (ADR 0025, condition 2).
 _VAST_TCAP_VARS=(OMP_NUM_THREADS OPENBLAS_NUM_THREADS MKL_NUM_THREADS
                  NUMEXPR_NUM_THREADS NUMEXPR_MAX_THREADS VECLIB_MAXIMUM_THREADS
-                 RAYON_NUM_THREADS HF_HUB_DISABLE_XET)
+                 RAYON_NUM_THREADS TOKIO_WORKER_THREADS)
 _VAST_TCAPS_BEGIN="# VAST_CPU_THREAD_CAPS_BEGIN (ADR 0014, managed — do not edit)"
 _VAST_TCAPS_END="# VAST_CPU_THREAD_CAPS_END"
 
@@ -123,16 +134,31 @@ _vast_strip_caps() {
 _vast_write_caps() {
     local cap="$1" file="${2:-/etc/environment}" var val
     [[ -n "$cap" ]] || return 0
+
+    # Drop variables the PREVIOUS block set that this one will not — otherwise a
+    # var removed from _VAST_TCAP_VARS lives on forever in the boot shell.
+    #
+    # 10-prep-env.sh sources /etc/environment before this hook runs, so a
+    # previously-capped instance arrives here with the old block's variables
+    # already exported. Rewriting the block removes them from the FILE only; the
+    # live shell keeps them and supervisord, launched later in this same shell,
+    # inherits them. That is how HF_HUB_DISABLE_XET=1 would have outlived its own
+    # removal (ADR 0025, condition 1) — Xet disabled forever on exactly the hosts
+    # the change exists to help, with nothing to show why.
+    local prev=(); mapfile -t prev < <(_vast_block_vars "$file")
+    for var in "${prev[@]}"; do
+        [[ -n "$var" ]] || continue
+        # Still managed, or a real user value outside the block? Leave it.
+        [[ " ${_VAST_TCAP_VARS[*]} " == *" $var "* ]] && continue
+        _vast_user_set "$var" "$file" && continue
+        unset "$var"
+    done
+
     _vast_strip_caps "$file"
     {
         echo "$_VAST_TCAPS_BEGIN"
         for var in "${_VAST_TCAP_VARS[@]}"; do
             val="$cap"
-            # hf_xet's Rust pool ignores the thread-count vars, so disable xet on
-            # these hosts (its only cost — slower dedup transfer — applies solely
-            # where it would otherwise crash). Not relied on being governed by
-            # RAYON_NUM_THREADS.
-            [[ "$var" == HF_HUB_DISABLE_XET ]] && val=1
             if _vast_user_set "$var" "$file"; then
                 echo "# ${var}: left at user/template value"
             else

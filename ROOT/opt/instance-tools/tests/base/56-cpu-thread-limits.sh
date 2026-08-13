@@ -54,7 +54,8 @@ _vast_write_caps 16 "$_tmpenv"
 grep -q '^OMP_NUM_THREADS=99$' "$_tmpenv" || fail_later "override-value" "user OMP_NUM_THREADS=99 not preserved"
 grep -q '^MKL_NUM_THREADS=16$'  "$_tmpenv" || fail_later "managed-set" "MKL_NUM_THREADS not set to cap in block"
 grep -q '^RAYON_NUM_THREADS=16$' "$_tmpenv" || fail_later "managed-rayon" "RAYON_NUM_THREADS not set to cap"
-grep -q '^HF_HUB_DISABLE_XET=1$' "$_tmpenv" || fail_later "managed-xet" "HF_HUB_DISABLE_XET not set to 1"
+grep -q '^TOKIO_WORKER_THREADS=16$' "$_tmpenv" || fail_later "managed-tokio" "TOKIO_WORKER_THREADS not set to cap (ADR 0025 — this is what bounds hf_xet)"
+grep -q '^HF_HUB_DISABLE_XET=' "$_tmpenv" && fail_later "xet-not-disabled" "the valve still disables Xet; ADR 0025 bounds its pool instead"
 # Idempotent: a second run (e.g. a restart, or a new host) must not stack blocks.
 _vast_write_caps 8 "$_tmpenv"
 [[ "$(grep -c 'VAST_CPU_THREAD_CAPS_BEGIN' "$_tmpenv")" == "1" ]] || fail_later "idempotent" "managed block stacked on re-run"
@@ -69,6 +70,48 @@ _tmpenv=$(mktemp)
 ( export WORKSPACE="$_tmpws"; _vast_write_caps 16 "$_tmpenv" )
 grep -q '^OMP_NUM_THREADS=16$' "$_tmpenv" && fail_later "env-override-write" ".env OMP_NUM_THREADS=64 was overwritten by the cap"
 grep -q '^MKL_NUM_THREADS=16$' "$_tmpenv" || fail_later "env-override-others" "non-.env vars still capped"
+rm -rf "$_tmpws" "$_tmpenv"
+
+# ── 2b. Migration: a variable dropped from the managed set must be UNSET ──
+#
+# The upgrade that motivated this (ADR 0025): an instance capped by an older
+# image carries HF_HUB_DISABLE_XET=1 in its managed block. 10-prep-env.sh sources
+# /etc/environment BEFORE this hook runs, so the boot shell already has it
+# exported. Rewriting the block removes it from the file only — the live shell
+# keeps it, supervisord inherits it, and Xet stays off forever on exactly the
+# hosts the change exists to help. Nothing would show why.
+#
+# This asserts the STILL-CAPPED path (a cap is written). The healthy-reboot path
+# is covered separately in section 3.
+_tmpenv=$(mktemp)
+{ echo "$_VAST_TCAPS_BEGIN"
+  echo "MKL_NUM_THREADS=16"; echo "HF_HUB_DISABLE_XET=1"
+  echo "$_VAST_TCAPS_END"; } > "$_tmpenv"
+_mig=$(
+    export MKL_NUM_THREADS=16 HF_HUB_DISABLE_XET=1   # as 10-prep-env would have
+    _vast_write_caps 16 "$_tmpenv"
+    echo "XET=${HF_HUB_DISABLE_XET:-UNSET};TOKIO=${TOKIO_WORKER_THREADS:-UNSET}"
+)
+[[ "$_mig" == *"XET=UNSET"*  ]] || fail_later "migrate-unset-xet" \
+    "stale HF_HUB_DISABLE_XET survived the rewrite in the boot shell ($_mig)"
+[[ "$_mig" == *"TOKIO=16"*   ]] || fail_later "migrate-set-tokio" \
+    "TOKIO_WORKER_THREADS not exported to the boot shell ($_mig)"
+grep -q '^HF_HUB_DISABLE_XET=' "$_tmpenv" && fail_later "migrate-file-xet" \
+    "stale HF_HUB_DISABLE_XET still in the file after rewrite"
+rm -f "$_tmpenv"
+
+# The other direction: a user who genuinely wants Xet off must keep it. The valve
+# stops SETTING the variable; it must not start deleting the user's.
+_tmpws=$(mktemp -d); echo "HF_HUB_DISABLE_XET=1" > "$_tmpws/.env"
+_tmpenv=$(mktemp)
+{ echo "$_VAST_TCAPS_BEGIN"; echo "HF_HUB_DISABLE_XET=1"; echo "$_VAST_TCAPS_END"; } > "$_tmpenv"
+_mig2=$(
+    export WORKSPACE="$_tmpws" HF_HUB_DISABLE_XET=1
+    _vast_write_caps 16 "$_tmpenv"
+    echo "XET=${HF_HUB_DISABLE_XET:-UNSET}"
+)
+[[ "$_mig2" == *"XET=1"* ]] || fail_later "migrate-keep-user-xet" \
+    "a user's .env HF_HUB_DISABLE_XET was cleared by the migration ($_mig2)"
 rm -rf "$_tmpws" "$_tmpenv"
 
 # ── 3. No-op reconciliation: formerly-capped instance reboots healthy ──

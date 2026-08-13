@@ -106,15 +106,28 @@ real `docker build` + smoke test is the correctness gate.**
 - Tag commit-hash-vs-version date suffix (depends on the runtime-resolved ref).
 - `base_image_source` build-context *content*.
 - single shared `/venv/main` assumption (false for aio-studio by design).
-- **Container-aware CPU thread caps** (ADR 0014). On a host that oversubscribes
-  (CPU `cpu.max`/`cfs_quota` ≪ visible `nproc`, e.g. ~46-core quota but 384 cpuset)
-  the boot hook `12-cpu-thread-limits.sh` must cap `OMP_NUM_THREADS` &co to the
-  entitlement so per-process thread pools don't exhaust `pids.max` (`pthread_create`
-  EAGAIN). Whether the cgroup is read correctly, the arithmetic, the oversubscription
-  trigger, and the "leave user overrides alone" rule are all **runtime facts** — a
-  static check could only assert the file exists. Gate: the on-box test
-  `tests/base/NN-cpu-thread-limits.sh` + a harness mutation test (delete the cap write
-  → test fires), per ADR 0014. Deliberately **not** a linter `RULES` code.
+- **Container-aware CPU thread caps** (ADR 0014, amended by ADR 0025). On a host
+  that oversubscribes (CPU `cpu.max`/`cfs_quota` ≪ visible `nproc`, e.g. ~46-core
+  quota but 384 cpuset) the boot hook `12-cpu-thread-limits.sh` must cap
+  `OMP_NUM_THREADS` &co to the entitlement so per-process thread pools don't exhaust
+  `pids.max` (`pthread_create` EAGAIN). Whether the cgroup is read correctly, the
+  arithmetic, the oversubscription trigger, and the "leave user overrides alone" rule
+  are all **runtime facts** — a static check could only assert the file exists. Gate:
+  the on-box test `tests/base/NN-cpu-thread-limits.sh` + a harness mutation test
+  (delete the cap write → test fires), per ADR 0014. Deliberately **not** a linter
+  `RULES` code.
+  - The Hugging Face half of the cap is `TOKIO_WORKER_THREADS`, **not**
+    `HF_HUB_DISABLE_XET` (ADR 0025). `hf-xet` is a hard dependency of
+    `huggingface_hub` since 0.34.0, so Xet is the default download path; disabling
+    it removed that path from the hosts least able to spare bandwidth. Measured:
+    bounding the Tokio pool holds one `hf download` at ~28 threads across 2, 8 and
+    16 visible cores, where the unbounded pool scales with the core count. Two
+    things this depends on and cannot detect: hf_xet continuing to use Tokio's
+    default runtime, and the variable reaching every Tokio program in the instance
+    (accepted). **A variable removed from the managed set must be `unset`, not
+    merely stopped being written** — `10-prep-env.sh` sources `/etc/environment`
+    into the boot shell before the hook runs, so a stale value outlives its own
+    removal and reaches supervisord. Covered by the `migrate-unset-xet` assertion.
 
 **Feasible future cross-file static check:** every `exit_portal.sh "<Label>"` in
 an image should have a matching `:<Label>` entry in that image's `PORTAL_CONFIG`
