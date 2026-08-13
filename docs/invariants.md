@@ -205,6 +205,27 @@ wrappers) for an explicit internal-prefix set — extend `_INTERNAL_TRACKERS` as
 internal projects appear. Precedent: the CON-/HOST-/CLN- references scrubbed from
 docs, workflows, templates, and tooling when this rule landed (ADR 0012).
 
+### A shipped instance test is executable — **GATED (L065)**
+
+`runner.sh` discovers tests with `find … -name '*.sh' -executable`, and the
+Dockerfile ships the overlay with a bare `COPY ./ROOT/ /`, which preserves mode.
+So a test committed `0644` is **not collected** — and unlike a skip or a missing
+required test, it produces no output whatsoever: not a SKIP line, not a "missing
+from this image", nothing. The only way to notice is to compare a directory
+listing against the collected list, which nobody does.
+
+`base/11-instance-metadata.sh` and `base/12-provisioning.sh` shipped `0644` from
+their introducing commit and had therefore **never run once**. Confirmed against
+production QA evidence, which records 23 tests where the directory holds 25. Two
+consequences ran unnoticed for that whole period: `lib.sh`'s `instance_field()`
+reads a metadata file only test 11 writes, so it returned empty for every caller
+*while signalling success*; and `runner.sh`'s "no blind provisioning wait —
+12-provisioning.sh handles monitoring" was false, so tests that document
+themselves as running after provisioning were racing it. **L065**
+(`check_instance_tests_executable`) is L051's shape applied to
+`ROOT/opt/instance-tools/tests/**` and the derivative/external overlays;
+`lib.sh` is exempt because it is sourced, not executed.
+
 ### A required test must be able to fail — **GATED (L059)**
 
 L057 makes a gating QA template *name* the tests that must have PASSED. This
