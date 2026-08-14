@@ -17,6 +17,8 @@ a run where the gate correctly STOPPED a promotion was announced as one where it
 let a partial promotion through — inverting the safety signal.
 """
 import re
+
+import pytest
 from pathlib import Path
 
 import yaml
@@ -36,23 +38,41 @@ def test_notify_depends_on_promote():
     assert "promote" in needs, "notify must depend on promote to report its result"
 
 
-def test_headline_consults_the_promote_result():
-    headline = str(_notify_with()["headline"])
-    assert "needs.promote.result" in headline, (
-        "the headline must branch on whether promote actually ran — without it, a "
-        "skipped promotion is announced as a completed one"
-    )
+def test_headline_is_an_ALLOWLIST_on_success():
+    """Only a successful promote may open with "promoted".
+
+    The first fix enumerated the bad outcomes ('skipped', 'failure') and let
+    everything else fall through to "Base image promoted". A CANCELLED run is
+    neither, so on 2026-08-14 Slack announced "Base image promoted — 10 auto
+    tag(s) HELD" for a run whose promote job never executed. Enumerating the ways
+    a thing can go wrong misses the one nobody listed; requiring the single way it
+    goes right cannot be missed.
+    """
+    headline = " ".join(str(_notify_with()["headline"]).split())
+    assert "needs.promote.result != 'success'" in headline, (
+        "the headline must key on promote SUCCEEDING, not on a list of known "
+        "failure states — an unlisted state falls through to claiming a promotion")
 
 
-def test_a_skipped_promotion_is_not_announced_as_promoted():
-    """The specific regression: skipped must produce a NOT-promoted headline."""
-    headline = str(_notify_with()["headline"])
-    m = re.search(r"needs\.promote\.result == 'skipped' && '([^']+)'", headline)
-    assert m, "no explicit branch for a skipped promote"
+@pytest.mark.parametrize("result", ["skipped", "failure", "cancelled", "some_future_state"])
+def test_no_non_success_result_can_claim_a_promotion(result):
+    """Evaluate the real expression's leading branch for each result GitHub can
+    produce, including one it does not produce yet."""
+    headline = " ".join(str(_notify_with()["headline"]).split())
+    m = re.search(r"needs\.promote\.result != 'success'\s*&&\s*format\('([^']+)'", headline)
+    assert m, "no not-promoted branch keyed on != success"
     msg = m.group(1)
-    assert "NOT promoted" in msg, f"skipped-promote headline must say so, got: {msg}"
-    assert not re.match(r"^Base image promoted", msg), (
-        f"skipped-promote headline still opens by claiming a promotion: {msg}")
+    assert "NOT promoted" in msg
+    assert not msg.startswith("Base image promoted"), msg
+    assert "{0}" in msg, "the not-promoted headline should name the actual result"
+
+
+def test_a_successful_promote_can_still_report_holds():
+    """The allowlist must not flatten the useful case: a real promotion that held
+    some tags still needs to say so."""
+    headline = " ".join(str(_notify_with()["headline"]).split())
+    assert "auto tag(s) HELD" in headline
+    assert "needs.qa-summary.outputs.holds" in headline
 
 
 def test_status_is_warning_when_promote_did_not_succeed():

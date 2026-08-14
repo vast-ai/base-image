@@ -471,9 +471,18 @@ safe available reading. If one is unsafe, none should move.
 failed jobs, not a multi-hour re-dispatch — GitHub re-runs failed jobs in place,
 and the digests are pinned at `resolve-digests`, so a re-run tests the same bits.
 
-**Also fixed, and the reason this was noticed at all:** the Slack headline
+**Also fixed, and the reason this was noticed at all — twice:** the Slack headline
 hard-coded "Base image promoted" in both of its arms and never consulted
-`needs.promote.result`. The run above — where the gate correctly STOPPED the
+`needs.promote.result`. The first fix enumerated the bad outcomes (`skipped`,
+`failure`) and let everything else fall through to the promoted wording. A
+CANCELLED run is neither, so the very next run announced *"Base image promoted —
+10 auto tag(s) HELD"* for a run whose promote job never executed. The headline is
+now an **allowlist**: only `success` may say "promoted", and every other result —
+including states GitHub has not invented yet — reports NOT promoted and names the
+result. Enumerating the ways something can go wrong misses the one nobody listed;
+requiring the single way it goes right cannot be missed. The same lesson as the
+`env -i` allowlist in `13-provisioner-selftest.sh`, learned again in a different
+place. The run above — where the gate correctly STOPPED the
 promotion — was announced as *"Base image promoted — 1 auto tag(s) HELD; dated
 tags landed as normal"*. Nothing was promoted and no dated tag landed. A
 notification that reports the intended outcome rather than the actual one inverts

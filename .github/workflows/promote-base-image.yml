@@ -1136,16 +1136,27 @@ jobs:
       # a run with holds looks identical to a fully-clear one in the only place most
       # people actually read.
       status: ${{ (needs.promote.result != 'success' || needs.qa-summary.result != 'success' || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
-      # SAY WHAT HAPPENED, NOT WHAT WAS INTENDED. Both arms of this expression
-      # used to open with "Base image promoted" unconditionally, without ever
-      # consulting needs.promote.result. On 2026-08-14 a QA cell drew a host with
-      # no GPU, the required-pass gate correctly blocked, `promote` was skipped by
-      # transitive failure — and Slack announced "Base image promoted — 1 auto
-      # tag(s) HELD; dated tags landed as normal". Nothing was promoted and no
-      # dated tag landed. A notification that reports an intended outcome is worse
-      # than none: it is the only place most people look, and it said the gate had
-      # let something through when the gate had in fact stopped it.
-      headline: ${{ needs.promote.result == 'skipped' && 'Base image NOT promoted — the run stopped before the promote job; no tags changed' || (needs.promote.result == 'failure' && 'Base image promotion FAILED mid-run — check which tags landed before reading anything as complete') || (needs.qa-summary.result != 'success' && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified') || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != '' && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds)) || '' }}
+      # SAY WHAT HAPPENED, NOT WHAT WAS INTENDED — AND REQUIRE SUCCESS TO SAY IT.
+      #
+      # This is an ALLOWLIST on purpose. The first version enumerated the bad
+      # outcomes ('skipped', 'failure') and let everything else fall through to
+      # "Base image promoted". A CANCELLED run is neither, so it fell through and
+      # announced "Base image promoted — 10 auto tag(s) HELD" for a run in which
+      # the promote job never executed and nothing moved. Enumerating the ways a
+      # thing can go wrong is how you miss the one nobody listed; requiring the
+      # single way it goes RIGHT cannot be missed.
+      #
+      # So: only `success` may open with "promoted". Every other result — skipped,
+      # failure, cancelled, and whatever GitHub adds next — says NOT promoted and
+      # names the result, which is also the fastest thing to read at 3am.
+      headline: >-
+        ${{ needs.promote.result != 'success'
+            && format('Base image NOT promoted (promote: {0}) — no tag was changed', needs.promote.result)
+            || (needs.qa-summary.result != 'success'
+                && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified')
+            || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != ''
+                && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds))
+            || '' }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}
