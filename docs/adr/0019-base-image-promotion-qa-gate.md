@@ -127,8 +127,11 @@ Shape:
   re-resolved; concurrent-promotion abort on moved auto tags) → copy **by digest** →
   dance with digest-ref targets, Phase A/B ordering and the full-config sweep
   byte-identical.
-- **Partial failure: flip passing, hold failing.** Auto tags with passing evidence
-  flip; failing/inconclusive configs keep their pre-captured digest (the dance
+- **Partial failure: flip passing, hold failing.** ~~Auto tags with passing evidence
+  flip; failing/inconclusive configs keep their pre-captured digest.~~
+  **SUPERSEDED 2026-08-14 — promotion is now ALL-OR-NOTHING: if any config holds,
+  no auto tag flips.** See the amendment at the end of this ADR.
+  Failing/inconclusive configs keep their pre-captured digest (the dance
   re-pushes them unchanged, preserving ordering) and are named loudly — verdict class
   and held-digest age — in the approval summary and Slack. Dated-tag copies proceed for
   all configs (dated tags are opt-in by explicit reference; the gate's claim is the
@@ -432,3 +435,64 @@ differently, which is the point.
 - Vast shipping scoped keys, first-class ephemeral instances, or an in-repo view of the
   live launch templates — each simplifies (the reaper/concurrency posture, or the
   condition-11 exemption) without changing the gate's principle.
+
+---
+
+## Amendment, 2026-08-14 — promotion is all-or-nothing
+
+**What changed.** "Flip passing / hold failing" is withdrawn. If any config holds,
+every flip is rewritten to a hold and nothing moves. `qa-gate.yml` additionally
+draws a **fresh host** when a cell blocks with zero failed tests.
+
+**Why the original reasoning does not survive.** Atomic gating was rejected here
+because the gate's success is pⁿ in per-cell reliability (≈54% clean at 12 cells
+× 95%), which "predictably drives operators to route around the gate". That
+arithmetic was right, but it treated per-cell flakiness as fixed. It is not.
+
+The first promote to run under this ADR held exactly one tag, and the cause was a
+rented host that presented **no GPU**: `60/61/62` skipped, `skip != pass` blocked
+the cell. Nothing about the image was tested or faulty. That is a *bad draw*, and
+the answer to a bad draw is another draw — not a partial promotion. The gate now
+distinguishes the two by whether any test actually **failed**: a host that cannot
+run the GPU tests makes them SKIP, a defective image makes them FAIL. Zero
+failures with a non-zero exit means nothing was tested, which is the same class as
+`no_offers`, and it is retried on a fresh offer. A single genuine failure still
+breaks immediately — retrying a real red until it passes by luck remains the thing
+this gate must never do.
+
+**And the premise partial promotion rested on was wrong.** It assumed a red cell
+is evidence about one image. Every config ships the same `ROOT/` overlay, the same
+boot sequence and the same instance-test suite; the configs differ only in the
+CUDA base. So a genuine defect found on `cuda-12.6` is evidence about all twelve,
+and flipping the other eleven on the theory that only one is affected is the least
+safe available reading. If one is unsafe, none should move.
+
+**What makes this affordable** is that the cost of a hold is now a re-run of the
+failed jobs, not a multi-hour re-dispatch — GitHub re-runs failed jobs in place,
+and the digests are pinned at `resolve-digests`, so a re-run tests the same bits.
+
+**Also fixed, and the reason this was noticed at all:** the Slack headline
+hard-coded "Base image promoted" in both of its arms and never consulted
+`needs.promote.result`. The run above — where the gate correctly STOPPED the
+promotion — was announced as *"Base image promoted — 1 auto tag(s) HELD; dated
+tags landed as normal"*. Nothing was promoted and no dated tag landed. A
+notification that reports the intended outcome rather than the actual one inverts
+the safety signal in the one place most people read. Guarded by
+`test_promote_notification_truth.py`.
+
+**Binding conditions on this amendment**
+
+1. **The redraw must stay conditional on zero failed tests.** Gating it on exit
+   code alone converts the gate into a retry-until-green loop. Pinned by
+   `test_promote_all_or_nothing.py::test_a_genuine_failure_is_still_never_retried`,
+   whose first version could not tell `if [ "${_failed}" = "0" ]` from `if true`
+   and was strengthened after a mutation showed it.
+2. **`n/a` configs stay `n/a`.** The `stock-*` pair has no auto tag; sweeping them
+   into the hold count would both miscount and misreport.
+3. **The originating hold keeps its own reason.** The batch reason is applied only
+   to configs that were going to flip — the cause is more useful to whoever is
+   reading than the consequence.
+4. **If holds become routine rather than exceptional, revisit.** The reliability
+   argument in the rejected alternative above is not wrong in principle; it is
+   answered by the redraw. If cells start holding for reasons the redraw cannot
+   absorb, this amendment is the thing to re-open, not the gate to route around.
