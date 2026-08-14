@@ -222,6 +222,14 @@ jobs:
             # LOWER bound: an 11.8 image is happy on a much newer driver, which is
             # where most of the fleet now is.
             case "$auto" in
+              # NO auto version = no -auto tag = never QA'd. The stock-* configs
+              # are this: `auto` is parsed off a `cuda-` prefix they do not have,
+              # so it is empty, and `qa-set` already excludes them by
+              # `.auto_version != ""`. They reached the fail-closed arm below and
+              # aborted the whole promotion before QA — latent since the stock
+              # configs and this case statement arrived together in #239, and hit
+              # the first time a promote ran with both on main.
+              "") floor="" ;;
               11.*) floor=11.8 ;;
               12.*) floor=12.0 ;;
               13.*) floor=13.0 ;;
