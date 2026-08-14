@@ -1630,3 +1630,61 @@ def test_L066_a_string_literal_argv_is_still_code(tmp_path):
                        '    """Checks the key."""\n'
                        '    return run(["openssl", "rsa", "-in", KEY, "-check"])\n')
     assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+# ---- L067: a base/ test must hold on a BARE base image -------------------
+
+def test_L067_a_pyworker_assertion_in_base_fires(tmp_path):
+    """Proven live on a driver-610 host: `pyworker: RUNNING` then `port 3000 not
+    listening after 60s`. Base ships the pyworker unit but no engine to put
+    behind it, so the assertion is structurally unsatisfiable there."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/86-serverless-pyworker.sh",
+                       '#!/bin/bash\nassert_service_running "pyworker"\n')
+    assert has(img, tmp_path, "L067", "serverless backend")
+
+
+def test_L067_a_port_3000_assertion_in_base_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/86-serverless-pyworker.sh",
+                       '#!/bin/bash\nwait_for_port 3000 60 || test_fail "no"\n')
+    assert has(img, tmp_path, "L067", "serverless backend")
+
+
+def test_L067_the_serverless_SERVICES_test_stays_legal(tmp_path):
+    """85 asserts that the non-serverless services are stopped and their ports
+    closed — a property base genuinely owns. Its ports (11111/11112/18080) must
+    not be mistaken for :3000."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/85-serverless-services.sh",
+                       '#!/bin/bash\nfor port in 11111 11112 18080; do\n'
+                       '  ss -tln | grep -q ":${port} " && test_fail "open"\ndone\n')
+    assert "L067" not in errs(img, tmp_path)
+
+
+def test_L067_prose_explaining_the_history_is_allowed(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/85-serverless-services.sh",
+                       '#!/bin/bash\n# 86 moved out because pyworker binds :3000 only\n'
+                       '# when an engine is present.\ntest_pass "ok"\n')
+    assert "L067" not in errs(img, tmp_path)
+
+
+def test_mut_L067_the_real_engine_suites_carry_the_test(tmp_path):
+    """The move must be real: base/ no longer has it, and all four engine
+    suites do — each with the lib.sh source that makes is_serverless defined."""
+    repo, _img = _real("base-image")
+    assert not (repo / "ROOT/opt/instance-tools/tests/base/86-serverless-pyworker.sh").exists()
+    suites = [
+        "external/vllm/ROOT/opt/instance-tools/tests/vllm.d",
+        "external/sglang/ROOT/opt/instance-tools/tests/sglang.d",
+        "derivatives/llama-cpp/ROOT/opt/instance-tools/tests/llama.d",
+        "derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/tests/comfyui.d",
+    ]
+    for s in suites:
+        f = repo / s / "20-serverless-pyworker.sh"
+        assert f.is_file(), f
+        assert f.stat().st_mode & 0o111, f"{f} is not executable (L065)"
+        body = f.read_text()
+        assert 'source "$(dirname "$0")/../lib.sh"' in body, f"{f} lost its lib.sh source"
+        assert "is_serverless" in body and "wait_for_port 3000" in body

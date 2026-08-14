@@ -84,6 +84,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
+    ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
 
@@ -1329,6 +1330,41 @@ def check_no_open_coded_native_libcuda(img: Image, repo: Path) -> Iterable[Findi
                               "and verifies what the loader actually mapped")
 
 
+_SERVERLESS_BACKEND = re.compile(
+    r"(?<![\w-])pyworker(?![\w-])|(?<![\d:.])3000(?![\d.])")
+
+
+def check_base_tests_have_no_serverless_backend(img: Image, repo: Path) -> Iterable[Finding]:
+    """L067 — a base/ test may not assert an engine-provided serverless backend.
+
+    `base/` runs on EVERY image, so every assertion in it has to hold on a bare
+    base image. `86-serverless-pyworker` asserted a running pyworker and a
+    listener on :3000; the base image ships the pyworker unit but nothing to put
+    behind it, so under SERVERLESS=true it failed structurally. Measured on a
+    610 host: `pyworker: RUNNING`, then `port 3000 not listening after 60s`.
+
+    The cost was not one red test. It meant `base-qa` could never set
+    SERVERLESS=true, so `85` and `86` had never run once anywhere — the mode was
+    entirely unexercised. 85 moves nothing (services stopped and ports closed is
+    a property base genuinely owns); 86 goes to the engine `.d/` suites, whose
+    `is_serverless` guard keeps it dormant until a serverless template exists.
+    """
+    if img.cls != "base":
+        return
+    base_dir = repo / "ROOT/opt/instance-tools/tests/base"
+    if not base_dir.is_dir():
+        return
+    for f in sorted(base_dir.glob("*.sh")):
+        for n, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            code = _strip_comment(line)
+            if _SERVERLESS_BACKEND.search(code):
+                yield Finding("L067", ERROR, img.name,
+                              f"ROOT/opt/instance-tools/tests/base/{f.name}:{n}",
+                              "asserts a serverless backend (pyworker / :3000) from a "
+                              "base test — base has no inference engine, so it cannot "
+                              "hold; move it to the engine images' .d/ suites")
+
+
 def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Finding]:
     """L066 — do not re-implement "is this cert usable"; ask the helper.
 
@@ -1697,6 +1733,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_no_nvidia_smi_text_parse(img, repo))
     out.extend(check_no_open_coded_native_libcuda(img, repo))
     out.extend(check_one_cert_usability_predicate(img, repo))
+    out.extend(check_base_tests_have_no_serverless_backend(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))

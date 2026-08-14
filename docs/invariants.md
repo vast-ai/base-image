@@ -421,6 +421,26 @@ ownership; hash files are read and written `O_NOFOLLOW`. `clear_all_state()`
 returns whether it cleared, and `--force` **aborts** on a refusal rather than
 silently skipping every stage against stale hashes.
 
+### A base/ test must hold on a BARE base image — **GATED (L067)**
+
+`tests/base/` runs on every image, so every assertion in it has to be true of the
+base image alone. `86-serverless-pyworker` asserted a running `pyworker` and a
+listener on `:3000`. Base ships the pyworker unit, but what binds `:3000` is the
+inference engine behind it, which base does not have — so the test was
+structurally unsatisfiable. Proven live on a driver-610 host: `pyworker: RUNNING`
+followed by `port 3000 not listening after 60s`.
+
+The real cost was not one red test. Because it could not pass, `base-qa` could
+never set `SERVERLESS=true` — so **85 and 86 had never executed once, anywhere**,
+and serverless mode was entirely unexercised by the gate. `85` stays in base
+(non-serverless services stopped, their ports closed, is a property base genuinely
+owns); `86` now lives in the four engine `.d/` suites (vllm, sglang, llama,
+comfyui), where the backend exists. Its `is_serverless` guard keeps it inert —
+not skip-as-pass, since there is nothing to assert when the mode is off — until a
+serverless template turns the mode on. **L067**
+(`check_base_tests_have_no_serverless_backend`) forbids reintroducing a pyworker
+or `:3000` assertion under `tests/base/`; prose explaining the history is fine.
+
 ### Copyleft licence compliance (proposed)
 
 An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in
