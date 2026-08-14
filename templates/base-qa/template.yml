@@ -100,8 +100,11 @@ extra_filters:
   # 13.3 toolkit is a configuration real customers land on — so testing it is
   # representative rather than lenient.
   #
-  # The value below is the FLOOR OF THE FLOOR; CI raises it per config (11.8 -> 11.8,
-  # 12.x -> 12.0, 13.x -> 13.0) via --set-filter, which may only tighten.
+  # The value below is the FLOOR OF THE FLOOR; CI raises it per config to the
+  # image's OWN exact minor (13.3.1 -> 13.3) via --set-filter, which may only
+  # tighten. It was a major baseline (13.x -> 13.0) until 2026-08-14; measured
+  # supply showed that cost driver coverage on nine of ten configs and bought
+  # thinness relief only on the newest. See promote-base-image.yml.
   cuda_max_good:
     gte: 11.8
   # PER-GPU, not the sum. gpu_total_ram lets a multi-GPU box of small cards clear the

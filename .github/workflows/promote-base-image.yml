@@ -221,6 +221,36 @@ jobs:
             # Major-baseline driver floor, raised per config at rent time. gte is a
             # LOWER bound: an 11.8 image is happy on a much newer driver, which is
             # where most of the fleet now is.
+            # EXACT MINOR, derived — not a major baseline.
+            #
+            # This used to floor a whole major (13.* -> 13.0). The effect was that
+            # the NEWEST images were tested almost exclusively on OLD drivers: at
+            # a 13.0 floor, 79% of the market qualifies and it is dominated by
+            # 580/590/595, so a cuda-13.3 image was routinely validated on a
+            # driver that does not natively support 13.3 and reaches it through
+            # forward compat. The native path — the one a customer on a current
+            # driver actually takes — went untested. That is the shape of gap the
+            # 610 rename got through.
+            #
+            # Measured supply at each exact floor (verified, rentable, meeting the
+            # other base-qa floors; n=497): 12.1 99.8%, 12.4 96.6%, 12.6 94.0%,
+            # 12.8 89.5%, 12.9 80.1%, 13.0 78.9%, 13.1 45.1%, 13.2 36.4%,
+            # 13.3 4.2% (21 offers). So the thinness argument for a major baseline
+            # holds for exactly one config — the newest minor — and only until the
+            # market catches up. For the other nine it cost driver coverage and
+            # bought nothing.
+            #
+            # On the newest config the exact floor also selects the driver branch
+            # that actually ships that CUDA (13.3 -> 610), which is coverage the
+            # gate could not otherwise get: driver_version is not a usable search
+            # filter on the API (every form returns zero), and ADR 0024 rejected
+            # pinning it anyway. cuda_max_good is a capability floor, not a driver
+            # pin, so this is the sanctioned way to reach it.
+            #
+            # A thin cell is absorbed by the gate, not by weakening the floor:
+            # no_offers is inconclusive and retried with jitter. If 13.3 starts
+            # holding on supply rather than on defects, that is the signal to
+            # revisit (ADR 0019 amendment, condition 4) — not to widen this.
             case "$auto" in
               # NO auto version = no -auto tag = never QA'd. The stock-* configs
               # are this: `auto` is parsed off a `cuda-` prefix they do not have,
@@ -230,16 +260,17 @@ jobs:
               # configs and this case statement arrived together in #239, and hit
               # the first time a promote ran with both on main.
               "") floor="" ;;
-              11.*) floor=11.8 ;;
-              12.*) floor=12.0 ;;
-              13.*) floor=13.0 ;;
+              [0-9]*.[0-9]*.[0-9]*) floor="${auto%.*}" ;;   # 13.3.1 -> 13.3
+              [0-9]*.[0-9]*)        floor="$auto" ;;        # 11.8   -> 11.8
               *)
-                # FAIL, do not default. A new CUDA major added to the config table
-                # without a floor here would silently inherit 11.8 and QA would be
-                # free to rent a host whose driver only supports CUDA 11.8 to test
-                # it. That fails closed (the GPU tests go red, the tag holds) but it
-                # presents as a broken IMAGE, sending whoever is on call to debug a
-                # build that is fine. Name the real cause instead.
+                # FAIL, do not default. The floor is now DERIVED, so a new CUDA
+                # version cannot silently inherit a stale one — but a tag template
+                # whose version does not parse as X.Y[.Z] would yield an empty or
+                # malformed floor, and QA would then be free to rent a host whose
+                # driver cannot run the image. That fails closed (the GPU tests go
+                # red, the tag holds) but it presents as a broken IMAGE, sending
+                # whoever is on call to debug a build that is fine. Name the real
+                # cause instead.
                 echo "::error::${key}: CUDA major of '${auto}' has no driver floor."
                 echo "::error::Add a '${auto%%.*}.*) floor=X ;;' branch to this case"
                 echo "::error::statement (see docs/runbooks/new-cuda-version.md)."

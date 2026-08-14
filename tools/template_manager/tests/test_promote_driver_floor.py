@@ -58,10 +58,33 @@ def test_every_config_in_the_table_resolves_a_floor():
         "these configs abort resolve-digests before QA runs:\n  " + "\n  ".join(failures))
 
 
-def test_a_cuda_config_gets_its_major_baseline():
-    assert "FLOOR=13.0" in _floor_for("cuda-13.3.1-cudnn-devel-ubuntu24.04").stdout
-    assert "FLOOR=12.0" in _floor_for("cuda-12.9.2-cudnn-devel-ubuntu24.04").stdout
+def test_a_cuda_config_gets_its_EXACT_minor():
+    """Not a major baseline. Flooring 13.* at 13.0 meant the newest images were
+    validated almost entirely on 580/590/595 drivers reaching 13.3 through
+    forward compat — the native path went untested, which is the shape of gap the
+    610 rename got through. Measured supply says the thinness argument for a
+    baseline holds only for the newest minor (13.3: 21 offers) and costs driver
+    coverage for the other nine."""
+    assert "FLOOR=13.3" in _floor_for("cuda-13.3.1-cudnn-devel-ubuntu24.04").stdout
+    assert "FLOOR=13.0" in _floor_for("cuda-13.0.3-cudnn-devel-ubuntu24.04").stdout
+    assert "FLOOR=12.9" in _floor_for("cuda-12.9.2-cudnn-devel-ubuntu24.04").stdout
+    assert "FLOOR=12.1" in _floor_for("cuda-12.1.1-cudnn8-devel-ubuntu22.04").stdout
     assert "FLOOR=11.8" in _floor_for("cuda-11.8.0-cudnn8-devel-ubuntu22.04").stdout
+
+
+def test_no_config_is_floored_below_its_own_cuda_version():
+    """The regression this replaces: a 13.3 image accepting a 13.0 host."""
+    configs = json.loads(CONFIGS.read_text())["configs"]
+    for c in configs:
+        tpl = c["tag_template"]
+        m = re.match(r"cuda-(\d+)\.(\d+)", tpl)
+        if not m:
+            continue
+        out = _floor_for(tpl).stdout
+        fm = re.search(r"FLOOR=([\d.]+)", out)
+        assert fm, f"{tpl}: no floor emitted"
+        assert fm.group(1) == f"{m.group(1)}.{m.group(2)}", (
+            f"{tpl}: floor {fm.group(1)} does not match the image's own CUDA minor")
 
 
 def test_a_stock_config_resolves_empty_not_an_error():
@@ -71,8 +94,25 @@ def test_a_stock_config_resolves_empty_not_an_error():
     assert "FLOOR=" in r.stdout and "FLOOR=1" not in r.stdout
 
 
-def test_an_UNKNOWN_cuda_major_still_fails_closed():
-    """The fail-closed arm is the point — a new major must not inherit 11.8."""
-    r = _floor_for("cuda-14.0.0-cudnn-devel-ubuntu24.04")
-    assert r.returncode != 0, "a CUDA major with no floor branch must abort"
+def test_a_new_cuda_major_now_derives_instead_of_aborting():
+    """Derivation removes the maintenance step the old case statement needed —
+    a future cuda-14.0 floors itself at 14.0 rather than aborting the promote."""
+    assert "FLOOR=14.0" in _floor_for("cuda-14.0.0-cudnn-devel-ubuntu24.04").stdout
+
+
+def test_a_MALFORMED_version_still_fails_closed():
+    """The fail-closed arm still matters. A bare major (`cuda-13-...`) parses as
+    a version but yields no minor, so it cannot produce an honest floor — abort
+    rather than emit something QA would rent against."""
+    r = _floor_for("cuda-13-cudnn-devel-ubuntu24.04")
+    assert r.returncode != 0, "a version with no minor must abort"
     assert "has no driver floor" in (r.stdout + r.stderr)
+
+
+def test_a_NON_cuda_template_reads_as_no_auto_tag():
+    """Not an error: a template with no parseable `cuda-X.Y` prefix yields an
+    empty auto version, which is exactly what the stock-* configs are. It fails
+    SAFE — qa-set excludes it and it has no auto tag to flip."""
+    r = _floor_for("notaversion-ubuntu24.04")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "FLOOR=" in r.stdout and "FLOOR=1" not in r.stdout

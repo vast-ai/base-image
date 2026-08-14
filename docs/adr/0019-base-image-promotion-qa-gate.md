@@ -496,3 +496,41 @@ the safety signal in the one place most people read. Guarded by
    argument in the rejected alternative above is not wrong in principle; it is
    answered by the redraw. If cells start holding for reasons the redraw cannot
    absorb, this amendment is the thing to re-open, not the gate to route around.
+
+## Amendment, 2026-08-14 (b) — the QA floor is the image's exact CUDA minor
+
+`cuda_max_good` was floored at a MAJOR baseline (`13.*` -> 13.0). The effect was
+that the newest images were validated almost entirely on old drivers: at a 13.0
+floor 79% of the market qualifies, dominated by 580/590/595, so a cuda-13.3 image
+routinely ran on a driver that does not natively support 13.3 and reaches it
+through forward compat. **The native path — what a customer on a current driver
+actually takes — went untested.** That is the shape of gap the driver-610 rename
+got through.
+
+Measured supply at each exact floor (verified, rentable, meeting the other
+base-qa floors; n=497): 12.1 99.8%, 12.4 96.6%, 12.6 94.0%, 12.8 89.5%,
+12.9 80.1%, 13.0 78.9%, 13.1 45.1%, 13.2 36.4%, **13.3 4.2% (21 offers)**.
+
+So the thinness argument that justified a baseline is true for exactly one config
+— the newest minor — and only until the market catches up. For the other nine it
+cost driver coverage and bought nothing. The floor is now DERIVED from the tag
+template (`13.3.1` -> `13.3`), which also removes the maintenance step where a new
+CUDA major had to be added to a case statement or the promote aborted.
+
+On the newest config the exact floor additionally selects the driver branch that
+ships that CUDA (13.3 -> 610) — coverage the gate could not otherwise obtain,
+since `driver_version` is not a usable search filter on the Vast API (every
+form returns zero offers) and ADR 0024 rejected pinning it in any case.
+`cuda_max_good` is a capability floor rather than a driver pin, so this reaches
+610 without reopening that decision.
+
+**Accepted cost.** The newest minor will sometimes be thin. That is absorbed by
+the gate — `no_offers` is inconclusive and retried with jitter — not by widening
+the floor. Under amendment (a) a hold now stops the whole batch, so if the newest
+config begins holding on *supply* rather than on defects, that is the signal to
+revisit (condition 4 there), not to weaken this.
+
+**Still fail-closed.** A tag template whose version parses but has no minor
+(`cuda-13-...`) aborts rather than emitting a floor QA would rent against. A
+template with no `cuda-X.Y` prefix at all reads as "no auto tag", which is what
+the `stock-*` pair is, and is excluded from QA rather than treated as an error.
