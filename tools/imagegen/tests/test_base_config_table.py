@@ -183,32 +183,57 @@ def test_every_job_that_reads_the_table_checks_out():
 
 # --- adding a new CUDA version must not silently mis-floor QA ---------------
 
-def test_every_cuda_major_in_the_table_has_a_driver_floor():
-    """A new CUDA major added to configs/base-image.json needs a matching branch in
-    promote's floor `case`. Without one it used to inherit 11.8, letting QA rent a
-    host whose driver only supports CUDA 11.8 to test, say, a CUDA 14 image — which
-    fails closed but presents as a broken IMAGE, not a missing config line.
+def test_every_cuda_config_floors_qa_at_its_own_minor():
+    """A config in the table must floor QA at the CUDA version it actually is.
 
-    This test is the reason the runbook can be trusted: the step it tells you not
-    to forget is enforced, not merely written down.
+    This replaces a per-major-branch check. The floor used to be a hand-maintained
+    `case` (11.* -> 11.8, 12.* -> 12.0, 13.* -> 13.0) and this test asserted every
+    major in the table had a branch — the risk then was a new major silently
+    inheriting 11.8 and QA renting a host that cannot run the image.
+
+    The floor is now DERIVED from the tag template, so that failure mode is gone by
+    construction and there is nothing to forget. The risk it leaves is different
+    and worth asserting instead: a config floored BELOW its own minor. A 13.3 image
+    accepting a 13.0 host is validated through forward compat, so the native driver
+    path — what a customer on a current driver takes — goes untested. That is the
+    shape of gap the driver-610 rename got through (ADR 0019 amendment (b)).
+
+    Runs the real case statement from the workflow against the real config table.
     """
     import json
     import re
-    cfg = json.loads(CONFIG.read_text())
-    majors = set()
-    for c in cfg["configs"]:
-        m = re.match(r"^cuda-(\d+)\.", c["tag_template"])
-        if m:
-            majors.add(m.group(1))
-    assert majors, "no cuda configs found — fixture is wrong"
+    import subprocess
 
     wf = (REPO / ".github/workflows/promote-base-image.yml").read_text()
-    block = wf.split('case "$auto" in', 1)[1].split("esac", 1)[0]
-    mapped = set(re.findall(r"^\s*(\d+)\.\*\)", block, re.M))
-    missing = majors - mapped
-    assert not missing, (
-        f"CUDA major(s) {sorted(missing)} are in the config table but have no "
-        f"driver floor branch. Add '<major>.*) floor=X ;;' to promote-base-image.yml.")
+    m = re.search(r'case "\$auto" in.*?esac', wf, re.S)
+    assert m, "could not find the floor case statement in promote-base-image.yml"
+    case_block = m.group(0)
+
+    def floor_for(tag_template: str):
+        script = (
+            'auto=$(echo "$1" | sed -n \'s/^cuda-\\([0-9.]*\\)-.*/\\1/p\')\n'
+            'key=test\n' + case_block + '\necho "FLOOR=${floor}"\n'
+        )
+        return subprocess.run(["bash", "-c", script, "_", tag_template],
+                              capture_output=True, text=True)
+
+    cfg = json.loads(CONFIG.read_text())
+    checked = 0
+    for c in cfg["configs"]:
+        tpl = c["tag_template"]
+        vm = re.match(r"^cuda-(\d+)\.(\d+)", tpl)
+        if not vm:
+            continue                      # stock-*: no auto tag, no floor needed
+        checked += 1
+        r = floor_for(tpl)
+        assert r.returncode == 0, f"{tpl}: floor derivation aborted: {r.stdout}{r.stderr}"
+        fm = re.search(r"FLOOR=([\d.]+)", r.stdout)
+        assert fm, f"{tpl}: no floor emitted"
+        assert fm.group(1) == f"{vm.group(1)}.{vm.group(2)}", (
+            f"{tpl} is floored at {fm.group(1)}, below its own CUDA minor "
+            f"{vm.group(1)}.{vm.group(2)} — QA would validate it through forward "
+            f"compat and never exercise the native driver path")
+    assert checked, "no cuda configs found — fixture is wrong"
 
 
 def test_the_floor_case_fails_closed_on_an_unmapped_major():
