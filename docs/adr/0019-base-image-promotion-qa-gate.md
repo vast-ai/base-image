@@ -480,6 +480,17 @@ notification that reports the intended outcome rather than the actual one invert
 the safety signal in the one place most people read. Guarded by
 `test_promote_notification_truth.py`.
 
+**Extended 2026-08-14 (observed live):** the redraw also covers exit 5
+(`instance_error`). `test_template.py` classifies anything that is not a clean
+pass/fail as `instance_error` and its comment calls that "the image's problem".
+True for an instance that crashes part way through a run — false for one that
+launches successfully and is then unreachable, which is the host's problem and
+produces no test results at all. `failed == 0` separates them, exactly as it does
+for exit 1. Not extended to 3 (`bad_instance`: the client already walked
+`MAX_LAUNCH_ATTEMPTS` offers internally) or 4 (`config_error`: our bug, and
+retrying hides it). A genuinely broken image that kills every instance it touches
+still blocks — the attempt count bounds the loop.
+
 **Binding conditions on this amendment**
 
 1. **The redraw must stay conditional on zero failed tests.** Gating it on exit

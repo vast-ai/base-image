@@ -22,6 +22,8 @@ from pathlib import Path
 
 import yaml
 
+_REDRAW_GUARD = re.compile(r'if \{? ?\[ "\$CODE" -eq 1 \].*?\n            fi', re.S)
+
 REPO = Path(__file__).resolve().parents[3]
 PROMOTE = REPO / ".github" / "workflows" / "promote-base-image.yml"
 QA_GATE = REPO / ".github" / "workflows" / "qa-gate.yml"
@@ -98,6 +100,30 @@ def test_the_gate_redraws_on_a_zero_failure_block():
     assert "drawing another host" in body
 
 
+def test_an_unreachable_instance_is_also_redrawn():
+    """A host that comes up and is then unreachable exits 5 (instance_error) with
+    no test results. test_template.py's own comment calls 5 "the image's problem",
+    which is true for a crash PART WAY THROUGH and false for a box that was never
+    reachable — `failed == 0` separates them. Observed live 2026-08-14."""
+    body = QA_GATE.read_text()
+    assert re.search(r'\[ "\$CODE" -eq 5 \]', body), (
+        "instance_error must be eligible for a redraw when nothing was tested")
+    guard = _REDRAW_GUARD.search(body)
+    assert guard, "the redraw guard no longer matches"
+    assert re.search(r'\[\s*"\$\{_failed:?-?[^}]*\}"\s*=\s*"0"\s*\]', guard.group(0)), (
+        "the exit-5 redraw must be gated on zero failed tests, exactly like exit 1")
+
+
+def test_config_error_and_bad_instance_are_NOT_redrawn():
+    """4 is our bug — retrying hides it. 3 already walked MAX_LAUNCH_ATTEMPTS
+    offers internally, so redrawing repeats work the client has done."""
+    guard = _REDRAW_GUARD.search(QA_GATE.read_text())
+    assert guard, "the redraw guard no longer matches"
+    block = guard.group(0)
+    assert '-eq 4' not in block and '-eq 3' not in block, (
+        "config_error/bad_instance must not be redrawn")
+
+
 def test_a_genuine_failure_is_still_never_retried():
     """The redraw must key on zero failed tests, never on exit 1 alone —
     retrying a real red until it passes by luck is how a gate becomes
@@ -105,7 +131,7 @@ def test_a_genuine_failure_is_still_never_retried():
     body = QA_GATE.read_text()
     assert 'CODE" -eq 1' in body and "_failed" in body, (
         "the redraw must be conditional on the failed-test count")
-    guard = re.search(r'if \[ "\$CODE" -eq 1 \].*?\n            fi', body, re.S)
+    guard = _REDRAW_GUARD.search(body)
     assert guard, "no exit-1 guard block found"
     block = guard.group(0)
     # Not "does _failed appear" — that survives replacing the condition with
