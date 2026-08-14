@@ -1521,6 +1521,54 @@ def test_L066_a_wrapped_argv_does_not_escape_the_rule(tmp_path):
     assert has(img, tmp_path, "L066", "RSA-only openssl")
 
 
+def test_L066_a_one_element_per_line_argv_does_not_escape(tmp_path):
+    """The shape a magic trailing comma FORCES: ruff/black explode a 6-element
+    list to one element per line, so `"openssl"` and `"-check"` land five lines
+    apart. _WINDOW=4 missed exactly this (it caught only the two-per-line form
+    the older test pinned)."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "subprocess.run(\n"
+                       "    [\n"
+                       '        "openssl",\n'
+                       '        "rsa",\n'
+                       '        "-in",\n'
+                       "        KEY_PATH,\n"
+                       '        "-check",\n'
+                       '        "-noout",\n'
+                       "    ],\n"
+                       ")\n")
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_one_statement_yields_one_finding(tmp_path):
+    """Deduping on the START line reports the same wrapped statement once per
+    overlapping window that reaches it — one of them pointing at a bare `[`.
+    The whole matched statement must be marked seen."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "subprocess.run(\n"
+                       "    [\n"
+                       '        "openssl", "rsa",\n'
+                       '        "-in", KEY_PATH,\n'
+                       '        "-check", "-noout",\n'
+                       "    ],\n"
+                       ")\n")
+    l066 = [f for f in lint_image(img, tmp_path) if f.code == "L066"]
+    assert len(l066) == 1, [f.path for f in l066]
+
+
+def test_L066_rsa_keygen_idiom_is_not_flagged(tmp_path):
+    """`openssl req -newkey rsa:2048 ... -noout` generates a key and suppresses
+    the CSR — it is not the RSA-only `openssl rsa` subcommand. The `rsa:2048`
+    token must not read as one, regardless of a nearby `-noout`."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/55-tls-cert-gen.sh",
+                       'openssl req -newkey rsa:2048 -subj "/CN=t" -nodes '
+                       '-keyout k.pem -noout\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
 def test_L066_rsa_noout_without_output_fires(tmp_path):
     """`openssl rsa -in K -noout` is the same RSA-only load with no flag at all;
     it rejects a valid EC key exactly as `-check` does."""
@@ -1549,6 +1597,28 @@ def test_L066_python_docstrings_are_prose_not_code(tmp_path):
                        '    """The previous version used the RSA-ONLY `openssl rsa`\n'
                        '    entry point and its `-check` flag, which cannot load EC."""\n'
                        "    return run([CERT_USABLE, CERT_PATH, KEY_PATH])\n")
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_prose_is_blanked_not_dropped(tmp_path):
+    """DROPPING prose lines closes the gap, so a window stitches code from either
+    side of a long docstring into a false positive. Here `openssl x509` and
+    `-modulus` are nine real lines apart (beyond the window), separated only by a
+    docstring — blanking keeps them apart, dropping would collapse them together.
+    Neither line is a real RSA-only check, so this must stay clean."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "def f(crt):\n"
+                       '    subject = run(["openssl", "x509", "-in", crt, "-subject"])\n'
+                       "    def helper():\n"
+                       '        """A deliberately long docstring so the two code\n'
+                       "        lines below and above are far enough apart that a\n"
+                       "        window cannot join them unless the prose in between\n"
+                       "        is removed rather than blanked. Line four. Line five.\n"
+                       "        Line six. Line seven. Line eight of prose here.\"\"\"\n"
+                       "        return 1\n"
+                       '    other = run(["-modulus", crt])\n'
+                       "    return subject, other\n")
     assert "L066" not in errs(img, tmp_path)
 
 

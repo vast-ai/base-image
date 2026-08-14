@@ -9,11 +9,14 @@ sleep 2
 # stop/start, and nothing here ever looked at the contents.
 #
 # "Usable" is ONE predicate, shared with base/27-caddy-tls.sh and the portal's
-# caddy_config_manager, and it lives in the helper rather than here. Three
-# hand-rolled copies of this question had grown three different answers — two
-# of which reject a valid EC keypair and turn HTTPS off (see the helper's own
-# header, and linter rule L066). Do not re-implement it.
-# EXIT CODE 2 (matched but expired) is a regenerate HERE, unlike at the portal:
+# caddy_config_manager, and it lives in the helper rather than here. (The portal
+# also carries an in-process fallback copy for OLDER images that predate the
+# helper — ADR 0026 binding condition 3 — so "one implementation" means one per
+# co-shipped artifact, not zero copies anywhere.) Three hand-rolled copies of
+# this question had grown three different answers — two of which reject a valid
+# EC keypair and turn HTTPS off (see the helper's own header, and linter rule
+# L066). Do not re-implement it.
+# EXIT CODE 3 (matched but expired) is a regenerate HERE, unlike at the portal:
 # at boot a fresh keypair costs milliseconds and the console will sign it, so
 # there is no reason to keep a lapsed certificate. `! _cert_usable` therefore
 # means "0 is fine, anything else is not", which is the strict reading and the
@@ -178,13 +181,30 @@ fi
 # NOTE THE DIFFERENT POLICY FROM THE GUARD ABOVE, and that it is deliberate.
 # That guard asks "should I regenerate?" and takes the strict reading. This one
 # asks "can supervisor serve TLS with what is on disk?" — the same question
-# caddy_config_manager asks — and an expired-but-matched pair (exit 2) answers
+# caddy_config_manager asks — and an expired-but-matched pair (exit 3) answers
 # yes. Its alternative is not a better certificate, it is plaintext on the same
 # public port with the portal token in ?token=, and an expired certificate still
 # encrypts. Reaching here with an expired pair means the block above declined to
 # regenerate (generate_tls_cert is not true, or the helper is missing), so there
 # is no fresher certificate on offer either way.
-_cert_usable; _cert_rc=$?
-if [[ ! -s /etc/instance.key ]] || { (( _cert_rc != 0 )) && (( _cert_rc != 2 )); }; then
+#
+# Any OTHER non-zero code — 1 (unusable), 127 (helper gone), or bash's own 2
+# from a syntactically broken helper — turns HTTPS off. 3 is the ONLY tolerated
+# non-zero, which is why the helper reports expiry as 3 and not 2: a broken
+# helper must fail closed here, never read as "expired, serve anyway".
+#
+# `_cert_rc=0; _cert_usable || _cert_rc=$?` rather than `_cert_usable; _cert_rc=$?`
+# so a future `set -e` (or a BOOT_SCRIPT override that sets it) cannot abort the
+# boot on this one unguarded non-zero exit before supervisor is even launched.
+_cert_rc=0; _cert_usable || _cert_rc=$?
+if [[ ! -s /etc/instance.key ]] || { (( _cert_rc != 0 )) && (( _cert_rc != 3 )); }; then
     export ENABLE_HTTPS=false
+elif (( _cert_rc == 3 )); then
+    # Serving an expired-but-matched pair. Say why HTTPS shows a date error and
+    # what fixes it, matching the portal's own message — the tolerant branch
+    # otherwise prints only cert-usable's stderr, and the customer-visible effect
+    # ("my browser says the certificate expired") has no explanation in the log.
+    echo "Instance certificate has EXPIRED but still matches its key; serving TLS" >&2
+    echo "with it rather than plaintext. Restart the instance to regenerate it" >&2
+    echo "(see docs/runbooks/tls-certificates.md)." >&2
 fi

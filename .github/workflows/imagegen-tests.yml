@@ -86,8 +86,11 @@ jobs:
       # Includes three docker-backed functional gates (cuda-driver-version, the
       # TLS cert boot script, and the provisioner self-test). They dominate the
       # runtime of this job — each needs a throwaway root because the thing under
-      # test is absolute paths and persistent state, not a pure function. They
-      # SKIP where docker is absent, which on ubuntu-latest it is not.
+      # test is absolute paths and persistent state, not a pure function. Each
+      # module also carries a `test_docker_is_available_under_ci` that FAILS
+      # (a single named red, not a session-wide collection abort) when CI is set
+      # and docker is absent — a skip is not a pass. Set ALLOW_DOCKERLESS_TESTS=1
+      # to opt out deliberately. On ubuntu-latest docker is present.
       - name: Run imagegen test suite
         working-directory: tools/imagegen
         run: python -m pytest -q

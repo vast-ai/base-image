@@ -59,7 +59,7 @@ from .log import setup_logging
 from .subprocess_runner import run_cmd
 from .manifest import apply_env_conventions, apply_env_merge, load_manifest, resolve_conditionals, resolve_manifest_source
 from .schema import CondaPackages, DownloadEntry, Manifest, PipPackages
-from .state import clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
+from .state import STATE_DIR, clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
 from .supervisor import register_services
 
 log = logging.getLogger("provisioner")
@@ -171,7 +171,14 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
 
     if force:
         log.info("=== FORCE MODE: clearing all state ===")
-        clear_all_state()
+        # A refusal is not a no-op to swallow: if we cannot clear the state, we
+        # must NOT then walk the phases and skip every stage whose stale hash is
+        # still on disk. That would make --force silently do nothing.
+        if not clear_all_state():
+            log.error("--force could not clear the state directory %s (it is not "
+                      "one the provisioner created); aborting rather than running "
+                      "against stale stage hashes", STATE_DIR)
+            return 1
 
     # Phase 1b: Extensions (discovery -- may append to git_repos, downloads, etc.)
     # Extensions run first so they can populate the manifest before any

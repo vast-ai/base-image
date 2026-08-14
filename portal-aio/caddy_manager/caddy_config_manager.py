@@ -73,11 +73,18 @@ def load_config(yaml_path='/etc/portal.yaml'):
 
 # The cert-usability predicate shared with 55-tls-cert-gen.sh (which decides
 # whether to REGENERATE) and base/27-caddy-tls.sh (which asserts on the result).
-# Exit codes: 0 usable, 2 matched-but-expired, 1 unusable. See its own header for
+# Exit codes: 0 usable, 3 matched-but-expired, 1 unusable. See its own header for
 # why the three hand-rolled copies this replaced were each wrong, and why expiry
 # is a separate code rather than a boolean.
+#
+# 3, not 2: bash's own exit status for a syntax error is 2, so a truncated or
+# half-written helper exits 2 — and reading 2 as "expired, serve anyway" would
+# serve TLS over whatever is on disk, the fail-open ADR 0026 exists to close. We
+# only serve on 3 AND only when stderr carries the helper's own "has expired"
+# sentinel (below), so a stray 3 without it fails closed too.
 CERT_USABLE = "/opt/instance-tools/bin/cert-usable"
-CERT_EXPIRED = 2
+CERT_EXPIRED = 3
+CERT_EXPIRED_SENTINEL = "has expired"
 
 
 def _validate_without_helper():
@@ -129,17 +136,40 @@ def validate_cert_and_key():
     handshake with.
     """
     try:
-        rc = subprocess.run(
+        proc = subprocess.run(
             [CERT_USABLE, CERT_PATH, KEY_PATH],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        ).returncode
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, timeout=15, text=True,
+        )
     except OSError:
+        # The population this branch exists for: an OLDER base image that predates
+        # /opt/instance-tools/bin/cert-usable but took a newer portal tarball
+        # (release-portal.yml publishes portal-aio, first_boot untars it over an
+        # older image). Say so — Caddy logs only to stdout, there is no on-instance
+        # log file, and on the exact fleet where the fallback runs an operator
+        # otherwise sees only "Files are present but invalid" with no hint that the
+        # helper was even absent.
+        print("cert-usable helper is absent (older base image); validating with "
+              "the in-process SPKI comparison instead.")
+        return _validate_without_helper()
+    except subprocess.SubprocessError as e:
+        print(f"cert-usable helper did not complete ({type(e).__name__}); "
+              "validating with the in-process SPKI comparison instead.")
         return _validate_without_helper()
 
-    if rc == CERT_EXPIRED:
+    rc = proc.returncode
+    # Serve on expiry ONLY when the helper says so explicitly: exit 3 AND its own
+    # "has expired" sentinel on stderr. A syntactically broken helper exits 2 (or
+    # some other code) with no sentinel and falls through to `rc == 0` — fail
+    # closed — rather than being read as expired.
+    if rc == CERT_EXPIRED and CERT_EXPIRED_SENTINEL in (proc.stderr or ""):
+        # "when certificate generation is enabled": the two states that produce
+        # an expired-and-kept pair are generate_tls_cert not true and a missing
+        # helper — in both, a bare "restart to fix" would be false advice.
         print("Instance certificate has EXPIRED but still matches its key; "
               "serving TLS with it rather than falling back to plaintext. "
-              "Restart the instance to obtain a fresh certificate.")
+              "Restarting the instance regenerates it when certificate "
+              "generation (generate_tls_cert) is enabled.")
         return True
     return rc == 0
 

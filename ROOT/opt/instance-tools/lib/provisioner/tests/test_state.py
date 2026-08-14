@@ -135,6 +135,21 @@ class TestStateDirOverride:
     def test_non_absolute_is_refused(self, monkeypatch, bad):
         assert self._resolve(monkeypatch, bad) == "/.provisioner_state"
 
+    def test_the_module_level_binding_is_validated(self, monkeypatch):
+        """The seam that matters. Every other test calls _resolve_state_dir()
+        directly or monkeypatches STATE_DIR, so deleting the validation from the
+        module-level binding would leave them all green. Reload the module with a
+        system dir in the environment and assert the BOUND value fell back."""
+        import importlib
+        import provisioner.state as st
+        monkeypatch.setenv("PROVISIONER_STATE_DIR", "/etc")
+        reloaded = importlib.reload(st)
+        try:
+            assert reloaded.STATE_DIR == "/.provisioner_state"
+        finally:
+            monkeypatch.delenv("PROVISIONER_STATE_DIR", raising=False)
+            importlib.reload(st)
+
     def test_clear_refuses_a_directory_it_did_not_create(self, monkeypatch, tmp_path):
         """The part that turns a bad value into an incident."""
         import provisioner.state as st
@@ -142,8 +157,70 @@ class TestStateDirOverride:
         victim.mkdir()
         (victim / "precious.conf").write_text("do not delete me")
         monkeypatch.setattr("provisioner.state.STATE_DIR", str(victim))
-        st.clear_all_state()
+        assert st.clear_all_state() is False, "should have refused"
         assert (victim / "precious.conf").exists(), "clear_all_state deleted a foreign tree"
+
+    def test_marking_a_foreign_directory_does_not_adopt_it(self, monkeypatch, tmp_path):
+        """The self-granting hole: mark_stage_complete used makedirs(exist_ok=True),
+        so ANY pre-existing directory it was pointed at got the ownership marker on
+        the first normal run — and the next --force then rmtree'd it. The marker
+        must be planted only in a directory the provisioner itself created."""
+        import provisioner.state as st
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "precious.conf").write_text("do not delete me")
+        monkeypatch.setattr("provisioner.state.STATE_DIR", str(victim))
+        st.mark_stage_complete("apt", "h")
+        assert not (victim / st._OWNER_MARKER).exists(), "adopted a foreign directory"
+        assert st.clear_all_state() is False
+        assert (victim / "precious.conf").exists(), "a later --force deleted it"
+
+    def test_a_symlinked_marker_is_not_followed(self, monkeypatch, tmp_path):
+        """The marker write must be O_NOFOLLOW/O_EXCL. A DANGLING symlink named
+        `.provisioner-state-dir` reads as absent under os.path.exists, so a plain
+        open() would create-and-write root's file at the symlink target, OUTSIDE
+        the state dir."""
+        import provisioner.state as st
+        sd = tmp_path / "state"
+        sd.mkdir()
+        outside = tmp_path / "outside.txt"
+        (sd / st._OWNER_MARKER).symlink_to(outside)     # dangling
+        monkeypatch.setattr("provisioner.state.STATE_DIR", str(sd))
+        # mark creates the dir itself normally; here the dir already exists, so no
+        # marker is (re)planted — but if a future edit reintroduces a plant on an
+        # existing dir, it must still not follow the symlink.
+        st._plant_owner_marker()
+        assert not outside.exists(), "followed a symlink and wrote outside the state dir"
+
+    def test_a_symlinked_marker_is_not_accepted_as_ownership(self, monkeypatch, tmp_path):
+        """clear_all_state uses lstat, so a symlink cannot forge ownership of a
+        directory holding foreign files."""
+        import provisioner.state as st
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "precious.conf").write_text("keep me")
+        # Symlink the marker at an EXISTING regular file, so a stat() (which
+        # follows) would see a regular file and forge ownership; lstat() sees the
+        # symlink and refuses.
+        existing = tmp_path / "some-real-file"
+        existing.write_text("x")
+        (victim / st._OWNER_MARKER).symlink_to(existing)
+        monkeypatch.setattr("provisioner.state.STATE_DIR", str(victim))
+        assert st.clear_all_state() is False
+        assert (victim / "precious.conf").exists()
+
+    def test_a_legacy_hash_only_directory_is_migrated(self, monkeypatch, tmp_path):
+        """Already-deployed instances have a /.provisioner_state that predates the
+        marker. A directory holding only stage-hash files must still be clearable
+        by --force, or --force silently skips every stage on the existing fleet."""
+        import provisioner.state as st
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+        (legacy / "apt.hash").write_text("abc")
+        (legacy / "pip.hash").write_text("def")
+        monkeypatch.setattr("provisioner.state.STATE_DIR", str(legacy))
+        assert st.clear_all_state() is True
+        assert not legacy.is_dir()
 
     def test_clear_still_removes_its_own_directory(self, monkeypatch, tmp_path):
         """...without which the refusal above would just break --force."""
@@ -152,7 +229,7 @@ class TestStateDirOverride:
         monkeypatch.setattr("provisioner.state.STATE_DIR", str(ours))
         st.mark_stage_complete("apt", "h")
         assert (ours / st._OWNER_MARKER).exists()
-        st.clear_all_state()
+        assert st.clear_all_state() is True
         assert not ours.is_dir()
 
     def test_a_symlinked_hash_file_is_not_followed(self, monkeypatch, tmp_path):

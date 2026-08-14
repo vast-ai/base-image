@@ -207,7 +207,7 @@ Set `max_retries: 0` to skip the retry loop and go straight to the action on fir
 | `PROVISIONER_LOG_FILE` | `settings.log_file` | Redirect logs per-instance |
 | `PROVISIONER_VENV` | `settings.venv` | Different default venv per deployment |
 | `PROVISIONER_CONDA_ENV` | `settings.conda_env` | Different default conda env per deployment |
-| `PROVISIONER_STATE_DIR` | (state directory) | Relocate `/.provisioner_state/`. Read at import, not from the manifest — it must be known before one is loaded. Set it to run the provisioner without touching the state a real provisioning run depends on. **`--force` calls `rmtree` on this directory**, so relative paths and system directories (`/`, `/etc`, `/usr`, …) are refused, and a directory without the provisioner's ownership marker is never deleted |
+| `PROVISIONER_STATE_DIR` | (state directory) | Relocate `/.provisioner_state/`. Read at import, not from the manifest — it must be known before one is loaded. Set it to run the provisioner without touching the state a real provisioning run depends on. **`--force` calls `rmtree` on this directory**, so relative paths and the exact system roots (`/`, `/etc`, `/usr`, …) are refused. That blocklist is a first cut, not a containment rule — the real guard is an **ownership marker** planted only in a directory the provisioner itself *created* (so a foreign directory it is merely pointed at is never adopted, and a later `--force` never deletes it). A directory holding only stage-hash files is treated as ours for migration (already-deployed instances predate the marker); a refusal makes `--force` abort rather than silently skip stages |
 
 ### write_files / write_files_late
 

@@ -16,11 +16,23 @@
 # side effects, not about the test's own verdict.
 set +e
 
+# Refuse to run outside a container. Every step below writes absolute paths
+# (/usr/local/bin/vastai, /LEAKED_*, /etc/hosts) and binds privileged ports — in
+# CI it is inside `docker run --rm`, but a developer running it directly would
+# scribble across their host. `docker run` sets $VAST_HARNESS_OK; /.dockerenv is
+# the belt to that suspenders.
+[[ -f /.dockerenv || -n "$VAST_HARNESS_OK" ]] \
+    || { echo "refusing to run outside a container (set VAST_HARNESS_OK to override)"; exit 1; }
+
 FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "  ok   $1"; else echo "  FAIL $1: expected [$2] got [$3]"; FAIL=1; fi; }
 
 export DEBIAN_FRONTEND=noninteractive
-{ apt-get update -qq && apt-get install -y -qq wget curl ca-certificates ; } >/dev/null 2>&1 \
+# git is needed for the WORKSPACE canary: a PROVISIONING_GIT_REPOS entry with no
+# dest is the ONLY thing that resolves a default path under $WORKSPACE (a
+# relative DOWNLOAD dest resolves against CWD, not $WORKSPACE — see the workspace
+# canary comment below), so exercising it requires a real `git clone`.
+{ apt-get update -qq && apt-get install -y -qq wget curl ca-certificates git ; } >/dev/null 2>&1 \
     || { echo "HARNESS SETUP FAILED"; exit 99; }
 
 # The provisioner's own venv, built the way the Dockerfile builds it.
@@ -47,7 +59,11 @@ export PROVISIONING_SCRIPT="https://example.invalid/leak.sh"
 export HF_TOKEN=hf_would_be_validated_against_huggingface_co
 export CIVITAI_TOKEN=ct_would_be_validated_against_civitai_com
 export WORKSPACE=/LEAKED_WORKSPACE
-# Shadows the interpreter of the http.server fixture if it is not scrubbed.
+# Hostile-but-INERT: a nonexistent dir on PYTHONPATH changes nothing even when
+# leaked, so no canary watches it and none could fire on it. Kept only so the
+# variable is present in the environment 13 must scrub; it proves nothing on its
+# own. (A live PYTHONPATH canary would need a real sitecustomize.py shim and a
+# scrub of every python 13 itself spawns — not done, deliberately.)
 export PYTHONPATH=/nonexistent-leaked-pythonpath
 #
 # NOTE WHAT IS *NOT* HERE: the proxy variables. They belong to a second run
@@ -64,22 +80,28 @@ export PYTHONPATH=/nonexistent-leaked-pythonpath
 # "ok  no customer post_command ran" while the log said
 # "env convention: added 1 post commands". The loudest canary shadowed the
 # worst one. So: nothing here may fail the run before the later phases execute.
+# The download (Phase 6) and git clone (Phase 4) are both served by THIS
+# container, so they SUCCEED and the run proceeds to post_commands (Phase 8).
 #
-#   - the download is served by THIS container, so it succeeds and Phase 6
-#     completes (https://example.invalid could never have resolved, which is
-#     why /LEAKED_DOWNLOAD was unreachable rather than merely unlikely)
-#   - the dest is RELATIVE, which is the only way $WORKSPACE is consulted at
-#     all; both manifests in test 13 use absolute dests, so an absolute one
-#     here made the workspace canary structurally dead
-#   - APT/PIP/GIT are gone entirely: each aborts the run early and none of them
-#     tells us anything the survivors do not
-export PROVISIONING_DOWNLOADS="http://127.0.0.1:18981/leak.bin|leaked-in-workspace/"
+# THE DOWNLOAD CANARY uses an ABSOLUTE dest. A relative download dest does NOT
+# resolve under $WORKSPACE — it lands in the provisioner's CWD (`/` here), so the
+# earlier `leaked-in-workspace/` fixture that claimed to test $WORKSPACE via the
+# download path was structurally dead: manifest.py reads WORKSPACE only in
+# _repo_dest_from_url, the GIT-repo default-dest helper. So this canary just
+# proves a customer download RAN, into a dedicated dir.
+export PROVISIONING_DOWNLOADS="http://127.0.0.1:18981/leak.bin|/LEAKED_DOWNLOAD/"
+#
+# THE WORKSPACE CANARY uses a git repo with NO dest — the one input that actually
+# resolves a default path under $WORKSPACE (${WORKSPACE}/{repo_name}). Under a
+# leak WORKSPACE=/LEAKED_WORKSPACE, so the clone lands in /LEAKED_WORKSPACE. The
+# repo is local and reachable, so the clone succeeds and does not abort Phase 4.
+export PROVISIONING_GIT_REPOS="file:///srv-leak/leakrepo"
 
-mkdir -p /var/log/portal /.provisioner_state /LEAKED_WORKSPACE /srv-leak
+mkdir -p /var/log/portal /.provisioner_state /LEAKED_WORKSPACE /LEAKED_DOWNLOAD /srv-leak
 echo "planted by the harness" > /.provisioner_state/canary
 
-# A reachable download for the canary above. If the env leaks, this lands in
-# /LEAKED_WORKSPACE and BOTH the download and workspace canaries fire.
+# A reachable download for the download canary. If the env leaks, this lands in
+# /LEAKED_DOWNLOAD and the download canary fires.
 head -c 64 /dev/urandom > /srv-leak/leak.bin
 python3 -m http.server 18981 --bind 127.0.0.1 --directory /srv-leak >/dev/null 2>&1 &
 _leak_srv=$!
@@ -87,6 +109,26 @@ for _ in $(seq 1 25); do
     curl -sf --noproxy '*' -o /dev/null http://127.0.0.1:18981/leak.bin && break
     sleep 0.2
 done
+
+# A local git repo for the WORKSPACE canary. Cloned into ${WORKSPACE}/leakrepo
+# when PROVISIONING_GIT_REPOS leaks; a successful clone leaves files there.
+git config --global user.email harness@localhost
+git config --global user.name harness
+git config --global init.defaultBranch main
+git config --global --add safe.directory '*'
+git init -q /srv-leak/leakrepo
+( cd /srv-leak/leakrepo && echo leaked > file && git add -A && git commit -qm init ) >/dev/null 2>&1
+
+# A hostile binary on a directory PREPENDED to the harness's own PATH, to pin the
+# PATH allowlist in 13 (`_PATH`). If 13 forwards $PATH verbatim instead of
+# pinning it, the provisioner resolves `wget` from here and runs attacker-chosen
+# code as root at boot stage 70. The shim touches a marker and then EXECs the
+# real wget, so the download still succeeds and later phases are not shadowed.
+mkdir -p /hostile-bin
+_real_wget=$(command -v wget)
+printf '#!/bin/bash\ntouch /LEAKED_PATH_HIJACK\nexec %s "$@"\n' "$_real_wget" > /hostile-bin/wget
+chmod +x /hostile-bin/wget
+export PATH=/hostile-bin:$PATH
 
 # A fake `vastai`, so the destroy path leaves EVIDENCE instead of being inferred
 # from a log line. `on_failure=destroy: destroying instance` is only logged when
@@ -144,46 +186,89 @@ check "exits 0"            "0" "$rc"
 check "reports a real download" "yes" \
       "$(grep -q 'content verified' <<< "$out" && echo yes || echo no)"
 
+# Each canary is written as a REUSABLE EXPRESSION, evaluated once here and once
+# in the positive-control block below, so a control cannot pass while the canary
+# it is meant to prove is dead. A control that writes a file and then asserts on
+# that file directly (rather than through the canary's own predicate) is the
+# decoration this fixture exists to remove.
+_post_command_leaked()  { [[ -e /LEAKED_POST_COMMAND ]]; }
+_download_leaked()      { [[ -n "$(ls -A /LEAKED_DOWNLOAD 2>/dev/null)" ]]; }
+_log_leaked()           { [[ -s /var/log/portal/provisioning.log ]]; }
+_state_touched()        { [[ "$(ls /.provisioner_state 2>/dev/null | tr '\n' ' ' | xargs)" != "canary" ]]; }
+_workspace_touched()    { [[ -n "$(ls -A /LEAKED_WORKSPACE 2>/dev/null)" ]]; }
+_egress_leaked()        { [[ -e /LEAKED_EGRESS ]]; }
+_destroy_invoked()      { [[ -e /LEAKED_DESTROY ]]; }
+_path_hijacked()        { [[ -e /LEAKED_PATH_HIJACK ]]; }
+yn() { "$1" && echo YES || echo no; }
+
 echo "=== what it did NOT do ==="
 # PROVISIONING_POST_COMMANDS: arbitrary root commands, at boot stage 70, before
 # the real provisioning at stage 75 has had a chance to run them itself.
-check "no customer post_command ran"  "no" "$([[ -e /LEAKED_POST_COMMAND ]] && echo YES || echo no)"
-check "no customer download ran"      "no" \
-      "$(compgen -G '/LEAKED_WORKSPACE/leaked-in-workspace/*' >/dev/null && echo YES || echo no)"
+check "no customer post_command ran"  "no" "$(yn _post_command_leaked)"
+# PROVISIONING_DOWNLOADS: a customer download reaching the real download path.
+check "no customer download ran"      "no" "$(yn _download_leaked)"
 # PROVISIONER_LOG_FILE: the file the Instance Portal surfaces and 12 tails.
-check "customer log untouched"        "no" "$([[ -s /var/log/portal/provisioning.log ]] && echo YES || echo no)"
+check "customer log untouched"        "no" "$(yn _log_leaked)"
 # STATE_DIR: marking a stage complete here makes the real run skip it.
-check "product state untouched"       "canary" "$(ls /.provisioner_state | tr '\n' ' ' | xargs)"
-# WORKSPACE: a relative dest must not resolve into the customer's workspace.
-check "workspace untouched"           "" "$(ls -A /LEAKED_WORKSPACE)"
+check "product state untouched"       "no" "$(yn _state_touched)"
+# WORKSPACE: a git repo with no dest must not clone into the customer's workspace.
+check "workspace untouched"           "no" "$(yn _workspace_touched)"
 # HF_TOKEN/CIVITAI_TOKEN reaching auth.py means real outbound requests.
-check "no connection to huggingface.co or civitai.com" "no" \
-      "$([[ -e /LEAKED_EGRESS ]] && echo YES || echo no)"
+check "no connection to huggingface.co or civitai.com" "no" "$(yn _egress_leaked)"
 # PROVISIONER_FAILURE_ACTION=destroy must not survive into the run. Asserted on
 # the CAPABILITY (did anything invoke vastai?), not on a log line that only
 # appears on a path this run does not take.
-check "vastai destroy never invoked"  "no" "$([[ -e /LEAKED_DESTROY ]] && echo YES || echo no)"
+check "vastai destroy never invoked"  "no" "$(yn _destroy_invoked)"
+# PATH: the pinned _PATH must keep the provisioner off the hostile-bin shim.
+check "no hostile-PATH binary ran"    "no" "$(yn _path_hijacked)"
 
 # POSITIVE CONTROLS. A canary that cannot fire reports "ok" forever; three of
-# the seven here did exactly that until a mutation showed it. Each negative
-# check above is worth only as much as a demonstration that the thing it watches
-# for is reachable at all.
+# the seven here did exactly that until a mutation showed it. Each control below
+# makes the watched-for thing happen and then evaluates THE CANARY'S OWN
+# EXPRESSION — not a file written directly — so it proves that expression can go
+# YES, which is the only thing that makes the "no" above meaningful.
 echo "=== the canaries themselves work ==="
+touch /LEAKED_POST_COMMAND
+check "post_command canary can fire"  "YES" "$(yn _post_command_leaked)"
+rm -f /LEAKED_POST_COMMAND
+
+# A real fetch of the leak URL into the watched dir — proving BOTH that the
+# fixture URL serves (a dead server would kill the canary a different way) and
+# that the canary's own expression fires on the result.
+curl -sf --noproxy '*' -o /LEAKED_DOWNLOAD/control-probe http://127.0.0.1:18981/leak.bin
+check "download canary can fire (via the leak URL)" "YES" "$(yn _download_leaked)"
+rm -f /LEAKED_DOWNLOAD/control-probe
+
+echo "control line" >> /var/log/portal/provisioning.log
+check "log canary can fire"           "YES" "$(yn _log_leaked)"
+: > /var/log/portal/provisioning.log
+
+echo "abc" > /.provisioner_state/control.hash
+check "state canary can fire"         "YES" "$(yn _state_touched)"
+rm -f /.provisioner_state/control.hash
+
+# A real clone of the fixture repo into the watched workspace — proving BOTH
+# that the repo is clonable (an unclonable fixture would kill the canary a
+# different way: Phase 4 aborts and shadows everything after it) and that the
+# canary's own expression fires on the result.
+git clone -q file:///srv-leak/leakrepo /LEAKED_WORKSPACE/control-clone 2>/dev/null
+check "workspace canary can fire (via a real clone)" "YES" "$(yn _workspace_touched)"
+rm -rf /LEAKED_WORKSPACE/control-clone
+
 vastai destroy instance 999 >/dev/null 2>&1
-check "a destroy WOULD have been recorded" "YES" \
-      "$([[ -e /LEAKED_DESTROY ]] && echo YES || echo no)"
+check "destroy canary can fire"       "YES" "$(yn _destroy_invoked)"
 rm -f /LEAKED_DESTROY
-curl -sf --noproxy '*' -o /LEAKED_WORKSPACE/probe.bin http://127.0.0.1:18981/leak.bin
-check "the leak URL is reachable"          "YES" \
-      "$([[ -s /LEAKED_WORKSPACE/probe.bin ]] && echo YES || echo no)"
-rm -f /LEAKED_WORKSPACE/probe.bin
+
+# The PATH shim, exercised through the same marker the canary reads.
+( PATH=/hostile-bin:$PATH wget --version >/dev/null 2>&1 )
+check "PATH-hijack canary can fire"   "YES" "$(yn _path_hijacked)"
+rm -f /LEAKED_PATH_HIJACK
 
 # The trap has to have been ARMED, or "no connection" proves nothing.
 echo "=== the trap itself works ==="
 (exec 3<>/dev/tcp/127.0.0.1/443) 2>/dev/null
 sleep 0.5
-check "a connection WOULD have been recorded" "YES" \
-      "$([[ -e /LEAKED_EGRESS ]] && echo YES || echo no)"
+check "egress canary can fire"        "YES" "$(yn _egress_leaked)"
 kill "$_trap_pid" 2>/dev/null
 
 # ── A SECOND RUN, for the proxy escape only ───────────────────────────

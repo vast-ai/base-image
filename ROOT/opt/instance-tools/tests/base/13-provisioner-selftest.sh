@@ -77,7 +77,13 @@ source "$(dirname "$0")/../lib.sh"
 PROVISIONER=/opt/instance-tools/bin/provisioner
 [[ -x "$PROVISIONER" ]] || test_fail "provisioner not found at ${PROVISIONER} — every image carrying this suite ships it"
 
-_tmp=$(mktemp -d)
+# TMPDIR is customer-controllable and mktemp honours it. TMPDIR=/nonexistent
+# makes `mktemp -d` fail; with the result unchecked, $_tmp would be empty and
+# every `mkdir -p "$_tmp/..."` below would resolve at the filesystem ROOT — a
+# root-run boot test scribbling into `/`. Pin TMPDIR for the temp-dir creation
+# and refuse to continue without a real directory.
+_tmp=$(TMPDIR=/tmp mktemp -d) || test_fail "could not create a temp dir"
+[[ -n "$_tmp" && -d "$_tmp" ]] || test_fail "mktemp did not yield a usable temp dir"
 _srv_pid=""
 cleanup() {
     [[ -n "$_srv_pid" ]] && kill "$_srv_pid" 2>/dev/null
@@ -99,33 +105,43 @@ mkdir -p "$_tmp/home" "$_tmp/ws" "$_tmp/state" "$_tmp/hfhome"
 #               cover the system tools the provisioner shells out to.
 #   HOME        uv/pip write caches; without it they fall back to '/' and warn
 #   LANG        python's stdio encoding; a C locale mangles log output
-#   WORKSPACE   manifest.py defaults dest paths under it — pointed at our temp
-#               dir so a relative dest cannot land in the customer's workspace
+#   WORKSPACE   manifest.py defaults GIT-REPO dest paths under it
+#               (_repo_dest_from_url) — pointed at our temp dir so a repo with no
+#               dest cannot clone into the customer's workspace. (A DOWNLOAD dest
+#               does not consult WORKSPACE at all; a relative one lands in CWD.)
 #   PROVISIONER_STATE_DIR   keeps stage hashes out of the real run's state
 #   OMP/MKL/…_NUM_THREADS, TOKIO_WORKER_THREADS
-#               forwarded, not pinned. These are the ADR 0014/0025 caps that
+#               forwarded, but VALIDATED (a small positive integer), not passed
+#               through verbatim. These are the ADR 0014/0025 caps that
 #               12-cpu-thread-limits.sh sets on pid-starved high-core hosts, and
 #               they are exactly the hosts where an unbounded hf download dies
 #               with pthread_create EAGAIN. Production always has them; a
 #               self-test that drops them would run the one configuration the
 #               fleet never runs, and no CI runner has enough cores to notice.
+#               But a customer-set OMP_NUM_THREADS=999999 or TOKIO_WORKER_THREADS=0
+#               (tokio panics on 0) would otherwise reach the real download path,
+#               so only a value matching ^[1-9][0-9]{0,2}$ is forwarded.
 #
 # CONTAINER_ID and CONTAINER_API_KEY are absent ON PURPOSE, not by oversight:
 # they are what failure.py needs to call the API, so without them the destroy
 # path cannot fire even if some future edit re-enables it.
 _PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Validate each thread cap and collect the survivors as VAR=value assignments.
+_thread_env=()
+for _tc in OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS \
+           NUMEXPR_NUM_THREADS TOKIO_WORKER_THREADS; do
+    _tcv="${!_tc}"
+    [[ "$_tcv" =~ ^[1-9][0-9]{0,2}$ ]] && _thread_env+=("$_tc=$_tcv")
+done
+
 _prov() {
     env -i \
         PATH="$_PATH" \
         HOME="$_tmp/home" \
         LANG="${LANG:-C.UTF-8}" \
-        WORKSPACE="$_tmp/ws" \
         PROVISIONER_STATE_DIR="$_tmp/state" \
-        ${OMP_NUM_THREADS:+OMP_NUM_THREADS="$OMP_NUM_THREADS"} \
-        ${MKL_NUM_THREADS:+MKL_NUM_THREADS="$MKL_NUM_THREADS"} \
-        ${OPENBLAS_NUM_THREADS:+OPENBLAS_NUM_THREADS="$OPENBLAS_NUM_THREADS"} \
-        ${NUMEXPR_NUM_THREADS:+NUMEXPR_NUM_THREADS="$NUMEXPR_NUM_THREADS"} \
-        ${TOKIO_WORKER_THREADS:+TOKIO_WORKER_THREADS="$TOKIO_WORKER_THREADS"} \
+        "${_thread_env[@]}" \
         "$PROVISIONER" "$@"
 }
 
@@ -284,8 +300,11 @@ did not run in its own venv, which is itself a broken-image signal"
         # all change what the CLI does — so an inherited environment could make
         # this contract check pass or fail for reasons that have nothing to do
         # with the argv it exists to check.
+        _tokio_env=()
+        [[ "$TOKIO_WORKER_THREADS" =~ ^[1-9][0-9]{0,2}$ ]] \
+            && _tokio_env+=("TOKIO_WORKER_THREADS=$TOKIO_WORKER_THREADS")
         hf_out=$(_env HF_ENDPOINT=http://127.0.0.1:18973 HF_HOME="$_tmp/hfhome" \
-            ${TOKIO_WORKER_THREADS:+TOKIO_WORKER_THREADS="$TOKIO_WORKER_THREADS"} \
+            "${_tokio_env[@]}" \
             no_proxy='*' NO_PROXY='*' "${_cmd[@]}" 2>&1)
         if grep -q "command not found\|No such file or directory" <<< "$hf_out"; then
             fail_later "hf-cli-missing" "could not execute the provisioner's hf: ${hf_out}"

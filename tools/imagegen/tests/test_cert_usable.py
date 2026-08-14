@@ -121,7 +121,7 @@ def rc_of(certs: Path, crt: str, key: str) -> int:
 
 def usable(certs: Path, crt: str, key: str) -> bool:
     """Strict reading: only exit 0. This is what the boot script's regeneration
-    guard and base/27-caddy-tls.sh use; the portal uses `rc in (0, 2)`."""
+    guard and base/27-caddy-tls.sh use; the portal uses `rc in (0, 3)`."""
     return rc_of(certs, crt, key) == 0
 
 
@@ -156,14 +156,17 @@ def test_both_sides_unreadable_is_rejected(certs):
 
 
 def test_expired_but_matched_reports_its_own_exit_code(certs):
-    """Exit 2, not 1, and not 0.
+    """Exit 3, not 2, not 1, and not 0.
 
-    The boot script regenerates on it; the portal serves with it, because its
-    only alternative is plaintext on the same public port. Collapsing the two
-    into a boolean is what turned a correct predicate into a downgrade, so the
-    distinction is pinned here rather than left to each caller to rediscover."""
+    3 rather than 2 because bash's own exit status for a syntax error is 2: a
+    truncated helper must not read as "expired, serve anyway" (a fail-open at the
+    TLS gate). The boot script regenerates on it; the portal serves with it,
+    because its only alternative is plaintext on the same public port. Collapsing
+    the two into a boolean is what turned a correct predicate into a downgrade, so
+    the distinction is pinned here rather than left to each caller to rediscover."""
     r = _run(str(HELPER), str(certs / "expired.crt"), str(certs / "expired.key"))
-    assert r.returncode == 2, r.stderr
+    assert r.returncode == 3, r.stderr
+    assert r.returncode != 2, "expiry must not collide with bash's syntax-error code"
     assert "has expired" in r.stderr
     assert "key still matches" in r.stderr, "the reason must say the pair is sound"
 
@@ -188,7 +191,10 @@ def test_the_helper_defaults_to_the_instance_pair(certs):
     r = _run(str(HELPER))
     # Asserting rc==1 alone would invert on a machine that HAS a valid instance
     # pair (a Vast instance, or a developer box that once ran the boot script).
-    # What is being pinned is the defaulting, not the verdict.
+    # What is being pinned is the defaulting, not the verdict — but the code must
+    # still be one of the three the contract defines, so a helper mutated to
+    # blanket `exit 0` with no reason cannot slide through on the `or`.
+    assert r.returncode in (0, 1, 3)
     assert "/etc/instance." in r.stderr or r.returncode == 0
 
 

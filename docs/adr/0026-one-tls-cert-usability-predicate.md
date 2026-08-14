@@ -44,7 +44,9 @@ that sample could not have falsified the claim it was cited for. Corrupt the
 SPKI **algorithm OID** instead and the certificate parses (`rc=0`), passes
 `-checkend 0` (`rc=0`), and yields no public key (`rc=1`) — so the digest
 comparison is reached with an empty certificate side and, against an unreadable
-key, returns USABLE.
+key, returns USABLE. The fail-open needs **both** sides to fail: an unknown-OID
+certificate against a *good* key still fails closed, because the key side then
+produces a real digest that the empty cert side cannot match.
 
 What actually made it improbable in the shipped script is narrower and worth
 naming precisely: `/etc/instance.key` is generated locally two lines earlier, so
@@ -106,7 +108,17 @@ directory (`PROVISIONER_STATE_DIR`), where the alternative was a test sharing
 1. **One implementation, two policies.** `/opt/instance-tools/bin/cert-usable`
    compares the PEM SubjectPublicKeyInfo of the two sides directly — no hashing
    step in which emptiness can stop looking like emptiness — and reports
-   **three** outcomes: `0` usable, `2` matched but expired, `1` unusable.
+   **three** outcomes: `0` usable, `3` matched but expired, `1` unusable.
+
+   Expiry is `3`, not `2`, on purpose: bash's own exit status for a syntax error
+   or builtin misuse is `2`, so a truncated or half-written copy of the helper
+   exits `2`. A caller that read `2` as "expired, serve anyway" would then serve
+   TLS over whatever is on disk — an HTML error page, a zero-byte file, a
+   mismatched pair — the precise fail-open at the TLS gate this ADR exists to
+   close. `3` is a code the interpreter never produces on its own, so a broken
+   helper reads as unusable (fail closed) at every caller, and the portal
+   additionally requires the helper's own `has expired` sentinel on stderr before
+   serving on `3`.
 
    The third code exists because "usable" is not one question, and collapsing it
    into a boolean turned a correct predicate into a downgrade. An expired but
@@ -178,9 +190,14 @@ directory (`PROVISIONER_STATE_DIR`), where the alternative was a test sharing
      unbounded key-churn plus per-boot signing traffic it exists to end.
    - **Portal:** absence means an *older* image, not a broken one, and failing
      closed there disables HTTPS on instances whose certificate is fine. It
-     falls back to the same SPKI comparison in-process. That is a second copy of
-     the comparison and is accepted as the price of the release skew; it is
-     minus the expiry check, which this caller tolerates anyway.
+     falls back to the same SPKI comparison in-process, and prints a line naming
+     the fallback (Caddy logs only to stdout; on the exact fleet where this runs
+     an operator otherwise sees no hint the helper was even absent). That is a
+     second copy of the comparison and is accepted as the price of the release
+     skew; it is minus the expiry check, which this caller tolerates anyway. It
+     is the branch that runs on most of the fleet on a portal release, so it now
+     carries its own tests (`portal-aio/tests/test_cert_validation.py`), which is
+     what decision item 5 ("Test it") requires for the copy, not only the helper.
 4. **A correction is recorded as a correction.** This ADR asserted the digest
    fail-open was unreachable; a review refuted it with a fixture, and the Context
    section now carries both the refutation and the flaw in the original
@@ -209,12 +226,18 @@ Accepted negatives:
 - Three CI jobs now depend on docker being present, and the imagegen suite's
   runtime grows by minutes. The alternative was testing the paths and state that
   are the entire subject matter with neither paths nor state. Absent docker they
-  skip locally and **fail** under `CI`, because a silent skip in a gate is the
-  failure mode this repo already has a dedicated test to prevent.
+  skip locally; under `CI` each module carries a `test_docker_is_available_under_ci`
+  that **fails** (a single named red, not a session-wide collection abort — the
+  earlier module-level `raise` interrupted the whole pytest run and lost ~260
+  tests), because a silent skip in a gate is the failure mode this repo already
+  has a dedicated test to prevent. `ALLOW_DOCKERLESS_TESTS=1` is the deliberate
+  opt-out, since `unset CI` is not available to someone re-running a CI job.
 - The portal carries a second copy of the SPKI comparison for the release-skew
   case (binding condition 3). L066 does not catch it, and would not catch a
   third: the rule blocks known-broken spellings, not re-implementation.
-- `cert-usable` is a fourth process spawned per boot and per portal start.
+- `cert-usable` is spawned up to three times per boot (the regeneration guard,
+  the signed-cert validation, the final `ENABLE_HTTPS` guard) and once per
+  portal start.
   Irrelevant against a 2048-bit keygen on the same path.
 - The portal now depends on a file outside `portal-aio/`. It already depended on
   `/etc/instance.crt`, so the coupling is to the image layout it already

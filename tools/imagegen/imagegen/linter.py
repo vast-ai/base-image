@@ -84,7 +84,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
-    ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 2 matched-but-expired, 1 unusable). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key — reachable with a certificate whose SPKI algorithm OID openssl cannot decode, which parses and passes -checkend but yields no public key (ADR 0026)"),
+    ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
 
 
@@ -1069,17 +1069,23 @@ _CERT_HELPER = "cert-usable"
 # `openssl rsa -in K -noout` is the same RSA-only load with no flag at all,
 # unless it is producing output, in which case it is a conversion and legitimate.
 #
+# The `rsa` token lookahead REFUSES a following `:` as well as `[\w-]`, so
+# `openssl req -newkey rsa:2048 ... -noout` — the textbook key-generation idiom,
+# which pairs `rsa:` with `-noout` to suppress the CSR — is not read as the
+# RSA-only `openssl rsa` subcommand. Without the `:` the baseline was clean only
+# because the one shipped call site happened to also carry `-out`.
+#
 # `.` rather than `[^\n]` throughout, because these are matched against JOINED
 # windows as well as single lines — see _logical_windows.
 _OPENSSL_RSA_ONLY = re.compile(
     r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?:"
-    r"(?<![\w-])rsa(?![\w-])(?:(?!\bopenssl\b).)*?(?<![\w-])-check(?![\w-])"
+    r"(?<![\w-])rsa(?![\w:-])(?:(?!\bopenssl\b).)*?(?<![\w-])-check(?![\w-])"
     r"|(?<![\w-])-modulus(?![\w-])"
     r")",
     re.S,
 )
 _OPENSSL_RSA_NOOUT = re.compile(
-    r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?<![\w-])rsa(?![\w-])"
+    r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?<![\w-])rsa(?![\w:-])"
     r"(?:(?!\bopenssl\b).)*?(?<![\w-])-noout(?![\w-])",
     re.S,
 )
@@ -1094,14 +1100,21 @@ _PUBKEY_DIGEST = re.compile(
     re.S,
 )
 
-# How many following lines to fold into each window. The portal's call is a
-# Python argv list, and any formatter that wraps it (ruff and black both do, at
-# 6 elements) split `openssl`/`rsa` from `-check` across lines — which made the
+# How many lines to fold into each window (the line itself plus _WINDOW-1 that
+# follow it). The portal's call is a Python argv list, and any formatter that
+# wraps it splits `openssl`/`rsa` from `-check` across lines — which made the
 # single-line regexes exempt the one caller that gates Caddy's TLS listener,
 # while the mutation test kept passing because it only ever mutated to the
-# one-line form. Bounded at 4 so two unrelated statements cannot be stitched
-# into a match; the alternation also refuses to span a second `openssl`.
-_WINDOW = 4
+# one-line form.
+#
+# It must be wide enough for the shape a magic trailing comma FORCES: ruff and
+# black explode a 6-element list to one element per line, so `"openssl"` and
+# `"-check"` land five lines apart. A window of 4 caught a hand-wrapped
+# two-per-line form and MISSED that one-per-line explosion (pinned by
+# test_L066_a_one_element_per_line_argv_does_not_escape). Widened to cover it;
+# the alternation refuses to span a second `openssl`, so the join cannot stitch
+# two independent openssl statements into one match even at this width.
+_WINDOW = 7
 
 
 def _py_prose_lines(path: Path) -> set[int]:
@@ -1134,14 +1147,22 @@ def _py_prose_lines(path: Path) -> set[int]:
 
 
 def _logical_windows(lines):
-    """Yield (lineno, text) for each line and for each short join of it with the
-    lines that follow, so a statement broken across lines is still one string."""
+    """Yield (start_lineno, text, covered_linenos) for each line and for each
+    short join of it with the lines that follow, so a statement broken across
+    lines is still one string.
+
+    `covered_linenos` is every source line the window folded in, so a caller can
+    mark the WHOLE matched statement as seen — deduping on the start line alone
+    reports the same offending statement once per overlapping window that reaches
+    it, one of them pointing at a bare `[`."""
     for i, (n, line) in enumerate(lines):
-        yield n, line
+        covered = [n]
+        yield n, line, list(covered)
         joined = line
-        for _, nxt in lines[i + 1:i + _WINDOW]:
+        for m, nxt in lines[i + 1:i + _WINDOW]:
             joined = f"{joined} {nxt.strip()}"
-            yield n, joined
+            covered.append(m)
+            yield n, joined, list(covered)
 
 
 def _shipped_scripts(repo: Path):
@@ -1328,15 +1349,20 @@ def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Findi
     e3b0c442… — a fixed, non-empty string — so two openssl invocations that both
     failed produce identical digests and an unreadable cert and an unreadable key
     are certified as a matching pair. `[[ -n "$c" ]]` does not save it: the
-    digest is what is non-empty, not the key. In the shipped script a parse check
-    above it made that unreachable, so this one was a trap for the next edit
-    rather than a live fault — which is precisely why a RULE and not just a fix:
-    the reasoning that made it safe lived nowhere.
+    digest is what is non-empty, not the key. That fail-open IS reachable — it
+    needs BOTH sides to fail, and a certificate whose SPKI algorithm OID openssl
+    cannot decode (parses, passes -checkend, yields no public key) supplies the
+    cert side; an unreadable key supplies the other. An unknown-OID cert against
+    a GOOD key still fails closed. A record here once called it unreachable on
+    the strength of a corrupted-modulus fixture, which could not have shown
+    otherwise because any integer is a valid modulus; that is corrected in
+    ADR 0026 and pinned by
+    test_old_digest_form_fails_open_on_an_unknown_key_algorithm.
 
     One implementation, /opt/instance-tools/bin/cert-usable: it compares the
     PEM SubjectPublicKeyInfo of each side directly, with no hashing step in
     which emptiness can disappear, and it is exercised against real RSA, EC,
-    mismatched, expired and unreadable fixtures by
+    mismatched, expired, unreadable and unknown-algorithm fixtures by
     tools/imagegen/tests/test_cert_usable.py.
     """
     if img.cls != "base":
@@ -1346,22 +1372,26 @@ def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Findi
             continue                           # the one sanctioned implementation
         seen: set[int] = set()
         prose = _py_prose_lines(f)
-        scan = [(n, line) for n, line in lines if n not in prose]
-        for n, text in _logical_windows(scan):
+        # BLANK prose lines, do not drop them: dropping closes the gap so a
+        # window stitches code from either side of a docstring into a false
+        # positive. Blanking keeps the line numbers contiguous, so the join only
+        # ever spans genuinely adjacent code.
+        scan = [(n, "" if n in prose else line) for n, line in lines]
+        for n, text, covered in _logical_windows(scan):
             if n in seen:
                 continue
             rsa_only = (_OPENSSL_RSA_ONLY.search(text)
                         or (_OPENSSL_RSA_NOOUT.search(text)
                             and not _OPENSSL_PRODUCES_OUTPUT.search(text)))
             if rsa_only:
-                seen.add(n)
+                seen.update(covered)
                 yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
                               "validates or matches a TLS key with an RSA-only openssl "
                               "form (`openssl rsa -check/-noout`, `-modulus`) — it "
                               "rejects a valid EC key; call "
                               "`/opt/instance-tools/bin/cert-usable <crt> <key>`")
             elif _PUBKEY_DIGEST.search(text):
-                seen.add(n)
+                seen.update(covered)
                 yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
                               "hashes an openssl public key before comparing it — the "
                               "digest of empty input is equal on both sides, so two "

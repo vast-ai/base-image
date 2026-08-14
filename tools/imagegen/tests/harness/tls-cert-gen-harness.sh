@@ -14,6 +14,13 @@
 # accordingly. Nothing here reaches console.vast.ai.
 set -u
 
+# Refuse to run outside a container: this overwrites /etc/instance.{crt,key},
+# installs a binary into /opt/instance-tools/bin and moves files around /etc. In
+# CI it is inside `docker run --rm`; a developer running it directly would do all
+# that to their host. `docker run` sets /.dockerenv.
+[[ -f /.dockerenv || -n "${VAST_HARNESS_OK:-}" ]] \
+    || { echo "refusing to run outside a container (set VAST_HARNESS_OK to override)"; exit 1; }
+
 BOOT=/etc/vast_boot.d/55-tls-cert-gen.sh
 FAIL=0
 
@@ -82,6 +89,7 @@ boot_https() { # mode -> prints the resulting ENABLE_HTTPS
 
 marker() { cat /etc/.instance-cert-selfsigned 2>/dev/null || echo "-"; }
 keyfp() { openssl pkey -in /etc/instance.key -pubout 2>/dev/null | sha256sum | cut -c1-16; }
+certfp() { openssl x509 -in /etc/instance.crt -noout -fingerprint 2>/dev/null | sha256sum | cut -c1-16; }
 
 echo "=== 1. healthy console: sign, install, no marker ==="
 reset_state
@@ -218,7 +226,7 @@ check "HTML cert, generation off => https off" "false" \
          source "$BOOT" >/dev/null 2>&1; echo "$ENABLE_HTTPS")"
 
 echo "=== 12. an EXPIRED but matched pair is still SERVED ==="
-# Exit code 2. The guard that decides whether to regenerate treats it as a
+# Exit code 3. The guard that decides whether to regenerate treats it as a
 # reason to regenerate; the guard that decides whether supervisor serves TLS
 # treats it as yes — because its alternative is plaintext on the same public
 # port, and an expired certificate still encrypts. Mutating either guard to use
@@ -235,7 +243,7 @@ openssl req -newkey rsa:2048 -nodes -subj "/CN=ca" -keyout /tmp/ca.key \
 openssl ca -batch -config /tmp/ca.cnf -cert /tmp/ca.crt -keyfile /tmp/ca.key \
     -startdate 20200101000000Z -enddate 20200102000000Z \
     -in /tmp/e.csr -out /etc/instance.crt >/dev/null 2>&1
-check "helper reports expired-but-matched" "2" \
+check "helper reports expired-but-matched" "3" \
       "$(/opt/instance-tools/bin/cert-usable >/dev/null 2>&1; echo $?)"
 check "generation off => https stays ON"  "true" \
       "$(ENABLE_HTTPS=true; generate_tls_cert=false; \
@@ -266,15 +274,40 @@ echo "=== 14. a MISSING helper stops, it does not churn keys ==="
 # response rejected. Doing nothing is the conservative act here.
 reset_state
 boot good
-before=$(keyfp)
+before_key=$(keyfp)
+before_crt=$(certfp)
 mv /opt/instance-tools/bin/cert-usable /tmp/cert-usable-hidden
 out=$(run_boot good)
-check "says the image is broken" "Error:" "$(grep -o 'Error:' <<< "$out" | head -1)"
-check "key NOT regenerated"      "$before" "$(keyfp)"
-check "existing cert untouched"  "0" \
-      "$(openssl x509 -in /etc/instance.crt -noout >/dev/null 2>&1; echo $?)"
+# The SPECIFIC message, not a bare "Error:" — scenario 9 also emits an "Error:"
+# line, so grep -o 'Error:' cannot discriminate a missing helper from any other.
+check "says the helper is missing" "missing or not executable" \
+      "$(grep -o 'missing or not executable' <<< "$out" | head -1)"
+check "key NOT regenerated"      "$before_key" "$(keyfp)"
+# IDENTITY, not parseability: a self-sign would leave a cert that still PARSES
+# while replacing the pair. The fingerprint must be byte-for-byte the one on disk
+# before the helper vanished.
+check "existing cert UNCHANGED"  "$before_crt" "$(certfp)"
 check "https disabled"           "false" "$(boot_https good)"
 mv /tmp/cert-usable-hidden /opt/instance-tools/bin/cert-usable
+
+echo "=== 15. a syntactically BROKEN helper (bash exit 2) fails CLOSED ==="
+# The exit-code collision: bash's own exit status for a syntax error is 2, and
+# the tolerated non-zero at the final guard is 3 (expired), NOT 2. So a truncated
+# or corrupt cert-usable must turn HTTPS OFF, never be read as "expired, serve
+# anyway" — a fail-open at the one TLS gate. Shim the helper to `exit 2` and the
+# final guard must disable HTTPS.
+reset_state
+boot good                                      # a genuinely good pair on disk
+cp /opt/instance-tools/bin/cert-usable /tmp/cert-usable-real
+printf '#!/bin/bash\nif then\n' > /opt/instance-tools/bin/cert-usable   # bash syntax error => exit 2
+chmod 755 /opt/instance-tools/bin/cert-usable
+check "broken helper exits 2" "2" \
+      "$(/opt/instance-tools/bin/cert-usable >/dev/null 2>&1; echo $?)"
+check "broken helper => https OFF (fail closed)" "false" \
+      "$(ENABLE_HTTPS=true; generate_tls_cert=false; \
+         source "$BOOT" >/dev/null 2>&1; echo "$ENABLE_HTTPS")"
+cp /tmp/cert-usable-real /opt/instance-tools/bin/cert-usable
+rm -f /tmp/cert-usable-real
 
 [[ $FAIL -eq 0 ]] && echo "ALL SCENARIOS OK" || echo "SCENARIOS FAILED"
 exit $FAIL

@@ -318,16 +318,20 @@ the key, so a mismatched pair — what a half-finished regeneration leaves —
 passed both. The third hashed each side's public key before comparing, which
 inverts the risk: `sha256sum` of empty input is `e3b0c442…` on *both* sides, so
 two failed extractions compare equal and `[[ -n "$c" ]]` guards the digest
-rather than the key — reachable with a certificate whose SPKI **algorithm OID**
-openssl cannot decode, which parses and passes `-checkend` but yields no public
-key. (This file previously called that unreachable, on the strength of a
+rather than the key. That fail-open needs **both** sides to fail: a certificate
+whose SPKI **algorithm OID** openssl cannot decode (parses, passes `-checkend`,
+yields no public key) supplies the cert side, and an unreadable key the other —
+an unknown-OID cert against a *good* key still fails **closed**. (This file
+previously called the whole thing unreachable, on the strength of a
 corrupted-*modulus* fixture that could not have falsified it — any integer is a
 valid modulus. Recorded because the bad inference, not the bug, is the reusable
 lesson.) All three now call
 `/opt/instance-tools/bin/cert-usable <crt> <key>`, which compares PEM SPKI
-directly and reports **0 usable / 2 matched-but-expired / 1 unusable** — expiry
+directly and reports **0 usable / 3 matched-but-expired / 1 unusable** — expiry
 is a separate code because it means *regenerate* at boot and *serve anyway* at
-the portal, whose only fallback is plaintext on the same public port. **L066**
+the portal, whose only fallback is plaintext on the same public port; **3, not
+2**, so a syntactically broken helper's own bash exit 2 cannot be misread as
+"expired, serve anyway" (a fail-open at the TLS gate). **L066**
 (`check_one_cert_usability_predicate`) blocks the spellings that have already
 shipped wrong, across line breaks and in Python argv lists; it is not a proof
 that no fourth implementation exists, and generic openssl use — `rand`,
@@ -361,16 +365,33 @@ Not gated by the linter — the property is about side effects, not syntax — b
 asserted by `tools/imagegen/tests/test_provisioner_selftest.py`, which runs the
 real test under a hostile environment and then checks for the files, log lines,
 state entries and outbound connections that must not exist. **Every one of those
-canaries carries a positive control**, because three of the first seven were
-structurally unable to fire (an early-aborting `PROVISIONING_APT` shadowed
-`post_commands`; an unresolvable URL; an absolute dest that never consulted
-`$WORKSPACE`) and reported `ok` regardless. A canary without a proof that it can
-fire is decoration.
+eight canaries carries a positive control that evaluates the canary's OWN
+predicate** — not a file written directly, which proves only that the directory
+is writable, never that the provisioner would write it. This matters because
+three of the first seven canaries were structurally unable to fire and reported
+`ok` regardless: an early-aborting `PROVISIONING_APT` shadowed `post_commands`;
+an unresolvable URL; and a *relative download dest* that was believed to resolve
+under `$WORKSPACE` but does not — a download dest lands in the provisioner's CWD,
+and `manifest.py` reads `WORKSPACE` only in `_repo_dest_from_url`, the **git-repo**
+default-dest helper. So the workspace canary is now driven by a
+`PROVISIONING_GIT_REPOS` entry with no dest (the one input that does consult
+`$WORKSPACE`), the download canary by an absolute dest, and the `_PATH` pin by a
+hostile-directory shim prepended to the harness's PATH. A canary without a proof
+that it can fire is decoration.
 
 `PROVISIONER_STATE_DIR` is validated rather than trusted: `clear_all_state()`
 does `shutil.rmtree` and is reachable from `--force`, so it refuses relative and
-system paths, writes an ownership marker and declines to delete a tree it did not
-create, and opens hash files `O_NOFOLLOW`.
+system paths (a blocklist of exact roots, **not** a containment rule — the
+ownership marker is the real defence). The marker is planted **only in a
+directory the provisioner itself created** (`makedirs(exist_ok=False)`), so a
+foreign directory it was merely pointed at is never adopted and the next
+`--force` never `rmtree`s it; a directory holding only stage-hash files is
+treated as ours for migration (already-deployed instances predate the marker).
+The marker is written `O_CREAT|O_EXCL|O_NOFOLLOW` and verified with `os.lstat`,
+so a planted symlink cannot make root write outside the state dir or forge
+ownership; hash files are read and written `O_NOFOLLOW`. `clear_all_state()`
+returns whether it cleared, and `--force` **aborts** on a refusal rather than
+silently skipping every stage against stale hashes.
 
 ### Copyleft licence compliance (proposed)
 

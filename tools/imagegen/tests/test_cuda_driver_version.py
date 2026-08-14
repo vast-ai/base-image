@@ -11,7 +11,9 @@ hint, so naming a directory with no loadable libcuda.so.1 sent the loader on to
 the ld.so cache, i.e. to a previous boot's forward-compat library. Nothing in a
 pure-python test can catch that; it is a property of the dynamic loader.
 
-Skips (loudly) where docker is unavailable — GitHub's ubuntu runners have it.
+Skips where docker is unavailable locally; under CI a missing docker is a named
+failure (test_docker_is_available_under_ci), not a silent skip — GitHub's ubuntu
+runners have docker.
 """
 
 import os
@@ -40,34 +42,15 @@ SETUP = (
 )
 
 
-def _docker_available() -> bool:
-    if not shutil.which("docker"):
-        return False
-    return subprocess.run(
-        ["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    ).returncode == 0
+# Docker-availability gate is shared across the three functional modules (a raw
+# `raise RuntimeError` under CI aborted the WHOLE pytest session at collection).
+from _docker_gate import assert_docker_present_under_ci, requires_docker  # noqa: E402
 
 
-# A SKIP IS NOT A PASS, and in CI it must not even be available.
-#
-# This repo has a whole test (test_harness_require_pass.py) devoted to making
-# "skipped != passed" enforceable in the instance suite, and then gates its own
-# functional tests on a bare skipif whose CI guarantee lives in a comment. Three
-# docker-backed gates now hinge on it. If docker ever stops being present on the
-# runner — a runner image change, a self-hosted migration — these go quietly
-# green having asserted nothing, which is precisely the shape they exist to stop.
-# Locally a skip is still the right behaviour; under CI it is a red build.
-_DOCKER_OK = _docker_available()
-if not _DOCKER_OK and os.environ.get("CI"):
-    raise RuntimeError(
-        "docker is unavailable but CI is set: these gates must not silently skip. "
-        "Fix the runner, or unset CI to skip them deliberately."
-    )
-
-requires_docker = pytest.mark.skipif(
-    not _DOCKER_OK,
-    reason="docker unavailable — cannot fabricate libcuda.so.1 at absolute paths",
-)
+def test_docker_is_available_under_ci():
+    """A SKIP IS NOT A PASS. One named red — not a session-wide collection abort —
+    when CI is set and docker is missing; a clean skip otherwise."""
+    assert_docker_present_under_ci()
 
 
 def _run_harness(harness: str, mounts: dict[Path, str]) -> str:
