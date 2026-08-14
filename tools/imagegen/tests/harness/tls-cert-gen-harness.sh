@@ -309,5 +309,33 @@ check "broken helper => https OFF (fail closed)" "false" \
 cp /tmp/cert-usable-real /opt/instance-tools/bin/cert-usable
 rm -f /tmp/cert-usable-real
 
+echo "=== 16. a PRESENT BUT BROKEN helper must not churn keys either ==="
+# Scenario 14 covers a MISSING helper. This is the case the exit-code renumbering
+# put into the threat model and then did not cover: a helper that is there and
+# executable but answers nothing — truncated, a partial layer, a bad HOTFIX_SCRIPT,
+# a future syntax error. `-x` passes, so the old gate believed it, every predicate
+# failed, and the instance regenerated a keypair and POSTed a CSR on EVERY boot.
+# Measured before the sanity probe: five boots, five different keys.
+reset_state
+boot good
+before=$(keyfp)
+crtfp() { openssl x509 -in /etc/instance.crt -noout -fingerprint 2>/dev/null; }
+before_crt=$(crtfp)
+cp /opt/instance-tools/bin/cert-usable /tmp/cert-usable-real
+for _broken in 'syntax' 'silent'; do
+    if [[ "$_broken" == syntax ]]; then
+        printf '#!/bin/bash\nif [ 1\n' > /opt/instance-tools/bin/cert-usable   # bash exits 2
+    else
+        printf '#!/bin/bash\nexit 1\n' > /opt/instance-tools/bin/cert-usable   # no reason on stderr
+    fi
+    chmod 755 /opt/instance-tools/bin/cert-usable
+    for i in 1 2 3; do boot good; done
+    check "${_broken} helper: key NOT regenerated" "$before" "$(keyfp)"
+    check "${_broken} helper: cert UNCHANGED" "$before_crt" "$(crtfp)"
+    check "${_broken} helper: https disabled" "false" "$(boot_https good)"
+done
+cp /tmp/cert-usable-real /opt/instance-tools/bin/cert-usable
+chmod 755 /opt/instance-tools/bin/cert-usable
+
 [[ $FAIL -eq 0 ]] && echo "ALL SCENARIOS OK" || echo "SCENARIOS FAILED"
 exit $FAIL

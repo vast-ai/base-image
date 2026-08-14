@@ -174,7 +174,13 @@ def _dir_is_ours(path: str) -> bool:
         entries = os.listdir(path)
     except OSError:
         return False
-    return all(e == _OWNER_MARKER or e.endswith(".hash") for e in entries)
+    # `bool(entries)` first: `all()` over an EMPTY listing is vacuously True, so
+    # without it an empty foreign directory reads as ours and the next --force
+    # rmtree's it. Worst shape is a freshly-mounted host-bound volume, where the
+    # final rmdir then fails EBUSY and --force dies on a traceback instead of the
+    # clean refusal this guard promises.
+    return bool(entries) and all(
+        e == _OWNER_MARKER or e.endswith(".hash") for e in entries)
 
 
 def clear_all_state() -> bool:

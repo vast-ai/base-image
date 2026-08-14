@@ -325,7 +325,16 @@ an unknown-OID cert against a *good* key still fails **closed**. (This file
 previously called the whole thing unreachable, on the strength of a
 corrupted-*modulus* fixture that could not have falsified it — any integer is a
 valid modulus. Recorded because the bad inference, not the bug, is the reusable
-lesson.) All three now call
+lesson.) All three call
+A helper that is PRESENT but broken is treated as MISSING. `-x` asks only whether
+a file exists; a truncated or half-written `cert-usable` passes that and then
+fails every predicate it is asked, so the regeneration guard is true on every
+boot and the instance churns a fresh keypair and a console CSR forever — the
+unbounded churn `55-tls-cert-gen.sh` exists to end, re-entered through the one
+door a presence check leaves open (measured before the fix: five boots, five
+keys). The gate is now the helper's own contract on inputs that cannot exist:
+two absent paths must yield exit 1 with a `cert-usable:` reason.
+
 `/opt/instance-tools/bin/cert-usable <crt> <key>`, which compares PEM SPKI
 directly and reports **0 usable / 3 matched-but-expired / 1 unusable** — expiry
 is a separate code because it means *regenerate* at boot and *serve anyway* at
@@ -339,6 +348,18 @@ that no fourth implementation exists, and generic openssl use — `rand`,
 pinned by `tools/imagegen/tests/test_cert_usable.py` against real
 RSA/EC/mismatched/expired/unreadable/unknown-algorithm fixtures, and the boot
 script's across-boot convergence by `test_tls_cert_gen.py` (ADR 0026).
+
+**Caveat, true at the time of writing:** the portal caller is fixed *in the
+repo* only. `portal-aio` is also published as a release tarball, and
+`portal-aio/VERSION` has not been bumped — so the published `v3.1.4` tarball
+still carries the `openssl rsa -check` form this rule bans, and the name
+`v3.1.4` now denotes two different payloads. New images carry the fixed copy
+(`COPY ./portal-aio`) and first-boot skips the download on version equality, so
+nothing regresses; but no *running* instance gets the fix until a portal release
+is cut, and a customer pinning `PORTAL_VERSION` to `v3.1.4` on a new image would
+overwrite the fixed copy with the banned one. Bumping `VERSION` is an
+unrevertable fleet push (`release-portal.yml` monotonic gate) and is deliberately
+a separate decision — see ADR 0026.
 
 ### A test-invoked provisioner run does not touch the real one's state
 
@@ -378,6 +399,13 @@ default-dest helper. So the workspace canary is now driven by a
 `$WORKSPACE`), the download canary by an absolute dest, and the `_PATH` pin by a
 hostile-directory shim prepended to the harness's PATH. A canary without a proof
 that it can fire is decoration.
+
+Two canaries were rebuilt again after a later review: the workspace one fired
+only when `WORKSPACE` **and** a git-repo variable both leaked, so leaking
+`PROVISIONING_GIT_REPOS` alone cloned an attacker-named repo into the customer's
+`/workspace` as root and still reported `ok`. It is now paired with a `git` shim
+on the pinned PATH that fires on the ACT of cloning, wherever it lands — a canary
+must not depend on the variable it is guarding.
 
 `PROVISIONER_STATE_DIR` is validated rather than trusted: `clear_all_state()`
 does `shutil.rmtree` and is reachable from `--force`, so it refuses relative and

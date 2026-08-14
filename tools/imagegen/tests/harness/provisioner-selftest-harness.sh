@@ -19,7 +19,8 @@ set +e
 # Refuse to run outside a container. Every step below writes absolute paths
 # (/usr/local/bin/vastai, /LEAKED_*, /etc/hosts) and binds privileged ports — in
 # CI it is inside `docker run --rm`, but a developer running it directly would
-# scribble across their host. `docker run` sets $VAST_HARNESS_OK; /.dockerenv is
+# scribble across their host. /.dockerenv is what actually guards this in CI;
+# $VAST_HARNESS_OK is the manual override for a non-Docker runtime, and is
 # the belt to that suspenders.
 [[ -f /.dockerenv || -n "$VAST_HARNESS_OK" ]] \
     || { echo "refusing to run outside a container (set VAST_HARNESS_OK to override)"; exit 1; }
@@ -142,6 +143,17 @@ export PATH=/hostile-bin:$PATH
 printf '#!/bin/bash\ntouch /LEAKED_DESTROY\nexit 0\n' > /usr/local/bin/vastai
 chmod +x /usr/local/bin/vastai
 
+# A `git` shim on the PINNED path, for the same reason but a sharper one.
+# `_workspace_touched` watches /LEAKED_WORKSPACE, so it only fires when WORKSPACE
+# leaks AND a git-repo variable leaks. Leak PROVISIONING_GIT_REPOS alone and the
+# clone lands in the WORKSPACE fallback (/workspace, per Dockerfile ENV) — a root
+# clone of an attacker-named repo into the customer's workspace, reported as
+# "ok workspace untouched". This shim fires on the ACT of cloning, whatever the
+# destination, so the canary no longer depends on the variable it is guarding.
+# 13 never runs git on its own path, so it is silent on a green run.
+printf '#!/bin/bash\ntouch /LEAKED_GIT\nexec /usr/bin/git "$@"\n' > /usr/local/bin/git
+chmod +x /usr/local/bin/git
+
 # ── An egress trap for the two token-validation endpoints ─────────────
 #
 # auth.py hardcodes https://huggingface.co/api/whoami-v2 and
@@ -198,6 +210,7 @@ _state_touched()        { [[ "$(ls /.provisioner_state 2>/dev/null | tr '\n' ' '
 _workspace_touched()    { [[ -n "$(ls -A /LEAKED_WORKSPACE 2>/dev/null)" ]]; }
 _egress_leaked()        { [[ -e /LEAKED_EGRESS ]]; }
 _destroy_invoked()      { [[ -e /LEAKED_DESTROY ]]; }
+_git_ran()              { [[ -e /LEAKED_GIT ]]; }
 _path_hijacked()        { [[ -e /LEAKED_PATH_HIJACK ]]; }
 yn() { "$1" && echo YES || echo no; }
 
@@ -213,6 +226,8 @@ check "customer log untouched"        "no" "$(yn _log_leaked)"
 check "product state untouched"       "no" "$(yn _state_touched)"
 # WORKSPACE: a git repo with no dest must not clone into the customer's workspace.
 check "workspace untouched"           "no" "$(yn _workspace_touched)"
+# Independent of WORKSPACE: fires on the clone itself, wherever it lands.
+check "no customer git clone ran"     "no" "$(yn _git_ran)"
 # HF_TOKEN/CIVITAI_TOKEN reaching auth.py means real outbound requests.
 check "no connection to huggingface.co or civitai.com" "no" "$(yn _egress_leaked)"
 # PROVISIONER_FAILURE_ACTION=destroy must not survive into the run. Asserted on
@@ -253,6 +268,12 @@ rm -f /.provisioner_state/control.hash
 # canary's own expression fires on the result.
 git clone -q file:///srv-leak/leakrepo /LEAKED_WORKSPACE/control-clone 2>/dev/null
 check "workspace canary can fire (via a real clone)" "YES" "$(yn _workspace_touched)"
+# The workspace control above also clones, which would leave the marker set and
+# make this control vacuous — clear it so the probe proves the shim, not history.
+rm -f /LEAKED_GIT
+git clone -q file:///srv-leak/leakrepo /tmp/gitprobe >/dev/null 2>&1
+check "git canary can fire"           "YES" "$(yn _git_ran)"
+rm -rf /tmp/gitprobe /LEAKED_GIT
 rm -rf /LEAKED_WORKSPACE/control-clone
 
 vastai destroy instance 999 >/dev/null 2>&1

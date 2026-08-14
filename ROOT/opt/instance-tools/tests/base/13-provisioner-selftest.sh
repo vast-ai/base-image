@@ -141,6 +141,7 @@ _prov() {
         HOME="$_tmp/home" \
         LANG="${LANG:-C.UTF-8}" \
         PROVISIONER_STATE_DIR="$_tmp/state" \
+        WORKSPACE="$_tmp/ws" \
         "${_thread_env[@]}" \
         "$PROVISIONER" "$@"
 }

@@ -23,11 +23,30 @@ cat /etc/.instance-cert-selfsigned 2>/dev/null   # self-signed attempt count, if
 openssl x509 -in /etc/instance.crt -noout -enddate
 ```
 
-Fix — regenerate the pair and restart:
+**Check `generate_tls_cert` FIRST — the obvious fix makes it worse otherwise.**
+
+```
+grep -c 'generate_tls_cert.*true' /etc/environment; echo "env: ${generate_tls_cert:-unset}"
+```
+
+*If certificate generation is ENABLED*, regenerate and restart:
 
 ```
 rm -f /etc/instance.crt /etc/instance.key /etc/.instance-cert-selfsigned
 # then restart the instance (stop/start) so 55-tls-cert-gen.sh runs again
+```
+
+*If it is NOT enabled* — which is the common way to reach this state, and the
+state the boot log's own message names — do **not** delete the pair. Nothing
+regenerates it, the final guard sees no key, and `ENABLE_HTTPS=false`: you would
+trade an expired-but-encrypting listener for plaintext on the public port with
+the portal token in `?token=`, which is the downgrade ADR 0026 exists to
+prevent. Either relaunch the instance with certificate generation enabled, or
+self-sign in place against the existing key:
+
+```
+openssl x509 -req -in /etc/instance.csr -signkey /etc/instance.key \
+    -days 365 -sha256 -out /etc/instance.crt && chmod 644 /etc/instance.crt
 ```
 
 ## Symptom: certificate is permanently self-signed after the cause cleared

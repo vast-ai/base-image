@@ -40,12 +40,36 @@ _cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" "${2:-/etc/instance.k
 #
 # So: leave whatever is on disk alone, and let the final guard turn HTTPS off.
 # Doing nothing is the conservative act here; regenerating is not.
+# SANITY, NOT PRESENCE. `-x` alone asks whether a file is there, and a helper
+# that is present but BROKEN — truncated, a partial layer, a bad HOTFIX_SCRIPT, a
+# future edit with a syntax error — passes that gate and then fails every
+# predicate it is asked. The regeneration guard below is one of those, so the
+# instance regenerates a keypair and POSTs a CSR on EVERY boot, forever: the
+# exact churn described above, re-entered through the one door the presence
+# check leaves open. Measured before this probe existed: five boots, five
+# different keys.
+#
+# The probe is the helper's own contract, on inputs that cannot exist: two empty
+# paths must be rejected as unusable (exit 1) with a `cert-usable:` reason. A
+# broken interpreter cannot produce that pair — bash's own syntax-error exit is
+# 2 and it prints no such prefix — so anything else routes into the same
+# leave-it-alone path as a missing helper.
 _CERT_HELPER_OK=true
+_cert_helper_sane() {
+    local out rc
+    out=$("$_CERT_USABLE" /nonexistent-crt /nonexistent-key 2>&1); rc=$?
+    (( rc == 1 )) && [[ "$out" == cert-usable:* ]]
+}
 if [[ ! -x "$_CERT_USABLE" ]]; then
     _CERT_HELPER_OK=false
     echo "Error: ${_CERT_USABLE} is missing or not executable; cannot validate" >&2
     echo "       the instance certificate. Leaving the existing pair untouched" >&2
     echo "       and disabling HTTPS. This is a broken image, not a host fault." >&2
+elif ! _cert_helper_sane; then
+    _CERT_HELPER_OK=false
+    echo "Error: ${_CERT_USABLE} is present but does not answer its own contract;" >&2
+    echo "       treating it as missing. Leaving the existing pair untouched and" >&2
+    echo "       disabling HTTPS. This is a broken image, not a host fault." >&2
 fi
 
 # Retry a self-signed fallback, but BOUNDEDLY. Re-entering on the marker alone
@@ -205,6 +229,8 @@ elif (( _cert_rc == 3 )); then
     # otherwise prints only cert-usable's stderr, and the customer-visible effect
     # ("my browser says the certificate expired") has no explanation in the log.
     echo "Instance certificate has EXPIRED but still matches its key; serving TLS" >&2
-    echo "with it rather than plaintext. Restart the instance to regenerate it" >&2
-    echo "(see docs/runbooks/tls-certificates.md)." >&2
+    echo "with it rather than plaintext. Restarting the instance regenerates it" >&2
+    echo "when certificate generation (generate_tls_cert) is enabled — which, if" >&2
+    echo "you are seeing this, it is not. See docs/runbooks/tls-certificates.md" >&2
+    echo "in github.com/vast-ai/base-image." >&2
 fi

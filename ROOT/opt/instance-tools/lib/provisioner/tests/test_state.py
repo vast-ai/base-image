@@ -249,3 +249,71 @@ class TestStateDirOverride:
         # And the stage must NOT read as complete, or the refusal would silently
         # skip work instead of merely declining to record it.
         assert st.is_stage_complete("apt", "hash1") is False
+
+
+class TestGuardsThatCouldNotFail:
+    """Checks added in an earlier round that no test could discriminate.
+
+    Each of these passed the whole suite with the guard removed, which by this
+    repo's own rule means the guard did not count. The discriminating input is
+    the point: a symlink whose target holds the value under test, and a
+    directory with nothing in it.
+    """
+
+    def test_a_symlinked_hash_file_is_not_READ(self, monkeypatch, tmp_path):
+        """The existing symlink test used a target holding "original", which can
+        never equal the hash being compared — so it passed with or without
+        O_NOFOLLOW. Make the target hold the hash and the read side has to
+        actually refuse to follow it."""
+        import provisioner.state as st
+        d = tmp_path / "state"
+        d.mkdir()
+        secret = tmp_path / "secret"
+        secret.write_text("hash1")
+        (d / "apt.hash").symlink_to(secret)
+        monkeypatch.setattr("provisioner.state.STATE_DIR", str(d))
+        assert st.is_stage_complete("apt", "hash1") is False
+
+    def test_an_empty_foreign_directory_is_not_adopted(self, monkeypatch, tmp_path):
+        """`all()` over an empty listing is vacuously True, so an empty directory
+        the provisioner was merely pointed at read as ours and --force deleted
+        it. A freshly-mounted volume is exactly that shape."""
+        import provisioner.state as st
+        victim = tmp_path / "empty-foreign"
+        victim.mkdir()
+        monkeypatch.setattr("provisioner.state.STATE_DIR", str(victim))
+        assert st._dir_is_ours(str(victim)) is False
+        assert st.clear_all_state() is False
+        assert victim.is_dir(), "clear_all_state deleted an empty foreign directory"
+
+
+class TestForceRefusalIsNotAProvisioningFailure:
+    """`--force` against a directory we do not own must abort — but as a CONFIG
+    error, not a run failure.
+
+    A run failure enters `run_with_retries` (3 attempts, 30s apart) and then
+    `handle_failure`, whose action is customer-settable and includes `destroy`.
+    The refusal is deterministic: every retry re-reads the same directory and
+    refuses identically. So retrying burns 90s to reach a destroy that a typo in
+    PROVISIONER_STATE_DIR should never be able to trigger.
+    """
+
+    def test_refusal_returns_the_config_code_and_skips_the_failure_action(
+            self, monkeypatch, tmp_path):
+        from provisioner.__main__ import CONFIG_REFUSED, run_with_retries
+        from provisioner.schema import Manifest
+
+        called = {}
+        monkeypatch.setattr("provisioner.__main__.clear_all_state", lambda: False)
+        monkeypatch.setattr("provisioner.__main__.handle_failure",
+                            lambda *a, **k: called.setdefault("handle_failure", True))
+        monkeypatch.setattr("provisioner.__main__.load_manifest",
+                            lambda p: Manifest(version=1))
+        monkeypatch.setattr("provisioner.__main__.setup_logging", lambda *a, **k: None)
+        monkeypatch.setattr("provisioner.__main__.time.sleep",
+                            lambda s: called.setdefault("slept", True))
+
+        rc = run_with_retries("m.yaml", force=True)
+        assert rc == CONFIG_REFUSED
+        assert "handle_failure" not in called, "a config refusal reached the failure action"
+        assert "slept" not in called, "a deterministic refusal was retried"
