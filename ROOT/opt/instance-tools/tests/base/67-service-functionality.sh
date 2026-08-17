@@ -179,6 +179,47 @@ if ! $jupyter_tested; then
     echo "  skip: jupyter (not running or not listening)"
 fi
 
+# ── syncthing: the configured listener must be usable, not just present ──
+#
+# A linter can prove the SOURCE is guarded (L068); only a live boot can prove what
+# ended up in config.xml. That distinction matters here because the malformed value
+# is persisted on overlayfs, which survives stop/start — an instance that booted
+# once with the old script keeps the bad entry even after the image is fixed.
+#
+# What went wrong: `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset is a
+# valid address with an empty port, so syncthing bound its own default [::]:22000 —
+# a port nothing publishes. Inbound direct connections were impossible and sync fell
+# back to relay-only (slow, rate-limited), which defeats the point of syncthing.
+# Nothing failed; it just quietly did not work. (ADR 0028)
+if service_running syncthing; then
+    echo "  -- syncthing listen addresses --"
+    _st_conf="${STCONFDIR:-/opt/syncthing/config}/config.xml"
+    if [[ -r "$_st_conf" ]]; then
+        if grep -qE '<listenAddress>(tcp|quic)://[^<]*:</listenAddress>' "$_st_conf"; then
+            fail_later "syncthing config.xml has a listen address with an EMPTY port" \
+                       "— syncthing resolves that to its own default (22000), which no" \
+                       "template publishes, so direct sync cannot work (ADR 0028)"
+        else
+            echo "     ok: no empty-port listen address"
+        fi
+        # If the platform mapped the sync port, that exact address must be configured
+        # — otherwise the direct listener the mapping exists for is simply absent.
+        if [[ "${VAST_TCP_PORT_72299:-}" =~ ^[0-9]+$ ]]; then
+            if grep -qF "tcp://0.0.0.0:${VAST_TCP_PORT_72299}<" "$_st_conf"; then
+                echo "     ok: direct listener on mapped port ${VAST_TCP_PORT_72299}"
+            else
+                fail_later "VAST_TCP_PORT_72299=${VAST_TCP_PORT_72299} is mapped but" \
+                           "syncthing has no matching listen address — direct peer" \
+                           "connections will not work and sync stays relay-only"
+            fi
+        else
+            echo "     ok: port unmapped, relay-only by design"
+        fi
+    else
+        echo "     skip: $_st_conf not readable"
+    fi
+fi
+
 # ── Report ───────────────────────────────────────────────────────────
 
 report_failures

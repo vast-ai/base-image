@@ -1715,3 +1715,87 @@ def test_L061_scans_persisted_review_artifacts(tmp_path):
     d.mkdir(parents=True, exist_ok=True)
     (d / "artifact.diff").write_text(f"+# see {ticket} for context\n")
     assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+# ---- L068: unguarded VAST_*_PORT_* in a listen address ----------------------
+
+def _shipped(tmp_path, rel, body):
+    p = tmp_path / "ROOT" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+    return p
+
+
+def test_mut_L068_fires_on_the_real_syncthing_defect(tmp_path):
+    """The exact line that shipped, and what it silently produced.
+
+    Unset -> `tcp://0.0.0.0:` -> syncthing binds its own default [::]:22000, a
+    port nothing publishes. Direct sync never works and the exposure allowlist
+    entry keyed `env:VAST_TCP_PORT_72299` can never match.
+    """
+    _shipped(tmp_path, "opt/supervisor-scripts/syncthing.sh",
+             '#!/bin/bash\nLISTEN_ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"\n')
+    assert "L068" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_accepts_the_guarded_idiom_already_in_the_tree(tmp_path):
+    """coturn's `-p "${VAST_UDP_PORT_70000:-3478}"` is the blessed pattern; a rule
+    that flagged it would be a false-positive generator on a real shipped file."""
+    _shipped(tmp_path, "opt/supervisor-scripts/coturn.sh",
+             '#!/bin/bash\nturnserver -p "${VAST_UDP_PORT_70000:-3478}" \\\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_accepts_an_explicit_emptiness_guard(tmp_path):
+    _shipped(tmp_path, "opt/supervisor-scripts/svc.sh",
+             '#!/bin/bash\n'
+             'if [[ -n "${VAST_TCP_PORT_72299}" ]]; then\n'
+             '    ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"\n'
+             'fi\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_ignores_the_var_outside_a_port_position(tmp_path):
+    """Scoped to the interpolation SITE. Reading the variable to log it, or to
+    branch on it, cannot produce an empty-port bind — flagging those would make
+    the rule noise and get it switched off."""
+    _shipped(tmp_path, "opt/supervisor-scripts/svc.sh",
+             '#!/bin/bash\n'
+             'echo "sync port is ${VAST_TCP_PORT_72299}"\n'
+             '[[ -z "$VAST_TCP_PORT_72299" ]] && echo unmapped\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_does_not_fire_on_PROSE_describing_the_bug(tmp_path):
+    """It did, first time it ran — on the docstring in the exposure scan that
+    explains this very defect, inside a `python3 - <<'PY'` heredoc in a .sh (so
+    the AST-based prose helper returned nothing for it). A rule that reddens the
+    documentation of the thing it detects is a rule nobody can keep green."""
+    _shipped(tmp_path, "opt/instance-tools/tests/base/28-x.sh",
+             '#!/bin/bash\npython3 - <<\'PY\'\n'
+             'def resolve_port(spec):\n'
+             '    """A literal port, or env:NAME.\n\n'
+             '    syncthing\'s sync listener is tcp://0.0.0.0:$VAST_TCP_PORT_72299,\n'
+             '    so a static key can never match it.\n'
+             '    """\n'
+             '    return spec\n'
+             'PY\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_mut_the_shipped_syncthing_reconciles_and_guards(tmp_path):
+    """Round-trip on the REAL file: the fix must guard, must reconcile away a
+    malformed entry from an earlier boot (config.xml is on overlayfs and survives
+    stop/start), and must not use the substring-colliding guard."""
+    repo = find_repo_root(Path(__file__).resolve())
+    body = (repo / "ROOT" / "opt" / "supervisor-scripts" / "syncthing.sh").read_text()
+    assert 'raw-listen-addresses remove' in body, (
+        "the malformed entry from an earlier boot is never removed; overlayfs "
+        "persists it across stop/start so the fix would not reach a booted instance")
+    assert '=~ ^[0-9]+$' in body, "the platform port variable is not validated"
+    assert 'grep -qxF' in body, (
+        "grep -qF substring-collides: 'tcp://0.0.0.0:' is a prefix of every "
+        "well-formed 'tcp://0.0.0.0:NNNN'")
+    assert 'no direct TCP listener' in body, (
+        "when the port is unmapped the script must configure no listener and say "
+        "so, rather than silently binding a default that cannot receive")

@@ -84,6 +84,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
+    ("L068", ERROR, "No shipped script interpolates a `VAST_TCP_PORT_*` / `VAST_UDP_PORT_*` variable into the PORT position of a listen address without a guard. The platform injects these only when the template maps that port, and an unset one does not fail loudly — it yields a syntactically valid address with an empty port, which the server resolves to its OWN default. Measured: `syncthing.sh` built `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset, persisted `<listenAddress>tcp://0.0.0.0:</listenAddress>` into config.xml on overlayfs, and syncthing bound `[::]:22000` — a port nothing publishes, so direct sync (the entire point of syncthing) silently never worked, and the exposure allowlist keyed `env:VAST_TCP_PORT_72299` could never match the port actually bound. Scoped to the interpolation site, not the variable: reading the var to build a display URL or an `if` test is fine. The blessed idiom is already in the tree — coturn's `-p \"${VAST_UDP_PORT_70000:-3478}\"` (ADR 0028)"),
     ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
@@ -1709,7 +1710,106 @@ def check_internal_ticket_ids(repo: Path) -> Iterable[Finding]:
                           "internal tracker links to the ADR/commit, not the reverse (ADR 0012)")
 
 
-REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [check_adr_secrets, check_internal_ticket_ids]
+# ---- L068: a listen address built from an unguarded platform port variable ---
+#
+# `VAST_TCP_PORT_<n>` / `VAST_UDP_PORT_<n>` are injected by the platform ONLY when
+# the template maps that port. Interpolating one unguarded into a listen address
+# does not fail loudly — it produces a syntactically valid address with an empty
+# port, which servers resolve to their OWN default. Measured on a live instance:
+#
+#   syncthing.sh:  LISTEN_ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"   # unset
+#   config.xml:    <listenAddress>tcp://0.0.0.0:</listenAddress>        # persisted
+#   syncthing.log: TCP listener starting (address="[::]:22000")         # its default
+#
+# Three consequences, all silent: the service binds a port nobody published, so it
+# is unreachable and the feature it exists to provide (direct sync) never works; an
+# allowlist entry keyed `env:VAST_TCP_PORT_<n>` can never match the port actually
+# bound, so the exposure gate reports it forever; and the malformed value is
+# PERSISTED to a config file on overlayfs, which outlives the fix.
+#
+# The guarded idiom already in the tree is the blessed one and keeps this clean:
+#   coturn.sh:  -p "${VAST_UDP_PORT_70000:-3478}"
+_LISTEN_CTX = re.compile(
+    r"(?:tcp|udp|quic|https?|ws|wss)://[^\s\"']*:\s*$"      # scheme://host:<here>
+    r"|(?:\b(?:0\.0\.0\.0|127\.0\.0\.1|localhost|\[::\]|\*)):\s*$"   # host:<here>
+    r"|--(?:port|listen|listen-address|bind|rfbport|gui-address)[=\s\"']*$",
+    re.I)
+_VAST_PORT_VAR = re.compile(r"\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)\}?")
+# `${VAR:-x}` / `${VAR:?}` / `${VAR:+x}` are self-guarding; a bare `${VAR}` is not.
+_VAST_PORT_GUARDED = re.compile(r"\$\{VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+:[-?+=]")
+_GUARD_NEARBY = re.compile(
+    r"-n\s+\"?\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)"      # [[ -n "$VAR" ]]
+    r"|-z\s+\"?\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)"     # [[ -z "$VAR" ]] && ...
+    r"|=~\s*\^\[0-9\]"                                         # =~ ^[0-9]+$
+    r"|\[\[\s+\"?\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)")
+
+
+def _triple_quoted_lines(lines) -> set[int]:
+    """Line numbers inside a triple-quoted block, for ANY shipped script.
+
+    `_py_prose_lines` is AST-based and returns nothing for a `.sh`. But the
+    biggest single python file in the tree is a heredoc INSIDE a shell script
+    (`28-inadvertent-exposure.sh` runs `python3 - <<'PY'`), and its docstrings are
+    prose about ports and listen addresses — which is exactly the vocabulary this
+    rule matches. Caught the first time L068 ran: it flagged the docstring that
+    DESCRIBES the syncthing bug, alongside the bug itself.
+
+    A quote-toggle scanner is cruder than an AST but works on both, and prose is
+    all it needs to find.
+    """
+    out: set[int] = set()
+    inside = False
+    for n, line in lines:
+        ticks = line.count('"""') + line.count("'''")
+        if inside:
+            out.add(n)
+        if ticks % 2:
+            if not inside:
+                out.add(n)                     # the opening line is prose too
+            inside = not inside
+    return out
+
+
+def check_unguarded_listen_port(repo: Path) -> Iterable[Finding]:
+    """L068 — a listen address may not interpolate an unguarded VAST_*_PORT_* var.
+
+    Scoped to the interpolation SITE, not to the variable: `VAST_TCP_PORT_*` is
+    read all over the tree for perfectly good reasons (building a URL to show a
+    user, an `if` test, a log line). Only a use that lands the value in the port
+    position of an address can produce the empty-port bind, so only that shape is
+    flagged — which is what keeps this from being a false-positive generator.
+    """
+    for f, rel, lines in _shipped_scripts(repo):
+        prose = _triple_quoted_lines(lines) | _py_prose_lines(f)
+        guarded_vars: set[str] = set()
+        for n, line in lines:
+            if n in prose:
+                continue                       # a docstring about ports is not a bind
+            g = _GUARD_NEARBY.search(line)
+            if g:
+                guarded_vars.update(x for x in g.groups() if x)
+            m = _VAST_PORT_VAR.search(line)
+            if not m:
+                continue
+            var = m.group(1)
+            if _VAST_PORT_GUARDED.search(line) or var in guarded_vars:
+                continue
+            # Is the interpolation in the PORT position of an address?
+            before = line[:m.start()]
+            if not _LISTEN_CTX.search(before):
+                continue
+            yield Finding("L068", ERROR, "", rel,
+                          f"line {n}: listen address interpolates ${{{var}}} with no "
+                          f"guard — the platform injects it only when the template maps "
+                          f"that port, so when unset this builds an address with an EMPTY "
+                          f"port and the server binds its own default instead (measured: "
+                          f"syncthing bound [::]:22000). Use ${{{var}:-<default>}}, or "
+                          f"guard with [[ -n \"${{{var}}}\" ]] and configure no listener "
+                          f"when it is unset")
+
+
+REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
+    check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port]
 
 
 def lint_repo(repo: Path) -> list[Finding]:
