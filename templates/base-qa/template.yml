@@ -30,7 +30,15 @@ ports:
   - "1111:1111"                   # Instance Portal
   - "8080:8080"                   # Jupyter
   - "6006:6006"                   # Tensorboard
-  - "8384:8384"                   # Syncthing
+  - "8384:8384"                   # Syncthing GUI (behind Caddy)
+  # Syncthing SYNC protocol. Mapped because the customer-facing template maps it,
+  # and until it was here the gate ran a configuration no customer runs: with the
+  # port unmapped, `syncthing.sh` built an address with an empty port, syncthing
+  # bound its own default (22000), and the `env:VAST_TCP_PORT_72299` allowlist
+  # entry resolved to nothing — so the one mechanism that entry exists to test had
+  # never executed in any QA run. The gate saw only the degenerate path, which is
+  # how the empty-port defect survived (ADR 0028).
+  - "72299:72299"                 # Syncthing sync protocol
 env:
   OPEN_BUTTON_PORT: "1111"
   OPEN_BUTTON_TOKEN: "1"
