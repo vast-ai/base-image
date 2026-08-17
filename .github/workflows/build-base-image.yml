@@ -591,10 +591,14 @@ jobs:
       - id: agg
         env:
           CONTRACT_RESULT: ${{ needs.cloudflared-contract.result }}
+          # Every architecture must REPORT, not merely not-contradict. Kept in
+          # step with the job's matrix by test_the_aggregate_expects_every_arch.
+          EXPECTED_ARCHES: "2"
         run: |
           set -euo pipefail
           STATES=$(find cf-state -name '*.txt' -exec cat {} + 2>/dev/null | tr -d ' ' | grep -v '^$' || true)
-          echo "per-arch states: ${STATES:-<none>}"
+          COUNT=$(grep -c . <<<"$STATES" || true); [[ -z "$STATES" ]] && COUNT=0
+          echo "per-arch states: ${STATES:-<none>}  (${COUNT}/${EXPECTED_ARCHES} reported)"
           if [[ -z "$STATES" ]]; then
             # No artifacts. Either the contract job never ran because something
             # upstream failed — in which case the build failure is the story and
@@ -607,6 +611,18 @@ jobs:
             fi
           elif grep -q '^broken$' <<<"$STATES"; then STATE="broken"
           elif grep -q '^unverified$' <<<"$STATES"; then STATE="unverified"
+          # A CELL THAT DIED WITHOUT REPORTING IS NOT A CELL THAT PASSED.
+          # Observed live: GitHub 429/503'd the action download, so the arm64 cell
+          # failed at "Set up job" before any step ran. amd64 uploaded `verified`,
+          # the aggregate saw one file, found no bad state in it, and reported
+          # `verified` — for a run where an entire architecture was never tested.
+          # Absence of contradiction is not evidence; require every arch to speak.
+          elif [[ "$COUNT" -lt "$EXPECTED_ARCHES" ]]; then
+            STATE="unverified"
+            echo "::warning::only ${COUNT}/${EXPECTED_ARCHES} architectures reported a contract result"
+          elif [[ "$CONTRACT_RESULT" != "success" ]]; then
+            STATE="unverified"
+            echo "::warning::contract job result is ${CONTRACT_RESULT}; treating as unverified"
           else STATE="verified"
           fi
           echo "state=$STATE" >> "$GITHUB_OUTPUT"

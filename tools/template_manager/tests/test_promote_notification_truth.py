@@ -320,3 +320,38 @@ def test_skipped_is_tolerated_because_a_FILTERed_dispatch_empties_the_mini_matri
     rendered = str(_build_jobs()["notify"]["with"]["build-result"])
     assert '["success","skipped"]' in rendered, (
         "a FILTERed dispatch that skips the mini stages must still report green")
+
+
+def test_a_cell_that_DIED_WITHOUT_REPORTING_is_not_a_cell_that_passed():
+    """Observed live on 2026-08-17: GitHub 429/503'd the action download, so the
+    arm64 contract cell failed at "Set up job" before any step ran and uploaded
+    no artifact. amd64 uploaded `verified`. The aggregate saw one file, found no
+    bad state in it, and reported `verified` — for a run where an entire
+    architecture was never tested.
+
+    Handling ZERO artifacts is not enough; PARTIAL is the dangerous case, because
+    absence of contradiction reads as agreement.
+    """
+    agg = _build_jobs()["cloudflared-contract-status"]
+    body = " ".join(str(s.get("run", "")) for s in agg["steps"])
+    assert "EXPECTED_ARCHES" in str(agg["steps"]) or "EXPECTED_ARCHES" in body, (
+        "the aggregate must know how many architectures owe it a result")
+    assert "-lt" in body, (
+        "the aggregate must compare the number of reports against the number of "
+        "architectures, or a missing cell reads as a passing one")
+    assert "CONTRACT_RESULT" in body and '!= "success"' in body, (
+        "a contract job that did not succeed must not yield `verified`")
+
+
+def test_the_aggregate_expects_every_arch_in_the_matrix():
+    """EXPECTED_ARCHES is a literal, so it can drift from the matrix it describes.
+    Adding a third architecture without bumping it would let that arch go
+    unreported and still read as verified."""
+    jobs = _build_jobs()
+    arches = jobs["cloudflared-contract"]["strategy"]["matrix"]["arch"]
+    step = [s for s in jobs["cloudflared-contract-status"]["steps"]
+            if "EXPECTED_ARCHES" in str(s.get("env", {}))]
+    assert step, "the aggregate declares no expected architecture count"
+    assert int(step[0]["env"]["EXPECTED_ARCHES"]) == len(arches), (
+        f"EXPECTED_ARCHES={step[0]['env']['EXPECTED_ARCHES']} but the contract "
+        f"matrix has {len(arches)} architectures {arches}")
