@@ -55,15 +55,27 @@ _USAGE = re.compile(
 _LATEST = ("https://github.com/cloudflare/cloudflared/releases/latest/"
            "download/cloudflared-linux-amd64")
 
-# Cloudflare RATE LIMITS quick-tunnel creation — tunnel_manager spaces its own
-# startup tunnels 2s apart for exactly this reason. A 429 means Cloudflare
-# declined to issue a tunnel, which says nothing about whether this binary still
-# speaks the portal's contract. Treating it as a break would make the gate fail
-# in bursts (a base rebuild is 12 configs) and, worse, fail more often the more
-# we run it — the shape that gets a gate switched off.
+# THREE STATES, AND THE DEFAULT IS BLOCK.
+#
+# The first version of this classifier folded `failed to request quick Tunnel`
+# into the rate-limit pattern. That string is the UNIVERSAL wrapper for the
+# quick-tunnel creation path — it wraps 429, 5xx, DNS, TLS *and a regression in
+# cloudflared's own tunnel client*. So the one failure this gate exists to catch,
+# a release that can no longer create tunnels, was being classified as
+# "rate-limited" and skipped. Measured against the real binary:
+#
+#   failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel":
+#   dial tcp: lookup api.trycloudflare.com: i/o timeout
+#
+# The discriminator is what the wrapper wraps, not the wrapper. Rate limiting and
+# transport failure are named explicitly and skip; anything else that fails to
+# produce a tunnel is a contract break and blocks.
 _RATE_LIMITED = re.compile(
-    r"\b429\b|too many requests|rate.?limit|quota exceeded|"
-    r"failed to request quick tunnel", re.I)
+    r"\b429\b|too many requests|rate.?limit|quota exceeded", re.I)
+
+_TRANSPORT = re.compile(
+    r"dial tcp|i/o timeout|no such host|connection refused|network is unreachable|"
+    r"tls handshake|context deadline exceeded|temporary failure in name resolution", re.I)
 
 
 @pytest.fixture(scope="module")
@@ -151,8 +163,8 @@ def test_the_shipped_binary_accepts_the_argv_the_portal_builds(cloudflared, daem
     except subprocess.TimeoutExpired as e:
         out = ((e.stdout or b"").decode(errors="replace")
                + (e.stderr or b"").decode(errors="replace"))
-    if _RATE_LIMITED.search(out) and not _USAGE.search(out):
-        pytest.skip("Cloudflare rate-limited this attempt; the arguments were not rejected")
+    if not _USAGE.search(out) and (_RATE_LIMITED.search(out) or _TRANSPORT.search(out)):
+        pytest.skip("rate-limited or unreachable; the arguments themselves were not rejected")
     m = _USAGE.search(out)
     assert not m, (
         f"the shipped cloudflared rejected the portal's arguments "
@@ -177,15 +189,55 @@ def test_a_live_quick_tunnel_still_announces_a_url_the_portal_can_parse(cloudfla
     finally:
         srv.terminate()
 
+    usage = _USAGE.search(out)
+    assert not usage, f"cloudflared rejected the portal's arguments ({usage.group(0)!r})"
+
     rl = _RATE_LIMITED.search(out)
     if rl:
         pytest.skip(f"Cloudflare rate-limited quick-tunnel creation ({rl.group(0)!r}) "
-                    "— declined to issue a tunnel, which is not a contract break")
-    if "trycloudflare.com" not in out:
-        pytest.skip("cloudflared never reached trycloudflare.com — transport, "
-                    f"not contract:\n{out[-600:]}")
+                    "— it declined to issue a tunnel, which is not a contract break")
+    tr = _TRANSPORT.search(out)
+    if tr:
+        pytest.skip(f"could not reach Cloudflare ({tr.group(0)!r}) — transport, not contract")
 
+    # Deliberately NOT `if "trycloudflare.com" not in out: skip`. That keyed the
+    # "did we get there" guard on the very literal the contract is about, so a
+    # release that moved to a different domain would have skipped instead of
+    # failing. Past this point cloudflared neither rejected our arguments nor
+    # reported a reason we recognise, so it owes us a parseable announcement.
     assert tm.QUICK_TUNNEL_URL_RE.search(out), (
         "cloudflared announced a tunnel but QUICK_TUNNEL_URL_RE did not match it. "
         "The portal would block for 30s per tunnel and start none.\n"
         + "\n".join(l for l in out.splitlines() if "trycloudflare.com" in l)[:800])
+
+
+def test_no_autoupdate_is_HONOURED_not_merely_accepted(cloudflared):
+    """Accepting a flag and acting on it are different things.
+
+    The argv test above only proves cloudflared did not *reject* --no-autoupdate.
+    A release that silently ignored it would pass that and still replace its own
+    binary inside a customer instance. cloudflared echoes its resolved settings on
+    startup, and the key is absent entirely when the flag is not passed:
+
+        with:    Settings: map[ha-connections:1 no-autoupdate:true no-tls-verify:true ...]
+        without: Settings: map[ha-connections:1 no-tls-verify:true ...]
+
+    so the presence of `no-autoupdate:true` in that map is the flag being applied,
+    not merely parsed.
+    """
+    try:
+        r = subprocess.run([cloudflared, "--no-autoupdate", "--no-tls-verify",
+                            "--url", "http://127.0.0.1:9"],
+                           capture_output=True, text=True, timeout=25)
+        out = (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        out = ((e.stdout or b"").decode(errors="replace")
+               + (e.stderr or b"").decode(errors="replace"))
+
+    m = re.search(r"Settings: map\[([^\]]*)\]", out)
+    if not m:
+        pytest.skip("this build does not echo a Settings map; cannot prove the flag "
+                    f"was applied:\n{out[-500:]}")
+    assert "no-autoupdate:true" in m.group(1), (
+        "cloudflared accepted --no-autoupdate but did not apply it — it would "
+        f"still self-update inside a running instance. Settings: {m.group(1)}")

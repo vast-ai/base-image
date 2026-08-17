@@ -441,6 +441,54 @@ serverless template turns the mode on. **L067**
 (`check_base_tests_have_no_serverless_backend`) forbids reintroducing a pyworker
 or `:3000` assertion under `tests/base/`; prose explaining the history is fine.
 
+### The cloudflared binary is unpinned, and a CONTRACT is what guards it
+
+`Dockerfile` fetches `cloudflared-linux-${TARGETARCH}` from `releases/latest`, so
+what ships is whatever Cloudflare published that morning (observed: 2026.8.2,
+built the previous day). That is deliberate — a pin is a knob someone has to turn
+on every rebuild, and a version bumped only under time pressure is one nobody
+validates. What replaces it is `portal-aio/tests/test_cloudflared_contract.py`,
+asserting the three things `tunnel_manager` actually depends on against whatever
+binary just shipped: both argv shapes, `--no-autoupdate` **applied** (its absence
+removes the key from cloudflared's echoed `Settings: map[...]`, so "accepted" and
+"honoured" are distinguishable), and a quick-tunnel announcement matching
+`QUICK_TUNNEL_URL_RE` — a module constant both the code and the test read, never
+a copy.
+
+**Per architecture.** amd64 and arm64 are different release artifacts, so the
+build-time job runs one cell per arch (QEMU/binfmt for the arm64 ELF) and no more:
+Cloudflare rate-limits quick-tunnel creation, so a cell per config x python would
+rate-limit itself and then report the rate limit as a defect.
+
+**Three outcomes, default BLOCK.** A usage rejection, an unapplied flag, or a
+tunnel that announces nothing parseable fails. Only an explicit rate limit
+(`429|too many requests|rate.?limit|quota exceeded`) or an explicit transport
+failure (`dial tcp|i/o timeout|no such host|…`) skips. The first version folded
+`failed to request quick Tunnel` into the rate-limit pattern — that string is the
+UNIVERSAL wrapper for the creation path, so the one failure the gate exists to
+catch was being skipped.
+
+**The result must reach the notification.** A `needs:` edge alone is not a
+control: the Slack status rendered from `needs.build.result` only, so a failing
+contract reported green while the staging tags were already pushed.
+
+**Known gaps, recorded rather than implied:**
+
+- **Freshness.** `--no-autoupdate` removes the only thing that kept a long-lived
+  instance's cloudflared current. Derivatives pin dated base tags, so the fleet's
+  spread will widen with no floor and no alert; `base/50-custom-binaries.sh` only
+  asserts the binary exists. Cloudflare does age out old builds. Nothing here
+  detects that, and the first symptom would be tunnels failing on older images
+  only.
+- **No integrity check.** The fetch has no checksum or signature. A behavioural
+  contract passes just as happily on a substituted binary. (`syncthing` and
+  `miniforge` in the same Dockerfile are unpinned-latest too, so this is the house
+  convention rather than a new exposure — but the contract does not close it.)
+- **The fix does not reach running instances.** `portal-aio` also ships as a
+  release tarball (ADR 0015) and `VERSION` is not bumped, so no running instance
+  gets `--no-autoupdate`, and `v3.1.4` now names another distinct payload — the
+  same caveat already recorded above for ADR 0026.
+
 ### Copyleft licence compliance (proposed)
 
 An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in

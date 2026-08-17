@@ -438,30 +438,38 @@ jobs:
           path: built-tags/
           retention-days: 1
 
-  # ── cloudflared contract, ONCE per build ────────────────────────────
+  # ── cloudflared contract ────────────────────────────────────────────
   #
   # The Dockerfile fetches cloudflared from releases/latest, deliberately
-  # unpinned (a pin is a knob someone has to turn on every rebuild, and a version
-  # bumped only under time pressure is one nobody validates). What replaces the
-  # pin is this: whatever binary just shipped must still answer the way
-  # tunnel_manager drives it — both argv shapes, and the quick-tunnel
-  # announcement line the portal parses with QUICK_TUNNEL_URL_RE.
+  # unpinned. What replaces the pin is this: whatever binary just shipped must
+  # still answer the way tunnel_manager drives it — both argv shapes, the
+  # --no-autoupdate flag actually APPLIED (not merely accepted), and the
+  # quick-tunnel announcement the portal parses with QUICK_TUNNEL_URL_RE.
   #
-  # ONCE, not per matrix cell, and that is load-bearing. Cloudflare rate-limits
-  # quick-tunnel creation — tunnel_manager spaces its own startup tunnels 2s
-  # apart for the same reason — so running this across 12 configs x 5 pythons
-  # would rate-limit itself and then report the rate limit as a defect. One cell
-  # is enough: every config fetches the same binary from the same URL in the same
-  # build.
+  # ONE CELL PER ARCHITECTURE, and no more. `Dockerfile` fetches
+  # cloudflared-linux-${TARGETARCH}, so amd64 and arm64 are DIFFERENT binaries
+  # from different release artifacts — testing one says nothing about the other,
+  # and a release where the arm64 artifact lags or differs would ship unguarded.
+  # But the fan-out stops at the architecture: Cloudflare rate-limits
+  # quick-tunnel creation (tunnel_manager spaces its own startup tunnels 2s apart
+  # for the same reason), so a cell per config x python would rate-limit itself
+  # and then report the rate limit as a defect. Two tunnels per build is the same
+  # order as one instance's own startup.
   #
-  # The binary is EXTRACTED FROM A BUILT IMAGE rather than re-downloaded, because
-  # releases/latest can move between the build and this job — testing a different
-  # binary from the one that shipped would be worse than not testing.
+  # The binary is EXTRACTED FROM THE BUILT IMAGE, not re-downloaded:
+  # releases/latest can move between the build and this job, and testing a
+  # different binary from the one that shipped would be worse than not testing.
   cloudflared-contract:
     needs: [generate-matrix, merge-manifests]
     if: ${{ !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      # Architecture ONLY. Guarded by test_promote_notification_truth.py so this
+      # cannot quietly grow a config/python dimension.
+      matrix:
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -473,6 +481,12 @@ jobs:
           # tunnel_manager's imports, so the test asks the SHIPPED module what
           # argv it builds instead of restating it.
           pip install pytest requests fastapi aiohttp cachetools PyYAML pydantic
+      # binfmt, so the arm64 ELF runs on this amd64 runner transparently. The
+      # test executes cloudflared directly, so registering the handler is all
+      # that is needed — no container gymnastics.
+      - name: Set up QEMU
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
       # The staging namespace is private; every other job that touches it logs in
       # first. Without this the extract fails on a pull, which would look like a
       # contract failure and is not one.
@@ -480,29 +494,34 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Extract cloudflared from the image that was just built
+      - name: Extract the ${{ matrix.arch }} cloudflared from the image just built
         env:
           NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+          MERGE_MATRIX: ${{ needs.generate-matrix.outputs.merge-matrix }}
         run: |
           set -euo pipefail
-          # Any built config carries the same binary; take the first with an
-          # amd64 manifest so the runner can execute it.
-          TPL=$(jq -r '.configs[0].tag_template' configs/base-image.json)
-          PY=$(jq -r '.configs[0].default_python' configs/base-image.json | tr -d .)
+          # Read the config from the MERGE MATRIX, not configs[0]: the matrix is
+          # what this run actually built, so a FILTERed dispatch (FILTER=cuda-12)
+          # cannot send us looking for a tag that was never pushed — which would
+          # go red for something that is not a contract break.
+          TPL=$(jq -r '.include[0].tag_template' <<<"$MERGE_MATRIX")
+          PY=$(jq -r '.include[0].default_python' <<<"$MERGE_MATRIX" | tr -d .)
           REF="${NAMESPACE}/base-image:${TPL}-py${PY}-${BUILD_DATE}"
-          echo "extracting from ${REF}"
-          docker create --platform linux/amd64 --name cfx "$REF"
+          echo "extracting linux/${{ matrix.arch }} cloudflared from ${REF}"
+          docker create --platform linux/${{ matrix.arch }} --name cfx "$REF"
           docker cp cfx:/opt/portal-aio/tunnel_manager/cloudflared ./cloudflared
           docker rm cfx
           chmod +x ./cloudflared
+          file ./cloudflared || true
           echo "CLOUDFLARED_BIN=$PWD/cloudflared" >> "$GITHUB_ENV"
           ./cloudflared --version
-      - name: Contract test
+      - name: Contract test (${{ matrix.arch }})
         working-directory: portal-aio
-        # A usage rejection fails this job. Not reaching Cloudflare, or being
-        # rate-limited by it, skips — see the test's own BLOCK vs INCONCLUSIVE
-        # note. -rs so the skips are visible in the log rather than silent.
+        # A usage rejection, an unapplied --no-autoupdate, or a tunnel that
+        # announces nothing parseable fails this job. Being rate-limited by
+        # Cloudflare, or not reaching it at all, skips — see the test's own
+        # BLOCK vs INCONCLUSIVE note. -rs so skips are visible, not silent.
         run: python -m pytest -q -rs tests/test_cloudflared_contract.py
 
   collect-tags:
@@ -593,11 +612,19 @@ jobs:
           done
 
   notify:
-    needs: [generate-matrix, build, merge-manifests, collect-tags]
+    needs: [generate-matrix, build, merge-manifests, collect-tags, cloudflared-contract]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      # THE CONTRACT RESULT MUST REACH THE NOTIFICATION, or the job is decoration.
+      # A `needs:` edge alone does not do it: this rendered ✅/❌ purely from
+      # needs.build.result, so a build whose cloudflared contract FAILED still
+      # reported green — the staging tags are pushed by `build` upstream and
+      # promote is a separate dispatch, so nothing else would have caught it.
+      # Both jobs share `if: !inputs.DRY_RUN`, so when notify runs the contract
+      # ran too: anything other than success is a real signal, not a skip.
+      build-result: ${{ needs.cloudflared-contract.result != 'success' && 'failure' || needs.build.result }}
+      headline: ${{ needs.cloudflared-contract.result != 'success' && format('cloudflared contract did not pass ({0}) — the tunnel binary in these images is UNVALIDATED; do not promote', needs.cloudflared-contract.result) || '' }}
       image-name: "Base Image"
       image-ref: ${{ needs.generate-matrix.outputs.build-date }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

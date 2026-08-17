@@ -102,15 +102,70 @@ def test_the_build_runs_the_cloudflared_contract():
     assert "test_cloudflared_contract.py" in run
 
 
-def test_the_contract_job_runs_once_not_per_matrix_cell():
-    """Cloudflare rate-limits quick-tunnel creation. A per-cell check (12 configs
-    x 5 pythons) would rate-limit itself and then report the rate limit as a
-    defect — a gate that fails more the more it runs is one that gets switched
-    off."""
+def test_the_contract_fans_out_over_ARCHITECTURE_ONLY():
+    """Two competing constraints, and the matrix has to satisfy both.
+
+    Dockerfile fetches `cloudflared-linux-${TARGETARCH}`, so amd64 and arm64 are
+    different release artifacts — testing one says nothing about the other, and a
+    release where arm64 lags would ship unguarded. But Cloudflare rate-limits
+    quick-tunnel creation, so a cell per config x python (12 x 5) would
+    rate-limit itself and then report the rate limit as a defect.
+
+    The matrix must therefore be over arch and nothing else.
+    """
     job = _build_jobs()["cloudflared-contract"]
-    assert "strategy" not in job, (
-        "the contract job must not be a matrix — one run per build, or it "
-        "self-inflicts Cloudflare's quick-tunnel rate limit")
+    matrix = (job.get("strategy") or {}).get("matrix")
+    assert matrix, "the contract job must fan out over architecture"
+    assert set(matrix) == {"arch"}, (
+        f"the contract matrix must be architecture ONLY, got dimensions {sorted(matrix)} "
+        "— any other dimension multiplies quick-tunnel creations into Cloudflare's "
+        "rate limiter")
+    assert set(matrix["arch"]) == {"amd64", "arm64"}, (
+        f"both shipped architectures must be covered, got {matrix['arch']}")
+    assert len(matrix["arch"]) <= 2
+
+
+def test_the_arm64_cell_can_actually_execute_its_binary():
+    """An arm64 ELF does not run on an amd64 runner without binfmt. Without QEMU
+    the cell would fail on exec and read as a contract break."""
+    steps = _build_jobs()["cloudflared-contract"]["steps"]
+    qemu = [s for s in steps if "setup-qemu" in str(s.get("uses", ""))]
+    assert qemu, "the arm64 cell has no QEMU/binfmt setup; it cannot exec the binary"
+    assert "arm64" in str(qemu[0].get("if", "")), (
+        "QEMU should be conditional on the arm64 cell")
+    extract = " ".join(str(s.get("run", "")) for s in steps)
+    assert "--platform linux/${{ matrix.arch }}" in extract, (
+        "the extract must pull the per-arch binary, not always amd64")
+
+
+def test_the_contract_result_reaches_the_notification():
+    """A `needs:` edge is not a control by itself. This rendered green from
+    needs.build.result alone, so a failing contract was invisible: the staging
+    tags are pushed upstream by `build` and promote is a separate dispatch."""
+    notify = _build_jobs()["notify"]
+    assert "cloudflared-contract" in notify["needs"]
+    rendered = " ".join(str(v) for v in notify["with"].values())
+    assert "needs.cloudflared-contract.result" in rendered, (
+        "the contract result must reach the notification's rendered status, not "
+        "merely appear in its needs")
+
+
+def test_the_extract_is_filter_aware():
+    """build-base-image.yml takes a FILTER input. Reading configs[0] would look
+    for a tag a FILTERed dispatch never built and go red for a non-contract
+    reason; the merge matrix is what this run actually produced."""
+    steps = _build_jobs()["cloudflared-contract"]["steps"]
+    run = " ".join(str(s.get("run", "")) for s in steps)
+    # Assert on the FILE, not on the substring "configs[0]" — the step's own
+    # comment explains why it does not read configs[0], so a substring check
+    # matches the prose that documents the fix. (Same shape as a linter rule
+    # firing on the docstring describing it.)
+    assert "configs/base-image.json" not in run, (
+        "the extract reads the static config table; a FILTERed dispatch would "
+        "send it looking for a tag that was never built")
+    assert "MERGE_MATRIX" in run, (
+        "the extract must derive its tag from the run's merge matrix — what this "
+        "run actually produced")
 
 
 def test_the_contract_tests_the_binary_that_SHIPPED():
