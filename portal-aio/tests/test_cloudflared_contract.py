@@ -31,6 +31,15 @@ usage markers, and turning a Cloudflare outage into a red base build is how a ga
 gets routed around. The live half therefore skips loudly rather than failing when
 the network is the problem — but a tunnel that DOES announce itself in a format
 the portal cannot parse is a hard failure.
+
+SKIP IS NOT PASS. The consequence of the paragraph above is that this file's
+NORMAL degraded outcome — rate-limited, offline — is `pytest` exiting 0 with the
+live assertions skipped, which is indistinguishable from success to anything
+reading an exit code. That is how a gate becomes decoration for the second time.
+So the live tests carry `@pytest.mark.live`, and the CI job classifies the run
+into verified / unverified / broken from the junit report rather than from the
+exit code. `-m "not live"` is also how a static PR run deselects them, so the
+per-PR suite stops spending real tunnels on a binary that is not what ships.
 """
 from __future__ import annotations
 
@@ -58,24 +67,65 @@ _LATEST = ("https://github.com/cloudflare/cloudflared/releases/latest/"
 # THREE STATES, AND THE DEFAULT IS BLOCK.
 #
 # The first version of this classifier folded `failed to request quick Tunnel`
-# into the rate-limit pattern. That string is the UNIVERSAL wrapper for the
-# quick-tunnel creation path — it wraps 429, 5xx, DNS, TLS *and a regression in
-# cloudflared's own tunnel client*. So the one failure this gate exists to catch,
-# a release that can no longer create tunnels, was being classified as
-# "rate-limited" and skipped. Measured against the real binary:
+# into the rate-limit pattern. That string wraps several distinct causes — 429,
+# 5xx, DNS, TLS *and a regression in cloudflared's own tunnel client* — so the
+# one failure this gate exists to catch, a release that can no longer create
+# tunnels, was being classified as "rate-limited" and skipped.
 #
-#   failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel":
-#   dial tcp: lookup api.trycloudflare.com: i/o timeout
+# It is NOT the universal wrapper for that path; an earlier version of this
+# comment said it was, on reasoning rather than measurement. The rate-limit path
+# actually emits a different wrapper entirely:
 #
-# The discriminator is what the wrapper wraps, not the wrapper. Rate limiting and
-# transport failure are named explicitly and skip; anything else that fails to
-# produce a tunnel is a contract break and blocks.
+#   ERR Error unmarshaling QuickTunnel response: error code: 1015
+#   failed to unmarshal quick Tunnel: invalid character 'e' looking for ...
+#
+# The discriminator is therefore the CAUSE, never the wrapper. Rate limiting and
+# transport failure are named explicitly and are inconclusive; anything else that
+# fails to produce a tunnel is a contract break and blocks.
 _RATE_LIMITED = re.compile(
-    r"\b429\b|too many requests|rate.?limit|quota exceeded", re.I)
+    r"\b429\b|too many requests|rate.?limit|quota exceeded|error code: 1015", re.I)
 
 _TRANSPORT = re.compile(
     r"dial tcp|i/o timeout|no such host|connection refused|network is unreachable|"
     r"tls handshake|context deadline exceeded|temporary failure in name resolution", re.I)
+
+# POSITIVE EVIDENCE, checked BEFORE any of the negative patterns above.
+#
+# cloudflared prints this the moment the API issues a tunnel, and it is a
+# DIFFERENT string from the announcement format under test — so it can answer
+# "did we get a tunnel?" without begging the question the gate asks. Real log
+# from a run on a host where UDP/QUIC is blocked:
+#
+#   INF Requesting new quick Tunnel on trycloudflare.com...
+#   INF |  Your quick Tunnel has been created! Visit it at ...
+#   INF |  https://blog-devoted-pos-angela.trycloudflare.com
+#   ...
+#   ERR Failed to dial a quic connection error="failed to dial to edge with
+#       quic: timeout: handshake did not complete in time"
+#
+# A working tunnel, with error lines after it. Ordering the negative patterns
+# first — as this file originally did — lets late transport noise overrule a
+# tunnel that was demonstrably created, turning both a success AND a genuine
+# regression in QUICK_TUNNEL_URL_RE into a skip. Measured honestly: none of the
+# _TRANSPORT patterns match the QUIC-fallback wording above, so this was a
+# latent ordering fault rather than a live misfire — but `i/o timeout` and
+# `context deadline exceeded` are ordinary Go network errors and the runner's
+# network is not this host's.
+_TUNNEL_ISSUED = re.compile(r"quick Tunnel has been created", re.I)
+
+
+@pytest.fixture(autouse=True)
+def _record_live_marker(request, record_property):
+    """Carry the `live` marker into the junit report.
+
+    `classify_contract_run.py` decides verified/unverified/broken from that
+    report, and it must not do so from a restated list of test names: a rename
+    would make a live test look offline, and the run would report `verified`
+    having verified nothing. The marker is the single source of truth; this is
+    the one line that gets it across the junit boundary.
+    """
+    if request.node.get_closest_marker("live"):
+        record_property("live", "1")
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +194,7 @@ def test_the_portal_passes_no_autoupdate_on_the_daemon():
     assert "--no-autoupdate" in argv, f"daemon argv lacks --no-autoupdate: {argv}"
 
 
+@pytest.mark.live
 @pytest.mark.parametrize("daemon", [False, True], ids=["quick-tunnel", "daemon"])
 def test_the_shipped_binary_accepts_the_argv_the_portal_builds(cloudflared, daemon):
     """Offline half — this one BLOCKS. Runs the portal's own argv against the
@@ -171,6 +222,7 @@ def test_the_shipped_binary_accepts_the_argv_the_portal_builds(cloudflared, daem
         f"({m.group(0)!r}) — the flag contract moved:\n{out[-1500:]}")
 
 
+@pytest.mark.live
 def test_a_live_quick_tunnel_still_announces_a_url_the_portal_can_parse(cloudflared, tmp_path):
     """Live half. A tunnel that announces itself in a format the portal cannot
     parse blocks `start()` until its 30s timeout, per tunnel, on every instance —
@@ -192,25 +244,34 @@ def test_a_live_quick_tunnel_still_announces_a_url_the_portal_can_parse(cloudfla
     usage = _USAGE.search(out)
     assert not usage, f"cloudflared rejected the portal's arguments ({usage.group(0)!r})"
 
-    rl = _RATE_LIMITED.search(out)
-    if rl:
-        pytest.skip(f"Cloudflare rate-limited quick-tunnel creation ({rl.group(0)!r}) "
-                    "— it declined to issue a tunnel, which is not a contract break")
-    tr = _TRANSPORT.search(out)
-    if tr:
-        pytest.skip(f"could not reach Cloudflare ({tr.group(0)!r}) — transport, not contract")
+    # POSITIVE EVIDENCE FIRST. If Cloudflare issued a tunnel then the contract
+    # question is live and gets answered, whatever else the log contains — a
+    # tunnel is created before its edge connections are dialled, so transport
+    # noise AFTER the announcement says nothing about whether we can parse it.
+    # Checking the negative patterns first is what let this gate skip on the
+    # very regression it exists to catch.
+    if not _TUNNEL_ISSUED.search(out):
+        rl = _RATE_LIMITED.search(out)
+        if rl:
+            pytest.skip(f"Cloudflare rate-limited quick-tunnel creation ({rl.group(0)!r}) "
+                        "— it declined to issue a tunnel, which is not a contract break")
+        tr = _TRANSPORT.search(out)
+        if tr:
+            pytest.skip(f"could not reach Cloudflare ({tr.group(0)!r}) — transport, not contract")
 
     # Deliberately NOT `if "trycloudflare.com" not in out: skip`. That keyed the
     # "did we get there" guard on the very literal the contract is about, so a
     # release that moved to a different domain would have skipped instead of
-    # failing. Past this point cloudflared neither rejected our arguments nor
-    # reported a reason we recognise, so it owes us a parseable announcement.
+    # failing. Past this point cloudflared either announced a tunnel, or failed
+    # to produce one for a reason we do not recognise. Both owe us a parseable
+    # announcement, and neither is a reason to stay quiet.
     assert tm.QUICK_TUNNEL_URL_RE.search(out), (
         "cloudflared announced a tunnel but QUICK_TUNNEL_URL_RE did not match it. "
         "The portal would block for 30s per tunnel and start none.\n"
         + "\n".join(l for l in out.splitlines() if "trycloudflare.com" in l)[:800])
 
 
+@pytest.mark.live
 def test_no_autoupdate_is_HONOURED_not_merely_accepted(cloudflared):
     """Accepting a flag and acting on it are different things.
 

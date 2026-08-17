@@ -453,8 +453,15 @@ jobs:
   # But the fan-out stops at the architecture: Cloudflare rate-limits
   # quick-tunnel creation (tunnel_manager spaces its own startup tunnels 2s apart
   # for the same reason), so a cell per config x python would rate-limit itself
-  # and then report the rate limit as a defect. Two tunnels per build is the same
-  # order as one instance's own startup.
+  # and then report the rate limit as a defect.
+  #
+  # COUNT IT HONESTLY: this comment used to say "two tunnels per build", which
+  # was the number of cells, not the number of tunnels. The suite creates one in
+  # the live announcement test and one in the --no-autoupdate-honoured test (the
+  # Settings map is printed on a real tunnel start), so it is ~3 creations per
+  # cell and ~6 per build. Still the same order as one instance's own startup,
+  # but the margin under Cloudflare's per-IP limit is smaller than "two" implied
+  # — which is why the per-PR suite deselects the live tests entirely.
   #
   # The binary is EXTRACTED FROM THE BUILT IMAGE, not re-downloaded:
   # releases/latest can move between the build and this job, and testing a
@@ -513,16 +520,97 @@ jobs:
           docker cp cfx:/opt/portal-aio/tunnel_manager/cloudflared ./cloudflared
           docker rm cfx
           chmod +x ./cloudflared
-          file ./cloudflared || true
+          # ASSERT the architecture, don't just print it. `file ... || true`
+          # checked nothing, so if --platform ever resolved to the amd64 image
+          # the arm64 cell would silently re-test amd64 and report a green tick
+          # — the exact hole this cell exists to close.
+          case "${{ matrix.arch }}" in
+            amd64) WANT="x86-64" ;;
+            arm64) WANT="aarch64" ;;
+            *) echo "unknown arch ${{ matrix.arch }}"; exit 1 ;;
+          esac
+          file ./cloudflared
+          file ./cloudflared | grep -q "$WANT" || {
+            echo "::error::extracted binary is not $WANT — this cell would have tested the wrong architecture"
+            exit 1
+          }
           echo "CLOUDFLARED_BIN=$PWD/cloudflared" >> "$GITHUB_ENV"
           ./cloudflared --version
       - name: Contract test (${{ matrix.arch }})
+        id: contract
         working-directory: portal-aio
         # A usage rejection, an unapplied --no-autoupdate, or a tunnel that
         # announces nothing parseable fails this job. Being rate-limited by
-        # Cloudflare, or not reaching it at all, skips — see the test's own
+        # Cloudflare, or not reaching it at all, does NOT — see the test's own
         # BLOCK vs INCONCLUSIVE note. -rs so skips are visible, not silent.
-        run: python -m pytest -q -rs tests/test_cloudflared_contract.py
+        #
+        # `|| true` looks wrong and is not: pytest's exit code cannot express
+        # the difference between "verified" and "we never got to ask", and
+        # reading it as pass/fail is exactly how this gate reported green under
+        # a rate limit while proving nothing. The junit report carries which
+        # live assertions actually EXECUTED, so the classifier decides, and it
+        # is the classifier's exit code that fails this step.
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs --junitxml=contract.xml \
+              tests/test_cloudflared_contract.py || true
+          python tests/classify_contract_run.py contract.xml | tee contract-state.txt
+      - name: Record the outcome for the notification
+        if: always()
+        run: |
+          mkdir -p cf-state
+          # The classifier may not have run at all (an earlier step died), in
+          # which case the state is unknown — which must not inherit the benign
+          # value. Absent evidence is 'broken' here, deliberately.
+          STATE=$(sed -n 's/^state=//p' portal-aio/contract-state.txt 2>/dev/null | tail -1)
+          echo "${STATE:-broken}" > "cf-state/${{ matrix.arch }}.txt"
+          echo "${{ matrix.arch }}: ${STATE:-broken}"
+      - name: Upload the outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-state-${{ matrix.arch }}
+          path: cf-state/
+
+  # Matrix jobs cannot hand a single value to a downstream job — each cell
+  # overwrites `outputs`, last writer wins — so the per-arch states are
+  # aggregated here into ONE value the notification can render. Severity order:
+  # broken > unverified > verified. One arch proving nothing is not a pass.
+  cloudflared-contract-status:
+    needs: [cloudflared-contract]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      state: ${{ steps.agg.outputs.state }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cf-state-*
+          path: cf-state/
+        continue-on-error: true
+      - id: agg
+        env:
+          CONTRACT_RESULT: ${{ needs.cloudflared-contract.result }}
+        run: |
+          set -euo pipefail
+          STATES=$(find cf-state -name '*.txt' -exec cat {} + 2>/dev/null | tr -d ' ' | grep -v '^$' || true)
+          echo "per-arch states: ${STATES:-<none>}"
+          if [[ -z "$STATES" ]]; then
+            # No artifacts. Either the contract job never ran because something
+            # upstream failed — in which case the build failure is the story and
+            # this must not claim a tunnel problem — or it ran and produced
+            # nothing, which is broken.
+            if [[ "$CONTRACT_RESULT" == "skipped" || "$CONTRACT_RESULT" == "cancelled" ]]; then
+              STATE="not-run"
+            else
+              STATE="broken"
+            fi
+          elif grep -q '^broken$' <<<"$STATES"; then STATE="broken"
+          elif grep -q '^unverified$' <<<"$STATES"; then STATE="unverified"
+          else STATE="verified"
+          fi
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          echo "aggregate: $STATE"
 
   collect-tags:
     needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests]
@@ -612,7 +700,7 @@ jobs:
           done
 
   notify:
-    needs: [generate-matrix, build, merge-manifests, collect-tags, cloudflared-contract]
+    needs: [generate-matrix, build, merge-manifests, collect-tags, cloudflared-contract-status]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
@@ -621,10 +709,22 @@ jobs:
       # needs.build.result, so a build whose cloudflared contract FAILED still
       # reported green — the staging tags are pushed by `build` upstream and
       # promote is a separate dispatch, so nothing else would have caught it.
-      # Both jobs share `if: !inputs.DRY_RUN`, so when notify runs the contract
-      # ran too: anything other than success is a real signal, not a skip.
-      build-result: ${{ needs.cloudflared-contract.result != 'success' && 'failure' || needs.build.result }}
-      headline: ${{ needs.cloudflared-contract.result != 'success' && format('cloudflared contract did not pass ({0}) — the tunnel binary in these images is UNVALIDATED; do not promote', needs.cloudflared-contract.result) || '' }}
+      #
+      # THREE STATES, because the contract has three. Reading job `result` gave
+      # only two and got both edges wrong: a rate-limited run proved nothing and
+      # rendered ✅, while an ordinary build failure made the contract `skipped`
+      # and rendered "the tunnel binary is UNVALIDATED" over what was a compile
+      # error — sending the first responder to the wrong place, on every red
+      # build. `state` distinguishes them:
+      #
+      #   verified    every live assertion ran against the shipped binary -> ✅
+      #   unverified  Cloudflare declined or was unreachable; nothing proven -> ⚠️
+      #   broken      the contract moved -> ❌ and do not promote
+      #   not-run     something upstream failed first; the build failure is the
+      #               story, so say nothing about tunnels
+      build-result: ${{ needs.cloudflared-contract-status.outputs.state == 'broken' && 'failure' || needs.build.result }}
+      status: ${{ (needs.cloudflared-contract-status.outputs.state == 'unverified' && needs.build.result == 'success') && 'warning' || '' }}
+      headline: ${{ needs.cloudflared-contract-status.outputs.state == 'broken' && 'cloudflared contract BROKEN — the tunnel binary in these images does not answer the way the portal drives it; do not promote' || ((needs.cloudflared-contract-status.outputs.state == 'unverified' && needs.build.result == 'success') && 'Base image built — cloudflared contract UNVERIFIED (Cloudflare rate-limited or unreachable); the tunnel binary was not exercised' || '') }}
       image-name: "Base Image"
       image-ref: ${{ needs.generate-matrix.outputs.build-date }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

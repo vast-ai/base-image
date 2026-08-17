@@ -38,7 +38,13 @@ jobs:
                       requests fastapi aiohttp cachetools
       - name: Run portal-aio test suite
         working-directory: portal-aio
-        run: python -m pytest -q
+        # -m "not live" deselects the cloudflared contract's live half. Those
+        # tests create REAL trycloudflare tunnels, and running them here spends
+        # the per-IP quota on `releases/latest` — which is explicitly not the
+        # binary that ships. The build-time job extracts cloudflared from the
+        # image it just built and is the run that should spend it; burning the
+        # quota here is how that run ends up rate-limited and proves nothing.
+        run: python -m pytest -q -m "not live"
 
       # The unit tests assert the generator emits the right STRINGS; they cannot
       # catch a block that is syntactically illegal Caddy (ADR 0017 finding 4).

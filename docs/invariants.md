@@ -462,15 +462,50 @@ rate-limit itself and then report the rate limit as a defect.
 
 **Three outcomes, default BLOCK.** A usage rejection, an unapplied flag, or a
 tunnel that announces nothing parseable fails. Only an explicit rate limit
-(`429|too many requests|rate.?limit|quota exceeded`) or an explicit transport
-failure (`dial tcp|i/o timeout|no such host|…`) skips. The first version folded
-`failed to request quick Tunnel` into the rate-limit pattern — that string is the
-UNIVERSAL wrapper for the creation path, so the one failure the gate exists to
-catch was being skipped.
+(`429|too many requests|rate.?limit|quota exceeded|error code: 1015`) or an
+explicit transport failure (`dial tcp|i/o timeout|no such host|…`) is
+inconclusive. The first version folded `failed to request quick Tunnel` into the
+rate-limit pattern, so the one failure the gate exists to catch was being skipped.
+(An earlier draft of this section called that string the *universal* wrapper for
+the creation path. It is not — the rate-limit path emits `failed to unmarshal
+quick Tunnel` instead. The claim was reasoned, not measured; the discriminator is
+the cause, never the wrapper.)
 
-**The result must reach the notification.** A `needs:` edge alone is not a
-control: the Slack status rendered from `needs.build.result` only, so a failing
-contract reported green while the staging tags were already pushed.
+**Positive evidence is checked BEFORE negative evidence.** If cloudflared says
+`quick Tunnel has been created`, the contract question is live and gets answered,
+whatever else the log holds. A tunnel is created before its edge connections are
+dialled, so transport noise *after* the announcement says nothing about whether
+the portal can parse it — and checking the negative patterns first let late noise
+overrule a tunnel that demonstrably existed, turning a genuine
+`QUICK_TUNNEL_URL_RE` regression into a skip. Proven by mutation: with the old
+ordering, a release that moves the announcement format reports `unverified`; with
+the fix, `broken`.
+
+**Skip is not pass.** The gate's normal degraded outcome is `skip`, and pytest
+exits 0 on it — measured under a real per-IP rate limit: `3 passed, 3 skipped`,
+exit 0, where the three passes introspect the portal's own argv and say nothing
+about the binary. An exit code therefore cannot express what this gate needs to
+say. `portal-aio/tests/classify_contract_run.py` reads the junit report and
+returns one of **verified** (every live assertion executed), **unverified**
+(nothing failed, but something did not run), or **broken** (a live assertion
+failed). Liveness comes from the `@pytest.mark.live` marker carried into the
+report by an autouse fixture — never from a list of test names, which a rename
+would silently downgrade.
+
+**The result must reach the notification, in three states.** A `needs:` edge alone
+is not a control: the Slack status rendered from `needs.build.result` only, so a
+failing contract reported green while the staging tags were already pushed. Two
+states were not enough either, and got both edges wrong — a rate-limited run
+rendered ✅ having proven nothing, and an ordinary build failure (which *skips*
+the contract job) rendered "the tunnel binary is UNVALIDATED" over a compile
+error. The aggregate is severity-ordered `broken > unverified > verified`, with
+`not-run` kept distinct so an upstream failure never claims a tunnel defect.
+
+**The per-PR suite must not spend the tunnel quota.** The live tests create real
+trycloudflare tunnels against a per-IP limit; `portal-aio-tests.yml` deselects
+them with `-m "not live"`. Running them on every portal PR spends the quota on
+`releases/latest` — not the binary that ships — and leaves the build-time run,
+which tests what *does* ship, rate-limited and unable to prove anything.
 
 **Known gaps, recorded rather than implied:**
 
@@ -488,6 +523,22 @@ contract reported green while the staging tags were already pushed.
   release tarball (ADR 0015) and `VERSION` is not bumped, so no running instance
   gets `--no-autoupdate`, and `v3.1.4` now names another distinct payload — the
   same caveat already recorded above for ADR 0026.
+- **Cloudflare's availability is coupled to the build's headline.** The skip list
+  is a closed enumeration of rate-limit and transport strings; anything else that
+  fails to produce a tunnel BLOCKs by design. So an `api.trycloudflare.com` 5xx, a
+  403, or an expired-certificate error would red a set of images that are fine.
+  Accepted deliberately — the alternative is widening the inconclusive bucket,
+  which is what let a real break through in the first place — but it is a third
+  party's uptime touching the release signal, and if it fires in practice the
+  answer is to route those causes to `unverified` (⚠️), not to widen the skip.
+- **No skip floor.** Nothing fails the gate when it has been `unverified` for N
+  consecutive builds. A gate that is *usually* inconclusive is one nobody reads,
+  and the ⚠️ makes that visible without making it enforceable. Deferred, not
+  solved: it needs run-history state the build workflow does not currently keep.
+- **Promotion does not read this.** `promote-base-image.yml` is a separate
+  human-gated dispatch with its own QA gate, and it has no view of the contract
+  result. The control here is the build notification plus the human who reads it —
+  stated plainly because the wiring could be mistaken for an automated block.
 
 ### Copyleft licence compliance (proposed)
 

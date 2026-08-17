@@ -143,11 +143,106 @@ def test_the_contract_result_reaches_the_notification():
     needs.build.result alone, so a failing contract was invisible: the staging
     tags are pushed upstream by `build` and promote is a separate dispatch."""
     notify = _build_jobs()["notify"]
-    assert "cloudflared-contract" in notify["needs"]
+    assert "cloudflared-contract-status" in notify["needs"]
     rendered = " ".join(str(v) for v in notify["with"].values())
-    assert "needs.cloudflared-contract.result" in rendered, (
-        "the contract result must reach the notification's rendered status, not "
+    assert "needs.cloudflared-contract-status.outputs.state" in rendered, (
+        "the contract state must reach the notification's rendered status, not "
         "merely appear in its needs")
+
+
+def test_a_run_that_PROVED_NOTHING_cannot_render_as_a_pass():
+    """The gate's normal degraded outcome is `skip`, and pytest exits 0 on it.
+
+    Measured under a real Cloudflare rate limit: `3 passed, 3 skipped`, exit 0 —
+    where the three that passed introspect the portal's own argv and say nothing
+    about the binary. Reading the job result therefore rendered a green tick over
+    a run that verified nothing, which is how this gate became decoration the
+    first time. The state must be derived from which live assertions EXECUTED.
+    """
+    jobs = _build_jobs()
+    run = " ".join(str(s.get("run", "")) for s in jobs["cloudflared-contract"]["steps"])
+    assert "--junitxml" in run, (
+        "the contract step must emit a junit report; an exit code cannot "
+        "distinguish 'verified' from 'never asked'")
+    assert "classify_contract_run.py" in run, (
+        "something must classify the report into verified/unverified/broken")
+
+    rendered = " ".join(str(v) for v in jobs["notify"]["with"].values())
+    assert "'unverified'" in rendered, (
+        "the notification must handle the unverified state explicitly; without "
+        "it, a rate-limited run is indistinguishable from a verified one")
+    assert "warning" in rendered, (
+        "an unverified contract must render as ⚠️, not as a green build")
+
+
+def test_an_ordinary_build_failure_is_not_reported_as_a_tunnel_problem():
+    """`cloudflared-contract` needs `merge-manifests`, so any upstream failure
+    SKIPS it. Keying the headline on `result != 'success'` therefore printed
+    "the tunnel binary is UNVALIDATED" over what was a compile error — on every
+    red build, which trains the reader to discount the one headline that matters.
+    """
+    jobs = _build_jobs()
+    agg = jobs["cloudflared-contract-status"]
+    body = " ".join(str(s.get("run", "")) for s in agg["steps"])
+    assert "not-run" in body, (
+        "the aggregate must have a state for 'the contract never ran because "
+        "something upstream failed', distinct from 'the contract failed'")
+    assert "skipped" in body and "cancelled" in body, (
+        "a skipped or cancelled contract job is an upstream failure, not a "
+        "tunnel defect")
+
+    rendered = " ".join(str(v) for v in jobs["notify"]["with"].values())
+    # The headline must be keyed on the POSITIVE states that warrant it. If it
+    # were keyed on "anything that is not verified", not-run would drag a tunnel
+    # claim onto an ordinary build failure again.
+    assert "state == 'broken'" in rendered, (
+        "the do-not-promote headline must fire on 'broken' specifically")
+    assert "state != " not in rendered, (
+        "keying on 'not this state' is what put a tunnel claim on a compile "
+        "error; enumerate the states that warrant the headline")
+
+
+def test_the_aggregate_is_severity_ordered_and_fails_closed():
+    """Per-arch states have to collapse to one value for the notification, and
+    the collapse must not be optimistic: one architecture proving nothing is not
+    a pass, and a missing report is not a pass either."""
+    agg = _build_jobs()["cloudflared-contract-status"]
+    body = " ".join(str(s.get("run", "")) for s in agg["steps"])
+    # Key on the grep PATTERNS, not on the words: "broken" and "unverified" both
+    # appear in this step's own comments, so an index comparison on the bare
+    # words passed no matter which order the branches were in — a guard reading
+    # the prose that describes the fix instead of the fix.
+    broken_at = body.index("'^broken$'")
+    unver_at = body.index("'^unverified$'")
+    assert broken_at < unver_at, (
+        "broken must be checked before unverified, or a broken arch alongside "
+        "an unverified one would report the milder state")
+    assert agg["if"].startswith("always()"), (
+        "the aggregate must run even when the contract job failed, or a broken "
+        "contract produces no state at all")
+
+
+def test_the_extracted_binary_is_asserted_to_be_the_right_ARCHITECTURE():
+    """`file ... || true` printed the architecture and checked nothing. If
+    --platform ever resolved to the amd64 image, the arm64 cell would re-test
+    amd64 and report a green tick for coverage it never had."""
+    run = " ".join(str(s.get("run", ""))
+                   for s in _build_jobs()["cloudflared-contract"]["steps"])
+    assert "aarch64" in run, "nothing asserts the arm64 cell got an aarch64 binary"
+    assert "file ./cloudflared || true" not in run, (
+        "`|| true` makes the architecture check unconditional decoration")
+
+
+def test_the_per_PR_suite_does_not_spend_real_TUNNELS():
+    """The live tests create real trycloudflare tunnels against a per-IP quota.
+    Running them on every portal-aio PR spends that quota on `releases/latest`,
+    which is not the binary that ships — and leaves the build-time run, which
+    tests what DOES ship, rate-limited and unable to prove anything."""
+    pr = yaml.safe_load((REPO / ".github" / "workflows" / "portal-aio-tests.yml").read_text())
+    runs = " ".join(str(s.get("run", ""))
+                    for j in pr["jobs"].values() for s in j.get("steps", []))
+    assert 'not live' in runs, (
+        "the per-PR portal suite must deselect the live cloudflared tests")
 
 
 def test_the_extract_is_filter_aware():
