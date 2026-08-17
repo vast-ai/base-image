@@ -55,11 +55,28 @@ _USAGE = re.compile(
 _LATEST = ("https://github.com/cloudflare/cloudflared/releases/latest/"
            "download/cloudflared-linux-amd64")
 
+# Cloudflare RATE LIMITS quick-tunnel creation — tunnel_manager spaces its own
+# startup tunnels 2s apart for exactly this reason. A 429 means Cloudflare
+# declined to issue a tunnel, which says nothing about whether this binary still
+# speaks the portal's contract. Treating it as a break would make the gate fail
+# in bursts (a base rebuild is 12 configs) and, worse, fail more often the more
+# we run it — the shape that gets a gate switched off.
+_RATE_LIMITED = re.compile(
+    r"\b429\b|too many requests|rate.?limit|quota exceeded|"
+    r"failed to request quick tunnel", re.I)
+
 
 @pytest.fixture(scope="module")
 def cloudflared(tmp_path_factory) -> str:
     """The binary that would ship: the one in the image if present, else the
     same `releases/latest` the Dockerfile fetches."""
+    # CLOUDFLARED_BIN env override: the build-time job extracts the binary from
+    # the image it just built and points here, so the gate tests what shipped
+    # rather than whatever releases/latest happens to be minutes later.
+    override = os.environ.get("CLOUDFLARED_BIN")
+    if override:
+        assert os.access(override, os.X_OK), f"CLOUDFLARED_BIN={override} is not executable"
+        return override
     inimage = tm.CLOUDFLARED_BIN
     if os.path.exists(inimage) and os.access(inimage, os.X_OK):
         return inimage
@@ -134,6 +151,8 @@ def test_the_shipped_binary_accepts_the_argv_the_portal_builds(cloudflared, daem
     except subprocess.TimeoutExpired as e:
         out = ((e.stdout or b"").decode(errors="replace")
                + (e.stderr or b"").decode(errors="replace"))
+    if _RATE_LIMITED.search(out) and not _USAGE.search(out):
+        pytest.skip("Cloudflare rate-limited this attempt; the arguments were not rejected")
     m = _USAGE.search(out)
     assert not m, (
         f"the shipped cloudflared rejected the portal's arguments "
@@ -158,6 +177,10 @@ def test_a_live_quick_tunnel_still_announces_a_url_the_portal_can_parse(cloudfla
     finally:
         srv.terminate()
 
+    rl = _RATE_LIMITED.search(out)
+    if rl:
+        pytest.skip(f"Cloudflare rate-limited quick-tunnel creation ({rl.group(0)!r}) "
+                    "— declined to issue a tunnel, which is not a contract break")
     if "trycloudflare.com" not in out:
         pytest.skip("cloudflared never reached trycloudflare.com — transport, "
                     f"not contract:\n{out[-600:]}")

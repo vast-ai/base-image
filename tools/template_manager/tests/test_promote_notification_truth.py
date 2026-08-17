@@ -79,3 +79,45 @@ def test_status_is_warning_when_promote_did_not_succeed():
     status = str(_notify_with()["status"])
     assert "needs.promote.result != 'success'" in status, (
         "a non-successful promote must not render as a normal green notification")
+
+
+# ---- the cloudflared contract must actually run at build time --------------
+
+BUILD = REPO / ".github" / "workflows" / "build-base-image.yml"
+
+
+def _build_jobs():
+    return yaml.safe_load(BUILD.read_text())["jobs"]
+
+
+def test_the_build_runs_the_cloudflared_contract():
+    """The Dockerfile fetches cloudflared unpinned, so the contract test IS the
+    control. It has to run where the binary changes — on a rebuild — not only on
+    a portal-aio/** push, or the unpinned fetch is unguarded between releases."""
+    jobs = _build_jobs()
+    assert "cloudflared-contract" in jobs, (
+        "build-base-image.yml does not run the cloudflared contract test; the "
+        "unpinned releases/latest fetch would ship unvalidated")
+    run = " ".join(str(s.get("run", "")) for s in jobs["cloudflared-contract"]["steps"])
+    assert "test_cloudflared_contract.py" in run
+
+
+def test_the_contract_job_runs_once_not_per_matrix_cell():
+    """Cloudflare rate-limits quick-tunnel creation. A per-cell check (12 configs
+    x 5 pythons) would rate-limit itself and then report the rate limit as a
+    defect — a gate that fails more the more it runs is one that gets switched
+    off."""
+    job = _build_jobs()["cloudflared-contract"]
+    assert "strategy" not in job, (
+        "the contract job must not be a matrix — one run per build, or it "
+        "self-inflicts Cloudflare's quick-tunnel rate limit")
+
+
+def test_the_contract_tests_the_binary_that_SHIPPED():
+    """releases/latest can move between the build and the check. Re-downloading
+    would test a different binary from the one in the image."""
+    run = " ".join(str(s.get("run", ""))
+                   for s in _build_jobs()["cloudflared-contract"]["steps"])
+    assert "docker cp" in run and "/opt/portal-aio/tunnel_manager/cloudflared" in run, (
+        "the job must extract cloudflared from the built image, not re-fetch it")
+    assert "CLOUDFLARED_BIN=" in run, "the extracted binary must be handed to the test"

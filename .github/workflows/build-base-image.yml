@@ -438,6 +438,73 @@ jobs:
           path: built-tags/
           retention-days: 1
 
+  # ── cloudflared contract, ONCE per build ────────────────────────────
+  #
+  # The Dockerfile fetches cloudflared from releases/latest, deliberately
+  # unpinned (a pin is a knob someone has to turn on every rebuild, and a version
+  # bumped only under time pressure is one nobody validates). What replaces the
+  # pin is this: whatever binary just shipped must still answer the way
+  # tunnel_manager drives it — both argv shapes, and the quick-tunnel
+  # announcement line the portal parses with QUICK_TUNNEL_URL_RE.
+  #
+  # ONCE, not per matrix cell, and that is load-bearing. Cloudflare rate-limits
+  # quick-tunnel creation — tunnel_manager spaces its own startup tunnels 2s
+  # apart for the same reason — so running this across 12 configs x 5 pythons
+  # would rate-limit itself and then report the rate limit as a defect. One cell
+  # is enough: every config fetches the same binary from the same URL in the same
+  # build.
+  #
+  # The binary is EXTRACTED FROM A BUILT IMAGE rather than re-downloaded, because
+  # releases/latest can move between the build and this job — testing a different
+  # binary from the one that shipped would be worse than not testing.
+  cloudflared-contract:
+    needs: [generate-matrix, merge-manifests]
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the portal's own imports
+        run: |
+          python -m pip install --upgrade pip
+          # tunnel_manager's imports, so the test asks the SHIPPED module what
+          # argv it builds instead of restating it.
+          pip install pytest requests fastapi aiohttp cachetools PyYAML pydantic
+      # The staging namespace is private; every other job that touches it logs in
+      # first. Without this the extract fails on a pull, which would look like a
+      # contract failure and is not one.
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Extract cloudflared from the image that was just built
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+        run: |
+          set -euo pipefail
+          # Any built config carries the same binary; take the first with an
+          # amd64 manifest so the runner can execute it.
+          TPL=$(jq -r '.configs[0].tag_template' configs/base-image.json)
+          PY=$(jq -r '.configs[0].default_python' configs/base-image.json | tr -d .)
+          REF="${NAMESPACE}/base-image:${TPL}-py${PY}-${BUILD_DATE}"
+          echo "extracting from ${REF}"
+          docker create --platform linux/amd64 --name cfx "$REF"
+          docker cp cfx:/opt/portal-aio/tunnel_manager/cloudflared ./cloudflared
+          docker rm cfx
+          chmod +x ./cloudflared
+          echo "CLOUDFLARED_BIN=$PWD/cloudflared" >> "$GITHUB_ENV"
+          ./cloudflared --version
+      - name: Contract test
+        working-directory: portal-aio
+        # A usage rejection fails this job. Not reaching Cloudflare, or being
+        # rate-limited by it, skips — see the test's own BLOCK vs INCONCLUSIVE
+        # note. -rs so the skips are visible in the log rather than silent.
+        run: python -m pytest -q -rs tests/test_cloudflared_contract.py
+
   collect-tags:
     needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests]
     if: always() && !inputs.DRY_RUN
