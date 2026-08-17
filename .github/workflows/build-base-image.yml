@@ -700,7 +700,8 @@ jobs:
           done
 
   notify:
-    needs: [generate-matrix, build, merge-manifests, collect-tags, cloudflared-contract-status]
+    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests,
+            collect-tags, cloudflared-contract-status]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
@@ -722,9 +723,47 @@ jobs:
       #   broken      the contract moved -> ❌ and do not promote
       #   not-run     something upstream failed first; the build failure is the
       #               story, so say nothing about tunnels
-      build-result: ${{ needs.cloudflared-contract-status.outputs.state == 'broken' && 'failure' || needs.build.result }}
-      status: ${{ (needs.cloudflared-contract-status.outputs.state == 'unverified' && needs.build.result == 'success') && 'warning' || '' }}
-      headline: ${{ needs.cloudflared-contract-status.outputs.state == 'broken' && 'cloudflared contract BROKEN — the tunnel binary in these images does not answer the way the portal drives it; do not promote' || ((needs.cloudflared-contract-status.outputs.state == 'unverified' && needs.build.result == 'success') && 'Base image built — cloudflared contract UNVERIFIED (Cloudflare rate-limited or unreachable); the tunnel binary was not exercised' || '') }}
+      #
+      # EVERY STAGE THAT PRODUCES AN ARTEFACT MUST SUCCEED, as an ALLOWLIST.
+      # This read `needs.build.result` alone — the 24 build cells — and ignored
+      # merge-manifests, build-mini and merge-mini-manifests. Observed live: a
+      # GitHub 429 fetching the setup-crane action failed one config's manifest
+      # merge, which skipped both mini stages, and Slack reported "Base Image
+      # Build Successful" for a run whose conclusion was `failure` — with one
+      # config having no multi-arch manifest and every mini image missing.
+      #
+      # `skipped` is tolerated because a FILTERed dispatch legitimately empties
+      # the mini matrices. `failure`, `cancelled` and anything unrecognised are
+      # not: this enumerates the states that may pass, never the states that must
+      # fail, because the state nobody thought of has to land on the failing side.
+      build-result: >-
+        ${{ (needs.build.result == 'success'
+             && contains(fromJSON('["success","skipped"]'), needs.merge-manifests.result)
+             && contains(fromJSON('["success","skipped"]'), needs.build-mini.result)
+             && contains(fromJSON('["success","skipped"]'), needs.merge-mini-manifests.result)
+             && contains(fromJSON('["verified","unverified","not-run"]'), needs.cloudflared-contract-status.outputs.state))
+            && 'success' || 'failure' }}
+      # The warning state is only meaningful when everything else passed; a run
+      # that lost a manifest is a plain failure, not a yellow "unverified".
+      status: >-
+        ${{ (needs.cloudflared-contract-status.outputs.state == 'unverified'
+             && needs.build.result == 'success'
+             && contains(fromJSON('["success","skipped"]'), needs.merge-manifests.result)
+             && contains(fromJSON('["success","skipped"]'), needs.build-mini.result)
+             && contains(fromJSON('["success","skipped"]'), needs.merge-mini-manifests.result))
+            && 'warning' || '' }}
+      headline: >-
+        ${{ needs.cloudflared-contract-status.outputs.state == 'broken'
+            && 'cloudflared contract BROKEN — the tunnel binary in these images does not answer the way the portal drives it; do not promote'
+            || (needs.build.result == 'success' && !contains(fromJSON('["success","skipped"]'), needs.merge-manifests.result)
+                && 'Base image cells all built, but a MANIFEST MERGE failed — the multi-arch tags are incomplete; do not promote this date'
+            || (needs.build.result == 'success' && !contains(fromJSON('["success","skipped"]'), needs.build-mini.result)
+                && 'Base image cells all built, but the MINI images failed — that set of tags is missing; do not promote this date'
+            || (needs.build.result == 'success' && !contains(fromJSON('["success","skipped"]'), needs.merge-mini-manifests.result)
+                && 'Base image cells all built, but the MINI manifest merge failed — those multi-arch tags are incomplete; do not promote this date'
+            || ((needs.cloudflared-contract-status.outputs.state == 'unverified' && needs.build.result == 'success')
+                && 'Base image built — cloudflared contract UNVERIFIED (Cloudflare rate-limited or unreachable); the tunnel binary was not exercised'
+            || '')))) }}
       image-name: "Base Image"
       image-ref: ${{ needs.generate-matrix.outputs.build-date }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

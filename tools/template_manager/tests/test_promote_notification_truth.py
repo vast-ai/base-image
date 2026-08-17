@@ -271,3 +271,52 @@ def test_the_contract_tests_the_binary_that_SHIPPED():
     assert "docker cp" in run and "/opt/portal-aio/tunnel_manager/cloudflared" in run, (
         "the job must extract cloudflared from the built image, not re-fetch it")
     assert "CLOUDFLARED_BIN=" in run, "the extracted binary must be handed to the test"
+
+
+def test_EVERY_artefact_stage_must_pass_before_the_build_reports_success():
+    """`build-result` read `needs.build.result` alone — the build cells — and
+    ignored the stages that turn them into shippable tags.
+
+    Observed live: a GitHub 429 fetching the setup-crane action failed one
+    config's manifest merge, which skipped both mini stages. The run's conclusion
+    was `failure`, one config had no multi-arch manifest and every mini image was
+    missing — and Slack said "Base Image Build Successful".
+    """
+    notify = _build_jobs()["notify"]
+    for stage in ("merge-manifests", "build-mini", "merge-mini-manifests"):
+        assert stage in notify["needs"], (
+            f"notify cannot see {stage}, so it cannot report on it")
+
+    rendered = " ".join(str(v) for v in notify["with"].values())
+    for stage in ("merge-manifests", "build-mini", "merge-mini-manifests"):
+        assert f"needs.{stage}.result" in rendered, (
+            f"{stage} is in needs but never reaches the rendered status — a "
+            f"needs edge alone is not a control")
+
+
+def test_the_build_verdict_is_an_ALLOWLIST_of_passing_states():
+    """The state nobody thought of has to land on the failing side. Enumerating
+    bad states is how a cancelled promote once reported a promotion, and how a
+    skipped contract job once reported a tunnel defect."""
+    rendered = " ".join(str(_build_jobs()["notify"]["with"]["build-result"]).split())
+    assert '["success","skipped"]' in rendered, (
+        "the passing states must be enumerated explicitly as an allowlist")
+    # Assert the POSITIVE form directly rather than blocklisting operators.
+    # First attempt at this guard listed the forbidden comparisons ("== 'failure'",
+    # "!= 'success'", ...) and a mutation to `!= 'failure'` sailed through it —
+    # the guard against enumeration was itself enumerating. Requiring the one
+    # correct spelling cannot be evaded that way.
+    assert "needs.build.result == 'success'" in rendered, (
+        "the build stage must be required to SUCCEED explicitly; any 'not-bad' "
+        "spelling lets an unlisted state fall through to reporting success")
+    assert rendered.rstrip().endswith("&& 'success' || 'failure' }}"), (
+        "the expression must resolve positively: all-good -> success, anything "
+        "else -> failure")
+
+
+def test_skipped_is_tolerated_because_a_FILTERed_dispatch_empties_the_mini_matrix():
+    """build-mini is `if: !inputs.DRY_RUN` over a matrix that a FILTER can empty,
+    so `skipped` is a legitimate outcome and must not red the build."""
+    rendered = str(_build_jobs()["notify"]["with"]["build-result"])
+    assert '["success","skipped"]' in rendered, (
+        "a FILTERed dispatch that skips the mini stages must still report green")
