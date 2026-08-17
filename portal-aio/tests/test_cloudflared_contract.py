@@ -22,8 +22,8 @@ break independently:
 (3) is the one that has no compile-time signal at all: cloudflared could rename a
 flag and we would see it immediately, but a change to the announcement line would
 leave `start()` blocking until its 30s timeout, per tunnel, on every instance —
-which is precisely the shape of the CS-4551 symptom (visible, loud, and easy to
-mistake for the cause of something else).
+which is precisely the shape of the customer-escalation symptom (visible, loud,
+and easy to mistake for the cause of something else).
 
 BLOCK vs INCONCLUSIVE. A usage error is a contract break and fails the build. Not
 being able to reach Cloudflare is not: a transport failure carries none of the

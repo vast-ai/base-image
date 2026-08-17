@@ -1672,9 +1672,17 @@ def check_adr_secrets(repo: Path) -> Iterable[Finding]:
 # (not a generic `[A-Z]{2,5}-\d+`) to keep false positives at zero — extend as new
 # internal projects appear. The internal issue links to the public ADR/commit; the
 # public repo never names the ticket.
-_INTERNAL_TRACKERS = ("CON", "HOST", "CLN")
+# CS = the customer-escalation project, added 2026-08-17 after a CS- id reached a
+# commit message and a shipped test docstring with the rule green: the list named
+# three projects and the tracker has more. A prefix list is only as good as its
+# completeness, so treat an unlisted project as the expected failure mode rather
+# than a surprise — add here first, then fix what it finds.
+_INTERNAL_TRACKERS = ("CON", "HOST", "CLN", "CS")
 _TICKET_RE = re.compile(r"\b(?:" + "|".join(_INTERNAL_TRACKERS) + r")-[0-9]{1,6}\b")
-_TICKET_SCAN_EXT = {".md", ".yml", ".yaml", ".py", ".sh", ".txt", ".toml", ".cfg", ".ini", ".json"}
+# .diff/.patch included: docs/panels/ and docs/redteam/ persist review artifacts
+# verbatim, and a saved diff leaks a ticket id exactly as a source file does.
+_TICKET_SCAN_EXT = {".md", ".yml", ".yaml", ".py", ".sh", ".txt", ".toml", ".cfg",
+                    ".ini", ".json", ".diff", ".patch"}
 _TICKET_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
                      ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 

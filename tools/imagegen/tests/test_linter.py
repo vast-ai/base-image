@@ -1688,3 +1688,30 @@ def test_mut_L067_the_real_engine_suites_carry_the_test(tmp_path):
         body = f.read_text()
         assert 'source "$(dirname "$0")/../lib.sh"' in body, f"{f} lost its lib.sh source"
         assert "is_serverless" in body and "wait_for_port 3000" in body
+
+
+def test_L061_covers_the_CS_project(tmp_path):
+    """The tracker prefix list named three projects; the tracker has more.
+
+    A CS- id reached a commit message and a shipped test docstring with L061
+    green, because the project was simply not in `_INTERNAL_TRACKERS`. A prefix
+    allowlist is only as good as its completeness.
+
+    Token built at runtime, per the convention above: a literal here would make
+    this file trip the repo-wide scanner it is testing.
+    """
+    ticket = "CS" + "-" + "4551"
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "note.md").write_text(f"see {ticket} for the escalation\n")
+    assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L061_scans_persisted_review_artifacts(tmp_path):
+    """docs/panels/ and docs/redteam/ persist diffs verbatim, and `.diff` was not
+    in the scanned extensions — so the artifact recording a leak was itself an
+    unscanned leak."""
+    ticket = "CON" + "-" + "1234"
+    d = tmp_path / "docs" / "redteam" / "x"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "artifact.diff").write_text(f"+# see {ticket} for context\n")
+    assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
