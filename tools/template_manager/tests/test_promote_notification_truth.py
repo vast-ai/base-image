@@ -355,3 +355,52 @@ def test_the_aggregate_expects_every_arch_in_the_matrix():
     assert int(step[0]["env"]["EXPECTED_ARCHES"]) == len(arches), (
         f"EXPECTED_ARCHES={step[0]['env']['EXPECTED_ARCHES']} but the contract "
         f"matrix has {len(arches)} architectures {arches}")
+
+
+# ---- the syncthing version is resolved ONCE, not once per cell ---------------
+
+def test_syncthing_version_is_resolved_once_and_passed_to_every_cell():
+    """`Dockerfile` used to call api.github.com from inside EVERY build cell.
+
+    Unauthenticated that endpoint allows 60 req/hr per IP and GitHub-hosted
+    runners share a NAT pool, so 24 cells is a coin flip on a busy day — measured
+    2026-08-17: HTTP 403 on cuda-13.0, which skipped all twelve manifest merges.
+
+    The consistency argument is the stronger one: cells resolving `latest`
+    independently means a release landing mid-build ships some configs on the old
+    version and some on the new, with nothing recording which.
+
+    If this wiring is removed the build still works, silently, by falling back to
+    per-cell lookups — so nothing but this test would notice.
+    """
+    jobs = _build_jobs()
+    assert "syncthing-version" in jobs["generate-matrix"]["outputs"], (
+        "generate-matrix must publish one resolved version for the whole run")
+
+    steps = jobs["generate-matrix"]["steps"]
+    resolver = [s for s in steps if s.get("id") == "syncthing"]
+    assert resolver, "no step resolves the syncthing version once"
+    assert "GH_TOKEN" in str(resolver[0].get("env", {})), (
+        "the resolve step must be AUTHENTICATED (5000/hr), or it inherits the "
+        "same 60/hr limit it exists to escape")
+
+    build = jobs["build"]
+    assert "syncthing-version" in str(build["steps"]), (
+        "the resolved version never reaches the build job")
+    run = " ".join(str(s.get("run", "")) for s in build["steps"])
+    assert "--build-arg SYNCTHING_VERSION=" in run, (
+        "the build does not pass the resolved version, so each cell would "
+        "resolve its own again")
+
+
+def test_the_dockerfile_still_builds_without_the_arg():
+    """The fallback is load-bearing: a local or manual `docker build` passes no
+    build-arg, and must not break. Verified by real docker build on 2026-08-17
+    (arg passed, arg absent, and arg with a leading 'v' all produce v2.1.3)."""
+    df = (REPO / "Dockerfile").read_text()
+    assert 'ARG SYNCTHING_VERSION=""' in df, (
+        "the ARG must default to empty so an unset build-arg is legal")
+    assert "${SYNCTHING_VERSION:-$(curl" in df, (
+        "an empty ARG must fall back to resolving the version in-build")
+    assert "${SYNCTHING_VERSION#v}" in df, (
+        "the tag_name carries a leading 'v' that the download URL adds back")

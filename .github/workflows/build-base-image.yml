@@ -55,6 +55,7 @@ jobs:
       mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
       mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
       build-date: ${{ steps.matrix.outputs.build-date }}
+      syncthing-version: ${{ steps.syncthing.outputs.version }}
     steps:
       # Needed for configs/base-image.json — this job previously ran with no checkout.
       - uses: actions/checkout@v4
@@ -174,6 +175,24 @@ jobs:
           echo "Mini build matrix entries: $(echo $MINI_BUILD_MATRIX | jq length)"
           echo "Build date: $BUILD_DATE"
 
+      - name: Resolve the syncthing release once, authenticated
+        id: syncthing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # One AUTHENTICATED call per run (5000/hr) replaces one unauthenticated
+          # call per build cell (60/hr, shared across every job on the runner NAT
+          # pool). It also pins the whole run to ONE version, so a release landing
+          # mid-build cannot ship a mixed set.
+          #
+          # Deliberately NOT fatal: the Dockerfile still resolves the version
+          # itself when this is empty, so a failure here degrades to the previous
+          # behaviour rather than adding a new hard dependency to every build.
+          V=$(gh api repos/syncthing/syncthing/releases/latest --jq .tag_name 2>/dev/null || true)
+          V="${V#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "syncthing: ${V:-<unresolved - cells will each resolve their own>}"
+
   build:
     needs: generate-matrix
     if: ${{ !inputs.DRY_RUN }}
@@ -209,6 +228,7 @@ jobs:
           ARCH_SUFFIX: ${{ matrix.arch_suffix }}
           DEFAULT_PYTHON: ${{ matrix.default_python }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+          SYNCTHING_VERSION: ${{ needs.generate-matrix.outputs.syncthing-version }}
         run: |
           # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
           # identically in five places here, so the shared table could claim one set
@@ -238,6 +258,7 @@ jobs:
               -f Dockerfile \
               --build-arg BASE_IMAGE="${BASE_IMAGE}" \
               --build-arg PYTHON_VERSION="${py_version}" \
+              --build-arg SYNCTHING_VERSION="${SYNCTHING_VERSION}" \
               ${TAGS} \
               --push .
 
