@@ -91,8 +91,12 @@ Surviving conditions from the critical review. If any is refused, the decision i
    image and violate the "baseline stays CLEAN" protocol — and the harness's own
    `0.0.0.0:10199` listener is a live example of why (it is allowlisted, not failed).
 3. **Serverless is handled explicitly.** No Caddy exists in serverless, so the gate
-   `test_skip`s with a loud message (TODO: a serverless-specific rule), rather than
-   mass-false-failing.
+   `test_skip`s with a loud message rather than mass-false-failing. **The
+   serverless-specific rule is deferred, and the deferral is a stated hole, not a
+   tidy-up:** `SERVERLESS=true` publishes port 3000 with no Caddy auth in front of
+   it, so serverless is the configuration where inadvertent exposure matters *most*
+   and is the one this gate does not cover. Scoped as a named follow-up (see
+   "Known gap: serverless is untested end-to-end" below).
 4. **Honest about scope.** Green means "no un-allowlisted public listener observed at scan
    time." It is a QA-time best-effort point-in-time scan (runner runs post-provisioning
    but a late-binding service can still escape), not a runtime guarantee; the message and
@@ -124,6 +128,32 @@ Surviving conditions from the critical review. If any is refused, the decision i
 - **Negative / accepted:** an explicit allowlist must be maintained (the convenience of
   auto-classifying was the fail-open hole); point-in-time scan can miss a late binder;
   the FAIL is advisory until a clean baseline earns the promotion.
+
+## Known gap: serverless is untested end-to-end (named follow-up, 2026-08-06)
+
+Surfaced while enabling serverless on the vllm/sglang/llama/comfyui images. Recorded
+here so it is a tracked hole rather than an assumption; the fix is a separate change
+after [ADR 0019](0019-base-image-promotion-qa-gate.md) lands, because it needs 0019's
+fail-not-skip contract to be enforceable at all.
+
+The harness cannot currently observe serverless mode in either direction, and
+skip-as-pass hides both halves:
+
+- **Serverless-only tests never run.** `base/85-serverless-services.sh` and
+  `base/86-serverless-pyworker.sh` open with `is_serverless || test_skip`, and no QA
+  template sets `SERVERLESS=true` — not `vllm-qa`, not `comfyui-qa`. So in every CI QA
+  run they skip, report green, and the serverless surface has **zero** automated
+  coverage. What exists today is hand-driven verification via test templates.
+- **Turning it on would hide the rest.** Under `SERVERLESS=true`, six of the 25 base
+  tests self-skip — `20-portal`, `25/26/27-caddy-*`, `70-logging`, and **this gate** —
+  so a serverless QA run would be a quarter skipped and still green, with the exposure
+  scan absent from the configuration that most needs it (condition 3).
+
+What the fix requires, when it is taken up: per-cell required-test sets (ADR 0019's W2
+already needs these for the stock-vs-cuda split); a second QA cell for each
+serverless-capable image launched with `SERVERLESS=true`, requiring `base/85` and
+`base/86` to *pass*, not merely be present; and the serverless exposure rule itself —
+port 3000 owned by pyworker is the legitimate case, anything else public is not.
 
 ## What would reverse this
 
