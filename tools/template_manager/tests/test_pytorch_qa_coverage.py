@@ -78,11 +78,25 @@ def _fake_manifest() -> dict:
     for c in TABLE["multi"]:
         m["multi"].append({
             "key": c["key"], "cuda_minor": c["cuda_minor"],
+            # a space-joined STRING, exactly as resolve-digests stores it —
+            # not a list. The jq splits it; a list here would let a broken
+            # program pass the test and fail in CI.
             "venvs": " ".join(c["venvs"]),
+            "primary_torch": c["primary_torch"],
             "digests": {f"py{p}": f"sha256:multi-{c['key']}-{p}"
                         for p in c["python_versions"]},
         })
     return m
+
+
+def _audio_versions() -> str:
+    """Torch versions that ship torchaudio, derived exactly as the workflow does.
+
+    Reproduced rather than hardcoded: the workflow reads it from
+    torch-companions.json, so a companion change moves both together.
+    """
+    comp = json.loads((REPO / "derivatives/pytorch/torch-companions.json").read_text())
+    return " ".join(v for v, e in comp.items() if "torchaudio" in e.get("packages", {}))
 
 
 def build_matrix(tmp_path: Path, manifest: dict | None = None) -> list[dict]:
@@ -90,6 +104,7 @@ def build_matrix(tmp_path: Path, manifest: dict | None = None) -> list[dict]:
     man.write_text(json.dumps(manifest if manifest is not None else _fake_manifest()))
     out = subprocess.run(
         ["jq", "-c", "--arg", "dpy", f"py{TABLE['default_python']}",
+         "--arg", "audio", _audio_versions(),
          _jq_matrix_program(), str(man)],
         capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
@@ -309,3 +324,65 @@ def test_backends_without_an_auto_tag_are_still_gated(tmp_path):
     table_backends = {c["key"] for c in TABLE["configs"]}
     assert gated == table_backends, (
         f"gate covers {sorted(gated)} but the table builds {sorted(table_backends)}")
+
+
+# --- the required list follows what the image SHIPS ------------------------
+#
+# The first real gate run (31497277275) blocked 20 healthy artifacts on
+# `pytorch.d/30-torchaudio=skipped`. torchaudio does not exist upstream past
+# torch 2.11, so those images correctly do not carry it and the test correctly
+# self-skips — the gate was right and the required list was wrong.
+
+def _audio(cell):
+    return "pytorch.d/30-torchaudio" in cell["require_tests"]
+
+
+def test_torchaudio_is_required_exactly_where_the_image_ships_it(tmp_path):
+    comp = json.loads((REPO / "derivatives/pytorch/torch-companions.json").read_text())
+    has = {v for v, e in comp.items() if "torchaudio" in e.get("packages", {})}
+    assert has and set(comp) - has, (
+        "every version either has or lacks torchaudio, so this test cannot "
+        "distinguish a working rule from one that always answers the same way")
+
+    for c in build_matrix(tmp_path):
+        if c["kind"] == "multi":
+            continue                       # covered below; a multi spans versions
+        ver = c["describe"].split("-")[0]
+        assert _audio(c) == (ver in has), (
+            f"{c['cell']}: torchaudio required={_audio(c)} but torch {ver} "
+            f"{'ships' if ver in has else 'does not ship'} it")
+
+
+def test_a_multi_requires_torchaudio_if_any_venv_ships_it(tmp_path):
+    """30-torchaudio iterates every venv and only skips when NONE has it, so
+    the requirement is an OR across the variant's versions — not a property of
+    its primary alone."""
+    comp = json.loads((REPO / "derivatives/pytorch/torch-companions.json").read_text())
+    has = {v for v, e in comp.items() if "torchaudio" in e.get("packages", {})}
+    by_key = {m["key"]: m for m in TABLE["multi"]}
+    for c in build_matrix(tmp_path):
+        if c["kind"] != "multi":
+            continue
+        key = next(k for k in by_key if c["cell"].startswith(f"multi-{k}-py"))
+        vers = [by_key[key]["primary_torch"] if v == "main" else v.removeprefix("torch-")
+                for v in by_key[key]["venvs"]]
+        assert _audio(c) == any(v in has for v in vers), (
+            f"{key}: venvs {vers}, required={_audio(c)}")
+
+
+def test_every_cell_requires_the_gpu_trio_and_the_core_pytorch_tests(tmp_path):
+    """Whatever the conditional part does, the unconditional part must survive:
+    a per-cell list is also an opportunity to accidentally require nothing."""
+    must = ["base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries",
+            "pytorch.d/05-venv-manifest", "pytorch.d/10-torch-core",
+            "pytorch.d/20-torchvision", "pytorch.d/40-nccl-init"]
+    for c in build_matrix(tmp_path):
+        for t in must:
+            assert t in c["require_tests"], f"{c['cell']} does not require {t}"
+
+
+def test_no_cell_requires_the_multi_gpu_collectives_matrix(tmp_path):
+    """41-nccl-collectives skips below 2 GPUs and every cell is single-GPU, so
+    requiring it would fail all of them."""
+    for c in build_matrix(tmp_path):
+        assert "41-nccl-collectives" not in c["require_tests"], c["cell"]

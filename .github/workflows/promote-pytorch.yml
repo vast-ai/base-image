@@ -298,8 +298,12 @@ jobs:
               d=$(crane digest "$ref" 2>/dev/null || echo "")
               d_map=$(jq -c --arg k "py${pt}" --arg v "$d" '.[$k]=$v' <<<"$d_map")
             done
-            e=$(jq -nc --arg k "$key" --arg c "$cm" --arg v "$venvs" --argjson d "$d_map" \
-                  '{key:$k, cuda_minor:$c, venvs:$v, digests:$d}')
+            # `ptorch`, not `pt` — `pt` is the python-tag loop variable just above,
+            # and reusing it would work only by accident of the loop having ended.
+            ptorch=$(jq -r --arg k "$key" '.multi[] | select(.key==$k) | .primary_torch' \
+              "$GITHUB_WORKSPACE/configs/pytorch.json")
+            e=$(jq -nc --arg k "$key" --arg c "$cm" --arg v "$venvs" --arg p "$ptorch" --argjson d "$d_map" \
+                  '{key:$k, cuda_minor:$c, venvs:$v, primary_torch:$p, digests:$d}')
             jq --argjson e "$e" '.multi += [$e]' manifest.json > m.tmp && mv m.tmp manifest.json
           done
 
@@ -323,7 +327,33 @@ jobs:
           # not exist, which the promote job would fail on anyway. Better to see it
           # here, before renting anything.
           DEFAULT_PY=$(jq -r '.default_python' "$GITHUB_WORKSPACE/configs/pytorch.json")
-          jq -c --arg dpy "py${DEFAULT_PY}" '
+
+          # WHICH TESTS A CELL REQUIRES DEPENDS ON WHAT THE IMAGE SHIPS.
+          #
+          # torchaudio does not exist upstream past torch 2.11 (no cu130 wheel
+          # beyond 2.11.0, none at all on cu132), so 2.12+ images correctly do
+          # not carry it and pytorch.d/30-torchaudio correctly self-skips with
+          # "torchaudio not installed in any torch venv (expected for torch >=
+          # 2.12)". Requiring it everywhere made the gate block 20 healthy
+          # artifacts on the first real run — the gate was right and the
+          # required list was wrong.
+          #
+          # Derived from torch-companions.json, which is the same file that
+          # decides whether torchaudio is installed. A second hand-maintained
+          # list would drift from it the first time a companion changed.
+          AUDIO_VERSIONS=$(jq -r 'to_entries | map(select(.value.packages.torchaudio)) | map(.key) | join(" ")' \
+            "$GITHUB_WORKSPACE/derivatives/pytorch/torch-companions.json")
+          echo "torch versions shipping torchaudio: ${AUDIO_VERSIONS}"
+
+          jq -c --arg dpy "py${DEFAULT_PY}" --arg audio "$AUDIO_VERSIONS" '
+            ( $audio | split(" ") ) as $has_audio
+            | def base_req: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries "
+                          + "pytorch.d/05-venv-manifest pytorch.d/10-torch-core "
+                          + "pytorch.d/20-torchvision pytorch.d/40-nccl-init";
+              def req(vers): base_req
+                + (if (vers | any(. as $v | $has_audio | index($v)))
+                   then " pytorch.d/30-torchaudio" else "" end);
+
             # newest torch per backend, by numeric version — the artifact each
             # -auto tag actually resolves to
             ( .configs
@@ -335,6 +365,7 @@ jobs:
                       digest: .digests[$dpy],
                       floor: (.cuda_short | split(".")[0:2] | join(".")),
                       venvs: "main",
+                      require_tests: req([.torch]),
                       describe: (.torch + "-cuda-" + .cuda_short + "-" + $dpy) })
             )
             +
@@ -346,6 +377,7 @@ jobs:
                              digest: .value,
                              floor: $m.cuda_minor,
                              venvs: "main",
+                             require_tests: req([$m.torch]),
                              describe: ($m.torch + "-" + $m.backend + "-cuda-" + $m.cuda_minor + "-mini-" + .key) }) )
               | flatten
             )
@@ -358,6 +390,20 @@ jobs:
                              digest: .value,
                              floor: $u.cuda_minor,
                              venvs: $u.venvs,
+                             # A multi requires torchaudio if ANY of its venvs
+                             # ships it — 30-torchaudio iterates every venv and
+                             # only skips when none has it.
+                             #
+                             # "main" is not a version string: it is the base
+                             # own venv of the base image, i.e. primary_torch. Mapping
+                             # rather than passing it through matters for a
+                             # variant whose PRIMARY ships torchaudio while its
+                             # supplementaries do not — that would otherwise
+                             # read as "no torchaudio anywhere" and leave a test
+                             # that does run unrequired.
+                             require_tests: req($u.venvs | split(" ")
+                               | map(if . == "main" then $u.primary_torch
+                                     else ltrimstr("torch-") end)),
                              describe: ($u.key + "-" + .key) }) )
               | flatten
             )
@@ -430,7 +476,12 @@ jobs:
       # which is the point. `.d` is not a typo: runner.sh names a derivative test
       # by its directory (pytorch.d/), and getting it wrong fails closed on every
       # cell. Pinned by test_required_test_names.py.
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest pytorch.d/10-torch-core pytorch.d/20-torchvision pytorch.d/30-torchaudio pytorch.d/40-nccl-init"
+      # PER CELL, derived in resolve-digests from torch-companions.json: an image
+      # that legitimately does not ship torchaudio must not be required to pass
+      # pytorch.d/30-torchaudio. Also pushed in-instance via extra_env below, so
+      # the runner's own gate and this one agree — they fail differently, which
+      # is the point, but they must not disagree about WHAT is required.
+      require_tests: ${{ matrix.require_tests }}
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       # Mini is 5-6 GB and the full config images 8-12 GB; no cell downloads a
@@ -447,6 +498,7 @@ jobs:
         PROV_TIMEOUT=900
         INSTANCE_TEST_DEFAULT_TIMEOUT=900
         EXPECTED_TORCH_VENVS=${{ matrix.venvs }}
+        INSTANCE_TEST_REQUIRE_PASS=${{ matrix.require_tests }}
       evidence_name: qa-evidence-${{ matrix.cell }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
@@ -484,7 +536,6 @@ jobs:
         env:
           STAGING_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           RUN_ID: ${{ github.run_id }}
-          REQUIRE_TESTS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest pytorch.d/10-torch-core pytorch.d/20-torchvision pytorch.d/30-torchaudio pytorch.d/40-nccl-init"
         run: |
           set -euo pipefail
           # Each cell's verdict is recomputed with qa_verdict.py — the SAME function
@@ -502,7 +553,6 @@ jobs:
           from qa_verdict import classify, parse_required
 
           ns, run_id = os.environ["STAGING_NS"], os.environ["RUN_ID"]
-          required = parse_required(os.environ["REQUIRE_TESTS"])
           planned = {c["cell"]: c for c in json.load(open("qa-set.json"))}
 
           rows = []
@@ -515,6 +565,12 @@ jobs:
                   lines = [l for l in raw.read_text().splitlines() if l.strip().startswith("{")]
                   if lines:
                       p = json.loads(lines[-1])
+                      # The cell's OWN required list, from the plan — not one
+                      # global list. Cells legitimately differ (a torch >= 2.12
+                      # image ships no torchaudio), and recomputing with the
+                      # wrong list would manufacture a block here that the cell
+                      # itself never reported.
+                      required = parse_required(plan.get("require_tests", ""))
                       verdict, reason = classify(p.get("exit_code", 1), p, required)
               # Re-resolve the tested digest from the run-scoped alias rather than
               # trusting the payload: the link is checked at the point of use.

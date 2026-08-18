@@ -66,7 +66,19 @@ env:
   # cell. The image-owned half of that surface — libnccl present, ABI-matched,
   # ncclCommInitRank works — is 40-nccl-init, which runs on one GPU and IS
   # required. That split is the point of ADR 0021 decision 5.
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest pytorch.d/10-torch-core pytorch.d/20-torchvision pytorch.d/30-torchaudio pytorch.d/40-nccl-init"
+  # OVERRIDDEN PER CELL by the workflow (via --env, which wins over a template
+  # env). What is declared here is the SAFE SUPERSET minus the one test that is
+  # conditional on what the image ships: torchaudio does not exist upstream past
+  # torch 2.11, so 2.12+ images correctly do not carry it and
+  # pytorch.d/30-torchaudio correctly self-skips. Requiring it unconditionally
+  # blocked 20 healthy artifacts on the first real gate run — the gate was right
+  # and the list was wrong.
+  #
+  # The workflow ADDS 30-torchaudio for cells whose image does ship it, derived
+  # from torch-companions.json. Keeping the conditional test OUT of the default
+  # means a template used without that override under-claims rather than
+  # producing false blocks; L057 still enforces the GPU trio.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest pytorch.d/10-torch-core pytorch.d/20-torchvision pytorch.d/40-nccl-init"
 
   # Overridden per cell by the workflow. Declared here so the template is
   # self-describing and so a single-venv cell still asserts SOMETHING about
