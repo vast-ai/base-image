@@ -19,6 +19,14 @@ app = FastAPI()
 
 
 CLOUDFLARED_BIN = "/opt/portal-aio/tunnel_manager/cloudflared"
+
+# The quick-tunnel URL cloudflared prints on startup. A module constant, not an
+# inline literal, so the contract test asserts against the SAME pattern the code
+# uses — a copy in the test would keep passing after this one drifted. cloudflared
+# is fetched unpinned at build time (releases/latest), so its output format is a
+# third-party contract that can move under us; test_cloudflared_contract.py is
+# what turns that from a silent breakage into a red build.
+QUICK_TUNNEL_URL_RE = re.compile(r'(https://\w+(-\w+){1,}\.trycloudflare\.com)')
 CF_TUNNEL_TOKEN = os.environ.get('CF_TUNNEL_TOKEN')
 cloudflared_account_process: Optional[asyncio.subprocess.Process] = None
 
@@ -150,7 +158,14 @@ class QuickTunnel:
         """Start the cloudflared process and capture the tunnel URL."""
         try:
             self.process = await asyncio.create_subprocess_exec(
-                CLOUDFLARED_BIN, '--no-tls-verify', '--url', self.target.geturl(),
+                # --no-autoupdate: cloudflared otherwise replaces its own binary
+                # in a running customer instance, unreviewed, and restarts itself
+                # to do it — which under supervisord reads as churn and makes a
+                # genuine failure harder to see. The version that ships is decided
+                # at build time and validated by the contract test; it must not
+                # change underneath a running instance.
+                CLOUDFLARED_BIN, '--no-autoupdate', '--no-tls-verify',
+                '--url', self.target.geturl(),
                 env = os.environ.copy(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT
@@ -169,7 +184,7 @@ class QuickTunnel:
                     line_str = line.decode().strip()
                     print(f"[{self.target.geturl()}] {line_str}")
                     # Avoid error response URLS on the trycloudflare domain
-                    match = re.search(r'(https://\w+(-\w+){1,}\.trycloudflare\.com)', line_str)
+                    match = QUICK_TUNNEL_URL_RE.search(line_str)
                     if match:
                         self.tunnel_url = match.group(1)
                         return self.tunnel_url
@@ -255,7 +270,8 @@ class CloudflareDaemon:
         try:
             async def start_process():
                 self.process = await asyncio.create_subprocess_exec(
-                    CLOUDFLARED_BIN, 'tunnel', '--metrics', self.metrics, 
+                    CLOUDFLARED_BIN, '--no-autoupdate', 'tunnel',
+                    '--metrics', self.metrics,
                     'run', '--token', self.token,
                     env = os.environ.copy(),
                     stdout=asyncio.subprocess.PIPE,

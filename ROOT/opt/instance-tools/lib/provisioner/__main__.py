@@ -59,10 +59,18 @@ from .log import setup_logging
 from .subprocess_runner import run_cmd
 from .manifest import apply_env_conventions, apply_env_merge, load_manifest, resolve_conditionals, resolve_manifest_source
 from .schema import CondaPackages, DownloadEntry, Manifest, PipPackages
-from .state import clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
+from .state import STATE_DIR, clear_all_state, compute_stage_hash, is_stage_complete, mark_stage_complete
 from .supervisor import register_services
 
 log = logging.getLogger("provisioner")
+
+# A CONFIGURATION refusal, distinct from a provisioning failure. Retrying cannot
+# change it — the state directory's contents are identical on every attempt — so
+# it must not enter the retry loop and must not reach handle_failure(), whose
+# action is customer-settable and includes `destroy`. Destroying an instance
+# because --force was pointed at the wrong directory is not a proportionate
+# response to a typo.
+CONFIG_REFUSED = 78          # EX_CONFIG, sysexits.h
 
 
 def _classify_downloads(
@@ -171,7 +179,16 @@ def run(manifest_path: str, manifest: Manifest, dry_run: bool = False, force: bo
 
     if force:
         log.info("=== FORCE MODE: clearing all state ===")
-        clear_all_state()
+        # A refusal is not a no-op to swallow: if we cannot clear the state, we
+        # must NOT then walk the phases and skip every stage whose stale hash is
+        # still on disk. That would make --force silently do nothing.
+        if not clear_all_state():
+            log.error("--force could not clear the state directory %s: it holds "
+                      "entries the provisioner did not write, so it is not one we "
+                      "created. Remove those entries, point PROVISIONER_STATE_DIR "
+                      "elsewhere, or drop --force. Aborting rather than running "
+                      "against stale stage hashes.", STATE_DIR)
+            return CONFIG_REFUSED
 
     # Phase 1b: Extensions (discovery -- may append to git_repos, downloads, etc.)
     # Extensions run first so they can populate the manifest before any
@@ -555,7 +572,7 @@ def run_with_retries(manifest_source: str | None = None, dry_run: bool = False, 
         rc = run(manifest_path, manifest, dry_run=dry_run, force=force)
         if rc == 0 and not dry_run:
             notify_success(manifest.on_failure, manifest_path)
-        elif rc != 0 and not dry_run:
+        elif rc != 0 and rc != CONFIG_REFUSED and not dry_run:
             handle_failure(manifest.on_failure, manifest_path, error="provisioning failed")
         return rc
 
@@ -565,6 +582,11 @@ def run_with_retries(manifest_source: str | None = None, dry_run: bool = False, 
         if rc == 0:
             notify_success(manifest.on_failure, manifest_path)
             return 0
+        if rc == CONFIG_REFUSED:
+            # Deterministic: the next attempt reads the same directory and makes
+            # the same refusal. Return without retrying and without dispatching
+            # the failure action.
+            return rc
 
         if attempt < max_retries:
             log.warning("Attempt %d/%d failed, retrying in %ds...", attempt, max_retries, retry_delay)

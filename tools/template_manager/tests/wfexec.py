@@ -48,6 +48,8 @@ import yaml
 REPO = Path(__file__).resolve().parents[3]
 PROMOTE = REPO / ".github/workflows/promote-base-image.yml"
 MOVE = REPO / ".github/workflows/move-base-auto-tag.yml"
+QA_GATE = REPO / ".github/workflows/qa-gate.yml"
+
 
 # A stub standing in for crane, backed by a JSON file: {"ref": "sha256:..."}.
 # It implements only what the scripts under test actually call, and it fails
@@ -175,6 +177,8 @@ def step_script(workflow: Path, job: str, step_name: str) -> str:
     raise AssertionError(f"step {step_name!r} not found in {job}")
 
 
+
+
 def run_step(script: str, workdir: Path, registry: dict, env: dict,
              configs: dict | None = None, extra_digests=()) -> dict:
     """Run `script` under bash with a stubbed crane. Returns the outcome + registry.
@@ -227,6 +231,10 @@ def run_step(script: str, workdir: Path, registry: dict, env: dict,
         "github_output": gh_out.read_text(),
         "summary": gh_sum.read_text(),
     }
+
+
+
+
 
 
 def requires_tools():

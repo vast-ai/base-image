@@ -106,15 +106,28 @@ real `docker build` + smoke test is the correctness gate.**
 - Tag commit-hash-vs-version date suffix (depends on the runtime-resolved ref).
 - `base_image_source` build-context *content*.
 - single shared `/venv/main` assumption (false for aio-studio by design).
-- **Container-aware CPU thread caps** (ADR 0014). On a host that oversubscribes
-  (CPU `cpu.max`/`cfs_quota` ≪ visible `nproc`, e.g. ~46-core quota but 384 cpuset)
-  the boot hook `12-cpu-thread-limits.sh` must cap `OMP_NUM_THREADS` &co to the
-  entitlement so per-process thread pools don't exhaust `pids.max` (`pthread_create`
-  EAGAIN). Whether the cgroup is read correctly, the arithmetic, the oversubscription
-  trigger, and the "leave user overrides alone" rule are all **runtime facts** — a
-  static check could only assert the file exists. Gate: the on-box test
-  `tests/base/NN-cpu-thread-limits.sh` + a harness mutation test (delete the cap write
-  → test fires), per ADR 0014. Deliberately **not** a linter `RULES` code.
+- **Container-aware CPU thread caps** (ADR 0014, amended by ADR 0025). On a host
+  that oversubscribes (CPU `cpu.max`/`cfs_quota` ≪ visible `nproc`, e.g. ~46-core
+  quota but 384 cpuset) the boot hook `12-cpu-thread-limits.sh` must cap
+  `OMP_NUM_THREADS` &co to the entitlement so per-process thread pools don't exhaust
+  `pids.max` (`pthread_create` EAGAIN). Whether the cgroup is read correctly, the
+  arithmetic, the oversubscription trigger, and the "leave user overrides alone" rule
+  are all **runtime facts** — a static check could only assert the file exists. Gate:
+  the on-box test `tests/base/NN-cpu-thread-limits.sh` + a harness mutation test
+  (delete the cap write → test fires), per ADR 0014. Deliberately **not** a linter
+  `RULES` code.
+  - The Hugging Face half of the cap is `TOKIO_WORKER_THREADS`, **not**
+    `HF_HUB_DISABLE_XET` (ADR 0025). `hf-xet` is a hard dependency of
+    `huggingface_hub` since 0.34.0, so Xet is the default download path; disabling
+    it removed that path from the hosts least able to spare bandwidth. Measured:
+    bounding the Tokio pool holds one `hf download` at ~28 threads across 2, 8 and
+    16 visible cores, where the unbounded pool scales with the core count. Two
+    things this depends on and cannot detect: hf_xet continuing to use Tokio's
+    default runtime, and the variable reaching every Tokio program in the instance
+    (accepted). **A variable removed from the managed set must be `unset`, not
+    merely stopped being written** — `10-prep-env.sh` sources `/etc/environment`
+    into the boot shell before the hook runs, so a stale value outlives its own
+    removal and reaches supervisord. Covered by the `migrate-unset-xet` assertion.
 
 **Feasible future cross-file static check:** every `exit_portal.sh "<Label>"` in
 an image should have a matching `:<Label>` entry in that image's `PORTAL_CONFIG`
@@ -192,6 +205,52 @@ wrappers) for an explicit internal-prefix set — extend `_INTERNAL_TRACKERS` as
 internal projects appear. Precedent: the CON-/HOST-/CLN- references scrubbed from
 docs, workflows, templates, and tooling when this rule landed (ADR 0012).
 
+### A shipped instance test is executable — **GATED (L065)**
+
+`runner.sh` discovers tests with `find … -name '*.sh' -executable`, and the
+Dockerfile ships the overlay with a bare `COPY ./ROOT/ /`, which preserves mode.
+So a test committed `0644` is **not collected** — and unlike a skip or a missing
+required test, it produces no output whatsoever: not a SKIP line, not a "missing
+from this image", nothing. The only way to notice is to compare a directory
+listing against the collected list, which nobody does.
+
+`base/11-instance-metadata.sh` and `base/12-provisioning.sh` shipped `0644` from
+their introducing commit and had therefore **never run once**. Confirmed against
+production QA evidence, which records 23 tests where the directory holds 25. Two
+consequences ran unnoticed for that whole period: `lib.sh`'s `instance_field()`
+reads a metadata file only test 11 writes, so it could only ever have returned
+empty *while signalling success* (nothing broke solely because it has no callers
+yet — `README.md` advertises it to derivative tests); and `runner.sh`'s
+"no blind provisioning wait —
+12-provisioning.sh handles monitoring" was false, so tests that document
+themselves as running after provisioning were racing it. **L065**
+(`check_instance_tests_executable`) is L051's shape applied to
+`ROOT/opt/instance-tools/tests/**` and the derivative/external overlays;
+`lib.sh` is exempt because it is sourced, not executed.
+
+### A required test must be able to fail — **GATED (L059)**
+
+L057 makes a gating QA template *name* the tests that must have PASSED. This
+closes the next hole down: a named test containing no failure path at all
+reports `passed` on every box, so requiring it asserts nothing beyond the script
+reaching its `test_pass`, and the gate reads as coverage while certifying
+nothing. Not hypothetical — `base/62-gpu-libraries.sh` was in base-qa's
+require-pass set with every branch an `echo`/`WARN` and zero `fail_later` calls,
+so the third of three gating tests asserted exactly `has_gpu`, which the other
+two already assert. **L059** (`check_required_tests_can_fail`) resolves each name
+in `INSTANCE_TEST_REQUIRE_PASS` against the base overlay and each derivative
+tests dir, and requires at least one real `test_fail`/`fail_later` **call** — a
+mention in a comment does not count, which is exactly how the defect hid.
+Deliberately weak: it asserts a failure path *exists*, not that it is a good one.
+Whether a test can fail at all is decidable by reading the file; whether it fails
+for the right reasons is a review question.
+
+The rule that makes such a test assertable without false-reddening images that
+legitimately ship less: **absent is fine, installed-but-broken is a failure.**
+Whether a library is shipped is a property of the image (ours); whether the
+hardware exists is a property of the host (not ours). `ldconfig -p` distinguishes
+them — `ctypes.CDLL` alone cannot, it fails identically for both.
+
 ### A deferred failure is reported before every non-failing exit — **GATED (L062)**
 
 `fail_later` (and `http_check`, which calls it internally) only **records** a
@@ -244,6 +303,242 @@ lived in both `05-configure-cuda.sh` and `base/60-gpu-cuda`, so the test agreed
 with the boot script instead of checking it — and only a manual review caught it.
 Behaviour is pinned in both directions by
 `tools/imagegen/tests/test_cuda_driver_version.py`.
+
+### One TLS cert-usability predicate, not one per caller — **GATED (L066)**
+
+"Can Caddy serve TLS with this pair?" is asked in three places — the boot script
+that decides whether to regenerate (`55-tls-cert-gen.sh`), the portal component
+that decides whether TLS comes up at all
+(`portal-aio/caddy_manager/caddy_config_manager.py`), and the test that asserts
+on the result (`base/27-caddy-tls.sh`) — and each had grown a different answer.
+Two used `openssl rsa -in KEY -check`, the RSA-*only* entry point: it cannot load
+an EC key, so a correct operator-supplied EC pair made the portal give up on TLS
+after `MAX_RETRIES` and hard-failed the gate. Neither compared the certificate to
+the key, so a mismatched pair — what a half-finished regeneration leaves —
+passed both. The third hashed each side's public key before comparing, which
+inverts the risk: `sha256sum` of empty input is `e3b0c442…` on *both* sides, so
+two failed extractions compare equal and `[[ -n "$c" ]]` guards the digest
+rather than the key. That fail-open needs **both** sides to fail: a certificate
+whose SPKI **algorithm OID** openssl cannot decode (parses, passes `-checkend`,
+yields no public key) supplies the cert side, and an unreadable key the other —
+an unknown-OID cert against a *good* key still fails **closed**. (This file
+previously called the whole thing unreachable, on the strength of a
+corrupted-*modulus* fixture that could not have falsified it — any integer is a
+valid modulus. Recorded because the bad inference, not the bug, is the reusable
+lesson.) All three call
+A helper that is PRESENT but broken is treated as MISSING. `-x` asks only whether
+a file exists; a truncated or half-written `cert-usable` passes that and then
+fails every predicate it is asked, so the regeneration guard is true on every
+boot and the instance churns a fresh keypair and a console CSR forever — the
+unbounded churn `55-tls-cert-gen.sh` exists to end, re-entered through the one
+door a presence check leaves open (measured before the fix: five boots, five
+keys). The gate is now the helper's own contract on inputs that cannot exist:
+two absent paths must yield exit 1 with a `cert-usable:` reason.
+
+`/opt/instance-tools/bin/cert-usable <crt> <key>`, which compares PEM SPKI
+directly and reports **0 usable / 3 matched-but-expired / 1 unusable** — expiry
+is a separate code because it means *regenerate* at boot and *serve anyway* at
+the portal, whose only fallback is plaintext on the same public port; **3, not
+2**, so a syntactically broken helper's own bash exit 2 cannot be misread as
+"expired, serve anyway" (a fail-open at the TLS gate). **L066**
+(`check_one_cert_usability_predicate`) blocks the spellings that have already
+shipped wrong, across line breaks and in Python argv lists; it is not a proof
+that no fourth implementation exists, and generic openssl use — `rand`,
+`s_client`, `-checkend`, fingerprints, conversions — stays legal. Behaviour is
+pinned by `tools/imagegen/tests/test_cert_usable.py` against real
+RSA/EC/mismatched/expired/unreadable/unknown-algorithm fixtures, and the boot
+script's across-boot convergence by `test_tls_cert_gen.py` (ADR 0026).
+
+**Caveat, true at the time of writing:** the portal caller is fixed *in the
+repo* only. `portal-aio` is also published as a release tarball, and
+`portal-aio/VERSION` has not been bumped — so the published `v3.1.4` tarball
+still carries the `openssl rsa -check` form this rule bans, and the name
+`v3.1.4` now denotes two different payloads. New images carry the fixed copy
+(`COPY ./portal-aio`) and first-boot skips the download on version equality, so
+nothing regresses; but no *running* instance gets the fix until a portal release
+is cut, and a customer pinning `PORTAL_VERSION` to `v3.1.4` on a new image would
+overwrite the fixed copy with the banned one. Bumping `VERSION` is an
+unrevertable fleet push (`release-portal.yml` monotonic gate) and is deliberately
+a separate decision — see ADR 0026.
+
+### A test-invoked provisioner run does not touch the real one's state
+
+`base/13-provisioner-selftest.sh` executes the shipped provisioner at boot stage
+**70**; the customer's own provisioning runs at stage **75**. The provisioner
+treats the environment as authoritative over the manifest through two separate
+mechanisms (`_apply_env_overrides`, 8 × `PROVISIONER_*`; `apply_env_conventions`,
+6 × `PROVISIONING_*`) plus `PROVISIONING_SCRIPT`, `HF_TOKEN`, `CIVITAI_TOKEN`,
+`WORKSPACE` and the API credentials — and `load_manifest` expands `$VARS` in the
+manifest text, so the reachable surface is "the environment", not a list. A
+self-test that unsets the variables its author could name therefore runs the
+customer's `post_commands` as root five stages early, writes their provisioning
+log, validates their tokens against huggingface.co, and can reach
+`vastai destroy instance`. The invariant is the **direction**: `env -i` plus a
+named allowlist with **pinned values** — `$PATH` forwarded verbatim would leave
+`wget`/`git`/`apt-get`/`vastai` resolvable from a template-set directory, so a
+name-only allowlist is just a shorter deny-list — plus `PROVISIONER_STATE_DIR`
+pointed at a temp dir so stage hashes cannot mark a stage complete that the real
+run has not performed. It covers the test's own **fixture** too: `curl` honours
+`http_proxy` and does not auto-bypass loopback, so an unscrubbed readiness probe
+let a customer-set proxy skip the download section into a pass.
+
+Not gated by the linter — the property is about side effects, not syntax — but
+asserted by `tools/imagegen/tests/test_provisioner_selftest.py`, which runs the
+real test under a hostile environment and then checks for the files, log lines,
+state entries and outbound connections that must not exist. **Every one of those
+eight canaries carries a positive control that evaluates the canary's OWN
+predicate** — not a file written directly, which proves only that the directory
+is writable, never that the provisioner would write it. This matters because
+three of the first seven canaries were structurally unable to fire and reported
+`ok` regardless: an early-aborting `PROVISIONING_APT` shadowed `post_commands`;
+an unresolvable URL; and a *relative download dest* that was believed to resolve
+under `$WORKSPACE` but does not — a download dest lands in the provisioner's CWD,
+and `manifest.py` reads `WORKSPACE` only in `_repo_dest_from_url`, the **git-repo**
+default-dest helper. So the workspace canary is now driven by a
+`PROVISIONING_GIT_REPOS` entry with no dest (the one input that does consult
+`$WORKSPACE`), the download canary by an absolute dest, and the `_PATH` pin by a
+hostile-directory shim prepended to the harness's PATH. A canary without a proof
+that it can fire is decoration.
+
+Two canaries were rebuilt again after a later review: the workspace one fired
+only when `WORKSPACE` **and** a git-repo variable both leaked, so leaking
+`PROVISIONING_GIT_REPOS` alone cloned an attacker-named repo into the customer's
+`/workspace` as root and still reported `ok`. It is now paired with a `git` shim
+on the pinned PATH that fires on the ACT of cloning, wherever it lands — a canary
+must not depend on the variable it is guarding.
+
+`PROVISIONER_STATE_DIR` is validated rather than trusted: `clear_all_state()`
+does `shutil.rmtree` and is reachable from `--force`, so it refuses relative and
+system paths (a blocklist of exact roots, **not** a containment rule — the
+ownership marker is the real defence). The marker is planted **only in a
+directory the provisioner itself created** (`makedirs(exist_ok=False)`), so a
+foreign directory it was merely pointed at is never adopted and the next
+`--force` never `rmtree`s it; a directory holding only stage-hash files is
+treated as ours for migration (already-deployed instances predate the marker).
+The marker is written `O_CREAT|O_EXCL|O_NOFOLLOW` and verified with `os.lstat`,
+so a planted symlink cannot make root write outside the state dir or forge
+ownership; hash files are read and written `O_NOFOLLOW`. `clear_all_state()`
+returns whether it cleared, and `--force` **aborts** on a refusal rather than
+silently skipping every stage against stale hashes.
+
+### A base/ test must hold on a BARE base image — **GATED (L067)**
+
+`tests/base/` runs on every image, so every assertion in it has to be true of the
+base image alone. `86-serverless-pyworker` asserted a running `pyworker` and a
+listener on `:3000`. Base ships the pyworker unit, but what binds `:3000` is the
+inference engine behind it, which base does not have — so the test was
+structurally unsatisfiable. Proven live on a driver-610 host: `pyworker: RUNNING`
+followed by `port 3000 not listening after 60s`.
+
+The real cost was not one red test. Because it could not pass, `base-qa` could
+never set `SERVERLESS=true` — so **85 and 86 had never executed once, anywhere**,
+and serverless mode was entirely unexercised by the gate. `85` stays in base
+(non-serverless services stopped, their ports closed, is a property base genuinely
+owns); `86` now lives in the four engine `.d/` suites (vllm, sglang, llama,
+comfyui), where the backend exists. Its `is_serverless` guard keeps it inert —
+not skip-as-pass, since there is nothing to assert when the mode is off — until a
+serverless template turns the mode on. **L067**
+(`check_base_tests_have_no_serverless_backend`) forbids reintroducing a pyworker
+or `:3000` assertion under `tests/base/`; prose explaining the history is fine.
+
+### The cloudflared binary is unpinned, and a CONTRACT is what guards it
+
+`Dockerfile` fetches `cloudflared-linux-${TARGETARCH}` from `releases/latest`, so
+what ships is whatever Cloudflare published that morning (observed: 2026.8.2,
+built the previous day). That is deliberate — a pin is a knob someone has to turn
+on every rebuild, and a version bumped only under time pressure is one nobody
+validates. What replaces it is `portal-aio/tests/test_cloudflared_contract.py`,
+asserting the three things `tunnel_manager` actually depends on against whatever
+binary just shipped: both argv shapes, `--no-autoupdate` **applied** (its absence
+removes the key from cloudflared's echoed `Settings: map[...]`, so "accepted" and
+"honoured" are distinguishable), and a quick-tunnel announcement matching
+`QUICK_TUNNEL_URL_RE` — a module constant both the code and the test read, never
+a copy.
+
+**Per architecture.** amd64 and arm64 are different release artifacts, so the
+build-time job runs one cell per arch (QEMU/binfmt for the arm64 ELF) and no more:
+Cloudflare rate-limits quick-tunnel creation, so a cell per config x python would
+rate-limit itself and then report the rate limit as a defect.
+
+**Three outcomes, default BLOCK.** A usage rejection, an unapplied flag, or a
+tunnel that announces nothing parseable fails. Only an explicit rate limit
+(`429|too many requests|rate.?limit|quota exceeded|error code: 1015`) or an
+explicit transport failure (`dial tcp|i/o timeout|no such host|…`) is
+inconclusive. The first version folded `failed to request quick Tunnel` into the
+rate-limit pattern, so the one failure the gate exists to catch was being skipped.
+(An earlier draft of this section called that string the *universal* wrapper for
+the creation path. It is not — the rate-limit path emits `failed to unmarshal
+quick Tunnel` instead. The claim was reasoned, not measured; the discriminator is
+the cause, never the wrapper.)
+
+**Positive evidence is checked BEFORE negative evidence.** If cloudflared says
+`quick Tunnel has been created`, the contract question is live and gets answered,
+whatever else the log holds. A tunnel is created before its edge connections are
+dialled, so transport noise *after* the announcement says nothing about whether
+the portal can parse it — and checking the negative patterns first let late noise
+overrule a tunnel that demonstrably existed, turning a genuine
+`QUICK_TUNNEL_URL_RE` regression into a skip. Proven by mutation: with the old
+ordering, a release that moves the announcement format reports `unverified`; with
+the fix, `broken`.
+
+**Skip is not pass.** The gate's normal degraded outcome is `skip`, and pytest
+exits 0 on it — measured under a real per-IP rate limit: `3 passed, 3 skipped`,
+exit 0, where the three passes introspect the portal's own argv and say nothing
+about the binary. An exit code therefore cannot express what this gate needs to
+say. `portal-aio/tests/classify_contract_run.py` reads the junit report and
+returns one of **verified** (every live assertion executed), **unverified**
+(nothing failed, but something did not run), or **broken** (a live assertion
+failed). Liveness comes from the `@pytest.mark.live` marker carried into the
+report by an autouse fixture — never from a list of test names, which a rename
+would silently downgrade.
+
+**The result must reach the notification, in three states.** A `needs:` edge alone
+is not a control: the Slack status rendered from `needs.build.result` only, so a
+failing contract reported green while the staging tags were already pushed. Two
+states were not enough either, and got both edges wrong — a rate-limited run
+rendered ✅ having proven nothing, and an ordinary build failure (which *skips*
+the contract job) rendered "the tunnel binary is UNVALIDATED" over a compile
+error. The aggregate is severity-ordered `broken > unverified > verified`, with
+`not-run` kept distinct so an upstream failure never claims a tunnel defect.
+
+**The per-PR suite must not spend the tunnel quota.** The live tests create real
+trycloudflare tunnels against a per-IP limit; `portal-aio-tests.yml` deselects
+them with `-m "not live"`. Running them on every portal PR spends the quota on
+`releases/latest` — not the binary that ships — and leaves the build-time run,
+which tests what *does* ship, rate-limited and unable to prove anything.
+
+**Known gaps, recorded rather than implied:**
+
+- **Freshness.** `--no-autoupdate` removes the only thing that kept a long-lived
+  instance's cloudflared current. Derivatives pin dated base tags, so the fleet's
+  spread will widen with no floor and no alert; `base/50-custom-binaries.sh` only
+  asserts the binary exists. Cloudflare does age out old builds. Nothing here
+  detects that, and the first symptom would be tunnels failing on older images
+  only.
+- **No integrity check.** The fetch has no checksum or signature. A behavioural
+  contract passes just as happily on a substituted binary. (`syncthing` and
+  `miniforge` in the same Dockerfile are unpinned-latest too, so this is the house
+  convention rather than a new exposure — but the contract does not close it.)
+- **The fix does not reach running instances.** `portal-aio` also ships as a
+  release tarball (ADR 0015) and `VERSION` is not bumped, so no running instance
+  gets `--no-autoupdate`, and `v3.1.4` now names another distinct payload — the
+  same caveat already recorded above for ADR 0026.
+- **Cloudflare's availability is coupled to the build's headline.** The skip list
+  is a closed enumeration of rate-limit and transport strings; anything else that
+  fails to produce a tunnel BLOCKs by design. So an `api.trycloudflare.com` 5xx, a
+  403, or an expired-certificate error would red a set of images that are fine.
+  Accepted deliberately — the alternative is widening the inconclusive bucket,
+  which is what let a real break through in the first place — but it is a third
+  party's uptime touching the release signal, and if it fires in practice the
+  answer is to route those causes to `unverified` (⚠️), not to widen the skip.
+- **No skip floor.** Nothing fails the gate when it has been `unverified` for N
+  consecutive builds. A gate that is *usually* inconclusive is one nobody reads,
+  and the ⚠️ makes that visible without making it enforceable. Deferred, not
+  solved: it needs run-history state the build workflow does not currently keep.
+- **Promotion does not read this.** `promote-base-image.yml` is a separate
+  human-gated dispatch with its own QA gate, and it has no view of the contract
+  result. The control here is the build notification plus the human who reads it —
+  stated plainly because the wiring could be mistaken for an automated block.
 
 ### Copyleft licence compliance (proposed)
 

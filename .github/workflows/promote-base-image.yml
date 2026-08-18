@@ -221,17 +221,56 @@ jobs:
             # Major-baseline driver floor, raised per config at rent time. gte is a
             # LOWER bound: an 11.8 image is happy on a much newer driver, which is
             # where most of the fleet now is.
+            # EXACT MINOR, derived — not a major baseline.
+            #
+            # This used to floor a whole major (13.* -> 13.0). The effect was that
+            # the NEWEST images were tested almost exclusively on OLD drivers: at
+            # a 13.0 floor, 79% of the market qualifies and it is dominated by
+            # 580/590/595, so a cuda-13.3 image was routinely validated on a
+            # driver that does not natively support 13.3 and reaches it through
+            # forward compat. The native path — the one a customer on a current
+            # driver actually takes — went untested. That is the shape of gap the
+            # 610 rename got through.
+            #
+            # Measured supply at each exact floor (verified, rentable, meeting the
+            # other base-qa floors; n=497): 12.1 99.8%, 12.4 96.6%, 12.6 94.0%,
+            # 12.8 89.5%, 12.9 80.1%, 13.0 78.9%, 13.1 45.1%, 13.2 36.4%,
+            # 13.3 4.2% (21 offers). So the thinness argument for a major baseline
+            # holds for exactly one config — the newest minor — and only until the
+            # market catches up. For the other nine it cost driver coverage and
+            # bought nothing.
+            #
+            # On the newest config the exact floor also selects the driver branch
+            # that actually ships that CUDA (13.3 -> 610), which is coverage the
+            # gate could not otherwise get: driver_version is not a usable search
+            # filter on the API (every form returns zero), and ADR 0024 rejected
+            # pinning it anyway. cuda_max_good is a capability floor, not a driver
+            # pin, so this is the sanctioned way to reach it.
+            #
+            # A thin cell is absorbed by the gate, not by weakening the floor:
+            # no_offers is inconclusive and retried with jitter. If 13.3 starts
+            # holding on supply rather than on defects, that is the signal to
+            # revisit (ADR 0019 amendment, condition 4) — not to widen this.
             case "$auto" in
-              11.*) floor=11.8 ;;
-              12.*) floor=12.0 ;;
-              13.*) floor=13.0 ;;
+              # NO auto version = no -auto tag = never QA'd. The stock-* configs
+              # are this: `auto` is parsed off a `cuda-` prefix they do not have,
+              # so it is empty, and `qa-set` already excludes them by
+              # `.auto_version != ""`. They reached the fail-closed arm below and
+              # aborted the whole promotion before QA — latent since the stock
+              # configs and this case statement arrived together in #239, and hit
+              # the first time a promote ran with both on main.
+              "") floor="" ;;
+              [0-9]*.[0-9]*.[0-9]*) floor="${auto%.*}" ;;   # 13.3.1 -> 13.3
+              [0-9]*.[0-9]*)        floor="$auto" ;;        # 11.8   -> 11.8
               *)
-                # FAIL, do not default. A new CUDA major added to the config table
-                # without a floor here would silently inherit 11.8 and QA would be
-                # free to rent a host whose driver only supports CUDA 11.8 to test
-                # it. That fails closed (the GPU tests go red, the tag holds) but it
-                # presents as a broken IMAGE, sending whoever is on call to debug a
-                # build that is fine. Name the real cause instead.
+                # FAIL, do not default. The floor is now DERIVED, so a new CUDA
+                # version cannot silently inherit a stale one — but a tag template
+                # whose version does not parse as X.Y[.Z] would yield an empty or
+                # malformed floor, and QA would then be free to rent a host whose
+                # driver cannot run the image. That fails closed (the GPU tests go
+                # red, the tag holds) but it presents as a broken IMAGE, sending
+                # whoever is on call to debug a build that is fine. Name the real
+                # cause instead.
                 echo "::error::${key}: CUDA major of '${auto}' has no driver floor."
                 echo "::error::Add a '${auto%%.*}.*) floor=X ;;' branch to this case"
                 echo "::error::statement (see docs/runbooks/new-cuda-version.md)."
@@ -415,7 +454,38 @@ jobs:
 
           python tools/template_manager/verify_qa_evidence.py             --manifest manifest.json --evidence evidence.json             --out decisions.json --summary summary.md
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
-          echo "holds=$(jq '[.[] | select(.decision=="hold")] | length' decisions.json)" >> "$GITHUB_OUTPUT"
+          # ALL-OR-NOTHING. If any config holds, NOTHING flips.
+          #
+          # This supersedes ADR 0019's "flip passing / hold failing". That rule was
+          # chosen because atomic gating is p^n in per-cell reliability (~54% clean
+          # at 12 cells x 95%), which drives operators to route around the gate. The
+          # answer to that is not partial promotion, it is removing the flakiness:
+          # qa-gate.yml now draws a FRESH HOST when a cell blocks with zero failed
+          # tests, which is what that argument was really about.
+          #
+          # What partial promotion assumed, and should not have: that a red cell is
+          # evidence about one image. Every config shares the same ROOT overlay and
+          # the same boot path, so a genuine defect found on cuda-12.6 is evidence
+          # about all twelve. Flipping the other eleven on the theory that only one
+          # is affected is the least safe reading of that evidence.
+          #
+          # Re-running only the failed jobs is cheap and keeps the batch honest.
+          _holds=$(jq '[.[] | select(.decision=="hold")] | length' decisions.json)
+          if [ "$_holds" -gt 0 ]; then
+            echo "::error::${_holds} config(s) held — NO auto tag will flip this run (all-or-nothing)."
+            echo "::error::Re-run the failed QA job(s), or re-dispatch, once the cause is understood."
+            jq -r '.[] | select(.decision=="hold") | "  hold \(.auto_tag // .key): \(.reason)"' decisions.json || true
+            # Rewrite every FLIP to a hold so the promote job cannot move anything.
+            # Only flips: `n/a` entries are configs with no auto tag (the stock-*
+            # pair) and must stay n/a, and existing holds keep their real reason —
+            # the cause is more useful than the consequence.
+            jq '[.[] | if .decision == "flip"
+                       then .decision = "hold"
+                          | .reason = "held: another config in this batch did not clear QA (all-or-nothing)"
+                       else . end]' decisions.json > d.tmp && mv d.tmp decisions.json
+            _holds=$(jq '[.[] | select(.decision=="hold")] | length' decisions.json)
+          fi
+          echo "holds=${_holds}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with: { name: promotion-decisions, path: "decisions.json", retention-days: 7 }
@@ -1065,8 +1135,28 @@ jobs:
       # must be distinguishable in Slack from a clean gated promotion. Without this
       # a run with holds looks identical to a fully-clear one in the only place most
       # people actually read.
-      status: ${{ (needs.qa-summary.result != 'success' || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
-      headline: ${{ needs.qa-summary.result != 'success' && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified' || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != '' && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds)) || '' }}
+      status: ${{ (needs.promote.result != 'success' || needs.qa-summary.result != 'success' || needs.qa-summary.outputs.holds != '0') && 'warning' || '' }}
+      # SAY WHAT HAPPENED, NOT WHAT WAS INTENDED — AND REQUIRE SUCCESS TO SAY IT.
+      #
+      # This is an ALLOWLIST on purpose. The first version enumerated the bad
+      # outcomes ('skipped', 'failure') and let everything else fall through to
+      # "Base image promoted". A CANCELLED run is neither, so it fell through and
+      # announced "Base image promoted — 10 auto tag(s) HELD" for a run in which
+      # the promote job never executed and nothing moved. Enumerating the ways a
+      # thing can go wrong is how you miss the one nobody listed; requiring the
+      # single way it goes RIGHT cannot be missed.
+      #
+      # So: only `success` may open with "promoted". Every other result — skipped,
+      # failure, cancelled, and whatever GitHub adds next — says NOT promoted and
+      # names the result, which is also the fastest thing to read at 3am.
+      headline: >-
+        ${{ needs.promote.result != 'success'
+            && format('Base image NOT promoted (promote: {0}) — no tag was changed', needs.promote.result)
+            || (needs.qa-summary.result != 'success'
+                && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified')
+            || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != ''
+                && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds))
+            || '' }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

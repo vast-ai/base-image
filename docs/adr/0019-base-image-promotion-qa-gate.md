@@ -127,8 +127,11 @@ Shape:
   re-resolved; concurrent-promotion abort on moved auto tags) → copy **by digest** →
   dance with digest-ref targets, Phase A/B ordering and the full-config sweep
   byte-identical.
-- **Partial failure: flip passing, hold failing.** Auto tags with passing evidence
-  flip; failing/inconclusive configs keep their pre-captured digest (the dance
+- **Partial failure: flip passing, hold failing.** ~~Auto tags with passing evidence
+  flip; failing/inconclusive configs keep their pre-captured digest.~~
+  **SUPERSEDED 2026-08-14 — promotion is now ALL-OR-NOTHING: if any config holds,
+  no auto tag flips.** See the amendment at the end of this ADR.
+  Failing/inconclusive configs keep their pre-captured digest (the dance
   re-pushes them unchanged, preserving ordering) and are named loudly — verdict class
   and held-digest age — in the approval summary and Slack. Dated-tag copies proceed for
   all configs (dated tags are opt-in by explicit reference; the gate's claim is the
@@ -432,3 +435,122 @@ differently, which is the point.
 - Vast shipping scoped keys, first-class ephemeral instances, or an in-repo view of the
   live launch templates — each simplifies (the reaper/concurrency posture, or the
   condition-11 exemption) without changing the gate's principle.
+
+---
+
+## Amendment, 2026-08-14 — promotion is all-or-nothing
+
+**What changed.** "Flip passing / hold failing" is withdrawn. If any config holds,
+every flip is rewritten to a hold and nothing moves. `qa-gate.yml` additionally
+draws a **fresh host** when a cell blocks with zero failed tests.
+
+**Why the original reasoning does not survive.** Atomic gating was rejected here
+because the gate's success is pⁿ in per-cell reliability (≈54% clean at 12 cells
+× 95%), which "predictably drives operators to route around the gate". That
+arithmetic was right, but it treated per-cell flakiness as fixed. It is not.
+
+The first promote to run under this ADR held exactly one tag, and the cause was a
+rented host that presented **no GPU**: `60/61/62` skipped, `skip != pass` blocked
+the cell. Nothing about the image was tested or faulty. That is a *bad draw*, and
+the answer to a bad draw is another draw — not a partial promotion. The gate now
+distinguishes the two by whether any test actually **failed**: a host that cannot
+run the GPU tests makes them SKIP, a defective image makes them FAIL. Zero
+failures with a non-zero exit means nothing was tested, which is the same class as
+`no_offers`, and it is retried on a fresh offer. A single genuine failure still
+breaks immediately — retrying a real red until it passes by luck remains the thing
+this gate must never do.
+
+**And the premise partial promotion rested on was wrong.** It assumed a red cell
+is evidence about one image. Every config ships the same `ROOT/` overlay, the same
+boot sequence and the same instance-test suite; the configs differ only in the
+CUDA base. So a genuine defect found on `cuda-12.6` is evidence about all twelve,
+and flipping the other eleven on the theory that only one is affected is the least
+safe available reading. If one is unsafe, none should move.
+
+**What makes this affordable** is that the cost of a hold is now a re-run of the
+failed jobs, not a multi-hour re-dispatch — GitHub re-runs failed jobs in place,
+and the digests are pinned at `resolve-digests`, so a re-run tests the same bits.
+
+**Also fixed, and the reason this was noticed at all — twice:** the Slack headline
+hard-coded "Base image promoted" in both of its arms and never consulted
+`needs.promote.result`. The first fix enumerated the bad outcomes (`skipped`,
+`failure`) and let everything else fall through to the promoted wording. A
+CANCELLED run is neither, so the very next run announced *"Base image promoted —
+10 auto tag(s) HELD"* for a run whose promote job never executed. The headline is
+now an **allowlist**: only `success` may say "promoted", and every other result —
+including states GitHub has not invented yet — reports NOT promoted and names the
+result. Enumerating the ways something can go wrong misses the one nobody listed;
+requiring the single way it goes right cannot be missed. The same lesson as the
+`env -i` allowlist in `13-provisioner-selftest.sh`, learned again in a different
+place. The run above — where the gate correctly STOPPED the
+promotion — was announced as *"Base image promoted — 1 auto tag(s) HELD; dated
+tags landed as normal"*. Nothing was promoted and no dated tag landed. A
+notification that reports the intended outcome rather than the actual one inverts
+the safety signal in the one place most people read. Guarded by
+`test_promote_notification_truth.py`.
+
+**Extended 2026-08-14 (observed live):** the redraw also covers exit 5
+(`instance_error`). `test_template.py` classifies anything that is not a clean
+pass/fail as `instance_error` and its comment calls that "the image's problem".
+True for an instance that crashes part way through a run — false for one that
+launches successfully and is then unreachable, which is the host's problem and
+produces no test results at all. `failed == 0` separates them, exactly as it does
+for exit 1. Not extended to 3 (`bad_instance`: the client already walked
+`MAX_LAUNCH_ATTEMPTS` offers internally) or 4 (`config_error`: our bug, and
+retrying hides it). A genuinely broken image that kills every instance it touches
+still blocks — the attempt count bounds the loop.
+
+**Binding conditions on this amendment**
+
+1. **The redraw must stay conditional on zero failed tests.** Gating it on exit
+   code alone converts the gate into a retry-until-green loop. Pinned by
+   `test_promote_all_or_nothing.py::test_a_genuine_failure_is_still_never_retried`,
+   whose first version could not tell `if [ "${_failed}" = "0" ]` from `if true`
+   and was strengthened after a mutation showed it.
+2. **`n/a` configs stay `n/a`.** The `stock-*` pair has no auto tag; sweeping them
+   into the hold count would both miscount and misreport.
+3. **The originating hold keeps its own reason.** The batch reason is applied only
+   to configs that were going to flip — the cause is more useful to whoever is
+   reading than the consequence.
+4. **If holds become routine rather than exceptional, revisit.** The reliability
+   argument in the rejected alternative above is not wrong in principle; it is
+   answered by the redraw. If cells start holding for reasons the redraw cannot
+   absorb, this amendment is the thing to re-open, not the gate to route around.
+
+## Amendment, 2026-08-14 (b) — the QA floor is the image's exact CUDA minor
+
+`cuda_max_good` was floored at a MAJOR baseline (`13.*` -> 13.0). The effect was
+that the newest images were validated almost entirely on old drivers: at a 13.0
+floor 79% of the market qualifies, dominated by 580/590/595, so a cuda-13.3 image
+routinely ran on a driver that does not natively support 13.3 and reaches it
+through forward compat. **The native path — what a customer on a current driver
+actually takes — went untested.** That is the shape of gap the driver-610 rename
+got through.
+
+Measured supply at each exact floor (verified, rentable, meeting the other
+base-qa floors; n=497): 12.1 99.8%, 12.4 96.6%, 12.6 94.0%, 12.8 89.5%,
+12.9 80.1%, 13.0 78.9%, 13.1 45.1%, 13.2 36.4%, **13.3 4.2% (21 offers)**.
+
+So the thinness argument that justified a baseline is true for exactly one config
+— the newest minor — and only until the market catches up. For the other nine it
+cost driver coverage and bought nothing. The floor is now DERIVED from the tag
+template (`13.3.1` -> `13.3`), which also removes the maintenance step where a new
+CUDA major had to be added to a case statement or the promote aborted.
+
+On the newest config the exact floor additionally selects the driver branch that
+ships that CUDA (13.3 -> 610) — coverage the gate could not otherwise obtain,
+since `driver_version` is not a usable search filter on the Vast API (every
+form returns zero offers) and ADR 0024 rejected pinning it in any case.
+`cuda_max_good` is a capability floor rather than a driver pin, so this reaches
+610 without reopening that decision.
+
+**Accepted cost.** The newest minor will sometimes be thin. That is absorbed by
+the gate — `no_offers` is inconclusive and retried with jitter — not by widening
+the floor. Under amendment (a) a hold now stops the whole batch, so if the newest
+config begins holding on *supply* rather than on defects, that is the signal to
+revisit (condition 4 there), not to weaken this.
+
+**Still fail-closed.** A tag template whose version parses but has no minor
+(`cuda-13-...`) aborts rather than emitting a floor QA would rent against. A
+template with no `cuda-X.Y` prefix at all reads as "no auto tag", which is what
+the `stock-*` pair is, and is excluded from QA rather than treated as an error.

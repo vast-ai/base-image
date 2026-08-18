@@ -1,2 +1,18 @@
 pyyaml
-huggingface_hub[cli]
+# Bounded at the next major, not pinned exact.
+#
+# The provisioner shells out to the `hf` CLI, so a huggingface_hub release can
+# change its behaviour under us — and has: 1.18.0 made `--local-dir` together
+# with `--cache-dir` a hard error, breaking every single-file download until it
+# was hotfixed (see the comment in downloaders/huggingface.py). Base images build
+# unattended, so an unbounded dependency means a third party can decide when our
+# downloader breaks.
+#
+# An upper bound at the major is the honest line: huggingface_hub itself pins
+# hf-xet<2.0.0, and Xet is the default download path (ADR 0025), so a major bump
+# is exactly where the transport and the CLI surface are allowed to change.
+# Deliberately NOT pinned exact — the floor keeps picking up Xet fixes.
+#
+# /venv/main is left unpinned on purpose: that venv belongs to the user, and
+# pinning there is what creates resolver conflicts with what they install.
+huggingface_hub[cli]>=1.0,<2

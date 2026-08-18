@@ -6,6 +6,46 @@ source "$(dirname "$0")/../lib.sh"
 has_gpu || test_skip "no GPU detected"
 
 # FAILURES and fail_later/report_failures come from lib.sh
+#
+# THE RULE THIS FILE FOLLOWS (ADR 0019, enforced by L059): absent is fine,
+# INSTALLED-BUT-BROKEN is a failure.
+#
+# Until 2026-08-07 every check here was an `echo WARN` and the file contained no
+# fail_later call at all, so it reported `passed` on every box while being named
+# in base-qa's INSTANCE_TEST_REQUIRE_PASS — i.e. a required test that could not
+# fail, asserting nothing beyond `has_gpu`. The distinction below is what makes
+# it assertable: whether a library is SHIPPED is a property of the image (ours to
+# get right), whether the hardware exists is a property of the host (not ours,
+# and not something a QA cell should block on).
+
+# Is the dynamic linker aware of this library? Distinguishes "we never shipped
+# it" (fine) from "we shipped it and it will not load" (a real defect). CDLL
+# alone cannot tell those apart — it fails identically for both.
+lib_installed() {
+    ldconfig -p 2>/dev/null | grep -qF "$1"
+}
+
+lib_loads() {
+    python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" "$1" 2>/dev/null
+}
+
+# Shipped => must load. Not shipped => nothing to assert.
+check_lib() {
+    local lib="$1" what="$2" name="$3"
+    if lib_loads "$lib"; then
+        echo "  ${lib}: loadable"
+        return 0
+    fi
+    if lib_installed "$lib"; then
+        # fail_later is <name> <message>: the name is what the summary line and
+        # the QA verdict carry, so it has to stay short and greppable.
+        fail_later "$name" \
+            "${lib} is installed but will not load — broken ${what} stack"
+        return 1
+    fi
+    echo "  absent (ok): ${lib}"
+    return 0
+}
 
 # ── OpenCL ────────────────────────────────────────────────────────────
 
@@ -21,12 +61,7 @@ else
     echo "  absent (ok): clinfo"
 fi
 
-# Check OpenCL ICD loader is loadable
-if python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" libOpenCL.so.1 2>/dev/null; then
-    echo "  libOpenCL.so.1: loadable"
-else
-    echo "  WARN: libOpenCL.so.1 not loadable"
-fi
+check_lib libOpenCL.so.1 OpenCL "opencl-icd"
 
 # nvidia.icd present
 if [[ -f /etc/OpenCL/vendors/nvidia.icd ]]; then
@@ -59,15 +94,20 @@ ib_libs=(
     "libibumad.so.3"
 )
 
+# check_lib returns 0 for "absent" as well as "loadable" — that is right for the
+# verdict and wrong for a tally, so count what actually loaded rather than what
+# did not fail. Reporting "3/3 loadable" for three absent libraries is the same
+# class of lie as a passing test that says it verified something.
 ib_ok=0
-ib_missing=0
 for lib in "${ib_libs[@]}"; do
-    if python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" "$lib" 2>/dev/null; then
-        ib_ok=$((ib_ok + 1))
-    else
-        ib_missing=$((ib_missing + 1))
-        echo "  WARN: ${lib} not loadable"
-    fi
+    # Two probes per library: check_lib does its own. Deliberately left alone —
+    # an earlier version of this comment claimed the second call reused the
+    # first, which was simply untrue (measured: 6 invocations for 3 libraries,
+    # before and after). The tally needs "did it load", check_lib needs "load,
+    # or is it merely installed"; collapsing them is a refactor of check_lib's
+    # return contract, not a comment.
+    check_lib "$lib" RDMA "rdma-${lib%%.*}"
+    lib_loads "$lib" && ib_ok=$((ib_ok + 1))
 done
 echo "  RDMA libs: ${ib_ok}/${#ib_libs[@]} loadable"
 
@@ -83,12 +123,72 @@ fi
 
 # ── NCCL ──────────────────────────────────────────────────────────────
 
-if python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" libnccl.so.2 2>/dev/null; then
+# Two sonames because the base ships the versioned one and some CUDA layouts only
+# carry the unversioned symlink. Either loading is enough; only a shipped-but-
+# broken NCCL is a defect, and it is one that matters — torch.distributed dlopens
+# this at init, so a broken NCCL is invisible until a collective is attempted.
+if lib_loads libnccl.so.2; then
     echo "  libnccl.so.2: loadable"
-elif python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" libnccl.so 2>/dev/null; then
+elif lib_loads libnccl.so; then
     echo "  libnccl.so: loadable"
+elif lib_installed libnccl.so; then
+    fail_later "nccl" \
+        "libnccl is installed but will not load — torch.distributed would fail at init"
 else
     echo "  absent (ok): libnccl"
+fi
+
+# ── Libraries the image installs unconditionally MUST be present ──────
+#
+# "absent is fine" is right for hardware-conditional things and wrong for
+# packages we always install: without this, an image that dropped them passes a
+# REQUIRED test, because check_lib returns 0 for absent.
+#
+# Each assertion is keyed on WHO INSTALLS IT, not on a blanket image-class check.
+# That distinction matters because external images run this same suite — they
+# copy the whole ROOT overlay from the build context — while being built by
+# tools/convert-non-vast-image.sh rather than by our Dockerfile, and the two
+# install different sets.
+#
+#   libibverbs / librdmacm : Dockerfile:127,130 AND convert-non-vast-image.sh:54,57
+#                            -> every image carrying this test has them.
+#   libOpenCL              : Dockerfile:180 only -> vast images only.
+#   libibumad              : same apt block as the RDMA pair in both installers.
+#   libnccl                : ONLY where the package is actually installed. The
+#                            CUDA toolkit is not a proxy for it: Dockerfile.runtime
+#                            installs libnccl2 for the MINI variants, while the 11
+#                            non-mini configs build from nvidia/cuda:*-cudnn-devel
+#                            and inherit NCCL from upstream — which CUDA 13 does
+#                            not ship. Measured: nvidia/cuda:13.2.1 has no
+#                            libnccl2 package at all, so keying this on
+#                            /usr/local/cuda-*/ would have failed a REQUIRED test
+#                            on every 13.x config and held four -auto tags.
+for _req in libibverbs.so.1 librdmacm.so.1 libibumad.so.3; do
+    lib_installed "$_req" \
+        || fail_later "missing-${_req%%.*}" \
+            "${_req} is not installed — every image shipping this test installs it, so it \
+was dropped from the image rather than being unavailable on this host"
+done
+
+if is_vast_image; then
+    lib_installed libOpenCL.so.1 \
+        || fail_later "missing-libOpenCL" \
+            "libOpenCL.so.1 is not installed — the base image installs ocl-icd-libopencl1 \
+unconditionally"
+    # "We installed the package, so the soname must be resolvable" — decidable,
+    # and true on every variant. An image that never shipped NCCL is not thereby
+    # broken; one that installed it and cannot load it is.
+    # `dpkg-query -W` alone returns 0 for a package that was REMOVED but not
+    # purged — it stays in the database as `config-files`. Measured: after
+    # `dpkg -r`, `dpkg-query -W` gives rc=0 with no files on disk, which would
+    # false-red this REQUIRED test on any image that apt-get remove'd NCCL.
+    # Require the status word, not merely a database entry.
+    if [[ "$(dpkg-query -W -f='${db:Status-Status}' libnccl2 2>/dev/null)" == "installed" ]]; then
+        lib_installed libnccl.so.2 \
+            || fail_later "missing-libnccl" \
+                "libnccl2 is installed but libnccl.so.2 is not on the loader path — \
+multi-GPU and torch.distributed would fail at init"
+    fi
 fi
 
 # ── Report ────────────────────────────────────────────────────────────

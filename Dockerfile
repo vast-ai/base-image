@@ -295,9 +295,31 @@ RUN \
 
 # Install Syncthing
 ARG TARGETARCH
+# Resolved ONCE per run by the workflow under its GITHUB_TOKEN and passed in.
+# Empty is a supported fallback, so a local or manual `docker build` still works.
+#
+# TWO reasons, and the second is the one that matters:
+#
+#  1. Robustness. Unauthenticated api.github.com allows 60 req/hr PER IP, and
+#     GitHub-hosted runners share a NAT pool. One lookup per build cell x 24
+#     cells is a coin flip on a busy day and a certainty during an incident —
+#     measured 2026-08-17, HTTP 403 on cuda-13.0, which then skipped all twelve
+#     manifest merges. Only the version LOOKUP is limited; the download is not,
+#     which is why cloudflared and miniforge are unaffected (they use the
+#     releases/latest/download redirect and never call the API).
+#
+#  2. Consistency. Each cell resolving `latest` independently means a syncthing
+#     release landing mid-build — a ~40 minute window — ships SOME configs on the
+#     old version and some on the new, with nothing recording which. One
+#     resolution per run makes the set coherent, and the echo below is the first
+#     record anywhere of which syncthing an image actually contains.
+ARG SYNCTHING_VERSION=""
 RUN \
     set -euo pipefail && \
-    SYNCTHING_VERSION="$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
+    SYNCTHING_VERSION="${SYNCTHING_VERSION:-$(curl -fsSL "https://api.github.com/repos/syncthing/syncthing/releases/latest" | jq -r '.tag_name')}" && \
+    SYNCTHING_VERSION="${SYNCTHING_VERSION#v}" && \
+    [ -n "$SYNCTHING_VERSION" ] || { echo "could not resolve a syncthing version"; exit 1; } && \
+    echo "syncthing version: ${SYNCTHING_VERSION}" && \
     SYNCTHING_URL="https://github.com/syncthing/syncthing/releases/download/v${SYNCTHING_VERSION}/syncthing-linux-${TARGETARCH}-v${SYNCTHING_VERSION}.tar.gz" && \
     mkdir -p /opt/syncthing/config && \
     mkdir -p /opt/syncthing/data && \

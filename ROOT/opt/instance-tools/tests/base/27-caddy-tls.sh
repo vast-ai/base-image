@@ -19,12 +19,36 @@ KEY_PATH="/etc/instance.key"
 echo "  cert: ${CERT_PATH} (present)"
 echo "  key: ${KEY_PATH} (present)"
 
-# Validate cert and key are well-formed
-openssl x509 -in "$CERT_PATH" -noout 2>/dev/null \
-    || test_fail "invalid certificate: ${CERT_PATH}"
-openssl rsa -in "$KEY_PATH" -check -noout 2>/dev/null \
-    || test_fail "invalid key: ${KEY_PATH}"
-echo "  cert and key are valid"
+# Validate cert and key — the SAME predicate 55-tls-cert-gen.sh uses to decide
+# whether to regenerate, so the test and the boot script cannot disagree about
+# the same pair of files (L066).
+#
+# This used to be `openssl rsa -in KEY -check`, which is RSA-only: it exits
+# non-zero on a valid EC key, so an operator-supplied EC certificate hard-failed
+# this cell while working perfectly. It also never compared the cert to the key,
+# so a MISMATCHED pair — what a half-finished regeneration leaves behind, and the
+# exact state that makes Caddy serve a listener no client will complete a
+# handshake with — passed.
+# STRICT here — exit 3 (matched but expired) fails this cell rather than warning.
+# The portal tolerates an expired pair because its alternative is plaintext; a
+# QA cell has no such dilemma. On a QA cell (generate_tls_cert=true, fresh boot)
+# an expired certificate means 55-tls-cert-gen.sh declined to replace one it
+# should have replaced — the image defect this suite is looking for. (Under
+# --no-cert-gen declining would be correct, but QA cells do not launch that way.)
+cert_reason=$(/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" 2>&1) \
+    || test_fail "instance certificate is not usable: ${cert_reason}"
+echo "  cert and key are valid, unexpired and matched"
+
+# Surface a self-signed fallback WITHOUT failing on it. 55-tls-cert-gen.sh
+# self-signs when the console signing service cannot be reached, which keeps TLS
+# working and keeps the assertions above true — but it means this cell never
+# exercised the signing path. Without this line the gate could certify a whole
+# promotion in which every instance quietly fell back, and nobody would know.
+# A WARN, not a failure: the console being down is not an image defect.
+if [[ -f /etc/.instance-cert-selfsigned ]]; then
+    echo "  WARN: certificate is SELF-SIGNED — the console signing service was"
+    echo "        unreachable at boot, so the signing path is untested on this cell"
+fi
 
 # wait_for_caddy comes from lib.sh
 

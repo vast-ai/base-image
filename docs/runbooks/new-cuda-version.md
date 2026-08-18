@@ -18,7 +18,7 @@ the failure mode was silent before it was caught.
 | rule | enforced by |
 |---|---|
 | The config table is the ONLY place configs are defined; build/promote/extend all read it | `test_python_versions_are_read_from_the_table_not_hardcoded`, `test_every_job_that_reads_the_table_checks_out` |
-| Every CUDA **major** in the table has an explicit driver floor | `test_every_cuda_major_in_the_table_has_a_driver_floor` |
+| Every CUDA config floors QA at **its own minor**, never below | `test_every_cuda_config_floors_qa_at_its_own_minor` |
 | An unmapped major **fails the run**; it never defaults | `test_the_floor_case_fails_closed_on_an_unmapped_major` |
 | `cuda_max_good` floors are LOWER bounds — never an `lte` | `test_set_filter.py`, template comments |
 | An auto tag only moves to a digest that passed QA **this run, at that digest** | `test_promote_behaviour.py` (executed against a fake registry) |
@@ -87,21 +87,28 @@ Notes that bite:
 - Mini variants are separate entries under `mini[]` and are **not QA'd** at all,
   also deliberately (they carry no auto tag).
 
-## 3. Add the driver floor — required for a new MAJOR
+## 3. The driver floor — nothing to do
 
-In `.github/workflows/promote-base-image.yml`, the `case "$auto" in` block:
+**This step no longer exists.** The `cuda_max_good` floor is DERIVED from the tag
+template in `.github/workflows/promote-base-image.yml` (`13.3.1` -> `13.3`), so a
+new major or minor floors itself. There is no `case` branch to add and no step to
+forget.
 
-```bash
-14.*) floor=14.0 ;;
-```
+It used to be a hand-maintained major baseline (`13.*) floor=13.0`). That was
+changed on 2026-08-14 (ADR 0019 amendment (b)) because it floored the newest
+images below their own version: at a 13.0 floor 79% of the market qualifies and is
+dominated by 580/590/595 drivers, so a cuda-13.3 image was validated through
+forward compat and the native driver path went untested — the shape of gap the
+driver-610 rename got through.
 
-This is the `cuda_max_good` floor QA rents against. It is a **lower** bound: an
-image is happy on a newer driver, so the floor is the *oldest* driver that can run
-it. Never add an `lte` — that would select for the oldest hosts, which is the
-opposite of the intent.
+The floor remains a **lower** bound: an image is happy on a newer driver, so
+`gte` selects the oldest driver that can run it natively. Never add an `lte` —
+that selects for the oldest hosts, the opposite of the intent.
 
-Skip this for a new minor/patch of an existing major. If you forget it for a new
-major, the run **fails and tells you** — it does not guess.
+Still fail-closed: a tag template whose version parses but has no minor
+(`cuda-14-...`) aborts the run rather than emitting a floor QA would rent
+against. A template with no `cuda-X.Y` prefix reads as "no auto tag" — which is
+what the `stock-*` pair is — and is excluded from QA.
 
 ## 4. Build
 
@@ -161,7 +168,7 @@ abandoned after 15 min and retried on another offer.
 
 | symptom | meaning | action |
 |---|---|---|
-| `has no driver floor` | new major, §3 skipped | add the branch; nothing was written |
+| `has no driver floor` | tag template version has no minor (e.g. `cuda-14-`) | fix the template in `configs/base-image.json`; nothing was written |
 | `STAGING_DATE must be YYYY-MM-DD` | typo | re-dispatch |
 | Some tags `HOLD` | QA did not clear those digests | read the reason column; those tags keep their current image, everything else promoted |
 | `staging moved after the plan was approved` | someone rebuilt mid-promotion | re-dispatch against the current staging date |

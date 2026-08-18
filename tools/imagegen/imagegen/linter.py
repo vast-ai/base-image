@@ -9,6 +9,7 @@ substring, not a whole check — so a *different* future break of the same code 
 NOT silently suppressed (tested by test_no_stale_exceptions).
 """
 from __future__ import annotations
+import ast
 import os
 import re
 from dataclasses import dataclass
@@ -76,11 +77,16 @@ RULES: list[tuple[str, str, str]] = [
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
+    ("L059", ERROR, "Every test named in a gating QA template's INSTANCE_TEST_REQUIRE_PASS contains at least one real test_fail/fail_later CALL (a mention in a comment does not count) — L057 makes the template name the tests that must pass, and this closes the next hole down: a named test with no failure path reports `passed` on every box, so requiring it asserts nothing beyond the script reaching its test_pass, and the gate reads as coverage while certifying nothing (ADR 0019)"),
+    ("L065", ERROR, "Every shipped instance test (ROOT/opt/instance-tools/tests/**/*.sh, and the same path under derivatives/external overlays) is executable — runner.sh discovers tests with `find … -executable`, so a 0644 test is not skipped, not reported missing, and emits no line at all: it silently does not exist. base/11-instance-metadata.sh and base/12-provisioning.sh shipped 0644 from their first commit and had therefore never run once, which also meant lib.sh's instance_field() always returned empty and nothing ever waited for provisioning to finish. Same failure and same fix as L051 for supervisor scripts"),
     ("L060", ERROR, "No credential-shaped secret committed in docs/adr/** — this repo is public; sensitive specifics live in the internal tracker, not the ADR (ADR 0012)"),
     ("L061", ERROR, "No internal tracker ticket id (CON-/HOST-/CLN-…) in any public-repo file — it leaks the internal tracker and dangles for external readers; the internal issue links to the ADR/commit, not the reverse (ADR 0012)"),
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
+    ("L068", ERROR, "No shipped script interpolates a `VAST_TCP_PORT_*` / `VAST_UDP_PORT_*` variable into the PORT position of a listen address without a guard. The platform injects these only when the template maps that port, and an unset one does not fail loudly — it yields a syntactically valid address with an empty port, which the server resolves to its OWN default. Measured: `syncthing.sh` built `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset, persisted `<listenAddress>tcp://0.0.0.0:</listenAddress>` into config.xml on overlayfs, and syncthing bound `[::]:22000` — a port nothing publishes, so direct sync (the entire point of syncthing) silently never worked, and the exposure allowlist keyed `env:VAST_TCP_PORT_72299` could never match the port actually bound. Scoped to the interpolation site, not the variable: reading the var to build a display URL or an `if` test is fine. The blessed idiom is already in the tree — coturn's `-p \"${VAST_UDP_PORT_70000:-3478}\"` (ADR 0028)"),
+    ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
+    ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
 
 
@@ -596,6 +602,153 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
 
 
 
+def _has_failure_path(text: str) -> bool:
+    """True if the script can actually FAIL, not merely mention failing.
+
+    Counts invocations at a command position only. A bare mention does not count
+    — `62-gpu-libraries.sh` carried the comment
+
+        # FAILURES and fail_later/report_failures come from lib.sh
+
+    and no call, so any rule matching the substring would have been satisfied by
+    the comment describing the machinery the file never used. Same trap L056
+    documents for the libggml-cuda assertion.
+    """
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        for fn in ("test_fail", "fail_later"):
+            if _line_calls(line, fn):
+                return True
+    return False
+
+
+def check_instance_tests_executable(img: Image, repo: Path) -> Iterable[Finding]:
+    """L065 — a shipped instance test must be executable.
+
+    `runner.sh` discovers with `find "${TESTS_DIR}/base" -name '*.sh' -executable`,
+    and the Dockerfile ships the overlay with a bare `COPY ./ROOT/ /`, which
+    preserves mode. So a test committed 0644 is not collected — and unlike a
+    skip or a missing required test, it produces NO output whatsoever. It does
+    not appear in the run, in the counts, or in the results JSON. The only way
+    to notice is to compare a directory listing against the collected list.
+
+    That is not hypothetical: `base/11-instance-metadata.sh` and
+    `base/12-provisioning.sh` were 0644 from their introducing commit and had
+    never executed. Two consequences ran unnoticed for the whole of that period —
+    `lib.sh`'s `instance_field()` reads a metadata file only test 11 writes, so it
+    could only ever have returned empty (it has no callers today, which is the
+    only reason nothing broke); and `runner.sh`'s
+    "no blind provisioning wait — 12-provisioning.sh handles monitoring" was
+    false, so tests that document themselves as running after provisioning were
+    racing it.
+
+    Repo-level (like L060/L061): the tests are shipped by whichever image owns
+    the overlay, and a mode is a property of the file, not of a build.
+    """
+    if img.cls != "base":
+        return
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").glob("*/ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sh in sorted(root.rglob("*.sh")):
+            # lib.sh is SOURCED by every test, never executed. runner.sh is
+            # executed and is deliberately NOT exempt: exempting the whole tests
+            # root (the first version of this rule) would have left the one file
+            # whose losing +x disables the entire suite ungated.
+            if sh.name == "lib.sh":
+                continue
+            if not (sh.stat().st_mode & 0o111):
+                try:
+                    rel = str(sh.relative_to(repo))
+                except ValueError:
+                    rel = sh.name
+                yield Finding("L065", ERROR, img.name, rel,
+                              "instance test is not executable (chmod +x) — runner.sh "
+                              "collects with `find -executable`, so it would never run "
+                              "and would report nothing at all")
+
+
+def check_required_tests_can_fail(img: Image, repo: Path) -> Iterable[Finding]:
+    """L059 — a test named in INSTANCE_TEST_REQUIRE_PASS must be able to fail.
+
+    L057 makes a gating template NAME the tests that must pass. This closes the
+    next hole down: a named test that contains no failure path at all reports
+    `passed` on every box, so requiring it asserts nothing beyond the fact that
+    the script ran to its `test_pass`. The gate then reads as coverage while
+    certifying nothing — the same skip-as-pass shape as an unnamed self-skipping
+    test, one level lower and harder to see (ADR 0019).
+
+    Not hypothetical: `base/62-gpu-libraries.sh` was named in base-qa's
+    require-pass set while every one of its branches was an `echo`/`WARN`. Under
+    the gate it asserted exactly `has_gpu`, which 60 and 61 already assert.
+
+    Scoped to base, following L057's precedent: comfyui-qa and vllm-qa are live
+    gates, and turning them red from a linter rule is a separate change that must
+    re-validate each first.
+
+    Deliberately weak by design: this asserts a failure path EXISTS, not that it
+    is a good one. A test that can fail for the wrong reasons is a review problem;
+    a test that cannot fail at all is a structural one, and only the second is
+    decidable by reading the file.
+    """
+    if img.cls != "base":
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    # A required test may live in the base overlay OR in a derivative's own tests
+    # dir. Looking only in ROOT/ would silently skip every derivative test — the
+    # rule would report clean precisely where the newest tests are.
+    test_roots = [repo / "ROOT/opt/instance-tools/tests"]
+    test_roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+
+    def _find(name: str) -> Path | None:
+        for root in test_roots:
+            p = root / f"{name}.sh"
+            if p.is_file():
+                return p
+            # derivatives name their dir `<img>.d` but declare `<img>/<test>`
+            head, _, tail = name.partition("/")
+            if tail:
+                p = root / f"{head}.d" / f"{tail}.sh"
+                if p.is_file():
+                    return p
+        return None
+
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            env = entry.get("env")
+            declared = env.get("INSTANCE_TEST_REQUIRE_PASS", "") if isinstance(env, dict) else ""
+            for name in str(declared).replace(",", " ").split():
+                path = _find(name)
+                if path is None:
+                    # Not resolvable in this repo at all — an external image's
+                    # test, or a typo. The runner fails closed on a required test
+                    # missing from the image, which is the right layer for that;
+                    # this rule only judges files it can actually read.
+                    continue
+                if not _has_failure_path(path.read_text(encoding="utf-8", errors="replace")):
+                    yield Finding("L059", ERROR, img.name, rel,
+                                  f"required test {name} contains no test_fail/fail_later "
+                                  "call — it cannot fail, so naming it in "
+                                  "INSTANCE_TEST_REQUIRE_PASS asserts nothing")
+
+
 def _line_calls(line: str, fn: str) -> bool:
     """True if `fn` is invoked at a command position on THIS line.
 
@@ -908,6 +1061,111 @@ _LDPATH_PROBE = re.compile(r"LD_LIBRARY_PATH=.*" + _CUDA_HELPER)
 # that 05-configure-cuda.sh and base/60-gpu-cuda both ask.
 _LIBCUDA_SEARCH = re.compile(r"\b(?:find|ls|compgen|glob|rglob|iglob)\b[^\n]*libcuda\.so\.1\b")
 
+_CERT_HELPER = "cert-usable"
+
+# RSA-only validity checks, in three spellings. `openssl rsa` cannot load an EC
+# key at all, so -check on it rejects correct keys. `-modulus` is the other half
+# of the classic matching idiom and exists only for RSA — on the CERT side it is
+# spelled `openssl x509 -modulus`, with no `rsa` token anywhere, so a pattern
+# keyed on the subcommand exempts exactly half of the idiom it targets. And
+# `openssl rsa -in K -noout` is the same RSA-only load with no flag at all,
+# unless it is producing output, in which case it is a conversion and legitimate.
+#
+# The `rsa` token lookahead REFUSES a following `:` as well as `[\w-]`, so
+# `openssl req -newkey rsa:2048 ... -noout` — the textbook key-generation idiom,
+# which pairs `rsa:` with `-noout` to suppress the CSR — is not read as the
+# RSA-only `openssl rsa` subcommand. Without the `:` the baseline was clean only
+# because the one shipped call site happened to also carry `-out`.
+#
+# `.` rather than `[^\n]` throughout, because these are matched against JOINED
+# windows as well as single lines — see _logical_windows.
+_OPENSSL_RSA_ONLY = re.compile(
+    r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?:"
+    r"(?<![\w-])rsa(?![\w:-])(?:(?!\bopenssl\b).)*?(?<![\w-])-check(?![\w-])"
+    r"|(?<![\w-])-modulus(?![\w-])"
+    r")",
+    re.S,
+)
+_OPENSSL_RSA_NOOUT = re.compile(
+    r"\bopenssl\b(?:(?!\bopenssl\b).)*?(?<![\w-])rsa(?![\w:-])"
+    r"(?:(?!\bopenssl\b).)*?(?<![\w-])-noout(?![\w-])",
+    re.S,
+)
+_OPENSSL_PRODUCES_OUTPUT = re.compile(r"(?<![\w-])-(?:pubout|out|outform|text)(?![\w-])")
+
+# Narrow deliberately: piping a PUBLIC KEY out of openssl into a digest, which is
+# the shape in which an empty result stops looking empty. Hashing a whole cert for
+# a fingerprint is a different, legitimate thing and is not matched.
+_PUBKEY_DIGEST = re.compile(
+    r"\bopenssl\b.*?(?:-pubkey|-pubout|-pubin|-modulus).*?\|.*?"
+    r"\b(?:sha\d+sum|md5sum|cksum)\b",
+    re.S,
+)
+
+# How many lines to fold into each window (the line itself plus _WINDOW-1 that
+# follow it). The portal's call is a Python argv list, and any formatter that
+# wraps it splits `openssl`/`rsa` from `-check` across lines — which made the
+# single-line regexes exempt the one caller that gates Caddy's TLS listener,
+# while the mutation test kept passing because it only ever mutated to the
+# one-line form.
+#
+# It must be wide enough for the shape a magic trailing comma FORCES: ruff and
+# black explode a 6-element list to one element per line, so `"openssl"` and
+# `"-check"` land five lines apart. A window of 4 caught a hand-wrapped
+# two-per-line form and MISSED that one-per-line explosion (pinned by
+# test_L066_a_one_element_per_line_argv_does_not_escape). Widened to cover it;
+# the alternation refuses to span a second `openssl`, so the join cannot stitch
+# two independent openssl statements into one match even at this width.
+_WINDOW = 7
+
+
+def _py_prose_lines(path: Path) -> set[int]:
+    """Line numbers occupied by Python DOCSTRINGS (and bare string statements).
+
+    `_shipped_scripts` strips `#` comments, which is all a shell script needs.
+    Python keeps its prose in string literals, and the window join above makes
+    that prose dangerous: an explanatory docstring saying the old code used
+    "`openssl rsa` … its `-check` flag" across two lines becomes a match. That
+    is not hypothetical — it fired on the very docstring explaining this rule.
+
+    Blanking ALL string literals would be the obvious move and is wrong: the
+    portal's offending call IS a list of string literals (`["openssl", "rsa", …]`),
+    so that would exempt the one site with the worst blast radius. Docstrings and
+    bare string statements are prose by construction and are never an argv, so
+    only those are dropped.
+    """
+    if path.suffix != ".py":
+        return set()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, ValueError, OSError):
+        return set()                           # not our business to diagnose
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            out.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return out
+
+
+def _logical_windows(lines):
+    """Yield (start_lineno, text, covered_linenos) for each line and for each
+    short join of it with the lines that follow, so a statement broken across
+    lines is still one string.
+
+    `covered_linenos` is every source line the window folded in, so a caller can
+    mark the WHOLE matched statement as seen — deduping on the start line alone
+    reports the same offending statement once per overlapping window that reaches
+    it, one of them pointing at a bare `[`."""
+    for i, (n, line) in enumerate(lines):
+        covered = [n]
+        yield n, line, list(covered)
+        joined = line
+        for m, nxt in lines[i + 1:i + _WINDOW]:
+            joined = f"{joined} {nxt.strip()}"
+            covered.append(m)
+            yield n, joined, list(covered)
+
 
 def _shipped_scripts(repo: Path):
     """Yield (path, repo-relative-path, [(lineno, code-without-comment)]) for
@@ -1071,6 +1329,111 @@ def check_no_open_coded_native_libcuda(img: Image, repo: Path) -> Iterable[Findi
                               "searches for libcuda.so.1 to pick a native driver library — "
                               "use `cuda-driver-version --native`, which resolves it once "
                               "and verifies what the loader actually mapped")
+
+
+_SERVERLESS_BACKEND = re.compile(
+    r"(?<![\w-])pyworker(?![\w-])|(?<![\d:.])3000(?![\d.])")
+
+
+def check_base_tests_have_no_serverless_backend(img: Image, repo: Path) -> Iterable[Finding]:
+    """L067 — a base/ test may not assert an engine-provided serverless backend.
+
+    `base/` runs on EVERY image, so every assertion in it has to hold on a bare
+    base image. `86-serverless-pyworker` asserted a running pyworker and a
+    listener on :3000; the base image ships the pyworker unit but nothing to put
+    behind it, so under SERVERLESS=true it failed structurally. Measured on a
+    610 host: `pyworker: RUNNING`, then `port 3000 not listening after 60s`.
+
+    The cost was not one red test. It meant `base-qa` could never set
+    SERVERLESS=true, so `85` and `86` had never run once anywhere — the mode was
+    entirely unexercised. 85 moves nothing (services stopped and ports closed is
+    a property base genuinely owns); 86 goes to the engine `.d/` suites, whose
+    `is_serverless` guard keeps it dormant until a serverless template exists.
+    """
+    if img.cls != "base":
+        return
+    base_dir = repo / "ROOT/opt/instance-tools/tests/base"
+    if not base_dir.is_dir():
+        return
+    for f in sorted(base_dir.glob("*.sh")):
+        for n, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            code = _strip_comment(line)
+            if _SERVERLESS_BACKEND.search(code):
+                yield Finding("L067", ERROR, img.name,
+                              f"ROOT/opt/instance-tools/tests/base/{f.name}:{n}",
+                              "asserts a serverless backend (pyworker / :3000) from a "
+                              "base test — base has no inference engine, so it cannot "
+                              "hold; move it to the engine images' .d/ suites")
+
+
+def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Finding]:
+    """L066 — do not re-implement "is this cert usable"; ask the helper.
+
+    Three sites had grown three different answers, and each was wrong in a
+    direction its author had no fixture for:
+
+      base/27-caddy-tls.sh   openssl rsa -in KEY -check
+      caddy_config_manager   ["openssl","rsa","-in",KEY,"-check","-noout"]
+      55-tls-cert-gen.sh     sha256sum of each side's DER public key
+
+    `openssl rsa` is the RSA-*only* entry point. On a valid EC key it exits
+    non-zero, so both -check callers reject a perfectly good keypair and turn
+    HTTPS off — and the portal one is not a test, it is what gates Caddy's TLS
+    listener. Neither -check caller compares the cert to the key at all, so a
+    mismatched pair passes.
+
+    The digest form fails the other way. `sha256sum` of EMPTY input is
+    e3b0c442… — a fixed, non-empty string — so two openssl invocations that both
+    failed produce identical digests and an unreadable cert and an unreadable key
+    are certified as a matching pair. `[[ -n "$c" ]]` does not save it: the
+    digest is what is non-empty, not the key. That fail-open IS reachable — it
+    needs BOTH sides to fail, and a certificate whose SPKI algorithm OID openssl
+    cannot decode (parses, passes -checkend, yields no public key) supplies the
+    cert side; an unreadable key supplies the other. An unknown-OID cert against
+    a GOOD key still fails closed. A record here once called it unreachable on
+    the strength of a corrupted-modulus fixture, which could not have shown
+    otherwise because any integer is a valid modulus; that is corrected in
+    ADR 0026 and pinned by
+    test_old_digest_form_fails_open_on_an_unknown_key_algorithm.
+
+    One implementation, /opt/instance-tools/bin/cert-usable: it compares the
+    PEM SubjectPublicKeyInfo of each side directly, with no hashing step in
+    which emptiness can disappear, and it is exercised against real RSA, EC,
+    mismatched, expired, unreadable and unknown-algorithm fixtures by
+    tools/imagegen/tests/test_cert_usable.py.
+    """
+    if img.cls != "base":
+        return
+    for f, rel, lines in _shipped_scripts(repo):
+        if f.name == _CERT_HELPER:
+            continue                           # the one sanctioned implementation
+        seen: set[int] = set()
+        prose = _py_prose_lines(f)
+        # BLANK prose lines, do not drop them: dropping closes the gap so a
+        # window stitches code from either side of a docstring into a false
+        # positive. Blanking keeps the line numbers contiguous, so the join only
+        # ever spans genuinely adjacent code.
+        scan = [(n, "" if n in prose else line) for n, line in lines]
+        for n, text, covered in _logical_windows(scan):
+            if n in seen:
+                continue
+            rsa_only = (_OPENSSL_RSA_ONLY.search(text)
+                        or (_OPENSSL_RSA_NOOUT.search(text)
+                            and not _OPENSSL_PRODUCES_OUTPUT.search(text)))
+            if rsa_only:
+                seen.update(covered)
+                yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
+                              "validates or matches a TLS key with an RSA-only openssl "
+                              "form (`openssl rsa -check/-noout`, `-modulus`) — it "
+                              "rejects a valid EC key; call "
+                              "`/opt/instance-tools/bin/cert-usable <crt> <key>`")
+            elif _PUBKEY_DIGEST.search(text):
+                seen.update(covered)
+                yield Finding("L066", ERROR, img.name, f"{rel}:{n}",
+                              "hashes an openssl public key before comparing it — the "
+                              "digest of empty input is equal on both sides, so two "
+                              "failures read as a match; call "
+                              "`/opt/instance-tools/bin/cert-usable <crt> <key>`")
 
 
 def check_template_disk_floor(img: Image, repo: Path) -> Iterable[Finding]:
@@ -1310,9 +1673,17 @@ def check_adr_secrets(repo: Path) -> Iterable[Finding]:
 # (not a generic `[A-Z]{2,5}-\d+`) to keep false positives at zero — extend as new
 # internal projects appear. The internal issue links to the public ADR/commit; the
 # public repo never names the ticket.
-_INTERNAL_TRACKERS = ("CON", "HOST", "CLN")
+# CS = the customer-escalation project, added 2026-08-17 after a CS- id reached a
+# commit message and a shipped test docstring with the rule green: the list named
+# three projects and the tracker has more. A prefix list is only as good as its
+# completeness, so treat an unlisted project as the expected failure mode rather
+# than a surprise — add here first, then fix what it finds.
+_INTERNAL_TRACKERS = ("CON", "HOST", "CLN", "CS")
 _TICKET_RE = re.compile(r"\b(?:" + "|".join(_INTERNAL_TRACKERS) + r")-[0-9]{1,6}\b")
-_TICKET_SCAN_EXT = {".md", ".yml", ".yaml", ".py", ".sh", ".txt", ".toml", ".cfg", ".ini", ".json"}
+# .diff/.patch included: docs/panels/ and docs/redteam/ persist review artifacts
+# verbatim, and a saved diff leaks a ticket id exactly as a source file does.
+_TICKET_SCAN_EXT = {".md", ".yml", ".yaml", ".py", ".sh", ".txt", ".toml", ".cfg",
+                    ".ini", ".json", ".diff", ".patch"}
 _TICKET_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
                      ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 
@@ -1339,7 +1710,106 @@ def check_internal_ticket_ids(repo: Path) -> Iterable[Finding]:
                           "internal tracker links to the ADR/commit, not the reverse (ADR 0012)")
 
 
-REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [check_adr_secrets, check_internal_ticket_ids]
+# ---- L068: a listen address built from an unguarded platform port variable ---
+#
+# `VAST_TCP_PORT_<n>` / `VAST_UDP_PORT_<n>` are injected by the platform ONLY when
+# the template maps that port. Interpolating one unguarded into a listen address
+# does not fail loudly — it produces a syntactically valid address with an empty
+# port, which servers resolve to their OWN default. Measured on a live instance:
+#
+#   syncthing.sh:  LISTEN_ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"   # unset
+#   config.xml:    <listenAddress>tcp://0.0.0.0:</listenAddress>        # persisted
+#   syncthing.log: TCP listener starting (address="[::]:22000")         # its default
+#
+# Three consequences, all silent: the service binds a port nobody published, so it
+# is unreachable and the feature it exists to provide (direct sync) never works; an
+# allowlist entry keyed `env:VAST_TCP_PORT_<n>` can never match the port actually
+# bound, so the exposure gate reports it forever; and the malformed value is
+# PERSISTED to a config file on overlayfs, which outlives the fix.
+#
+# The guarded idiom already in the tree is the blessed one and keeps this clean:
+#   coturn.sh:  -p "${VAST_UDP_PORT_70000:-3478}"
+_LISTEN_CTX = re.compile(
+    r"(?:tcp|udp|quic|https?|ws|wss)://[^\s\"']*:\s*$"      # scheme://host:<here>
+    r"|(?:\b(?:0\.0\.0\.0|127\.0\.0\.1|localhost|\[::\]|\*)):\s*$"   # host:<here>
+    r"|--(?:port|listen|listen-address|bind|rfbport|gui-address)[=\s\"']*$",
+    re.I)
+_VAST_PORT_VAR = re.compile(r"\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)\}?")
+# `${VAR:-x}` / `${VAR:?}` / `${VAR:+x}` are self-guarding; a bare `${VAR}` is not.
+_VAST_PORT_GUARDED = re.compile(r"\$\{VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+:[-?+=]")
+_GUARD_NEARBY = re.compile(
+    r"-n\s+\"?\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)"      # [[ -n "$VAR" ]]
+    r"|-z\s+\"?\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)"     # [[ -z "$VAR" ]] && ...
+    r"|=~\s*\^\[0-9\]"                                         # =~ ^[0-9]+$
+    r"|\[\[\s+\"?\$\{?(VAST_(?:TCP|UDP)_PORT_[0-9A-Za-z_]+)")
+
+
+def _triple_quoted_lines(lines) -> set[int]:
+    """Line numbers inside a triple-quoted block, for ANY shipped script.
+
+    `_py_prose_lines` is AST-based and returns nothing for a `.sh`. But the
+    biggest single python file in the tree is a heredoc INSIDE a shell script
+    (`28-inadvertent-exposure.sh` runs `python3 - <<'PY'`), and its docstrings are
+    prose about ports and listen addresses — which is exactly the vocabulary this
+    rule matches. Caught the first time L068 ran: it flagged the docstring that
+    DESCRIBES the syncthing bug, alongside the bug itself.
+
+    A quote-toggle scanner is cruder than an AST but works on both, and prose is
+    all it needs to find.
+    """
+    out: set[int] = set()
+    inside = False
+    for n, line in lines:
+        ticks = line.count('"""') + line.count("'''")
+        if inside:
+            out.add(n)
+        if ticks % 2:
+            if not inside:
+                out.add(n)                     # the opening line is prose too
+            inside = not inside
+    return out
+
+
+def check_unguarded_listen_port(repo: Path) -> Iterable[Finding]:
+    """L068 — a listen address may not interpolate an unguarded VAST_*_PORT_* var.
+
+    Scoped to the interpolation SITE, not to the variable: `VAST_TCP_PORT_*` is
+    read all over the tree for perfectly good reasons (building a URL to show a
+    user, an `if` test, a log line). Only a use that lands the value in the port
+    position of an address can produce the empty-port bind, so only that shape is
+    flagged — which is what keeps this from being a false-positive generator.
+    """
+    for f, rel, lines in _shipped_scripts(repo):
+        prose = _triple_quoted_lines(lines) | _py_prose_lines(f)
+        guarded_vars: set[str] = set()
+        for n, line in lines:
+            if n in prose:
+                continue                       # a docstring about ports is not a bind
+            g = _GUARD_NEARBY.search(line)
+            if g:
+                guarded_vars.update(x for x in g.groups() if x)
+            m = _VAST_PORT_VAR.search(line)
+            if not m:
+                continue
+            var = m.group(1)
+            if _VAST_PORT_GUARDED.search(line) or var in guarded_vars:
+                continue
+            # Is the interpolation in the PORT position of an address?
+            before = line[:m.start()]
+            if not _LISTEN_CTX.search(before):
+                continue
+            yield Finding("L068", ERROR, "", rel,
+                          f"line {n}: listen address interpolates ${{{var}}} with no "
+                          f"guard — the platform injects it only when the template maps "
+                          f"that port, so when unset this builds an address with an EMPTY "
+                          f"port and the server binds its own default instead (measured: "
+                          f"syncthing bound [::]:22000). Use ${{{var}:-<default>}}, or "
+                          f"guard with [[ -n \"${{{var}}}\" ]] and configure no listener "
+                          f"when it is unset")
+
+
+REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
+    check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port]
 
 
 def lint_repo(repo: Path) -> list[Finding]:
@@ -1365,9 +1835,13 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_instance_tests_executable(img, repo))
+    out.extend(check_required_tests_can_fail(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))
     out.extend(check_no_nvidia_smi_text_parse(img, repo))
     out.extend(check_no_open_coded_native_libcuda(img, repo))
+    out.extend(check_one_cert_usability_predicate(img, repo))
+    out.extend(check_base_tests_have_no_serverless_backend(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))
     out.extend(check_no_baked_weights(img))

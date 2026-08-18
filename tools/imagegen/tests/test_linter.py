@@ -10,7 +10,7 @@ from pathlib import Path
 import imagegen.linter as L
 from imagegen.discover import Image, discover, find_repo_root
 from imagegen.dockerfile import parse, stages
-from imagegen.linter import lint_image, ERROR, EXCEPTIONS
+from imagegen.linter import lint_image, ERROR, EXCEPTIONS, RULES
 
 VALID_DF = """\
 ARG PYTORCH_BASE=vastai/pytorch:test
@@ -742,6 +742,167 @@ def test_L050_L054_now_apply_to_base(tmp_path):
     assert "L050" in errs(img, tmp_path)
 
 
+# ---- L059: a REQUIRED test must be able to fail (ADR 0019) ----------------
+#
+# L057 makes the template name the tests that must pass. This is the next hole
+# down, and it was a live defect when the rule was written: base/62-gpu-libraries
+# was named in base-qa's INSTANCE_TEST_REQUIRE_PASS and contained no failure path
+# at all — every check was `echo WARN` — so it reported `passed` on every box and
+# the gate's third required test asserted nothing beyond `has_gpu`.
+
+def _write_test(repo: Path, name: str, body: str) -> None:
+    p = repo / "ROOT/opt/instance-tools/tests" / f"{name}.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+
+
+_CAN_FAIL = 'source lib.sh\nhas_gpu || test_skip "no gpu"\n' \
+            'if ! thing; then\n    fail_later "thing" "broke"\nfi\nreport_failures\ntest_pass "ok"\n'
+_CANNOT_FAIL = 'source lib.sh\nhas_gpu || test_skip "no gpu"\n' \
+               'if ! thing; then\n    echo "  WARN: thing broke"\nfi\ntest_pass "ok"\n'
+
+
+def _qa_requiring(img, repo, name, body):
+    _write_test(repo, name, body)
+    _base_qa(img, f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {name}\n")
+
+
+def test_L059_a_required_test_that_cannot_fail_fires(tmp_path):
+    """THE mutation, and a reproduction of the real defect: every check is a
+    warning, so the script always reaches test_pass."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries", _CANNOT_FAIL)
+    assert has(img, tmp_path, "L059", "cannot fail")
+
+
+def test_L059_a_required_test_with_a_failure_path_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries", _CAN_FAIL)
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_test_fail_also_counts(tmp_path):
+    """Both spellings are real failure paths: fail_later defers to
+    report_failures, test_fail exits immediately."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/60-gpu-cuda",
+                  'source lib.sh\nif ! thing; then\n    test_fail "broke"\nfi\ntest_pass "ok"\n')
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_a_comment_mentioning_fail_later_does_not_count(tmp_path):
+    """The exact trap the real file set. base/62-gpu-libraries carried
+
+        # FAILURES and fail_later/report_failures come from lib.sh
+
+    and no call — so a rule matching the substring would have been satisfied by
+    the comment describing machinery the file never used, and reported the
+    defect as clean. Same shape as L056's 'a bare mention does not count'."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries",
+                  "source lib.sh\n"
+                  "# FAILURES and fail_later/report_failures come from lib.sh\n"
+                  '# we could test_fail here one day\n'
+                  'echo "  WARN: thing broke"\ntest_pass "ok"\n')
+    assert has(img, tmp_path, "L059", "cannot fail")
+
+
+def test_L059_a_trailing_comment_does_not_mask_a_real_call(tmp_path):
+    """The inverse error: stripping comments must not eat a real call that
+    happens to have one after it."""
+    img = make(tmp_path, cls="base")
+    _qa_requiring(img, tmp_path, "base/60-gpu-cuda",
+                  'source lib.sh\nfail_later "broke"   # deferred, see report_failures\n'
+                  "report_failures\ntest_pass \"ok\"\n")
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_ignores_a_required_test_absent_from_the_base_overlay(tmp_path):
+    """A derivative's own test (e.g. pytorch/10-torch-core) does not live in
+    ROOT/. The runner fails closed on a genuinely missing required test
+    ('missing from this image'), which is the right layer for that."""
+    img = make(tmp_path, cls="base")
+    _base_qa(img, "env:\n  INSTANCE_TEST_REQUIRE_PASS: pytorch/10-torch-core\n")
+    assert "L059" not in errs(img, tmp_path)
+
+
+def test_L059_is_scoped_to_base(tmp_path):
+    """Follows L057's precedent: comfyui-qa and vllm-qa are live gates and
+    turning them red from a linter rule is a separate, re-validated change."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _qa_requiring(img, tmp_path, "base/62-gpu-libraries", _CANNOT_FAIL)
+    assert "L059" not in errs(img, tmp_path)
+
+
+# ---- L065: a shipped instance test must be executable --------------------
+#
+# runner.sh collects with `find … -executable` and the Dockerfile ships the
+# overlay with a bare COPY, so a 0644 test is not skipped and not reported
+# missing — it emits no line at all. base/11 and base/12 shipped 0644 from their
+# first commit and had never run once; nothing in the suite, the runner or the
+# verdict could see it.
+
+def test_L065_a_non_executable_test_fires(tmp_path):
+    """THE mutation, and a reproduction of the real defect."""
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/base/99-thing.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("source lib.sh\ntest_pass ok\n")
+    p.chmod(0o644)
+    assert has(img, tmp_path, "L065", "never run")
+
+
+def test_L065_an_executable_test_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/base/99-thing.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("source lib.sh\ntest_pass ok\n")
+    p.chmod(0o755)
+    assert "L065" not in errs(img, tmp_path)
+
+
+def test_L065_lib_sh_is_exempt_because_it_is_sourced_not_executed(tmp_path):
+    """lib.sh is sourced by every test, so its mode is irrelevant and demanding +x
+    would be a false positive. (The shipped file happens to be 0755; the exemption
+    is about how it is USED, not about what mode it currently carries.) runner.sh
+    sits in the same directory and is deliberately NOT exempt — it is executed,
+    and losing +x on it disables the whole suite."""
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/lib.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("test_pass() { exit 0; }\n")
+    p.chmod(0o644)
+    assert "L065" not in errs(img, tmp_path)
+
+
+def test_mut_L065_the_real_suite_chmodded_back_fires(tmp_path):
+    """Mutation against a COPY of the real tree, not the tree itself.
+
+    The first version chmodded the real `12-provisioning.sh` and restored it in a
+    `finally`. A SIGKILL or a cancelled CI job between the two would leave that
+    file at 0644 — reintroducing precisely the defect this rule exists to catch,
+    via the test that guards it.
+    """
+    repo, img = _real("base-image")
+    work = tmp_path / "repo"
+    shutil.copytree(repo / "ROOT", work / "ROOT")
+    (work / "Dockerfile").write_text((repo / "Dockerfile").read_text())
+    mut = replace(img, dir=work, root=work / "ROOT")
+    (work / "ROOT/opt/instance-tools/tests/base/12-provisioning.sh").chmod(0o644)
+    assert "L065" in errs(mut, work)
+
+
+def test_L065_runner_sh_is_not_exempt(tmp_path):
+    """The file whose losing +x disables the entire suite must be gated. The first
+    version of the rule exempted the whole tests root and left it out."""
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/runner.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("#!/bin/bash\necho runner\n")
+    p.chmod(0o644)
+    assert has(img, tmp_path, "L065", "never run")
+
+
 # ---- L062: a deferred failure must actually be reported -------------------
 #
 # `fail_later` only RECORDS a failure; `report_failures` is what turns the
@@ -1165,3 +1326,476 @@ def test_L063_ignores_a_comment_explaining_the_history(tmp_path):
                        '# driver 610 renamed "CUDA Version:" to "CUDA UMD Version:"\n'
                        'MAX=$(/opt/instance-tools/bin/cuda-driver-version || true)\n')
     assert "L063" not in errs(img, tmp_path)
+
+
+# ---- L066: one cert-usability predicate -----------------------------------
+#
+# Three sites asked "is this cert usable" and gave three different wrong answers.
+# Two rejected a valid EC keypair (`openssl rsa` cannot load one at all) and
+# neither compared the cert to the key; the third hashed both public keys before
+# comparing them, and sha256sum of EMPTY input is the same fixed string on both
+# sides — so two failed extractions certified each other.
+
+def _write_portal_file(repo, rel, body):
+    p = repo / "portal-aio" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+
+
+def test_L066_openssl_rsa_check_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       'openssl rsa -in "$KEY_PATH" -check -noout || test_fail "bad key"\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_openssl_modulus_matching_fires(tmp_path):
+    """The other RSA-only shape: comparing moduli. On an EC pair the cert side
+    yields "Modulus=No modulus for this public key type" and the key side yields
+    nothing, so a correct pair reads as a mismatch."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/55-tls-cert-gen.sh",
+                       'c=$(openssl x509 -in "$CRT" -noout -modulus)\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_hashing_the_public_key_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/55-tls-cert-gen.sh",
+                       'k=$(openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | sha256sum)\n')
+    assert has(img, tmp_path, "L066", "digest of empty input")
+
+
+def test_L066_the_argv_list_form_fires(tmp_path):
+    """The portal calls openssl as a Python argv list, not a shell line. A rule
+    written only for shell syntax would have exempted the one site that actually
+    gates Caddy's TLS listener."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       'subprocess.run(["openssl", "rsa", "-in", KEY_PATH, '
+                       '"-check", "-noout"], check=True)\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_calling_the_helper_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       '/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" '
+                       '|| test_fail "unusable"\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_the_helper_itself_is_exempt(tmp_path):
+    """The sanctioned implementation necessarily contains openssl key handling."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/cert-usable",
+                       '#!/bin/bash\n_k=$(openssl pkey -in "$KEY" -pubout)\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_generic_openssl_use_is_not_matched(tmp_path):
+    """The rule must not fire on the many legitimate openssl calls the images
+    make — random tokens, s_client probes, plain parseability, expiry."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       'tok=$(openssl rand -hex 8)\n'
+                       'openssl x509 -in "$CRT" -noout -checkend 0\n'
+                       'issuer=$(echo "$info" | openssl x509 -noout -issuer)\n'
+                       'echo | openssl s_client -connect 127.0.0.1:1 2>/dev/null\n'
+                       'fp=$(openssl x509 -in "$CRT" -noout -fingerprint)\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_mut_L066_the_real_boot_script_reverted_fires(tmp_path):
+    """Mutation against the REAL file: restore the sha256sum comparison and the
+    rule must fire. That form certified an unreadable cert against an unreadable
+    key, because sha256sum of empty input is e3b0c442... on both sides."""
+    repo, img = _real("base-image")
+    src = repo / "ROOT/etc/vast_boot.d/55-tls-cert-gen.sh"
+    original = src.read_text()
+    assert "bin/cert-usable" in original
+    mutated = original.replace(
+        '_cert_usable() { "$_CERT_USABLE" "${1:-/etc/instance.crt}" '
+        '"${2:-/etc/instance.key}"; }',
+        "_cert_usable() {\n"
+        "    local c k\n"
+        "    c=$(openssl x509 -in /etc/instance.crt -noout -pubkey 2>/dev/null "
+        "| openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)\n"
+        "    k=$(openssl pkey -in /etc/instance.key -pubout -outform DER "
+        "2>/dev/null | sha256sum)\n"
+        '    [[ -n "$c" && "$c" == "$k" ]]\n'
+        "}",
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        assert "L066" in errs(img, repo)
+    finally:
+        src.write_text(original)
+
+
+def test_mut_L066_the_real_caddy_test_reverted_fires(tmp_path):
+    repo, img = _real("base-image")
+    src = repo / "ROOT/opt/instance-tools/tests/base/27-caddy-tls.sh"
+    original = src.read_text()
+    assert "bin/cert-usable" in original
+    mutated = original.replace(
+        'cert_reason=$(/opt/instance-tools/bin/cert-usable "$CERT_PATH" "$KEY_PATH" 2>&1)',
+        'openssl rsa -in "$KEY_PATH" -check -noout 2>/dev/null',
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        assert "L066" in errs(img, repo)
+    finally:
+        src.write_text(original)
+
+
+def test_mut_L066_the_real_portal_validator_reverted_fires(tmp_path):
+    """The site that is not a test: this is what gates Caddy's TLS listener."""
+    repo, img = _real("base-image")
+    src = repo / "portal-aio/caddy_manager/caddy_config_manager.py"
+    original = src.read_text()
+    assert "CERT_USABLE" in original
+    mutated = original.replace(
+        "            [CERT_USABLE, CERT_PATH, KEY_PATH],",
+        '            ["openssl", "rsa", "-in", KEY_PATH, "-check", "-noout"],',
+    )
+    assert mutated != original
+    try:
+        src.write_text(mutated)
+        assert "L066" in errs(img, repo)
+    finally:
+        src.write_text(original)
+
+
+# ---- The rule CATALOGUE must not drift from the tree -----------------------
+
+# `/opt/...` paths that are deliberately illustrative rather than real. Adding to
+# this list is the explicit way to say "placeholder"; everything else must exist.
+_RULES_PATH_PLACEHOLDERS = {
+    "/opt/supervisor-scripts/NAME.sh",     # L010: NAME stands for the app name
+}
+
+
+def test_rules_text_cites_paths_that_exist():
+    """Every /opt path a RULES entry names must be real.
+
+    `imagegen rules` generates docs/lint-rules.md, which CLAUDE.md treats as
+    ground truth and which is what a developer reads when a rule fires and they
+    ask "what should I do instead". L066 shipped telling them to source
+    `/opt/instance-tools/lib/tls-cert.sh` — a file that does not exist, and the
+    design ADR 0026 explicitly REJECTED. Every L066 test passed, and the
+    doc-currency test kept the published catalogue in perfect sync with the
+    wrong text, because nothing compared the prose to the tree. The likely
+    reader response would have been to CREATE the named file: a second
+    implementation, which is the precise drift the rule exists to prevent.
+    """
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    root = repo / "ROOT"
+    pat = re.compile(r"/opt/[A-Za-z0-9_./-]*[A-Za-z0-9_-]")
+    missing = []
+    for code, _sev, text in RULES:
+        for p in sorted(set(pat.findall(text))):
+            if p in _RULES_PATH_PLACEHOLDERS:
+                continue
+            if not (root / p.lstrip("/")).exists():
+                missing.append(f"{code} cites {p}, which is not in ROOT/")
+    assert not missing, "\n".join(missing)
+
+
+def test_L066_a_wrapped_argv_does_not_escape_the_rule(tmp_path):
+    """ruff and black both wrap a 6-element list. The line-scoped regex exempted
+    the portal — the one caller that is NOT a test, and the one that gates
+    Caddy's TLS listener — while the mutation test kept passing because it only
+    ever mutated to the single-line form."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "subprocess.run(\n"
+                       '    [\n'
+                       '        "openssl", "rsa",\n'
+                       '        "-in", KEY_PATH,\n'
+                       '        "-check", "-noout",\n'
+                       '    ],\n'
+                       ")\n")
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_a_one_element_per_line_argv_does_not_escape(tmp_path):
+    """The shape a magic trailing comma FORCES: ruff/black explode a 6-element
+    list to one element per line, so `"openssl"` and `"-check"` land five lines
+    apart. _WINDOW=4 missed exactly this (it caught only the two-per-line form
+    the older test pinned)."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "subprocess.run(\n"
+                       "    [\n"
+                       '        "openssl",\n'
+                       '        "rsa",\n'
+                       '        "-in",\n'
+                       "        KEY_PATH,\n"
+                       '        "-check",\n'
+                       '        "-noout",\n'
+                       "    ],\n"
+                       ")\n")
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_one_statement_yields_one_finding(tmp_path):
+    """Deduping on the START line reports the same wrapped statement once per
+    overlapping window that reaches it — one of them pointing at a bare `[`.
+    The whole matched statement must be marked seen."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "subprocess.run(\n"
+                       "    [\n"
+                       '        "openssl", "rsa",\n'
+                       '        "-in", KEY_PATH,\n'
+                       '        "-check", "-noout",\n'
+                       "    ],\n"
+                       ")\n")
+    l066 = [f for f in lint_image(img, tmp_path) if f.code == "L066"]
+    assert len(l066) == 1, [f.path for f in l066]
+
+
+def test_L066_rsa_keygen_idiom_is_not_flagged(tmp_path):
+    """`openssl req -newkey rsa:2048 ... -noout` generates a key and suppresses
+    the CSR — it is not the RSA-only `openssl rsa` subcommand. The `rsa:2048`
+    token must not read as one, regardless of a nearby `-noout`."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "etc/vast_boot.d/55-tls-cert-gen.sh",
+                       'openssl req -newkey rsa:2048 -subj "/CN=t" -nodes '
+                       '-keyout k.pem -noout\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_rsa_noout_without_output_fires(tmp_path):
+    """`openssl rsa -in K -noout` is the same RSA-only load with no flag at all;
+    it rejects a valid EC key exactly as `-check` does."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/27-caddy-tls.sh",
+                       'openssl rsa -in "$KEY_PATH" -noout || test_fail "bad key"\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+def test_L066_rsa_conversion_is_not_a_check(tmp_path):
+    """Producing output is a conversion, not a validity test — legitimate."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/bin/some-tool",
+                       'openssl rsa -in "$KEY" -pubout -out "$PUB" -noout\n')
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_python_docstrings_are_prose_not_code(tmp_path):
+    """The window join made explanatory prose dangerous: a docstring describing
+    the old code fired the rule on the file that had just been fixed. Blanking
+    ALL string literals would have been the obvious fix and is wrong — the
+    offending call IS a list of strings — so only docstrings are dropped."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "def validate():\n"
+                       '    """The previous version used the RSA-ONLY `openssl rsa`\n'
+                       '    entry point and its `-check` flag, which cannot load EC."""\n'
+                       "    return run([CERT_USABLE, CERT_PATH, KEY_PATH])\n")
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_prose_is_blanked_not_dropped(tmp_path):
+    """DROPPING prose lines closes the gap, so a window stitches code from either
+    side of a long docstring into a false positive. Here `openssl x509` and
+    `-modulus` are nine real lines apart (beyond the window), separated only by a
+    docstring — blanking keeps them apart, dropping would collapse them together.
+    Neither line is a real RSA-only check, so this must stay clean."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "def f(crt):\n"
+                       '    subject = run(["openssl", "x509", "-in", crt, "-subject"])\n'
+                       "    def helper():\n"
+                       '        """A deliberately long docstring so the two code\n'
+                       "        lines below and above are far enough apart that a\n"
+                       "        window cannot join them unless the prose in between\n"
+                       "        is removed rather than blanked. Line four. Line five.\n"
+                       "        Line six. Line seven. Line eight of prose here.\"\"\"\n"
+                       "        return 1\n"
+                       '    other = run(["-modulus", crt])\n'
+                       "    return subject, other\n")
+    assert "L066" not in errs(img, tmp_path)
+
+
+def test_L066_a_string_literal_argv_is_still_code(tmp_path):
+    """The other side of the same coin — dropping prose must not drop data."""
+    img = make(tmp_path, cls="base")
+    _write_portal_file(tmp_path, "caddy_manager/caddy_config_manager.py",
+                       "def validate():\n"
+                       '    """Checks the key."""\n'
+                       '    return run(["openssl", "rsa", "-in", KEY, "-check"])\n')
+    assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+# ---- L067: a base/ test must hold on a BARE base image -------------------
+
+def test_L067_a_pyworker_assertion_in_base_fires(tmp_path):
+    """Proven live on a driver-610 host: `pyworker: RUNNING` then `port 3000 not
+    listening after 60s`. Base ships the pyworker unit but no engine to put
+    behind it, so the assertion is structurally unsatisfiable there."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/86-serverless-pyworker.sh",
+                       '#!/bin/bash\nassert_service_running "pyworker"\n')
+    assert has(img, tmp_path, "L067", "serverless backend")
+
+
+def test_L067_a_port_3000_assertion_in_base_fires(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/86-serverless-pyworker.sh",
+                       '#!/bin/bash\nwait_for_port 3000 60 || test_fail "no"\n')
+    assert has(img, tmp_path, "L067", "serverless backend")
+
+
+def test_L067_the_serverless_SERVICES_test_stays_legal(tmp_path):
+    """85 asserts that the non-serverless services are stopped and their ports
+    closed — a property base genuinely owns. Its ports (11111/11112/18080) must
+    not be mistaken for :3000."""
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/85-serverless-services.sh",
+                       '#!/bin/bash\nfor port in 11111 11112 18080; do\n'
+                       '  ss -tln | grep -q ":${port} " && test_fail "open"\ndone\n')
+    assert "L067" not in errs(img, tmp_path)
+
+
+def test_L067_prose_explaining_the_history_is_allowed(tmp_path):
+    img = make(tmp_path, cls="base")
+    _write_root_script(tmp_path, "opt/instance-tools/tests/base/85-serverless-services.sh",
+                       '#!/bin/bash\n# 86 moved out because pyworker binds :3000 only\n'
+                       '# when an engine is present.\ntest_pass "ok"\n')
+    assert "L067" not in errs(img, tmp_path)
+
+
+def test_mut_L067_the_real_engine_suites_carry_the_test(tmp_path):
+    """The move must be real: base/ no longer has it, and all four engine
+    suites do — each with the lib.sh source that makes is_serverless defined."""
+    repo, _img = _real("base-image")
+    assert not (repo / "ROOT/opt/instance-tools/tests/base/86-serverless-pyworker.sh").exists()
+    suites = [
+        "external/vllm/ROOT/opt/instance-tools/tests/vllm.d",
+        "external/sglang/ROOT/opt/instance-tools/tests/sglang.d",
+        "derivatives/llama-cpp/ROOT/opt/instance-tools/tests/llama.d",
+        "derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/tests/comfyui.d",
+    ]
+    for s in suites:
+        f = repo / s / "20-serverless-pyworker.sh"
+        assert f.is_file(), f
+        assert f.stat().st_mode & 0o111, f"{f} is not executable (L065)"
+        body = f.read_text()
+        assert 'source "$(dirname "$0")/../lib.sh"' in body, f"{f} lost its lib.sh source"
+        assert "is_serverless" in body and "wait_for_port 3000" in body
+
+
+def test_L061_covers_the_CS_project(tmp_path):
+    """The tracker prefix list named three projects; the tracker has more.
+
+    A CS- id reached a commit message and a shipped test docstring with L061
+    green, because the project was simply not in `_INTERNAL_TRACKERS`. A prefix
+    allowlist is only as good as its completeness.
+
+    Token built at runtime, per the convention above: a literal here would make
+    this file trip the repo-wide scanner it is testing.
+    """
+    ticket = "CS" + "-" + "4551"
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "note.md").write_text(f"see {ticket} for the escalation\n")
+    assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L061_scans_persisted_review_artifacts(tmp_path):
+    """docs/panels/ and docs/redteam/ persist diffs verbatim, and `.diff` was not
+    in the scanned extensions — so the artifact recording a leak was itself an
+    unscanned leak."""
+    ticket = "CON" + "-" + "1234"
+    d = tmp_path / "docs" / "redteam" / "x"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "artifact.diff").write_text(f"+# see {ticket} for context\n")
+    assert "L061" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+# ---- L068: unguarded VAST_*_PORT_* in a listen address ----------------------
+
+def _shipped(tmp_path, rel, body):
+    p = tmp_path / "ROOT" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+    return p
+
+
+def test_mut_L068_fires_on_the_real_syncthing_defect(tmp_path):
+    """The exact line that shipped, and what it silently produced.
+
+    Unset -> `tcp://0.0.0.0:` -> syncthing binds its own default [::]:22000, a
+    port nothing publishes. Direct sync never works and the exposure allowlist
+    entry keyed `env:VAST_TCP_PORT_72299` can never match.
+    """
+    _shipped(tmp_path, "opt/supervisor-scripts/syncthing.sh",
+             '#!/bin/bash\nLISTEN_ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"\n')
+    assert "L068" in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_accepts_the_guarded_idiom_already_in_the_tree(tmp_path):
+    """coturn's `-p "${VAST_UDP_PORT_70000:-3478}"` is the blessed pattern; a rule
+    that flagged it would be a false-positive generator on a real shipped file."""
+    _shipped(tmp_path, "opt/supervisor-scripts/coturn.sh",
+             '#!/bin/bash\nturnserver -p "${VAST_UDP_PORT_70000:-3478}" \\\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_accepts_an_explicit_emptiness_guard(tmp_path):
+    _shipped(tmp_path, "opt/supervisor-scripts/svc.sh",
+             '#!/bin/bash\n'
+             'if [[ -n "${VAST_TCP_PORT_72299}" ]]; then\n'
+             '    ADDR="tcp://0.0.0.0:${VAST_TCP_PORT_72299}"\n'
+             'fi\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_ignores_the_var_outside_a_port_position(tmp_path):
+    """Scoped to the interpolation SITE. Reading the variable to log it, or to
+    branch on it, cannot produce an empty-port bind — flagging those would make
+    the rule noise and get it switched off."""
+    _shipped(tmp_path, "opt/supervisor-scripts/svc.sh",
+             '#!/bin/bash\n'
+             'echo "sync port is ${VAST_TCP_PORT_72299}"\n'
+             '[[ -z "$VAST_TCP_PORT_72299" ]] && echo unmapped\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L068_does_not_fire_on_PROSE_describing_the_bug(tmp_path):
+    """It did, first time it ran — on the docstring in the exposure scan that
+    explains this very defect, inside a `python3 - <<'PY'` heredoc in a .sh (so
+    the AST-based prose helper returned nothing for it). A rule that reddens the
+    documentation of the thing it detects is a rule nobody can keep green."""
+    _shipped(tmp_path, "opt/instance-tools/tests/base/28-x.sh",
+             '#!/bin/bash\npython3 - <<\'PY\'\n'
+             'def resolve_port(spec):\n'
+             '    """A literal port, or env:NAME.\n\n'
+             '    syncthing\'s sync listener is tcp://0.0.0.0:$VAST_TCP_PORT_72299,\n'
+             '    so a static key can never match it.\n'
+             '    """\n'
+             '    return spec\n'
+             'PY\n')
+    assert "L068" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_mut_the_shipped_syncthing_reconciles_and_guards(tmp_path):
+    """Round-trip on the REAL file: the fix must guard, must reconcile away a
+    malformed entry from an earlier boot (config.xml is on overlayfs and survives
+    stop/start), and must not use the substring-colliding guard."""
+    repo = find_repo_root(Path(__file__).resolve())
+    body = (repo / "ROOT" / "opt" / "supervisor-scripts" / "syncthing.sh").read_text()
+    assert 'raw-listen-addresses remove' in body, (
+        "the malformed entry from an earlier boot is never removed; overlayfs "
+        "persists it across stop/start so the fix would not reach a booted instance")
+    assert '=~ ^[0-9]+$' in body, "the platform port variable is not validated"
+    assert 'grep -qxF' in body, (
+        "grep -qF substring-collides: 'tcp://0.0.0.0:' is a prefix of every "
+        "well-formed 'tcp://0.0.0.0:NNNN'")
+    assert 'no direct TCP listener' in body, (
+        "when the port is unmapped the script must configure no listener and say "
+        "so, rather than silently binding a default that cannot receive")

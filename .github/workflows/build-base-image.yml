@@ -55,6 +55,7 @@ jobs:
       mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
       mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
       build-date: ${{ steps.matrix.outputs.build-date }}
+      syncthing-version: ${{ steps.syncthing.outputs.version }}
     steps:
       # Needed for configs/base-image.json — this job previously ran with no checkout.
       - uses: actions/checkout@v4
@@ -174,6 +175,24 @@ jobs:
           echo "Mini build matrix entries: $(echo $MINI_BUILD_MATRIX | jq length)"
           echo "Build date: $BUILD_DATE"
 
+      - name: Resolve the syncthing release once, authenticated
+        id: syncthing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # One AUTHENTICATED call per run (5000/hr) replaces one unauthenticated
+          # call per build cell (60/hr, shared across every job on the runner NAT
+          # pool). It also pins the whole run to ONE version, so a release landing
+          # mid-build cannot ship a mixed set.
+          #
+          # Deliberately NOT fatal: the Dockerfile still resolves the version
+          # itself when this is empty, so a failure here degrades to the previous
+          # behaviour rather than adding a new hard dependency to every build.
+          V=$(gh api repos/syncthing/syncthing/releases/latest --jq .tag_name 2>/dev/null || true)
+          V="${V#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "syncthing: ${V:-<unresolved - cells will each resolve their own>}"
+
   build:
     needs: generate-matrix
     if: ${{ !inputs.DRY_RUN }}
@@ -209,6 +228,7 @@ jobs:
           ARCH_SUFFIX: ${{ matrix.arch_suffix }}
           DEFAULT_PYTHON: ${{ matrix.default_python }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+          SYNCTHING_VERSION: ${{ needs.generate-matrix.outputs.syncthing-version }}
         run: |
           # Python matrix from configs/base-image.json (ADR 0019) — it was hardcoded
           # identically in five places here, so the shared table could claim one set
@@ -238,6 +258,7 @@ jobs:
               -f Dockerfile \
               --build-arg BASE_IMAGE="${BASE_IMAGE}" \
               --build-arg PYTHON_VERSION="${py_version}" \
+              --build-arg SYNCTHING_VERSION="${SYNCTHING_VERSION}" \
               ${TAGS} \
               --push .
 
@@ -438,6 +459,196 @@ jobs:
           path: built-tags/
           retention-days: 1
 
+  # ── cloudflared contract ────────────────────────────────────────────
+  #
+  # The Dockerfile fetches cloudflared from releases/latest, deliberately
+  # unpinned. What replaces the pin is this: whatever binary just shipped must
+  # still answer the way tunnel_manager drives it — both argv shapes, the
+  # --no-autoupdate flag actually APPLIED (not merely accepted), and the
+  # quick-tunnel announcement the portal parses with QUICK_TUNNEL_URL_RE.
+  #
+  # ONE CELL PER ARCHITECTURE, and no more. `Dockerfile` fetches
+  # cloudflared-linux-${TARGETARCH}, so amd64 and arm64 are DIFFERENT binaries
+  # from different release artifacts — testing one says nothing about the other,
+  # and a release where the arm64 artifact lags or differs would ship unguarded.
+  # But the fan-out stops at the architecture: Cloudflare rate-limits
+  # quick-tunnel creation (tunnel_manager spaces its own startup tunnels 2s apart
+  # for the same reason), so a cell per config x python would rate-limit itself
+  # and then report the rate limit as a defect.
+  #
+  # COUNT IT HONESTLY: this comment used to say "two tunnels per build", which
+  # was the number of cells, not the number of tunnels. The suite creates one in
+  # the live announcement test and one in the --no-autoupdate-honoured test (the
+  # Settings map is printed on a real tunnel start), so it is ~3 creations per
+  # cell and ~6 per build. Still the same order as one instance's own startup,
+  # but the margin under Cloudflare's per-IP limit is smaller than "two" implied
+  # — which is why the per-PR suite deselects the live tests entirely.
+  #
+  # The binary is EXTRACTED FROM THE BUILT IMAGE, not re-downloaded:
+  # releases/latest can move between the build and this job, and testing a
+  # different binary from the one that shipped would be worse than not testing.
+  cloudflared-contract:
+    needs: [generate-matrix, merge-manifests]
+    if: ${{ !inputs.DRY_RUN }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      # Architecture ONLY. Guarded by test_promote_notification_truth.py so this
+      # cannot quietly grow a config/python dimension.
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the portal's own imports
+        run: |
+          python -m pip install --upgrade pip
+          # tunnel_manager's imports, so the test asks the SHIPPED module what
+          # argv it builds instead of restating it.
+          pip install pytest requests fastapi aiohttp cachetools PyYAML pydantic
+      # binfmt, so the arm64 ELF runs on this amd64 runner transparently. The
+      # test executes cloudflared directly, so registering the handler is all
+      # that is needed — no container gymnastics.
+      - name: Set up QEMU
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+      # The staging namespace is private; every other job that touches it logs in
+      # first. Without this the extract fails on a pull, which would look like a
+      # contract failure and is not one.
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Extract the ${{ matrix.arch }} cloudflared from the image just built
+        env:
+          NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
+          MERGE_MATRIX: ${{ needs.generate-matrix.outputs.merge-matrix }}
+        run: |
+          set -euo pipefail
+          # Read the config from the MERGE MATRIX, not configs[0]: the matrix is
+          # what this run actually built, so a FILTERed dispatch (FILTER=cuda-12)
+          # cannot send us looking for a tag that was never pushed — which would
+          # go red for something that is not a contract break.
+          TPL=$(jq -r '.include[0].tag_template' <<<"$MERGE_MATRIX")
+          PY=$(jq -r '.include[0].default_python' <<<"$MERGE_MATRIX" | tr -d .)
+          REF="${NAMESPACE}/base-image:${TPL}-py${PY}-${BUILD_DATE}"
+          echo "extracting linux/${{ matrix.arch }} cloudflared from ${REF}"
+          docker create --platform linux/${{ matrix.arch }} --name cfx "$REF"
+          docker cp cfx:/opt/portal-aio/tunnel_manager/cloudflared ./cloudflared
+          docker rm cfx
+          chmod +x ./cloudflared
+          # ASSERT the architecture, don't just print it. `file ... || true`
+          # checked nothing, so if --platform ever resolved to the amd64 image
+          # the arm64 cell would silently re-test amd64 and report a green tick
+          # — the exact hole this cell exists to close.
+          case "${{ matrix.arch }}" in
+            amd64) WANT="x86-64" ;;
+            arm64) WANT="aarch64" ;;
+            *) echo "unknown arch ${{ matrix.arch }}"; exit 1 ;;
+          esac
+          file ./cloudflared
+          file ./cloudflared | grep -q "$WANT" || {
+            echo "::error::extracted binary is not $WANT — this cell would have tested the wrong architecture"
+            exit 1
+          }
+          echo "CLOUDFLARED_BIN=$PWD/cloudflared" >> "$GITHUB_ENV"
+          ./cloudflared --version
+      - name: Contract test (${{ matrix.arch }})
+        id: contract
+        working-directory: portal-aio
+        # A usage rejection, an unapplied --no-autoupdate, or a tunnel that
+        # announces nothing parseable fails this job. Being rate-limited by
+        # Cloudflare, or not reaching it at all, does NOT — see the test's own
+        # BLOCK vs INCONCLUSIVE note. -rs so skips are visible, not silent.
+        #
+        # `|| true` looks wrong and is not: pytest's exit code cannot express
+        # the difference between "verified" and "we never got to ask", and
+        # reading it as pass/fail is exactly how this gate reported green under
+        # a rate limit while proving nothing. The junit report carries which
+        # live assertions actually EXECUTED, so the classifier decides, and it
+        # is the classifier's exit code that fails this step.
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs --junitxml=contract.xml \
+              tests/test_cloudflared_contract.py || true
+          python tests/classify_contract_run.py contract.xml | tee contract-state.txt
+      - name: Record the outcome for the notification
+        if: always()
+        run: |
+          mkdir -p cf-state
+          # The classifier may not have run at all (an earlier step died), in
+          # which case the state is unknown — which must not inherit the benign
+          # value. Absent evidence is 'broken' here, deliberately.
+          STATE=$(sed -n 's/^state=//p' portal-aio/contract-state.txt 2>/dev/null | tail -1)
+          echo "${STATE:-broken}" > "cf-state/${{ matrix.arch }}.txt"
+          echo "${{ matrix.arch }}: ${STATE:-broken}"
+      - name: Upload the outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-state-${{ matrix.arch }}
+          path: cf-state/
+
+  # Matrix jobs cannot hand a single value to a downstream job — each cell
+  # overwrites `outputs`, last writer wins — so the per-arch states are
+  # aggregated here into ONE value the notification can render. Severity order:
+  # broken > unverified > verified. One arch proving nothing is not a pass.
+  cloudflared-contract-status:
+    needs: [cloudflared-contract]
+    if: always() && !inputs.DRY_RUN
+    runs-on: ubuntu-latest
+    outputs:
+      state: ${{ steps.agg.outputs.state }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cf-state-*
+          path: cf-state/
+        continue-on-error: true
+      - id: agg
+        env:
+          CONTRACT_RESULT: ${{ needs.cloudflared-contract.result }}
+          # Every architecture must REPORT, not merely not-contradict. Kept in
+          # step with the job's matrix by test_the_aggregate_expects_every_arch.
+          EXPECTED_ARCHES: "2"
+        run: |
+          set -euo pipefail
+          STATES=$(find cf-state -name '*.txt' -exec cat {} + 2>/dev/null | tr -d ' ' | grep -v '^$' || true)
+          COUNT=$(grep -c . <<<"$STATES" || true); [[ -z "$STATES" ]] && COUNT=0
+          echo "per-arch states: ${STATES:-<none>}  (${COUNT}/${EXPECTED_ARCHES} reported)"
+          if [[ -z "$STATES" ]]; then
+            # No artifacts. Either the contract job never ran because something
+            # upstream failed — in which case the build failure is the story and
+            # this must not claim a tunnel problem — or it ran and produced
+            # nothing, which is broken.
+            if [[ "$CONTRACT_RESULT" == "skipped" || "$CONTRACT_RESULT" == "cancelled" ]]; then
+              STATE="not-run"
+            else
+              STATE="broken"
+            fi
+          elif grep -q '^broken$' <<<"$STATES"; then STATE="broken"
+          elif grep -q '^unverified$' <<<"$STATES"; then STATE="unverified"
+          # A CELL THAT DIED WITHOUT REPORTING IS NOT A CELL THAT PASSED.
+          # Observed live: GitHub 429/503'd the action download, so the arm64 cell
+          # failed at "Set up job" before any step ran. amd64 uploaded `verified`,
+          # the aggregate saw one file, found no bad state in it, and reported
+          # `verified` — for a run where an entire architecture was never tested.
+          # Absence of contradiction is not evidence; require every arch to speak.
+          elif [[ "$COUNT" -lt "$EXPECTED_ARCHES" ]]; then
+            STATE="unverified"
+            echo "::warning::only ${COUNT}/${EXPECTED_ARCHES} architectures reported a contract result"
+          elif [[ "$CONTRACT_RESULT" != "success" ]]; then
+            STATE="unverified"
+            echo "::warning::contract job result is ${CONTRACT_RESULT}; treating as unverified"
+          else STATE="verified"
+          fi
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          echo "aggregate: $STATE"
+
   collect-tags:
     needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests]
     if: always() && !inputs.DRY_RUN
@@ -526,11 +737,70 @@ jobs:
           done
 
   notify:
-    needs: [generate-matrix, build, merge-manifests, collect-tags]
+    needs: [generate-matrix, build, merge-manifests, build-mini, merge-mini-manifests,
+            collect-tags, cloudflared-contract-status]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      # THE CONTRACT RESULT MUST REACH THE NOTIFICATION, or the job is decoration.
+      # A `needs:` edge alone does not do it: this rendered ✅/❌ purely from
+      # needs.build.result, so a build whose cloudflared contract FAILED still
+      # reported green — the staging tags are pushed by `build` upstream and
+      # promote is a separate dispatch, so nothing else would have caught it.
+      #
+      # THREE STATES, because the contract has three. Reading job `result` gave
+      # only two and got both edges wrong: a rate-limited run proved nothing and
+      # rendered ✅, while an ordinary build failure made the contract `skipped`
+      # and rendered "the tunnel binary is UNVALIDATED" over what was a compile
+      # error — sending the first responder to the wrong place, on every red
+      # build. `state` distinguishes them:
+      #
+      #   verified    every live assertion ran against the shipped binary -> ✅
+      #   unverified  Cloudflare declined or was unreachable; nothing proven -> ⚠️
+      #   broken      the contract moved -> ❌ and do not promote
+      #   not-run     something upstream failed first; the build failure is the
+      #               story, so say nothing about tunnels
+      #
+      # EVERY STAGE THAT PRODUCES AN ARTEFACT MUST SUCCEED, as an ALLOWLIST.
+      # This read `needs.build.result` alone — the 24 build cells — and ignored
+      # merge-manifests, build-mini and merge-mini-manifests. Observed live: a
+      # GitHub 429 fetching the setup-crane action failed one config's manifest
+      # merge, which skipped both mini stages, and Slack reported "Base Image
+      # Build Successful" for a run whose conclusion was `failure` — with one
+      # config having no multi-arch manifest and every mini image missing.
+      #
+      # `skipped` is tolerated because a FILTERed dispatch legitimately empties
+      # the mini matrices. `failure`, `cancelled` and anything unrecognised are
+      # not: this enumerates the states that may pass, never the states that must
+      # fail, because the state nobody thought of has to land on the failing side.
+      build-result: >-
+        ${{ (needs.build.result == 'success'
+             && contains(fromJSON('["success","skipped"]'), needs.merge-manifests.result)
+             && contains(fromJSON('["success","skipped"]'), needs.build-mini.result)
+             && contains(fromJSON('["success","skipped"]'), needs.merge-mini-manifests.result)
+             && contains(fromJSON('["verified","unverified","not-run"]'), needs.cloudflared-contract-status.outputs.state))
+            && 'success' || 'failure' }}
+      # The warning state is only meaningful when everything else passed; a run
+      # that lost a manifest is a plain failure, not a yellow "unverified".
+      status: >-
+        ${{ (needs.cloudflared-contract-status.outputs.state == 'unverified'
+             && needs.build.result == 'success'
+             && contains(fromJSON('["success","skipped"]'), needs.merge-manifests.result)
+             && contains(fromJSON('["success","skipped"]'), needs.build-mini.result)
+             && contains(fromJSON('["success","skipped"]'), needs.merge-mini-manifests.result))
+            && 'warning' || '' }}
+      headline: >-
+        ${{ needs.cloudflared-contract-status.outputs.state == 'broken'
+            && 'cloudflared contract BROKEN — the tunnel binary in these images does not answer the way the portal drives it; do not promote'
+            || (needs.build.result == 'success' && !contains(fromJSON('["success","skipped"]'), needs.merge-manifests.result)
+                && 'Base image cells all built, but a MANIFEST MERGE failed — the multi-arch tags are incomplete; do not promote this date'
+            || (needs.build.result == 'success' && !contains(fromJSON('["success","skipped"]'), needs.build-mini.result)
+                && 'Base image cells all built, but the MINI images failed — that set of tags is missing; do not promote this date'
+            || (needs.build.result == 'success' && !contains(fromJSON('["success","skipped"]'), needs.merge-mini-manifests.result)
+                && 'Base image cells all built, but the MINI manifest merge failed — those multi-arch tags are incomplete; do not promote this date'
+            || ((needs.cloudflared-contract-status.outputs.state == 'unverified' && needs.build.result == 'success')
+                && 'Base image built — cloudflared contract UNVERIFIED (Cloudflare rate-limited or unreachable); the tunnel binary was not exercised'
+            || '')))) }}
       image-name: "Base Image"
       image-ref: ${{ needs.generate-matrix.outputs.build-date }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags || '[]' }}

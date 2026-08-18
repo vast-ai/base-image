@@ -30,7 +30,15 @@ ports:
   - "1111:1111"                   # Instance Portal
   - "8080:8080"                   # Jupyter
   - "6006:6006"                   # Tensorboard
-  - "8384:8384"                   # Syncthing
+  - "8384:8384"                   # Syncthing GUI (behind Caddy)
+  # Syncthing SYNC protocol. Mapped because the customer-facing template maps it,
+  # and until it was here the gate ran a configuration no customer runs: with the
+  # port unmapped, `syncthing.sh` built an address with an empty port, syncthing
+  # bound its own default (22000), and the `env:VAST_TCP_PORT_72299` allowlist
+  # entry resolved to nothing — so the one mechanism that entry exists to test had
+  # never executed in any QA run. The gate saw only the degenerate path, which is
+  # how the empty-port defect survived (ADR 0028).
+  - "72299:72299"                 # Syncthing sync protocol
 env:
   OPEN_BUTTON_PORT: "1111"
   OPEN_BUTTON_TOKEN: "1"
@@ -49,6 +57,23 @@ env:
   # in-instance, and by qa_verdict.py in CI, so a template that lost this line still
   # cannot produce a passing verdict. Gated by linter rule L057.
   INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+  # Promote the exposure scan from advisory to gating, for base only (ADR 0006
+  # condition 2 always intended this flip once a clean baseline existed; base is
+  # the image that OWNS exposure-allowlist/00-base.conf, so its baseline is the
+  # one that can be shown clean).
+  #
+  # Until this line existed, 28-inadvertent-exposure ran on every cell, correctly
+  # identified a violation, printed it — and then PASSED, because
+  # EXPOSURE_ENFORCE defaults to false and no template set it. So the one field
+  # defect here with a customer-facing security consequence (an image inheriting
+  # an upstream EXPOSE and binding 0.0.0.0 past the auth proxy) was scanned for
+  # and reported as green. An advisory gate nobody ever promotes is a permanent
+  # pass.
+  #
+  # Costs no extra runtime: the scan already runs. Its own false-red source is
+  # already handled in the test — a platform-injected listener with no owning
+  # process degrades to WARN, not VIOLATION.
+  EXPOSURE_ENFORCE: "true"
 # QA gate floors (ADR 0005): smallest viable box above the declared floors, VRAM
 # bounded at 3x so a small claim is never tested on a huge box.
 extra_filters:
@@ -83,8 +108,11 @@ extra_filters:
   # 13.3 toolkit is a configuration real customers land on — so testing it is
   # representative rather than lenient.
   #
-  # The value below is the FLOOR OF THE FLOOR; CI raises it per config (11.8 -> 11.8,
-  # 12.x -> 12.0, 13.x -> 13.0) via --set-filter, which may only tighten.
+  # The value below is the FLOOR OF THE FLOOR; CI raises it per config to the
+  # image's OWN exact minor (13.3.1 -> 13.3) via --set-filter, which may only
+  # tighten. It was a major baseline (13.x -> 13.0) until 2026-08-14; measured
+  # supply showed that cost driver coverage on nine of ten configs and bought
+  # thinness relief only on the newest. See promote-base-image.yml.
   cuda_max_good:
     gte: 11.8
   # PER-GPU, not the sum. gpu_total_ram lets a multi-GPU box of small cards clear the
