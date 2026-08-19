@@ -4,8 +4,32 @@ source "$(dirname "$0")/../lib.sh"
 
 is_serverless && test_skip "caddy not expected in serverless mode"
 
-# Caddy PID alive
-caddy_pid=$(pidof caddy 2>/dev/null) || test_fail "caddy not running"
+# Readiness from the socket, identity from pidof.
+#
+# `pidof caddy` alone was the readiness gate here, and it is the same defect as
+# base/10-supervisor: it answers "was it forked", while caddy.conf sets
+# `startsecs=5`, so caddy is legitimately STARTING for the first five seconds of
+# the instance's life. assert_service_running waits for RUNNING.
+#
+# But RUNNING answers for the WRAPPER. caddy.sh runs caddy_config_manager.py —
+# cost-14 bcrypt per proxied app, 43s measured on a contended host — before it
+# execs `caddy run`, so the BINARY appears well after supervisord calls the
+# program started. A single-shot pidof here would race that chain rather than
+# supervisord, and fail with a new message on a healthy image. Same class of
+# defect, one layer further in, so it gets the same bounded wait.
+#
+# pidof stays for IDENTITY, which supervisord genuinely cannot supply: caddy.sh
+# is a wrapper script, so `supervisorctl pid caddy` returns the shell's pid and
+# the listener attribution below would match nothing.
+assert_service_running caddy
+caddy_pid=""
+_caddy_deadline=$(( SECONDS + CADDY_READY_TIMEOUT ))
+while :; do
+    caddy_pid=$(pidof caddy 2>/dev/null) && break
+    (( SECONDS >= _caddy_deadline )) && test_fail \
+        "caddy is RUNNING under supervisord but its binary never started (${CADDY_READY_TIMEOUT}s)"
+    sleep 1
+done
 
 # Has listening sockets
 caddy_listeners=$(ss -tlnp 2>/dev/null | grep "pid=${caddy_pid}" | wc -l)

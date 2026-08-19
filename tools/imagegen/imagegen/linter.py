@@ -85,6 +85,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
     ("L068", ERROR, "No shipped script interpolates a `VAST_TCP_PORT_*` / `VAST_UDP_PORT_*` variable into the PORT position of a listen address without a guard. The platform injects these only when the template maps that port, and an unset one does not fail loudly — it yields a syntactically valid address with an empty port, which the server resolves to its OWN default. Measured: `syncthing.sh` built `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset, persisted `<listenAddress>tcp://0.0.0.0:</listenAddress>` into config.xml on overlayfs, and syncthing bound `[::]:22000` — a port nothing publishes, so direct sync (the entire point of syncthing) silently never worked, and the exposure allowlist keyed `env:VAST_TCP_PORT_72299` could never match the port actually bound. Scoped to the interpolation site, not the variable: reading the var to build a display URL or an `if` test is fine. The blessed idiom is already in the tree — coturn's `-p \"${VAST_UDP_PORT_70000:-3478}\"` (ADR 0028)"),
+    ("L070", ERROR, "The readiness budgets in ROOT/opt/instance-tools/tests/lib.sh are env-overridable AND their defaults do not fall below the cost that was actually measured. docs/invariants.md called these \"fixed but NOT gated\" on the grounds that a linter cannot decide whether a number is large enough — true, and a dodge: it cannot decide SUFFICIENCY, but it can decide whether someone has quietly put a budget back below the measured floor. Proven: reverting `HTTP_CHECK_MAX_TIME` to 5 and the portal budget to 30 — the two exact values that failed cells on 2026-08-18 — passed every test in this repo. Floors, each from a measurement recorded in docs/invariants.md: HTTP_CHECK_MAX_TIME 20 (a cost-14 bcrypt verification of one wrong credential measures 4666ms at --cpus=0.12, and Caddy caches only successes), PORTAL_READY_TIMEOUT 120 (the portal cannot bind until caddy_config_manager.py has hashed once per proxied app; observed not serving at 30s and serving 53s later), CADDY_READY_TIMEOUT 120 (a caddy restart measured 43s on a contended host, against a 30s ceiling that only WARNed), SUPERVISOR_READY_TIMEOUT 60 (socket usable at 383ms idle, seconds under contention). Also gated: `http_check` must READ the variable rather than re-hardcode a literal, since a lever nothing uses is not a lever. The budgets stay overridable because the suite ships INSIDE the image — baked, a wrong number can only be corrected by rebuilding and re-promoting every image; behind a variable it is a template edit (ADR 0029)"),
+    ("L069", ERROR, "No shipped instance test asserts that a supervisord-managed process is UP by process presence (`pgrep`/`pidof`) unless the supervisord RPC socket has already been reached earlier in the same file. Presence is satisfied the instant supervisord forks; the socket is what every downstream service assertion actually needs, and the gap between the two is real and load-dependent. Measured in the shipped image on an idle 16-core host: `pgrep -f supervisord` succeeded at 1.7ms, `supervisorctl status` only became usable at 383ms. base/10-supervisor.sh sat in exactly that window — `pgrep` gate on one line, socket call on the next — and on a contended QA host it failed `supervisorctl cannot communicate with supervisord (exit 4)` 0.09s into the suite, taking 20-portal and 26-caddy-auth down as collateral and blocking the whole promote batch; the same suite proved the image healthy 53s later. Presence may still be used for IDENTITY (which pid is caddy, so its listeners can be attributed) — it must not be the readiness gate. Exempt: negated assertions (`! pidof caddy` in serverless mode), because absence cannot be waited for and presence is the right instrument for it; and `if pgrep`/`if pidof` branch predicates, which are not assertions. Reach readiness through `wait_for_supervisor`, `assert_service_running` or `service_running`, which go through the socket with a bounded wait (ADR 0029)"),
     ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
@@ -1366,6 +1368,275 @@ def check_base_tests_have_no_serverless_backend(img: Image, repo: Path) -> Itera
                               "hold; move it to the engine images' .d/ suites")
 
 
+# A liveness assertion answered by process presence, and the socket-backed
+# helpers that actually answer it. Kept next to the check so the two lists are
+# read together.
+_L069_PRESENCE_VERB = r"(?<![\w-])(pgrep|pidof|ps)\b"
+# ANY of these verbs, anywhere on the logical line — not only after `||`.
+# `|| { test_fail ...; }` and `|| fail_later ...` are the same assertion, and
+# `fail_later` is the house idiom in the two files most likely to grow one of
+# these (26-caddy-auth, 65-conditional-services). Requiring the `|| test_fail`
+# spelling meant the rule was blind exactly where it was most needed.
+_L069_ASSERTS = re.compile(r"(?<![\w-])(test_fail|test_fatal|fail_later)\b")
+# Only the helpers that WAIT. A bare `supervisorctl status` used to count, which
+# made the rule satisfiable by hoisting a non-waiting call — producing a file
+# that is lint-clean and strictly worse than the one that tripped it. That is how
+# a rule gets trained out of people.
+_L069_SOCKET = re.compile(
+    r"\b(wait_for_supervisor|assert_service_running|assert_service_stopped"
+    r"|service_running)\b")
+
+
+def _strip_shell_strings(code: str) -> str:
+    """Blank out quoted string bodies, keeping the code around them.
+
+    Only used when looking for a SOCKET call. `echo "waiting for
+    wait_for_supervisor"` and `test_fail "supervisorctl unreachable"` are prose,
+    and in a suite written in this repo's narrative style a helper name inside a
+    message is a realistic accident — one that would silently disarm the rule for
+    the rest of the file. Presence probes are matched against the RAW line
+    instead, because `pgrep -f "supervisord"` legitimately quotes the name.
+    """
+    out: list[str] = []
+    quote = None
+    escaped = False
+    for ch in code:
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+                out.append(" ")
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(" ")
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+
+# (variable, floor, why the floor is where it is). Floors come from measurements
+# recorded in docs/invariants.md, not from taste — the rule is "not below what we
+# measured", never "big enough", which is not decidable here.
+_L070_FLOORS = (
+    ("SUPERVISOR_READY_TIMEOUT", 60,
+     "the RPC socket is usable at 383ms idle and seconds under contention"),
+    ("PORTAL_READY_TIMEOUT", 120,
+     "the portal waits on caddy's config generation; observed down at 30s, up 53s later"),
+    ("CADDY_READY_TIMEOUT", 120,
+     "a caddy restart measured 43s on a contended host"),
+    ("HTTP_CHECK_MAX_TIME", 20,
+     "one cost-14 bcrypt verification measures 4666ms at --cpus=0.12"),
+)
+
+
+def check_readiness_budget_floors(img: Image, repo: Path) -> Iterable[Finding]:
+    """L070 — a budget may be raised or overridden, never quietly lowered.
+
+    The companion to L069. L069 gates the STRUCTURE (readiness is a wait, not a
+    presence probe); this gates the NUMBERS, which structure cannot reach.
+
+    Both halves matter and they pull in opposite directions, which is why this is
+    one rule and not two. The budgets must stay env-overridable, because the test
+    suite ships inside the image: a number baked here can only be corrected by
+    rebuilding and re-promoting every image in the family, so a wrong guess costs
+    a release cycle. But an overridable default is also an easy thing to edit
+    downwards, and the values that failed real cells on 2026-08-18 are exactly
+    the ones someone would reach for.
+
+    Deliberately a FLOOR, not an equality: raising a budget after a new
+    measurement must not need a linter change, and pinning the exact value would
+    make the rule an obstacle rather than a guard.
+    """
+    if img.cls != "base":
+        return
+    lib = repo / "ROOT/opt/instance-tools/tests/lib.sh"
+    if not lib.is_file():
+        return
+    text = lib.read_text(encoding="utf-8", errors="replace")
+    rel = "ROOT/opt/instance-tools/tests/lib.sh"
+    for var, floor, why in _L070_FLOORS:
+        m = re.search(rf'^{var}="\$\{{{var}:-(\d+)\}}"', text, re.M)
+        if m is None:
+            yield Finding("L070", ERROR, img.name, rel,
+                          f"{var} is not defined as an overridable default "
+                          f'({var}="${{{var}:-N}}") — the suite ships inside the '
+                          "image, so a baked budget can only be corrected by "
+                          "rebuilding every image in the family")
+            continue
+        if int(m.group(1)) < floor:
+            yield Finding("L070", ERROR, img.name, rel,
+                          f"{var} default is {m.group(1)}, below the measured "
+                          f"floor of {floor}: {why}. Raising a budget is always "
+                          "allowed; lowering it past what was measured is what "
+                          "reintroduced the 2026-08-18 failures")
+    # A lever nothing reads is not a lever.
+    if not re.search(r'--max-time\s+"\$HTTP_CHECK_MAX_TIME"', text):
+        yield Finding("L070", ERROR, img.name, rel,
+                      "http_check does not pass \"$HTTP_CHECK_MAX_TIME\" to curl — "
+                      "a hardcoded literal here cannot be overridden from a "
+                      "template, which is the whole point of the variable")
+
+
+def _logical_lines(text: str) -> Iterable[tuple[int, str]]:
+    """Yield (first_line_number, joined_line), folding backslash-continuations.
+
+    A rule that scans raw lines is defeated by a line break. `caddy_pid=$(pidof
+    caddy) \\` + `    || test_fail "..."` is one command, and reading it as two
+    hides the `|| test_fail` from the probe on the first half — which is exactly
+    how the L069 mutation test first passed against a file that had the defect.
+    """
+    buf: list[str] = []
+    start = 0
+    for n, raw in enumerate(text.splitlines(), 1):
+        if not buf:
+            start = n
+        stripped = raw.rstrip()
+        if stripped.endswith("\\") and not stripped.endswith("\\\\"):
+            buf.append(stripped[:-1])
+            continue
+        buf.append(raw)
+        yield start, " ".join(buf)
+        buf = []
+    if buf:
+        yield start, " ".join(buf)
+
+
+def _asserts_in_block(lines: list[tuple[int, str]], start: int, limit: int = 25) -> bool:
+    """Does the `if` block opening at *start* contain a failure assertion?
+
+    Bounded and shallow on purpose: this decides whether `if ! pgrep X; then ...`
+    is an assertion or a branch, and the answer is "does anything in it fail the
+    test". Stops at the first `fi`, or after *limit* logical lines.
+    """
+    depth = 0
+    for idx, (n, code) in enumerate(lines[start:start + limit]):
+        if re.match(r"^\s*(el)?if\s", code):
+            depth += 1
+        if idx and _L069_ASSERTS.search(code):
+            return True
+        if re.match(r"^\s*fi\b", code.strip()):
+            depth -= 1
+            if depth <= 0:
+                return False
+    return False
+
+
+def _supervisord_programs(repo: Path) -> list[str]:
+    """Program names supervisord manages, read from the overlay it ships.
+
+    Read, not hardcoded: a list restated here would go stale the first time a
+    program is added, and the rule would report clean on precisely the newest
+    service. `supervisord` itself is included — it is the process whose presence
+    and whose socket diverge, and the exhibit that produced this rule.
+    """
+    names = {"supervisord"}
+    for conf in sorted((repo / "ROOT/etc/supervisor/conf.d").glob("*.conf")):
+        m = re.search(r"^\[program:([A-Za-z0-9_.-]+)\]", conf.read_text(
+            encoding="utf-8", errors="replace"), re.M)
+        if m:
+            names.add(m.group(1))
+    return sorted(names)
+
+
+
+def check_no_presence_as_readiness_gate(img: Image, repo: Path) -> Iterable[Finding]:
+    """L069 — `pgrep` answers "was it forked", not "is it serving".
+
+    65-supervisor-launch.sh backgrounds supervisord and boot walks straight on to
+    70-instance-test.sh, which backgrounds the runner. The two are effectively
+    simultaneous, so the suite's FIRST test races supervisord's startup — and the
+    gate it used, process presence, is satisfied at fork while the RPC socket it
+    then calls is not. Measured in vastai/base-image:cuda-13.2.0-auto, idle,
+    16 cores: presence at 1.7ms, socket usable at 383ms. A 380ms window on an
+    idle desktop is seconds on a contended host with a cold page cache, which is
+    what a QA box is while it provisions.
+
+    The cost was not one red test. On the 2026-08-18 pytorch promote it took
+    20-portal and 26-caddy-auth with it, blocked the cell, and under
+    all-or-nothing promotion blocked every tag in the batch — while the same
+    suite proved the portal healthy 53 seconds later, on the same instance.
+
+    Ordering, not presence-vs-absence: the fix is not to delete `pidof`. Caddy's
+    pid is genuinely needed to attribute its listening sockets, and supervisord
+    cannot supply it (the program is a wrapper script, so `supervisorctl pid
+    caddy` returns the shell). Presence is fine for identity. It is being the
+    READINESS GATE that is the defect, so the rule asks only that something
+    socket-backed came first.
+
+    Deliberately weak, following L059: it does not verify that the earlier socket
+    call covers the same service, only that the file established the socket
+    before trusting a pid. A wait for the wrong service is a review problem; no
+    wait at all is a structural one, and only the second is decidable by reading
+    the file.
+
+    Repo-level like L065: the tests are shipped by whichever image owns the
+    overlay, so this runs once, under base.
+    """
+    if img.cls != "base":
+        return
+    names = _supervisord_programs(repo)
+    if not names:
+        return
+    presence = re.compile(_L069_PRESENCE_VERB + r"[^|;&]*?(?<![\w-])("
+                          + "|".join(map(re.escape, names)) + r")(?![\w-])")
+    # `! pidof caddy || test_fail "still running"` asserts ABSENCE — nothing to
+    # wait for, and presence is the right instrument. Keyed on the negation
+    # sitting immediately before the probe, NOT on a `!` anywhere on the line:
+    # `if ! pgrep X; then test_fail` is a PRESENCE assertion spelled with `!`,
+    # and exempting it left the most idiomatic spelling of the defect uncaught.
+    inline_neg = re.compile(r"(^|\|\||&&|;)\s*!\s*" + _L069_PRESENCE_VERB)
+    if_head = re.compile(r"^\s*(el)?if\s")
+    if_neg_head = re.compile(r"^\s*(el)?if\s+!\s")
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").glob("*/ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sh in sorted(root.rglob("*.sh")):
+            # lib.sh DEFINES the socket helpers; it asserts nothing itself.
+            if sh.name == "lib.sh":
+                continue
+            lines = [(n, _strip_comment(t)) for n, t in _logical_lines(
+                sh.read_text(encoding="utf-8", errors="replace"))]
+            socket_seen = False
+            for i, (n, code) in enumerate(lines):
+                if not code.strip():
+                    continue
+                if not socket_seen and _L069_SOCKET.search(_strip_shell_strings(code)):
+                    socket_seen = True
+                if not presence.search(code):
+                    continue
+                # An `if` head is a predicate unless it is NEGATED and its block
+                # asserts: `if pgrep X; then test_fail` says X must be ABSENT,
+                # `if ! pgrep X; then test_fail` says X must be PRESENT.
+                if if_head.match(code):
+                    if not if_neg_head.match(code) or not _asserts_in_block(lines, i):
+                        continue
+                elif not _L069_ASSERTS.search(code) or inline_neg.search(code):
+                    continue
+                # Ordering is enforced by this being a single forward pass:
+                # socket_seen is only true for calls EARLIER in the file.
+                if socket_seen:
+                    continue
+                try:
+                    rel = str(sh.relative_to(repo))
+                except ValueError:
+                    rel = sh.name
+                yield Finding("L069", ERROR, img.name, f"{rel}:{n}",
+                              "asserts a supervisord-managed process is up by process "
+                              "presence before anything has reached the supervisord "
+                              "socket — presence is true at fork, the socket is what "
+                              "the next assertion needs; gate on wait_for_supervisor "
+                              "or assert_service_running first")
+
+
 def check_one_cert_usability_predicate(img: Image, repo: Path) -> Iterable[Finding]:
     """L066 — do not re-implement "is this cert usable"; ask the helper.
 
@@ -1841,6 +2112,8 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_no_nvidia_smi_text_parse(img, repo))
     out.extend(check_no_open_coded_native_libcuda(img, repo))
     out.extend(check_one_cert_usability_predicate(img, repo))
+    out.extend(check_no_presence_as_readiness_gate(img, repo))
+    out.extend(check_readiness_budget_floors(img, repo))
     out.extend(check_base_tests_have_no_serverless_backend(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))

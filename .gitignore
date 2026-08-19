@@ -10,3 +10,6 @@ tools/template_manager/output/
 
 # uv lockfile for the imagegen tool venv — a local build artifact, not a pin we ship
 tools/imagegen/uv.lock
+
+# A second working copy someone dropped in the tree; never part of the image.
+pcl/

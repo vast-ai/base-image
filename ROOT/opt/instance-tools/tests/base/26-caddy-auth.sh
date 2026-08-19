@@ -1,5 +1,15 @@
 #!/bin/bash
 # Test: Caddy authentication on external ports.
+#
+# This file restarts caddy six times and makes ~15 http_check calls, each now
+# allowed 20s (lib.sh: cost-14 bcrypt on every distinct wrong credential). An
+# earlier version of this header declared `# TEST_TIMEOUT=900` to cover that.
+# It was wrong twice over: 900 is exactly INSTANCE_TEST_DEFAULT_TIMEOUT in the
+# promote workflow, so it changed nothing in CI, and it CUT the runner's own
+# 3600s default by 4x for a customer running the suite by hand — the slow case
+# it was supposed to protect. The ceiling is bounded in the code instead: the
+# first caddy restart that does not come back fails the test immediately, so the
+# worst case is one caddy budget plus the http_checks, not six budgets.
 # Verifies bearer token, basic auth, query-param token, and 401 on unauthenticated requests.
 source "$(dirname "$0")/../lib.sh"
 
@@ -43,7 +53,7 @@ if [[ -z "${WEB_PASSWORD:-}" ]]; then
 
     echo "  restarting caddy to pick up WEB_PASSWORD..."
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy
+    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
     auth_modified=true
 else
     echo "  WEB_PASSWORD=${WEB_PASSWORD:0:8}..."
@@ -133,7 +143,7 @@ elif [[ -n "$test_port" ]]; then
 
     # Cookie auth: capture cookie from ?token= redirect, then use it
     cookie_name="${VAST_CONTAINERLABEL:-C.unknown}_auth_token"
-    cookie_val=$(curl -s --max-time 5 ${tls_flag:-} -D- -o /dev/null \
+    cookie_val=$(curl -s --max-time "$HTTP_CHECK_MAX_TIME" ${tls_flag:-} -D- -o /dev/null \
         "${base_url}/?token=${OPEN_BUTTON_TOKEN}" 2>/dev/null \
         | grep -oP "${cookie_name}=\K[^;]+")
     if [[ -n "$cookie_val" ]]; then
@@ -179,7 +189,7 @@ elif [[ -n "$test_port" ]]; then
         sed -i '/^WEB_USERNAME=/d' /etc/environment 2>/dev/null
         echo "WEB_USERNAME=\"${test_web_user}\"" >> /etc/environment
         supervisorctl restart caddy &>/dev/null
-        wait_for_caddy
+        wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
 
         # Custom user + WEB_PASSWORD → should work
         http_check \
@@ -194,7 +204,7 @@ elif [[ -n "$test_port" ]]; then
         # Restore: remove custom username and restart
         sed -i '/^WEB_USERNAME=/d' /etc/environment
         supervisorctl restart caddy &>/dev/null
-        wait_for_caddy
+        wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
         echo "  WEB_USERNAME removed, caddy restored"
     fi
 fi
@@ -211,7 +221,7 @@ if [[ ${#all_caddy_ports[@]} -gt 1 ]]; then
         tls_flag=""
         [[ "$port_proto" == "https" ]] && tls_flag="-k"
 
-        s=$(curl -s --max-time 3 ${tls_flag} -o /dev/null -w '%{http_code}' "${port_proto}://127.0.0.1:${port}/" 2>/dev/null)
+        s=$(curl -s --max-time "$HTTP_CHECK_MAX_TIME" ${tls_flag} -o /dev/null -w '%{http_code}' "${port_proto}://127.0.0.1:${port}/" 2>/dev/null)
 
         if is_excluded "$port"; then
             if [[ "$s" == "200" || "$s" == "302" ]]; then
@@ -242,13 +252,13 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment 2>/dev/null
     echo "AUTH_EXCLUDE=\"${test_port}\"" >> /etc/environment
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy
+    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
 
     exc_proto=$(caddy_port_proto "$test_port")
     tls_flag=""
     [[ "$exc_proto" == "https" ]] && tls_flag="-k"
 
-    s=$(curl -s --max-time 5 ${tls_flag} -o /dev/null -w '%{http_code}' "${exc_proto}://127.0.0.1:${test_port}/" 2>/dev/null)
+    s=$(curl -s --max-time "$HTTP_CHECK_MAX_TIME" ${tls_flag} -o /dev/null -w '%{http_code}' "${exc_proto}://127.0.0.1:${test_port}/" 2>/dev/null)
     if [[ "$s" == "200" || "$s" == "302" ]]; then
         echo "  port ${test_port}: no auth → ${s} (AUTH_EXCLUDE active, correct)"
     elif [[ "$s" == "502" ]]; then
@@ -259,7 +269,7 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
 
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy
+    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
     echo "  AUTH_EXCLUDE removed, caddy restored"
 fi
 
@@ -319,7 +329,7 @@ if $auth_modified; then
     echo "  cleaning up test password and restarting caddy..."
     sed -i '/^WEB_PASSWORD=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy
+    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
 fi
 
 # ── Report ───────────────────────────────────────────────────────────

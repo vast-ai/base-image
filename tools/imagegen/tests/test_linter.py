@@ -4,6 +4,8 @@ Run: cd tools/imagegen && PYTHONPATH=. python -m pytest -q
 """
 import re
 import shutil
+
+import pytest
 from dataclasses import replace
 from pathlib import Path
 
@@ -1630,6 +1632,314 @@ def test_L066_a_string_literal_argv_is_still_code(tmp_path):
                        '    """Checks the key."""\n'
                        '    return run(["openssl", "rsa", "-in", KEY, "-check"])\n')
     assert has(img, tmp_path, "L066", "RSA-only openssl")
+
+
+
+# ---- L069: presence is not readiness ------------------------------------
+#
+# 65-supervisor-launch.sh backgrounds supervisord; boot walks straight on to
+# 70-instance-test.sh, which backgrounds the runner. The suite's first test
+# therefore races supervisord's own startup, and `pgrep` — the gate it used — is
+# satisfied at fork while the RPC socket it calls on the next line is not.
+# Measured in vastai/base-image:cuda-13.2.0-auto, idle, 16 cores: presence at
+# 1.7ms, socket usable at 383ms. On a contended QA host that window is seconds.
+
+def _tests_repo(tmp: Path, name: str, body: str, *, confs: str = "") -> Image:
+    """A repo-level tests tree. The rule reads programs from the repo overlay
+    (repo/ROOT/etc/supervisor/conf.d), not from the image dir."""
+    img = make(tmp, cls="base")
+    t = tmp / "ROOT/opt/instance-tools/tests/base" / name
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text(body)
+    t.chmod(0o755)
+    if confs:
+        c = tmp / "ROOT/etc/supervisor/conf.d/caddy.conf"
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_text(confs)
+    return img
+
+
+def test_L069_presence_as_the_readiness_gate_fires(tmp_path):
+    """THE defect, in the shape base/10-supervisor.sh shipped it."""
+    img = _tests_repo(tmp_path, "10-supervisor.sh",
+                      'pgrep -f supervisord &>/dev/null || test_fail "supervisord not running"\n'
+                      'supervisorctl status &>/dev/null; rc=$?\n')
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_L069_presence_used_for_IDENTITY_after_a_socket_call_is_clean(tmp_path):
+    """The fix is not to delete `pidof`. Caddy's pid is genuinely needed to
+    attribute its listening sockets and supervisord cannot supply it — the
+    program is a wrapper script, so `supervisorctl pid caddy` returns the shell.
+    Presence AFTER readiness is an identity lookup, and legal."""
+    img = _tests_repo(tmp_path, "25-caddy-proxy.sh",
+                      'assert_service_running caddy\n'
+                      'caddy_pid=$(pidof caddy 2>/dev/null) || test_fail "caddy not running"\n',
+                      confs="[program:caddy]\ncommand=/opt/supervisor-scripts/caddy.sh\n")
+    assert "L069" not in errs(img, tmp_path)
+
+
+def test_L069_a_socket_call_LATER_in_the_file_does_not_excuse_the_gate(tmp_path):
+    """Order is the whole rule. A wait further down the file did not run yet."""
+    img = _tests_repo(tmp_path, "25-caddy-proxy.sh",
+                      'caddy_pid=$(pidof caddy 2>/dev/null) || test_fail "caddy not running"\n'
+                      'assert_service_running caddy\n',
+                      confs="[program:caddy]\ncommand=/opt/supervisor-scripts/caddy.sh\n")
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_L069_a_negated_ABSENCE_assertion_is_exempt(tmp_path):
+    """`! pidof caddy || test_fail "still running"` asserts caddy is GONE, which
+    is what serverless mode requires. There is nothing to wait for and presence
+    is the correct instrument, so demanding a socket call first would be a false
+    positive — and one that pushes an author toward a weaker check."""
+    img = _tests_repo(tmp_path, "85-serverless-services.sh",
+                      '! pidof caddy &>/dev/null || test_fail "caddy still running"\n',
+                      confs="[program:caddy]\ncommand=/opt/supervisor-scripts/caddy.sh\n")
+    assert "L069" not in errs(img, tmp_path)
+
+
+def test_L069_an_if_predicate_is_not_an_assertion(tmp_path):
+    """65-conditional-services and 67-service-functionality branch on `pgrep -f
+    jupyter` to tell the .launch-managed case from the supervisor-managed one.
+    Nothing is asserted, so nothing raced."""
+    img = _tests_repo(tmp_path, "65-conditional-services.sh",
+                      'if pgrep -f "jupyter" &>/dev/null; then\n  echo launch-managed\nfi\n',
+                      confs="[program:jupyter]\ncommand=/opt/supervisor-scripts/jupyter.sh\n")
+    assert "L069" not in errs(img, tmp_path)
+
+
+def test_L069_a_process_supervisord_does_not_manage_is_out_of_scope(tmp_path):
+    """`pidof sshd` in 40-users-permissions: sshd is not a supervisord program,
+    so its presence is not a proxy for a socket that has to come up first."""
+    img = _tests_repo(tmp_path, "40-users-permissions.sh",
+                      'pidof sshd &>/dev/null || test_fail "sshd not running"\n')
+    assert "L069" not in errs(img, tmp_path)
+
+
+def test_L069_the_program_list_is_READ_from_the_overlay_not_restated(tmp_path):
+    """A list of service names hardcoded in the linter would go stale the first
+    time a program is added, and the rule would report clean on precisely the
+    newest service."""
+    img = _tests_repo(tmp_path, "99-new.sh",
+                      'pidof brandnew &>/dev/null || test_fail "brandnew not running"\n')
+    assert "L069" not in errs(img, tmp_path), "not a program yet"
+    c = tmp_path / "ROOT/etc/supervisor/conf.d/brandnew.conf"
+    c.parent.mkdir(parents=True, exist_ok=True)
+    c.write_text("[program:brandnew]\ncommand=/opt/supervisor-scripts/brandnew.sh\n")
+    assert has(img, tmp_path, "L069", "presence is true at fork"), "adding the conf must arm it"
+
+
+def test_L069_a_line_continuation_does_not_hide_the_assertion(tmp_path):
+    """Found by the mutation test, not by review: the first detector scanned raw
+    lines, so splitting `pidof caddy ... || test_fail` across a backslash hid the
+    `|| test_fail` from the probe and the rule went quiet on a file that had the
+    defect. A rule a line break defeats is not a rule."""
+    img = _tests_repo(tmp_path, "25-caddy-proxy.sh",
+                      'caddy_pid=$(pidof caddy 2>/dev/null) \\\n'
+                      '    || test_fail "caddy not running"\n',
+                      confs="[program:caddy]\ncommand=/opt/supervisor-scripts/caddy.sh\n")
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_mut_L069_the_real_suite_with_the_readiness_gate_reverted_fires(tmp_path):
+    """THE mutation: put base/10-supervisor.sh back the way it shipped.
+
+    Against a COPY of the real tree, following L065's precedent — mutating the
+    tree in place and restoring in a `finally` reintroduces the exact defect the
+    rule exists to catch if the process dies between the two.
+    """
+    repo, img = _real("base-image")
+    work = tmp_path / "repo"
+    shutil.copytree(repo / "ROOT", work / "ROOT")
+    (work / "Dockerfile").write_text((repo / "Dockerfile").read_text())
+    mutant = replace(img, dir=work, root=work / "ROOT")
+    assert "L069" not in errs(mutant, work), "the copy must start clean"
+
+    t = work / "ROOT/opt/instance-tools/tests/base/10-supervisor.sh"
+    t.write_text('source "$(dirname "$0")/../lib.sh"\n'
+                 'pgrep -f supervisord &>/dev/null || test_fail "supervisord not running"\n'
+                 'supervisorctl status &>/dev/null; rc=$?\n'
+                 '[[ $rc -le 3 ]] || test_fail "cannot communicate (exit ${rc})"\n')
+    assert has(mutant, work, "L069", "presence is true at fork")
+
+
+def test_mut_L069_dropping_the_socket_gate_from_25_caddy_proxy_fires(tmp_path):
+    """The second real site: caddy's `startsecs=5` means a single-shot pidof is
+    racing a five-second window on every boot, not a sub-second one."""
+    repo, img = _real("base-image")
+    work = tmp_path / "repo"
+    shutil.copytree(repo / "ROOT", work / "ROOT")
+    (work / "Dockerfile").write_text((repo / "Dockerfile").read_text())
+    mutant = replace(img, dir=work, root=work / "ROOT")
+    t = work / "ROOT/opt/instance-tools/tests/base/25-caddy-proxy.sh"
+    # Back to the single-shot gate it shipped with. Removing only the
+    # assert_service_running line is NOT this defect any more: the post-fix file
+    # wraps pidof in a bounded retry, which is itself a wait.
+    t.write_text('source "$(dirname "$0")/../lib.sh"\n'
+                 'caddy_pid=$(pidof caddy 2>/dev/null) || test_fail "caddy not running"\n')
+    assert has(mutant, work, "L069", "presence is true at fork")
+
+
+def test_L069_derivative_and_external_suites_are_covered(tmp_path):
+    """The engine images ship their own .d/ suites against the same supervisord."""
+    img = make(tmp_path, cls="base")
+    t = tmp_path / "external/vllm/ROOT/opt/instance-tools/tests/vllm.d/10-serving.sh"
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text('pgrep -f supervisord &>/dev/null || test_fail "supervisord not running"\n')
+    t.chmod(0o755)
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_L069_the_idiomatic_if_not_rewrite_is_caught(tmp_path):
+    """The single most likely way a future author rewrites the banned line — and
+    it reads MORE careful, not less. An earlier version of the rule required the
+    `|| test_fail` spelling and let this through, which would have made the whole
+    gate decorative the first time someone tidied the file."""
+    img = _tests_repo(tmp_path, "10-supervisor.sh",
+                      'if ! pgrep -f supervisord &>/dev/null; then\n'
+                      '    test_fail "supervisord not running"\n'
+                      'fi\n')
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_L069_an_if_predicate_asserting_ABSENCE_stays_exempt(tmp_path):
+    """The symmetric case, and why the exemption cannot key on the `!` token:
+    `if pgrep X; then test_fail` says X must be GONE, `if ! pgrep X; then
+    test_fail` says X must be PRESENT. Same tokens, opposite meanings."""
+    img = _tests_repo(tmp_path, "85-serverless-services.sh",
+                      'if pidof caddy &>/dev/null; then\n'
+                      '    test_fail "caddy still running in serverless mode"\n'
+                      'fi\n',
+                      confs="[program:caddy]\ncommand=/opt/supervisor-scripts/caddy.sh\n")
+    assert "L069" not in errs(img, tmp_path)
+
+
+def test_L069_brace_group_and_fail_later_are_assertions(tmp_path):
+    """`|| { test_fail ...; }` and `|| fail_later ...` fail the test exactly as
+    `|| test_fail` does. fail_later matters most: it is the house idiom in
+    26-caddy-auth and 65-conditional-services, i.e. the rule was blindest in the
+    two files most likely to grow one of these."""
+    for i, body in enumerate((
+            'pgrep -f supervisord &>/dev/null || { test_fail "x"; }\n',
+            'pgrep -f supervisord &>/dev/null || fail_later "sup" "x"\nreport_failures\n',
+            'pgrep -f supervisord &>/dev/null || test_fatal "x"\n')):
+        d = tmp_path / f"case{i}"
+        d.mkdir()
+        img = _tests_repo(d, "10-supervisor.sh", body)
+        assert has(img, d, "L069", "presence is true at fork"), body
+
+
+def test_L069_a_helper_NAME_inside_a_string_does_not_disarm_the_rule(tmp_path):
+    """These files are written with long narrative prose and explicit messages,
+    so a helper name inside an `echo` or a failure message is a realistic
+    accident — and it used to silence the rule for the whole rest of the file."""
+    img = _tests_repo(tmp_path, "10-supervisor.sh",
+                      'echo "next step: wait_for_supervisor"\n'
+                      'pgrep -f supervisord &>/dev/null || test_fail "run assert_service_running"\n')
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_L069_a_bare_unwaited_supervisorctl_does_not_count_as_readiness(tmp_path):
+    """The rule must not be satisfiable by code that is strictly worse. A
+    single-shot `supervisorctl status` is what failed on 2026-08-18; hoisting one
+    above the probe used to turn the finding off."""
+    img = _tests_repo(tmp_path, "10-supervisor.sh",
+                      'sup=$(supervisorctl status 2>/dev/null)\n'
+                      'pgrep -f supervisord &>/dev/null || test_fail "not running"\n')
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+def test_L069_assert_service_stopped_counts_as_reaching_the_socket(tmp_path):
+    """It calls wait_for_supervisor and is exactly as socket-backed as its
+    sibling; omitting it made the rule fire on a correctly-guarded file."""
+    img = _tests_repo(tmp_path, "85-serverless-services.sh",
+                      'assert_service_stopped caddy\n'
+                      'pidof caddy &>/dev/null || test_fail "gone"\n',
+                      confs="[program:caddy]\ncommand=/opt/supervisor-scripts/caddy.sh\n")
+    assert "L069" not in errs(img, tmp_path)
+
+
+def test_L069_reports_the_file_and_line_of_the_probe(tmp_path):
+    """Every other L069 test keys on the message, so all of them would pass with
+    the rule pointing at the wrong line of the wrong file."""
+    img = _tests_repo(tmp_path, "10-supervisor.sh",
+                      '# a comment\n'
+                      'echo hello\n'
+                      'pgrep -f supervisord &>/dev/null || test_fail "not running"\n')
+    f = [f for f in lint_image(img, tmp_path) if f.code == "L069"]
+    assert len(f) == 1
+    assert f[0].path == "ROOT/opt/instance-tools/tests/base/10-supervisor.sh:3", f[0].path
+
+
+@pytest.mark.parametrize("rel", [
+    "derivatives/llama-cpp/ROOT/opt/instance-tools/tests/llama.d/10-serving.sh",
+    "derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/tests/comfyui.d/10-serving.sh",
+    "external/vllm/ROOT/opt/instance-tools/tests/vllm.d/10-serving.sh",
+])
+def test_L069_every_scanned_root_is_locked_in(tmp_path, rel):
+    """One assert per root. The single-root version passed with any of the other
+    two roots deleted from the scan list — a silent coverage regression on the
+    trees where the newest tests actually live."""
+    img = make(tmp_path, cls="base")
+    t = tmp_path / rel
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text('pgrep -f supervisord &>/dev/null || test_fail "supervisord not running"\n')
+    t.chmod(0o755)
+    assert has(img, tmp_path, "L069", "presence is true at fork")
+
+
+# ---- L070: a budget may be raised, never quietly lowered -----------------
+#
+# L069 gates the STRUCTURE of a readiness check; L070 gates the NUMBERS, which
+# structure cannot reach. Before it existed, reverting http_check to --max-time 5
+# and the portal wait to 30s — the two exact values that failed cells on
+# 2026-08-18 — passed every test in this repo.
+
+def _lib(tmp_path, **over):
+    vals = {"SUPERVISOR_READY_TIMEOUT": 60, "PORTAL_READY_TIMEOUT": 120,
+            "CADDY_READY_TIMEOUT": 120, "HTTP_CHECK_MAX_TIME": 20}
+    vals.update(over)
+    img = make(tmp_path, cls="base")
+    p = tmp_path / "ROOT/opt/instance-tools/tests/lib.sh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(f'{k}="${{{k}:-{v}}}"\n' for k, v in vals.items())
+                 + 'status=$(curl -s --max-time "$HTTP_CHECK_MAX_TIME" -o /dev/null "$@")\n')
+    p.chmod(0o755)
+    return img
+
+
+def test_L070_the_shipped_defaults_are_clean(tmp_path):
+    assert "L070" not in errs(_lib(tmp_path), tmp_path)
+
+
+@pytest.mark.parametrize("var,bad", [("HTTP_CHECK_MAX_TIME", 5), ("PORTAL_READY_TIMEOUT", 30),
+                                     ("CADDY_READY_TIMEOUT", 30), ("SUPERVISOR_READY_TIMEOUT", 1)])
+def test_L070_lowering_a_budget_below_the_measured_floor_fires(tmp_path, var, bad):
+    """The first two are the exact values that failed real cells."""
+    assert has(_lib(tmp_path, **{var: bad}), tmp_path, "L070", "below the measured")
+
+
+def test_L070_RAISING_a_budget_is_always_allowed(tmp_path):
+    """A floor, not an equality: a new measurement must not need a linter change."""
+    assert "L070" not in errs(_lib(tmp_path, HTTP_CHECK_MAX_TIME=45), tmp_path)
+
+
+def test_L070_baking_the_budget_back_into_the_file_fires(tmp_path):
+    """The suite ships INSIDE the image, so a baked number can only be corrected
+    by rebuilding and re-promoting every image in the family."""
+    img = _lib(tmp_path)
+    p = tmp_path / "ROOT/opt/instance-tools/tests/lib.sh"
+    p.write_text(p.read_text().replace('HTTP_CHECK_MAX_TIME="${HTTP_CHECK_MAX_TIME:-20}"',
+                                       'HTTP_CHECK_MAX_TIME=20'))
+    assert has(img, tmp_path, "L070", "not defined as an overridable default")
+
+
+def test_L070_a_lever_nothing_reads_is_not_a_lever(tmp_path):
+    img = _lib(tmp_path)
+    p = tmp_path / "ROOT/opt/instance-tools/tests/lib.sh"
+    p.write_text(p.read_text().replace('--max-time "$HTTP_CHECK_MAX_TIME"', '--max-time 20'))
+    assert has(img, tmp_path, "L070", "cannot be overridden from a")
 
 
 # ---- L067: a base/ test must hold on a BARE base image -------------------

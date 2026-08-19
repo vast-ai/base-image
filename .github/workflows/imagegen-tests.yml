@@ -18,6 +18,13 @@ on:
       - ".github/workflows/build-base-image.yml"
       - ".github/workflows/extend-base-image.yml"
       - "ROOT/opt/instance-tools/tests/**"
+      # L069 scans the derivative and external suites too, so a PR that adds a
+      # test there must run the rule that governs it.
+      - "derivatives/**/ROOT/opt/instance-tools/tests/**"
+      - "external/**/ROOT/opt/instance-tools/tests/**"
+      # L069 reads the supervisord program list from this directory, so adding a
+      # program changes what the rule covers.
+      - "ROOT/etc/supervisor/conf.d/**"
       # The provisioner suite is a CI gate now, so the PR that edits the
       # provisioner has to run it.
       - "ROOT/opt/instance-tools/lib/provisioner/**"
@@ -47,6 +54,13 @@ on:
       - ".github/workflows/build-base-image.yml"
       - ".github/workflows/extend-base-image.yml"
       - "ROOT/opt/instance-tools/tests/**"
+      # L069 scans the derivative and external suites too, so a PR that adds a
+      # test there must run the rule that governs it.
+      - "derivatives/**/ROOT/opt/instance-tools/tests/**"
+      - "external/**/ROOT/opt/instance-tools/tests/**"
+      # L069 reads the supervisord program list from this directory, so adding a
+      # program changes what the rule covers.
+      - "ROOT/etc/supervisor/conf.d/**"
       # The provisioner suite is a CI gate now, so the PR that edits the
       # provisioner has to run it.
       - "ROOT/opt/instance-tools/lib/provisioner/**"
@@ -64,6 +78,26 @@ on:
       - "templates/**"
 
 jobs:
+  # The gated invariants are only invariants if something checks them. Until this
+  # job existed, `imagegen lint --all` ran on developer machines only: every RULES
+  # code was enforced by habit, and the two mutation tests touched the real tree
+  # incidentally at best. A rule CI never runs is documentation.
+  lint-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: imagegen lint --all
+        run: PYTHONPATH=tools/imagegen python -m imagegen.cli lint --all
+      - name: docs/lint-rules.md is regenerated from RULES
+        run: |
+          PYTHONPATH=tools/imagegen python -m imagegen.cli rules > /tmp/rules.md
+          diff -u docs/lint-rules.md /tmp/rules.md \
+            || { echo "::error::docs/lint-rules.md is stale — run: imagegen rules > docs/lint-rules.md"; exit 1; }
+
   imagegen-tests:
     runs-on: ubuntu-latest
     steps:
