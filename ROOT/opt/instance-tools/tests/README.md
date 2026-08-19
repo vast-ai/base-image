@@ -66,21 +66,38 @@ Sourced by every test. Provides:
 | `portal_has_entry "term"` | Predicate | grep for term in `/etc/portal.yaml` |
 | `version_gt A B` | Predicate | Dotted version comparison (e.g. `12.10` > `12.9`) |
 | `instance_field "key"` | Query | Read field from cached API metadata JSON |
+| `wait_for_supervisor [timeout]` | Wait | Poll until supervisord's RPC socket answers (default 60s; memoised per test process) |
 | `wait_for_url URL [timeout]` | Wait | Poll for HTTP 200 |
 | `wait_for_port PORT [timeout]` | Wait | Poll for TCP listener |
-| `wait_for_caddy [port] [proto]` | Wait | Poll for Caddy (accepts 401 as responsive) |
+| `wait_for_caddy [port] [proto] [timeout]` | Wait | Poll for Caddy (accepts 401 as responsive); default `CADDY_READY_TIMEOUT` (120s) — a restart runs `caddy hash-password` per app first |
 | `assert_file_exists PATH` | Assert | |
 | `assert_dir_exists PATH` | Assert | |
 | `assert_file_mode PATH OCTAL` | Assert | `stat -c '%a'` comparison (use `440` not `0440`) |
 | `assert_command_exists CMD` | Assert | |
-| `assert_service_running NAME` | Assert | supervisorctl RUNNING |
+| `assert_service_running NAME [timeout]` | Assert | Wait for RUNNING (default 60s); short-circuits on FATAL |
 | `assert_service_stopped NAME` | Assert | supervisorctl STOPPED/EXITED/FATAL |
 | `assert_env_set VARNAME` | Assert | Non-empty env var |
 | `assert_user_exists USER [UID]` | Assert | `id -u` check |
-| `service_running NAME` | Predicate | supervisorctl RUNNING check (return 0/1) |
+| `service_running NAME` | Predicate | RUNNING check (return 0/1); waits for the socket, not for RUNNING |
 | `find_caddy_ports` | Query | Populate REPLY with active Caddy external ports |
 | `caddy_port_proto PORT` | Query | Echo "https" or "http" for a Caddyfile port |
-| `http_check LABEL EXPECTED [curl_args...]` | Assert | HTTP status check via `fail_later` (supports pipe-delimited codes) |
+| `http_check LABEL EXPECTED [curl_args...]` | Assert | HTTP status check via `fail_later` (pipe-delimited codes ok). `--max-time 20` — Caddy pays a cost-14 bcrypt on every distinct wrong credential; pass a later `--max-time` to override |
+
+**Budgets are levers (L070).** `SUPERVISOR_READY_TIMEOUT`, `PORTAL_READY_TIMEOUT`,
+`CADDY_READY_TIMEOUT` and `HTTP_CHECK_MAX_TIME` are env-overridable — the suite
+ships inside the image, so a baked number can only be fixed by rebuilding every
+image. Their defaults are floor-pinned by L070 against measurements in
+docs/invariants.md; raise them freely, never lower them past what was measured.
+
+**Readiness, not presence (L069).** The suite starts while supervisord is still
+starting — `65-supervisor-launch.sh` backgrounds it and boot moves straight on to
+`70-instance-test.sh`. `pgrep`/`pidof` are satisfied at fork; the RPC socket
+appears later (measured 1.7 ms vs 383 ms, idle), and the long-running `conf.d`
+programs are `STARTING` for their first five seconds (`startsecs=5`; `cron` and
+`pyworker` are `startsecs=0`). Never gate readiness on
+process presence — use `wait_for_supervisor` or `assert_service_running`.
+Presence is still the right tool for IDENTITY (which pid is caddy) and for
+asserting a service is ABSENT. See docs/invariants.md and ADR 0029.
 
 **Instance metadata:** Test 11 queries the Vast API and caches the full instance JSON at `/tmp/instance-test-metadata.json`. Use `instance_field "gpu_name"` etc. from any test that runs after 11.
 

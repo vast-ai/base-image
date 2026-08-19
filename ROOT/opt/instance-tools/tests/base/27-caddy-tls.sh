@@ -168,7 +168,8 @@ if ! caddyfile_has_tls; then
     echo 'ENABLE_HTTPS="true"' >> /etc/environment
     export ENABLE_HTTPS=true
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy "$test_port" "https"
+    wait_for_caddy "$test_port" "https" \
+        || test_fail "caddy did not come back after restart (see WARN above)"
 
     if caddyfile_has_tls; then
         # Verify HTTPS works
@@ -185,7 +186,8 @@ if ! caddyfile_has_tls; then
     sed -i '/^ENABLE_HTTPS=/d' /etc/environment
     export ENABLE_HTTPS=false
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy "$test_port" "http"
+    wait_for_caddy "$test_port" "http" \
+        || test_fail "caddy did not come back after restart (see WARN above)"
 
     http_check "http-restore" "200|302|401" "http://127.0.0.1:${test_port}/"
 else
@@ -194,7 +196,8 @@ else
     echo 'ENABLE_HTTPS="false"' >> /etc/environment
     export ENABLE_HTTPS=false
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy "$test_port" "http"
+    wait_for_caddy "$test_port" "http" \
+        || test_fail "caddy did not come back after restart (see WARN above)"
 
     if ! caddyfile_has_tls; then
         http_check "http-disable" "200|302|401" "http://127.0.0.1:${test_port}/"
@@ -208,7 +211,8 @@ else
     echo 'ENABLE_HTTPS="true"' >> /etc/environment
     export ENABLE_HTTPS=true
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy "$test_port" "https"
+    wait_for_caddy "$test_port" "https" \
+        || test_fail "caddy did not come back after restart (see WARN above)"
 
     http_check "tls-restore" "200|302|401" -k "https://127.0.0.1:${test_port}/"
 fi

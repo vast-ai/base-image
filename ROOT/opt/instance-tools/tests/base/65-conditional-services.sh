@@ -7,6 +7,11 @@ source "$(dirname "$0")/../lib.sh"
 
 # ── Verify .conf files are registered ─────────────────────────────────
 
+# This file's first touch of supervisord is a raw supervisorctl in a subshell.
+# It runs after provisioning so it is not the race base/10-supervisor hit, but an
+# unreachable socket here yields an EMPTY status and every service below would be
+# reported "not registered" — a wrong answer rather than no answer.
+wait_for_supervisor 60 || test_fail "supervisord RPC socket did not come up after 60s"
 sup_status=$(supervisorctl status 2>/dev/null)
 for conf in /etc/supervisor/conf.d/*.conf; do
     [[ -f "$conf" ]] || continue

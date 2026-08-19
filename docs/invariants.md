@@ -441,6 +441,171 @@ serverless template turns the mode on. **L067**
 (`check_base_tests_have_no_serverless_backend`) forbids reintroducing a pyworker
 or `:3000` assertion under `tests/base/`; prose explaining the history is fine.
 
+### Process presence is not readiness — **GATED (L069)**
+
+`65-supervisor-launch.sh` backgrounds `supervisord`; boot then walks straight on
+to `70-instance-test.sh`, which backgrounds the test runner. The two are
+effectively simultaneous, so the suite's **first** test runs while supervisord is
+still starting. The gate it used was `pgrep -f supervisord`, which is satisfied
+the instant supervisord forks — while the RPC socket that every other service
+assertion needs appears later. Measured in the shipped image
+(`vastai/base-image:cuda-13.2.0-auto`), idle, 16 cores:
+
+    pgrep -f supervisord  visible at   1.7 ms
+    supervisorctl status  usable at  383   ms
+
+380 ms of window on an idle desktop; seconds on a contended host reading the
+Python stdlib cold off overlayfs while it provisions. On the 2026-08-18 pytorch
+promote, `base/10-supervisor` failed **0.09 s into the suite** with
+`supervisorctl cannot communicate with supervisord (exit 4)`, took `20-portal`
+and `26-caddy-auth` down as collateral, and blocked every tag in the batch under
+all-or-nothing promotion — on an image the same suite proved healthy 53 seconds
+later. Reproduced locally at 2 failures in 3 runs, idle.
+
+The same shape one level down: the long-running `conf.d` programs carry
+`startsecs=5` (`cron` and `pyworker` are `startsecs=0`), so `supervisorctl status`
+legitimately reports `STARTING` for the first five seconds of such a program's
+life and a single-shot check reads that as "not running". `25-caddy-proxy` gated
+on `pidof caddy` and had the same defect with a five-second window instead of a
+sub-second one.
+
+One layer further in again: RUNNING answers for the *wrapper*. `caddy.sh` runs
+`caddy_config_manager.py` — cost-14 bcrypt per proxied app, 43 s measured on a
+contended host — before it execs `caddy run`, so the caddy BINARY appears well
+after supervisord calls the program started. Every readiness question in this
+suite has to name which layer it is asking about.
+
+And when the socket is down, `supervisorctl status X | awk '{print $2}'` yields a
+word from an **error message**, not an empty string — so "cannot tell" was
+already being rendered as a definite answer.
+
+The fix is in `lib.sh`, so every caller inherits it: `wait_for_supervisor`
+(bounded wait for the socket, memoised in the caller's shell — inside `$( )` the
+memo dies with the subshell and each of eight services would pay the full
+timeout), and `assert_service_running` waiting for `RUNNING` with a `FATAL`
+short-circuit.
+
+**L069** (`check_no_presence_as_readiness_gate`) forbids asserting that a
+supervisord-managed process is UP via `pgrep`/`pidof` unless something
+socket-backed appears earlier in the same file. Scope, deliberately narrow:
+
+- **Presence for IDENTITY stays legal.** Caddy's pid is genuinely needed to
+  attribute its listening sockets, and supervisord cannot supply it — `caddy.sh`
+  is a wrapper, so `supervisorctl pid caddy` returns the shell. Only being the
+  *readiness gate* is the defect, so the rule asks about ORDER.
+- **An assertion is any of `test_fail`, `test_fatal`, `fail_later`**, anywhere on
+  the logical line — not only after `||`. The first version required the
+  `|| test_fail` spelling, which left `|| { test_fail ...; }`, `|| fail_later`
+  and `if ! pgrep ...; then test_fail; fi` all silent. The last is the most
+  idiomatic rewrite of the banned line and reads *more* careful; `fail_later` is
+  the house idiom in `26-caddy-auth` and `65-conditional-services`, so the rule
+  was blindest in the two files most likely to grow one.
+- **Negation is judged by POSITION, not by the token.** `! pidof caddy ||
+  test_fail "still running"` asserts ABSENCE and is exempt; `if ! pgrep X; then
+  test_fail` asserts PRESENCE and must fire. Same tokens, opposite meanings — an
+  exemption keyed on a bare `!` got the second one wrong.
+- **`if pgrep` predicates are exempt** — a branch is not an assertion. `if pgrep
+  X; then test_fail` is an absence assertion and is likewise exempt.
+- **Only WAITING helpers count as reaching the socket.** A bare `supervisorctl
+  status` does not: accepting it made the rule satisfiable by hoisting a
+  non-waiting call, producing a file that is lint-clean and strictly worse than
+  the one that tripped it. That is how a rule gets trained out of people.
+- **Helper names inside strings are ignored.** These files carry long narrative
+  prose and explicit failure messages, so `echo "run wait_for_supervisor"` used
+  to disarm the rule for the whole rest of the file.
+- **Program names are read from `ROOT/etc/supervisor/conf.d/`**, never restated
+  in the linter, so adding a program arms the rule for it.
+- Weak by design, following L059: it checks that the file reached the socket
+  first, not that the wait covers the same service. A wait for the wrong service
+  is a review problem; no wait at all is a structural one, and only the second is
+  decidable by reading the file.
+- **Known blind spots, stated rather than implied.** A service name held in a
+  variable (`pgrep -f "$svc"`) cannot be resolved statically, and the
+  `grep "[s]upervisord"` bracket idiom does not match the program name as
+  written. Neither is in the tree; both would pass.
+
+### Readiness budgets are levers, and their floors are gated — **GATED (L070)**
+
+The same 2026-08-18 batch lost two more cells to timeouts that are judgement, not
+structure. This section previously said they were "fixed but NOT gated", on the
+grounds that a linter cannot decide whether a number is large enough. That was
+half true and, as an argument for gating nothing, wrong: a linter cannot decide
+**sufficiency**, but it can decide whether a budget has been put back **below the
+cost that was actually measured**. It had to be: reverting `HTTP_CHECK_MAX_TIME`
+to 5 and the portal budget to 30 — the two exact values that failed real cells —
+passed every test in this repo.
+
+Two properties, pulling opposite ways, which is why they are one rule:
+
+- **Overridable.** The suite ships INSIDE the image, so a baked number can only
+  be corrected by rebuilding and re-promoting every image in the family. Behind
+  `${VAR:-N}` it is a template edit. Every other tunable in this harness
+  (`PROV_TIMEOUT`, `INSTANCE_TEST_DEFAULT_TIMEOUT`, `EXPOSURE_ENFORCE`) is
+  already env-driven; these were the exception.
+- **Floor-pinned.** An overridable default is also easy to edit downwards, and
+  the values that failed are the ones someone would reach for.
+
+**L070** (`check_readiness_budget_floors`) enforces both, plus the obvious
+corollary that `http_check` must READ the variable — a lever nothing uses is not
+a lever. It is a FLOOR, not an equality: raising a budget after a new measurement
+must never require a linter change.
+
+`caddy hash-password` emits bcrypt at cost **14**, and Caddy verifies an unknown
+username against a fake hash anyway so timing cannot enumerate accounts. It
+caches successes only, so every distinct WRONG credential pays a full
+verification — which is precisely what the auth-rejection checks send. bcrypt is
+single-threaded, so the cost tracks the CPU share the container gets. Measured in
+the shipped image:
+
+| CPU quota | mean wrong-credential latency |
+|---|---|
+| 16 cores idle | 690 ms |
+| `--cpus=0.50` | 1410 ms |
+| `--cpus=0.25` | 2232 ms |
+| `--cpus=0.12` | 4666 ms |
+
+`http_check`'s `--max-time 5` sat inside that range, so two rejection checks
+returned `000` — a curl timeout, not a server answer — and failed a base test on
+a healthy image. `HTTP_CHECK_MAX_TIME` now defaults to **20 s**, covering roughly
+a 0.03-core share, and the same raised budget applies to the raw `curl` calls in
+`26-caddy-auth` that hit the same auth-protected URLs. The old
+budget was also self-amplifying: when curl gives up Caddy carries on computing
+the abandoned bcrypt on the same starved core the next check needs, which is why
+the production failure came in pairs. Reproduced at `--cpus=0.12`: forcing one
+check back to 5 s made the *next* fail at 20 s and reproduced the production line
+verbatim; at 20 s throughout, clean. An earlier version of this fix declared `# TEST_TIMEOUT=900` on `26-caddy-auth`
+to cover the raised budgets. That was wrong twice: 900 is exactly
+`INSTANCE_TEST_DEFAULT_TIMEOUT` in the promote workflow, so it changed nothing in
+CI, and it CUT the runner's own 3600 s default by 4x for anyone running the suite
+by hand — the slow case it was meant to protect. The ceiling is bounded in the
+code instead: the first caddy restart that does not come back now fails the test
+immediately, so the worst case is one caddy budget plus the `http_check`s rather
+than six budgets.
+
+**A third instance of the same defect was left behind by the first pass.**
+`wait_for_caddy` was still 30 s against that measured 43 s restart, and its expiry
+only WARNed — every caller ignored it, so the next `http_check` hit a port with no
+listener and recorded `expected 401, got 000`, indistinguishable from the bcrypt
+timeout and NOT fixable by a longer `--max-time`, because a refused connection
+returns instantly. It is now `CADDY_READY_TIMEOUT` (120 s) and every caller fails
+the test on expiry.
+
+`20-portal`'s 30 s was a budget for a process, but the wait is on a chain. The
+portal binds in 1.9 s (4 cores) / 2.9 s (`--cpus=0.5`) measured cold. What it
+waits on is `exit_portal.sh`, which blocks until `/etc/portal.yaml` exists —
+created by `caddy.sh` only after `caddy_config_manager.py` has run, which hashes
+once per proxied app. On 2026-08-18 the test gave up at 30 s and
+`67-service-functionality` passed on the same endpoints 53 s later, on the same
+instance; a caddy restart on that box took 43 s. Now `PORTAL_READY_TIMEOUT`,
+**120 s**.
+
+`wait_for_url` also could not honour any budget: it had no `--max-time` on the
+probe and only advanced its counter when a probe COMPLETED, so a service that
+accepts a connection and then wedges blocked the first `curl` forever and the
+test ran to the runner's timeout — reporting `timedout`, which names no failing
+check at all. Both wait helpers now bound the probe and use a wall-clock
+deadline.
+
 ### The cloudflared binary is unpinned, and a CONTRACT is what guards it
 
 `Dockerfile` fetches `cloudflared-linux-${TARGETARCH}` from `releases/latest`, so
@@ -613,14 +778,31 @@ A cell redraws on any non-zero exit except `config_error` (4) and `interrupted`
 (130), because reproducibility rather than symptom is what separates a bad host from a bad image: measured on 2026-08-18,
 six of seventy pytorch cells blocked and every one investigated passed on other
 hardware, all of them with FAILED tests that the previous zero-failure rule could
-not redraw.
+not redraw. **Amended 2026-08-19:** on re-examination only THREE of those six were
+host faults (across three machines). The other three were defects in our own test
+suite — the supervisord readiness race now gated by L069, and the two budgets
+above — and two of those three ran on the same machine, so they had been counted
+as independent exhibits. The redraw stands; its evidence base is half what it
+claimed.
 
 Every failed attempt records the `machine_id` it ran on (`SUSPECT-HOST`, and a
 job-summary table), because the instance is destroyed immediately afterwards and
-the evidence is otherwise lost. The table separates the two readings deliberately:
-a cell that PASSED after a redraw exonerates the image and makes that host a
-de-verification candidate; a cell that never passed does not, and de-verifying
-those hosts would be wrong.
+the evidence is otherwise lost. The table separates the readings deliberately: a
+cell that PASSED after a redraw exonerates the image; a cell that never passed
+does not, and de-verifying those hosts would be wrong.
+
+**A redraw pass is necessary but NOT sufficient to blame the host** (ADR 0029,
+amended 2026-08-19). It has three causes, not two: a host fault, a flaky image
+defect, and a defect in our own suite that a slower host merely exposed. A cell
+whose failing test was later contradicted by a passing test of the same property
+**in the same run** is self-contradicted — a harness defect, no host suspicion.
+That happened twice on 2026-08-18: `20-portal` failed and
+`67-service-functionality` passed on the same endpoints, on the same instance,
+53 seconds later. The unamended rule would have nominated a healthy machine
+twice. De-verification acts on someone else's hardware, so a suspect-list entry is
+a **candidate for investigation, never an instruction** — nothing yet computes
+self-contradiction, and until it does the two known harness pairs are checked by
+hand.
 
 Accepted cost, stated: a FLAKY image defect can now pass by luck, where the old
 rule would have blocked it. A deterministic one still fails every draw and blocks.
