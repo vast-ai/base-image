@@ -98,3 +98,122 @@ def test_the_gate_actually_PASSES_the_exclusions_to_the_client():
         "the redraw can re-pick the box it just failed on")
     assert "qa-suspect-hosts.txt" in gate.split("--exclude-machine")[0][-900:], (
         "the exclusions must be built from the recorded failures, not a fresh list")
+
+
+# ---- a host fault is not a market shortage ----------------------------------
+
+def _gate() -> str:
+    return (TM.parents[1] / ".github" / "workflows" / "qa-gate.yml").read_text()
+
+
+def test_a_host_fault_is_not_reported_as_no_offers():
+    """Observed 2026-08-19 in run 32236327488.
+
+    Making the redraw reuse exit code 2 gave that code two meanings — the
+    client's genuine `no_offers`, and our own "a host failed, draw again". The
+    wait branch only knew the first, so a cell that drew two GPU-less boxes in a
+    row reported `no offers matched the floors` twice. cu130 had 452 distinct
+    machines available at the time; nothing was short. The message sent the
+    reader to raise the floors, which would have been the wrong fix.
+    """
+    g = _gate()
+    assert '_RETRY_REASON="host"' in g, (
+        "the redraw branch must MARK itself as a host fault; merely having the "
+        "variable is not enough — if it stays 'no_offers' the message is wrong "
+        "again, which is the exact bug this guards")
+    assert '_RETRY_REASON="no_offers"' in g, (
+        "the default must remain the client's own no-offers meaning")
+    assert 'host fault; drawing another machine' in g, (
+        "a host-fault redraw must say so rather than blaming the market")
+    assert 'no offers matched the floors' in g, (
+        "the genuine market-shortage message must survive")
+
+
+def test_a_host_fault_does_not_wait_for_market_capacity():
+    """The two reasons want opposite waits. A thin market needs capacity to
+    appear, so the backoff IS the point. A bad host needs a different box, which
+    is available right now and already excluded — waiting the market backoff cost
+    about seven minutes per redraw for nothing, multiplied across 70 cells."""
+    g = _gate()
+    host_branch = g.split('if [ "$_RETRY_REASON" = "host" ]')[1][:700]
+    assert "inputs.retry_delay" not in host_branch, (
+        "the host-fault path must not use the market backoff")
+    assert "RANDOM %" in host_branch, (
+        "keep a small jitter so a matrix does not re-enter the single-key QA "
+        "account in lockstep (ADR 0005 cond 6)")
+
+
+# ---- the loop flag must never become the verdict ----------------------------
+
+def test_an_exhausted_redraw_reports_the_REAL_exit_code_not_the_loop_flag():
+    """The redraw sets CODE=2 to mean "go round again". Exit 2 is also
+    EXIT_NO_OFFERS, which `qa_verdict.classify` short-circuits to `inconclusive`
+    BEFORE it looks at any test result — and on the scheduled comfyui/vllm gates
+    `inconclusive` soft-passes and promotes UNGATED.
+
+    So emitting the loop flag as the verdict turns a real, reproducible test
+    failure into an automatic production promotion, twice a day, announced as
+    "no live test ran". `retries` defaults to 0, so those two pipelines never even
+    redraw — they got the aliasing with none of the benefit.
+    """
+    g = _gate()
+    assert "_REAL_CODE=$CODE" in g, (
+        "the client's real exit code is not preserved before the loop rewrites it")
+    assert 'echo "exit_code=${_REAL_CODE}"' in g, (
+        "the loop-control flag is emitted as the verdict; a real test failure "
+        "becomes EXIT_NO_OFFERS and soft-passes on the scheduled gates")
+    assert 'echo "exit_code=${CODE}"' not in g, (
+        "CODE is the loop flag, not a verdict")
+
+
+def test_a_real_failure_classifies_as_block_not_inconclusive():
+    """The end-to-end property, driven through the real classifier rather than
+    asserted about the YAML."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("qa_verdict", TM / "qa_verdict.py")
+    qv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qv)
+    raw = {"state": "failed", "got_result_event": True,
+           "tests": [{"name": "base/60-gpu-cuda", "state": "failed"}],
+           "stream_counts": {"passed": 10, "failed": 1, "skipped": 0}}
+    req = qv.parse_required("base/60-gpu-cuda")
+    assert qv.classify(1, raw, req)[0] == "block", "a real failure must block"
+    assert qv.classify(5, raw, req)[0] == "block", "an instance error must block"
+    # The bug, pinned: if the gate ever emits 2 for this payload the verdict flips.
+    assert qv.classify(2, raw, req)[0] == "inconclusive", (
+        "exit 2 means no-box-obtained; this is exactly why the loop flag must "
+        "never be emitted as the verdict")
+
+
+def test_a_usage_error_is_config_error_not_no_offers():
+    """argparse exits 2 on a bad flag — the SAME code as EXIT_NO_OFFERS.
+
+    qa_verdict maps 2 to `inconclusive`, which a scheduled run soft-passes and
+    promotes UNGATED while Slack blames a thin market. So any skew between the
+    gate and this client — a typo, a flag added on one side only — failed OPEN on
+    the unattended path. Latent until the gate started passing --exclude-machine,
+    which is a new place for that skew to appear.
+    """
+    import subprocess, sys as _s
+    r = subprocess.run([_s.executable, str(TM / "test_template.py"), "--bogus-flag", "x"],
+                       capture_output=True, text=True)
+    assert r.returncode == 4, (
+        f"a usage error exited {r.returncode}; 2 is EXIT_NO_OFFERS and soft-passes "
+        f"on the schedule path")
+    assert "config_error" in r.stdout
+
+
+def test_help_still_exits_zero():
+    """The guard must not swallow --help."""
+    import subprocess, sys as _s
+    r = subprocess.run([_s.executable, str(TM / "test_template.py"), "--help"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+
+
+def test_interrupted_is_not_redrawn():
+    """qa_verdict calls exit 130 'a cancellation is not a pass'. Redrawing it
+    would turn a decision someone made into a bad draw."""
+    g = _gate()
+    assert '[ "$CODE" -ne 130 ]' in g, (
+        "exit 130 (interrupted) is redrawn; a cancellation must not be retried")

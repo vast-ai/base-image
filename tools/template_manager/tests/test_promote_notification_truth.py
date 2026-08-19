@@ -478,3 +478,68 @@ def test_exoneration_is_distinguished_from_a_still_suspect_image():
         "the report must distinguish a redraw-exonerated image from one that "
         "never passed; otherwise good hosts get de-verified for an image bug")
     assert 'FINAL_CODE' in body, "the distinction must key on the cell's final outcome"
+
+
+# ---- the notifier must survive any caller's headline -------------------------
+
+NOTIFY = REPO / ".github" / "workflows" / "notify-slack.yml"
+
+
+def test_the_slack_header_is_clamped_to_slacks_limit():
+    """Observed 2026-08-19, run 32239585814.
+
+    promote-pytorch built a 527-character headline enumerating the QA'd
+    artifacts. Slack's header block is plain_text with a hard 150-character
+    limit, so the whole POST was rejected with HTTP 400 and the notification was
+    lost — including the part that says whether anything shipped. The promotion
+    had fully SUCCEEDED, every tag pushed, and the run still reported failure
+    because the only thing that broke was the announcement of the success.
+
+    This file already truncates the tags section for its 3000-char limit; the
+    header was never clamped, so any of the five callers could break the shared
+    notifier.
+    """
+    body = NOTIFY.read_text()
+    assert "${#HEADER_TEXT} -gt 150" in body, (
+        "the header is not clamped to Slack's 150-char limit, so a long headline "
+        "from any caller loses the entire notification to an HTTP 400")
+
+
+def test_the_clamped_text_is_not_simply_discarded():
+    """A headline long enough to clamp is carrying information. The body has a
+    3000-char limit rather than 150, so the overflow belongs there — silently
+    dropping it would trade one lost message for a misleading one."""
+    body = NOTIFY.read_text()
+    assert "HEADER_OVERFLOW" in body, "the clamped text is discarded"
+    assert "section" in body.split('if [[ -n "$HEADER_OVERFLOW" ]]')[-1][:400], (
+        "the overflow must be re-attached as a body block, not thrown away")
+
+
+def test_the_clamp_is_defensive_in_the_shared_notifier_not_only_the_caller():
+    """Fixing only promote-pytorch would leave the same trap for the other four
+    callers. The component that knows Slack's limits is the one that must hold
+    them."""
+    callers = [p.name for p in (REPO / ".github" / "workflows").glob("*.yml")
+               if p.name != "notify-slack.yml" and "notify-slack.yml" in p.read_text()]
+    assert len(callers) >= 3, (
+        f"expected several callers of the shared notifier, found {callers}")
+    assert "${#HEADER_TEXT} -gt 150" in NOTIFY.read_text(), (
+        "the clamp must live in the shared notifier so no caller can break it")
+
+
+def test_the_word_boundary_cut_does_not_eat_the_budget():
+    """The trim must be conditional on the TRIMMED length, not the pre-trim one.
+
+    The first version tested `${#_cut}`, which is always 147 at that point, so
+    the condition was vacuously true. A headline whose tail is a space-free list
+    — a comma-joined tag list — then trimmed back to the last space in the prose
+    prefix. Measured: 194 characters in, 27 out. The full text survived in the
+    overflow block, so nothing was lost, but the header collapsed to a fifth of
+    its budget.
+    """
+    body = NOTIFY.read_text()
+    assert "${#_trim} -gt 120" in body, (
+        "the word-boundary guard must test the trimmed string; testing the "
+        "fixed-length cut is vacuously true and throws away the budget")
+    assert "${#_cut} -gt 120" not in body, (
+        "this is the vacuous form — _cut is always 147 where it is tested")

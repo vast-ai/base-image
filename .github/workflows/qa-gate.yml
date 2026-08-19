@@ -80,13 +80,24 @@ on:
         default: ""
       retries:
         description: >-
-          Extra attempts on an INFRA-inconclusive outcome only: no_offers, or a block
-          in which NO test actually failed (the host could not provide what the
-          required tests need — e.g. it presented no GPU — so nothing was tested and
-          a fresh draw is warranted). Never on a real failure, an instance crash or a
-          config error — retrying a red is how a gate becomes decoration.
-          bad_instance is excluded too: it already exhausted the client's own launch
-          attempts.
+          Extra attempts on ANY failure except config_error (4) and interrupted
+          (130) — ADR 0029. Reproducibility, not symptom, is what separates a bad
+          host from a bad image: a defect in the image fails every draw and still
+          blocks once attempts are exhausted, while a bad host does not survive a
+          fresh draw. Each failed attempt records the machine it ran on and
+          excludes it from the next draw.
+
+          This SUPERSEDES the previous "infra-inconclusive only" rule, which
+          redrew only when no test had failed. That was written for a GPU-less
+          box, where the required-pass gate fires on skips; it could not help when
+          a bad host makes a real test FAIL, which is most of what happens.
+
+          config_error is never retried (our own bug — retrying hides it), and
+          neither is 130 (a cancellation is a decision, not a bad draw).
+
+          NOTE: a deterministic image defect blocks, but a FLAKY one can now pass
+          by luck, because one passing redraw ends the loop. That cost is accepted
+          in ADR 0029 and the suspect-machine record is what makes it visible.
         required: false
         type: number
         default: 0
@@ -224,6 +235,8 @@ jobs:
         continue-on-error: true
         env:
           LOG_PATHS: ${{ inputs.log_paths }}
+          QA_REPO: ${{ inputs.repo }}
+          QA_TAG: ${{ inputs.tag }}
           EXTRA_ENV: ${{ inputs.extra_env }}
         run: |
           ARGS=()
@@ -231,11 +244,13 @@ jobs:
           while IFS= read -r kv; do [ -n "$kv" ] && ARGS+=(--env "$kv"); done <<< "${EXTRA_ENV}"
           if [ "${{ inputs.require_floor }}" = "true" ]; then ARGS+=(--require-floor); fi
 
-          # Retry only an INFRA-inconclusive outcome (2 = no_offers: nothing in the
-          # market matched the floors, so the image was never tested). Never retry a
-          # real failure (1), an instance crash (5) or a config error (4) — retrying a
-          # red is how a gate turns into decoration. 3 (bad_instance) is excluded
-          # because the client already exhausted its own launch attempts internally.
+          # Retry ANY failure except config_error (4) and interrupted (130), and
+          # exclude the machine that failed (ADR 0029). Reproducibility rather than
+          # symptom is the discriminator: an image defect fails every draw and
+          # still blocks when attempts run out; a bad host does not survive a fresh
+          # one. Retrying a red does risk passing by luck — that cost is accepted
+          # in ADR 0029, bounded by the attempt count, and made visible by the
+          # per-attempt machine record.
           ATTEMPTS=$(( ${{ inputs.retries }} + 1 ))
           for attempt in $(seq 1 "$ATTEMPTS"); do
             [ "$attempt" -gt 1 ] && echo "::notice::attempt ${attempt}/${ATTEMPTS} after an inconclusive market result"
@@ -262,6 +277,17 @@ jobs:
               > /tmp/qa-raw.json
             CODE=$?
             set -e
+            # WHY we may retry, which is not the same as the code we retry ON.
+            # Exit 2 from the client means the market had nothing; the redraw
+            # below ALSO sets CODE=2, for a host that failed. Both wait, but for
+            # opposite reasons, and only one of them is worth waiting long for.
+            _RETRY_REASON="no_offers"
+            # The client's REAL exit code, before the loop rewrites it. CODE=2 is a
+            # LOOP-CONTROL flag ("go round again"); it is not a verdict. Emitting it
+            # as the verdict aliases a real test failure onto EXIT_NO_OFFERS, which
+            # qa_verdict.py short-circuits to `inconclusive` — and on the scheduled
+            # comfyui/vllm gates `inconclusive` soft-passes and PROMOTES UNGATED.
+            _REAL_CODE=$CODE
             echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
 
             # DRAW ANOTHER HOST ON ANY FAILURE, AND NAME THE HOST.
@@ -287,33 +313,62 @@ jobs:
             # image defect has to pass EVERY redraw to escape, not just one.
             #
             # NOT 4 (config_error): that is our bug, and retrying hides it.
-            if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ] && [ "$CODE" -ne 2 ]; then
+            # NOT 4 (config_error: our bug, retrying hides it) and NOT 130
+            # (interrupted: qa_verdict calls a cancellation "not a pass", and a
+            # cancelled run is a decision someone made, not a bad draw).
+            if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ] && [ "$CODE" -ne 2 ] && [ "$CODE" -ne 130 ]; then
               # Name the box before redrawing. A machine that fails a test the
               # image passes elsewhere is a de-verification candidate, and that is
               # only actionable if the machine id is recorded at the moment it
               # failed — the instance is destroyed immediately afterwards.
-              _mid=$(jq -r '.machine_id // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
-              _iid=$(jq -r '.instance_id // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
-              _failed_names=$(jq -r '[.tests[]? | select(.state=="failed") | .name] | join(",")' /tmp/qa-raw.json 2>/dev/null || echo "")
+              # Take the LAST complete {...} line, never the whole file — the same
+              # parse qa_verdict.py documents, after a whole-file parse once
+              # "turned a real PASS into a BLOCK". Anything the client prints on
+              # stdout alongside the payload would otherwise make jq fail, leave
+              # _mid empty, and the redraw would land back on the failed host.
+              grep '^{.*}$' /tmp/qa-raw.json 2>/dev/null | tail -n1 > /tmp/qa-raw-last.json || : > /tmp/qa-raw-last.json
+              _mid=$(jq -r '.machine_id // empty' /tmp/qa-raw-last.json 2>/dev/null || echo "")
+              _iid=$(jq -r '.instance_id // empty' /tmp/qa-raw-last.json 2>/dev/null || echo "")
+              _failed_names=$(jq -r '[.tests[]? | select(.state=="failed") | .name] | join(",")' /tmp/qa-raw-last.json 2>/dev/null || echo "")
               echo "SUSPECT-HOST machine=${_mid:-unknown} instance=${_iid:-unknown} exit=${CODE} failed=${_failed_names:-none}"
               echo "${_mid:-unknown}|${_iid:-unknown}|${CODE}|${_failed_names:-none}" >> /tmp/qa-suspect-hosts.txt
               echo "::warning::cell failed on machine ${_mid:-unknown} (exit ${CODE}, failed: ${_failed_names:-none}) — drawing another host; if a redraw passes, this machine is a de-verification candidate"
               CODE=2      # treat as inconclusive: retry on a fresh offer
+              _RETRY_REASON="host"
             fi
 
             [ "$CODE" -ne 2 ] && break
             if [ "$attempt" -lt "$ATTEMPTS" ]; then
-              # Jitter: a matrix of cells that all went inconclusive did so because
-              # the market was thin for all of them at once, so an unjittered delay
-              # marches them back to the single-key account in lockstep (ADR 0005
-              # cond 6). Spread is up to +50%.
-              _delay=$(( ${{ inputs.retry_delay }} + RANDOM % ((${{ inputs.retry_delay }} / 2) + 1) ))
-              echo "no offers matched the floors; waiting ${_delay}s before retrying"
+              if [ "$_RETRY_REASON" = "host" ]; then
+                # A HOST failed. The market is not thin — there is nothing to wait
+                # for, and the machine that failed is now excluded, so the next
+                # draw is a different box. Waiting the market backoff here cost
+                # ~7 minutes per redraw for no reason. A small jitter only, so a
+                # matrix of cells does not re-enter the single-key QA account in
+                # lockstep (ADR 0005 cond 6).
+                _delay=$(( 5 + RANDOM % 20 ))
+                echo "host fault; drawing another machine in ${_delay}s"
+              else
+                # Genuinely no offers matched the floors. Here the wait IS the
+                # point: capacity has to appear. Jitter up to +50% for the same
+                # lockstep reason.
+                _delay=$(( ${{ inputs.retry_delay }} + RANDOM % ((${{ inputs.retry_delay }} / 2) + 1) ))
+                echo "no offers matched the floors; waiting ${_delay}s before retrying"
+              fi
               sleep "$_delay"
             fi
           done
-          echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
+          # Emit what actually happened on the LAST attempt, never the loop flag.
+          echo "exit_code=${_REAL_CODE}" >> "$GITHUB_OUTPUT"
           echo "attempts=${attempt}" >> "$GITHUB_OUTPUT"
+          # Surfaced, not just recorded. ADR 0029's "what would reverse this"
+          # cites the redraw RATE, and an output nothing reads cannot show it.
+          if [ "${attempt}" -gt 1 ]; then
+            echo "### QA redraws — ${QA_REPO} \`${QA_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "This cell took **${attempt}** attempts (final exit ${_REAL_CODE})." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::cell needed ${attempt} attempts (final exit ${_REAL_CODE})"
+          fi
           if [ -s /tmp/qa-suspect-hosts.txt ]; then
             echo "suspect-hosts<<SUSPECT_EOF" >> "$GITHUB_OUTPUT"
             cat /tmp/qa-suspect-hosts.txt >> "$GITHUB_OUTPUT"
@@ -331,15 +386,22 @@ jobs:
         env:
           SUSPECTS: ${{ steps.test.outputs.suspect-hosts }}
           FINAL_CODE: ${{ steps.test.outputs.exit_code }}
+          # Via env:, not spliced into bash. Two reasons, and the second is why
+          # the previous version could not be tested at all: a dispatch input is
+          # free text, and wfexec.step_script REFUSES a step carrying an
+          # unresolved expression rather than guess at it — so an untestable step
+          # stayed untested, which is how three grep-only guards shipped here.
+          QA_REPO: ${{ inputs.repo }}
+          QA_TAG: ${{ inputs.tag }}
         run: |
           {
             if [ "${FINAL_CODE}" = "0" ]; then
-              echo "### De-verification candidates — ${{ inputs.repo }} \`${{ inputs.tag }}\`"
+              echo "### De-verification candidates — ${QA_REPO} \`${QA_TAG}\`"
               echo ""
               echo "These machines failed, then the SAME image passed on a fresh draw."
               echo "The redraw exonerates the image, so the host is the fault:"
             else
-              echo "### Failed hosts (image NOT exonerated) — ${{ inputs.repo }} \`${{ inputs.tag }}\`"
+              echo "### Failed hosts (image NOT exonerated) — ${QA_REPO} \`${QA_TAG}\`"
               echo ""
               echo "The cell never passed, so these are NOT de-verification"
               echo "candidates — the image is still a live suspect:"
@@ -348,7 +410,12 @@ jobs:
             echo "| machine | instance | exit | failed tests |"
             echo "|---|---|---|---|"
             while IFS='|' read -r m i c f; do
-              [ -n "$m" ] && echo "| \`$m\` | $i | $c | $f |"
+              # Skip rows with no machine. exit 3 (bad_instance) is emitted before
+              # any machine is bound, so it records `unknown` — and presenting
+              # that under "de-verification candidates" is a wrong accusation
+              # with no way to act on it.
+              case "$m" in ''|unknown) continue;; esac
+              echo "| \`$m\` | $i | $c | $f |"
             done <<< "${SUSPECTS}"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "${SUSPECTS}"
