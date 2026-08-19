@@ -262,6 +262,11 @@ jobs:
               > /tmp/qa-raw.json
             CODE=$?
             set -e
+            # WHY we may retry, which is not the same as the code we retry ON.
+            # Exit 2 from the client means the market had nothing; the redraw
+            # below ALSO sets CODE=2, for a host that failed. Both wait, but for
+            # opposite reasons, and only one of them is worth waiting long for.
+            _RETRY_REASON="no_offers"
             echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
 
             # DRAW ANOTHER HOST ON ANY FAILURE, AND NAME THE HOST.
@@ -299,16 +304,27 @@ jobs:
               echo "${_mid:-unknown}|${_iid:-unknown}|${CODE}|${_failed_names:-none}" >> /tmp/qa-suspect-hosts.txt
               echo "::warning::cell failed on machine ${_mid:-unknown} (exit ${CODE}, failed: ${_failed_names:-none}) — drawing another host; if a redraw passes, this machine is a de-verification candidate"
               CODE=2      # treat as inconclusive: retry on a fresh offer
+              _RETRY_REASON="host"
             fi
 
             [ "$CODE" -ne 2 ] && break
             if [ "$attempt" -lt "$ATTEMPTS" ]; then
-              # Jitter: a matrix of cells that all went inconclusive did so because
-              # the market was thin for all of them at once, so an unjittered delay
-              # marches them back to the single-key account in lockstep (ADR 0005
-              # cond 6). Spread is up to +50%.
-              _delay=$(( ${{ inputs.retry_delay }} + RANDOM % ((${{ inputs.retry_delay }} / 2) + 1) ))
-              echo "no offers matched the floors; waiting ${_delay}s before retrying"
+              if [ "$_RETRY_REASON" = "host" ]; then
+                # A HOST failed. The market is not thin — there is nothing to wait
+                # for, and the machine that failed is now excluded, so the next
+                # draw is a different box. Waiting the market backoff here cost
+                # ~7 minutes per redraw for no reason. A small jitter only, so a
+                # matrix of cells does not re-enter the single-key QA account in
+                # lockstep (ADR 0005 cond 6).
+                _delay=$(( 5 + RANDOM % 20 ))
+                echo "host fault; drawing another machine in ${_delay}s"
+              else
+                # Genuinely no offers matched the floors. Here the wait IS the
+                # point: capacity has to appear. Jitter up to +50% for the same
+                # lockstep reason.
+                _delay=$(( ${{ inputs.retry_delay }} + RANDOM % ((${{ inputs.retry_delay }} / 2) + 1) ))
+                echo "no offers matched the floors; waiting ${_delay}s before retrying"
+              fi
               sleep "$_delay"
             fi
           done

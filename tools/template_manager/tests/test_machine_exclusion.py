@@ -98,3 +98,46 @@ def test_the_gate_actually_PASSES_the_exclusions_to_the_client():
         "the redraw can re-pick the box it just failed on")
     assert "qa-suspect-hosts.txt" in gate.split("--exclude-machine")[0][-900:], (
         "the exclusions must be built from the recorded failures, not a fresh list")
+
+
+# ---- a host fault is not a market shortage ----------------------------------
+
+def _gate() -> str:
+    return (TM.parents[1] / ".github" / "workflows" / "qa-gate.yml").read_text()
+
+
+def test_a_host_fault_is_not_reported_as_no_offers():
+    """Observed 2026-08-19 in run 32236327488.
+
+    Making the redraw reuse exit code 2 gave that code two meanings — the
+    client's genuine `no_offers`, and our own "a host failed, draw again". The
+    wait branch only knew the first, so a cell that drew two GPU-less boxes in a
+    row reported `no offers matched the floors` twice. cu130 had 452 distinct
+    machines available at the time; nothing was short. The message sent the
+    reader to raise the floors, which would have been the wrong fix.
+    """
+    g = _gate()
+    assert '_RETRY_REASON="host"' in g, (
+        "the redraw branch must MARK itself as a host fault; merely having the "
+        "variable is not enough — if it stays 'no_offers' the message is wrong "
+        "again, which is the exact bug this guards")
+    assert '_RETRY_REASON="no_offers"' in g, (
+        "the default must remain the client's own no-offers meaning")
+    assert 'host fault; drawing another machine' in g, (
+        "a host-fault redraw must say so rather than blaming the market")
+    assert 'no offers matched the floors' in g, (
+        "the genuine market-shortage message must survive")
+
+
+def test_a_host_fault_does_not_wait_for_market_capacity():
+    """The two reasons want opposite waits. A thin market needs capacity to
+    appear, so the backoff IS the point. A bad host needs a different box, which
+    is available right now and already excluded — waiting the market backoff cost
+    about seven minutes per redraw for nothing, multiplied across 70 cells."""
+    g = _gate()
+    host_branch = g.split('if [ "$_RETRY_REASON" = "host" ]')[1][:700]
+    assert "inputs.retry_delay" not in host_branch, (
+        "the host-fault path must not use the market backoff")
+    assert "RANDOM %" in host_branch, (
+        "keep a small jitter so a matrix does not re-enter the single-key QA "
+        "account in lockstep (ADR 0005 cond 6)")
