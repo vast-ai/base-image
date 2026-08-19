@@ -278,3 +278,70 @@ def test_a_short_prefix_with_a_space_free_tail_keeps_its_budget(tmp_path):
     assert len(header) >= 140, (
         f"header collapsed to {len(header)} chars — the word-boundary trim ate "
         f"the budget by trimming back to the only space, in the prefix")
+
+
+def test_a_failed_notification_does_not_fail_the_run_it_reports_on(tmp_path):
+    """A fully successful promotion reported as a failed run, because the
+    announcement got a 400. The clamp fixes that trigger; `curl -f` is the class —
+    a 429, a Slack 5xx, or the next payload limit would each do it again.
+
+    "The promotion worked but the run is red" is the most expensive false alarm:
+    it trains people to discount red on the pipeline where red matters most.
+    """
+    script = wfexec.step_script(NOTIFY, "notify", "Notify Slack")
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    bindir = workdir / "bin"
+    bindir.mkdir()
+    # curl that always fails, as Slack would on any non-2xx
+    (bindir / "curl").write_text('#!/bin/bash\nexit 22\n')
+    (bindir / "curl").chmod(0o755)
+    r, _, _ = _run(script, workdir, {
+        "HEADLINE": "PyTorch promoted", "BUILD_RESULT": "success", "STATUS": "",
+        "IMAGE_NAME": "PyTorch", "IMAGE_TAGS": "[]", "TRIGGER": "schedule",
+        "IMAGE_REF": "2026-08-18", "RUN_URL": "https://example/1",
+        "SLACK_WEBHOOK_URL": "https://hooks.example/x"})
+    assert r.returncode == 0, (
+        "a failed Slack POST failed the step, turning a successful promotion "
+        f"into a red run: {r.stderr}")
+    assert "::warning::" in (r.stdout + r.stderr), "the failure must still be surfaced"
+
+
+def test_a_redraw_is_visible_in_the_job_summary(tmp_path):
+    """ADR 0029's own reversal tripwire cites the redraw RATE. An output nothing
+    reads cannot show it, so a cell that needed extra attempts says so."""
+    tm = tmp_path / "tm"
+    tm.mkdir(parents=True, exist_ok=True)
+    (tm / "counter").write_text("0")
+    (tm / "test_template.py").write_text(
+        "import sys, pathlib\n"
+        "c = pathlib.Path(__file__).with_name('counter')\n"
+        "i = int(c.read_text()); c.write_text(str(i + 1))\n"
+        f"print({RED!r} % (35974 + i))\n"
+        "sys.exit(1 if i == 0 else 0)\n")
+    (tmp_path / "qa-suspect-hosts.txt").write_text("")
+    script = _loop_script().replace("/tmp/qa-suspect-hosts.txt",
+                                    str(tmp_path / "qa-suspect-hosts.txt"))
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "python").write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n')
+    (bindir / "python").chmod(0o755)
+    (bindir / "sleep").write_text('#!/bin/bash\nexit 0\n')
+    (bindir / "sleep").chmod(0o755)
+    r, summary, _ = _run(script, tmp_path, {
+        "TM": str(tm), "LOG_PATHS": "", "EXTRA_ENV": "",
+        "QA_REPO": "pytorch", "QA_TAG": "auto-cu126"})
+    assert r.returncode == 0, r.stderr
+    assert "QA redraws" in summary and "2** attempts" in summary, (
+        f"a redraw left no trace in the job summary:\n{summary}")
+
+
+def test_interrupted_is_never_redrawn(tmp_path):
+    """exit 130. qa_verdict calls a cancellation "not a pass"; redrawing it turns
+    a decision someone made into a bad draw, and spends money doing it. Executed
+    rather than grepped, because a grep for the literal survives moving the test
+    out of the condition."""
+    r, out, _ = _run_loop(tmp_path, [130, 0], [35974, 136916])
+    assert out["exit_code"] == "130", "a cancellation must not be retried"
+    assert out["attempts"] == "1", (
+        f"redrew a cancelled run ({out['attempts']} attempts)")

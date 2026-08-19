@@ -243,6 +243,20 @@ jobs:
               }]
             }')
           
-          curl -sfS -X POST "$SLACK_WEBHOOK_URL" \
-            -H 'Content-type: application/json' \
-            --data "$PAYLOAD"
+          # A FAILED ANNOUNCEMENT MUST NOT FAIL THE THING IT ANNOUNCES.
+          # On 2026-08-19 a fully successful pytorch promotion — QA green on 70
+          # cells, every tag pushed — reported as a failed run because a 527-char
+          # header got a 400 from Slack. The clamp fixes that trigger; `-f` is the
+          # class. A 429, a Slack 5xx, or the next payload limit nobody knew about
+          # would each do it again, and "the promotion worked but the run is red"
+          # is the most expensive kind of false alarm: it trains people to ignore
+          # red runs on the pipeline where red matters most.
+          #
+          # Retries first, because a transient really is worth retrying; then warn
+          # rather than exit. The step summary and the run itself remain the record.
+          if ! curl -sS --retry 3 --retry-delay 2 --retry-all-errors \
+                 -X POST "$SLACK_WEBHOOK_URL" \
+                 -H 'Content-type: application/json' \
+                 --data "$PAYLOAD" --fail-with-body; then
+            echo "::warning::Slack notification failed — the build/promotion result above is unaffected"
+          fi

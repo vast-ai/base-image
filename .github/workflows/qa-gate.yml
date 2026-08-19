@@ -235,6 +235,8 @@ jobs:
         continue-on-error: true
         env:
           LOG_PATHS: ${{ inputs.log_paths }}
+          QA_REPO: ${{ inputs.repo }}
+          QA_TAG: ${{ inputs.tag }}
           EXTRA_ENV: ${{ inputs.extra_env }}
         run: |
           ARGS=()
@@ -359,6 +361,14 @@ jobs:
           # Emit what actually happened on the LAST attempt, never the loop flag.
           echo "exit_code=${_REAL_CODE}" >> "$GITHUB_OUTPUT"
           echo "attempts=${attempt}" >> "$GITHUB_OUTPUT"
+          # Surfaced, not just recorded. ADR 0029's "what would reverse this"
+          # cites the redraw RATE, and an output nothing reads cannot show it.
+          if [ "${attempt}" -gt 1 ]; then
+            echo "### QA redraws — ${QA_REPO} \`${QA_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "This cell took **${attempt}** attempts (final exit ${_REAL_CODE})." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::cell needed ${attempt} attempts (final exit ${_REAL_CODE})"
+          fi
           if [ -s /tmp/qa-suspect-hosts.txt ]; then
             echo "suspect-hosts<<SUSPECT_EOF" >> "$GITHUB_OUTPUT"
             cat /tmp/qa-suspect-hosts.txt >> "$GITHUB_OUTPUT"
