@@ -267,6 +267,12 @@ jobs:
             # below ALSO sets CODE=2, for a host that failed. Both wait, but for
             # opposite reasons, and only one of them is worth waiting long for.
             _RETRY_REASON="no_offers"
+            # The client's REAL exit code, before the loop rewrites it. CODE=2 is a
+            # LOOP-CONTROL flag ("go round again"); it is not a verdict. Emitting it
+            # as the verdict aliases a real test failure onto EXIT_NO_OFFERS, which
+            # qa_verdict.py short-circuits to `inconclusive` — and on the scheduled
+            # comfyui/vllm gates `inconclusive` soft-passes and PROMOTES UNGATED.
+            _REAL_CODE=$CODE
             echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
 
             # DRAW ANOTHER HOST ON ANY FAILURE, AND NAME THE HOST.
@@ -328,7 +334,8 @@ jobs:
               sleep "$_delay"
             fi
           done
-          echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
+          # Emit what actually happened on the LAST attempt, never the loop flag.
+          echo "exit_code=${_REAL_CODE}" >> "$GITHUB_OUTPUT"
           echo "attempts=${attempt}" >> "$GITHUB_OUTPUT"
           if [ -s /tmp/qa-suspect-hosts.txt ]; then
             echo "suspect-hosts<<SUSPECT_EOF" >> "$GITHUB_OUTPUT"

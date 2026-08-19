@@ -141,3 +141,45 @@ def test_a_host_fault_does_not_wait_for_market_capacity():
     assert "RANDOM %" in host_branch, (
         "keep a small jitter so a matrix does not re-enter the single-key QA "
         "account in lockstep (ADR 0005 cond 6)")
+
+
+# ---- the loop flag must never become the verdict ----------------------------
+
+def test_an_exhausted_redraw_reports_the_REAL_exit_code_not_the_loop_flag():
+    """The redraw sets CODE=2 to mean "go round again". Exit 2 is also
+    EXIT_NO_OFFERS, which `qa_verdict.classify` short-circuits to `inconclusive`
+    BEFORE it looks at any test result — and on the scheduled comfyui/vllm gates
+    `inconclusive` soft-passes and promotes UNGATED.
+
+    So emitting the loop flag as the verdict turns a real, reproducible test
+    failure into an automatic production promotion, twice a day, announced as
+    "no live test ran". `retries` defaults to 0, so those two pipelines never even
+    redraw — they got the aliasing with none of the benefit.
+    """
+    g = _gate()
+    assert "_REAL_CODE=$CODE" in g, (
+        "the client's real exit code is not preserved before the loop rewrites it")
+    assert 'echo "exit_code=${_REAL_CODE}"' in g, (
+        "the loop-control flag is emitted as the verdict; a real test failure "
+        "becomes EXIT_NO_OFFERS and soft-passes on the scheduled gates")
+    assert 'echo "exit_code=${CODE}"' not in g, (
+        "CODE is the loop flag, not a verdict")
+
+
+def test_a_real_failure_classifies_as_block_not_inconclusive():
+    """The end-to-end property, driven through the real classifier rather than
+    asserted about the YAML."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("qa_verdict", TM / "qa_verdict.py")
+    qv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qv)
+    raw = {"state": "failed", "got_result_event": True,
+           "tests": [{"name": "base/60-gpu-cuda", "state": "failed"}],
+           "stream_counts": {"passed": 10, "failed": 1, "skipped": 0}}
+    req = qv.parse_required("base/60-gpu-cuda")
+    assert qv.classify(1, raw, req)[0] == "block", "a real failure must block"
+    assert qv.classify(5, raw, req)[0] == "block", "an instance error must block"
+    # The bug, pinned: if the gate ever emits 2 for this payload the verdict flips.
+    assert qv.classify(2, raw, req)[0] == "inconclusive", (
+        "exit 2 means no-box-obtained; this is exactly why the loop flag must "
+        "never be emitted as the verdict")
