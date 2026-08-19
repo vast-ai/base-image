@@ -511,7 +511,6 @@ def test_the_clamped_text_is_not_simply_discarded():
     dropping it would trade one lost message for a misleading one."""
     body = NOTIFY.read_text()
     assert "HEADER_OVERFLOW" in body, "the clamped text is discarded"
-    overflow = body.split("HEADER_OVERFLOW")[-1]
     assert "section" in body.split('if [[ -n "$HEADER_OVERFLOW" ]]')[-1][:400], (
         "the overflow must be re-attached as a body block, not thrown away")
 
@@ -521,8 +520,26 @@ def test_the_clamp_is_defensive_in_the_shared_notifier_not_only_the_caller():
     callers. The component that knows Slack's limits is the one that must hold
     them."""
     callers = [p.name for p in (REPO / ".github" / "workflows").glob("*.yml")
-               if "notify-slack.yml" in p.read_text()]
+               if p.name != "notify-slack.yml" and "notify-slack.yml" in p.read_text()]
     assert len(callers) >= 3, (
         f"expected several callers of the shared notifier, found {callers}")
     assert "${#HEADER_TEXT} -gt 150" in NOTIFY.read_text(), (
         "the clamp must live in the shared notifier so no caller can break it")
+
+
+def test_the_word_boundary_cut_does_not_eat_the_budget():
+    """The trim must be conditional on the TRIMMED length, not the pre-trim one.
+
+    The first version tested `${#_cut}`, which is always 147 at that point, so
+    the condition was vacuously true. A headline whose tail is a space-free list
+    — a comma-joined tag list — then trimmed back to the last space in the prose
+    prefix. Measured: 194 characters in, 27 out. The full text survived in the
+    overflow block, so nothing was lost, but the header collapsed to a fifth of
+    its budget.
+    """
+    body = NOTIFY.read_text()
+    assert "${#_trim} -gt 120" in body, (
+        "the word-boundary guard must test the trimmed string; testing the "
+        "fixed-length cut is vacuously true and throws away the budget")
+    assert "${#_cut} -gt 120" not in body, (
+        "this is the vacuous form — _cut is always 147 where it is tested")

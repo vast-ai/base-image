@@ -111,10 +111,16 @@ jobs:
             # 147 + the ellipsis. Cut on a word boundary when one is near the end,
             # so the header does not stop mid-token.
             _cut="${HEADER_TEXT:0:147}"
-            case "${_cut##*[[:space:]]}" in
-              "$_cut") ;;                       # no space at all: hard cut
-              *) [[ ${#_cut} -gt 120 ]] && _cut="${_cut% *}" ;;
-            esac
+            # Cut on a word boundary ONLY when that does not cost most of the
+            # budget. The length test must be on the TRIMMED string: the first
+            # version tested ${#_cut}, which is always 147 here, so it was
+            # vacuously true — and a headline whose tail is a space-free list
+            # (a comma-joined tag list, say) trimmed back to the last space in
+            # the prose prefix. Measured: 194 chars in, 27 out.
+            _trim="${_cut% *}"
+            if [[ "$_trim" != "$_cut" && ${#_trim} -gt 120 ]]; then
+              _cut="$_trim"
+            fi
             HEADER_TEXT="${_cut}…"
             echo "::notice::headline was ${#HEADER_OVERFLOW} chars; clamped to Slack's 150 char header limit (full text moved into the message body)"
           fi
