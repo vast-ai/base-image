@@ -1291,7 +1291,11 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
             on_instance_created(None)
             continue
 
-        return instance_id, test_url, auth_token
+        # machine_id travels with the instance so a FAILING cell can name the
+        # box it ran on. A host that fails a test the image passes elsewhere is
+        # a de-verification candidate, and that is only actionable if the
+        # machine is in the record rather than only the instance.
+        return instance_id, test_url, auth_token, offer.get("machine_id")
 
     log(f"Exhausted offers ({attempts} attempts, last error: {last_error or 'none'})")
     return None
@@ -1566,7 +1570,7 @@ def main():
         log("Could not launch a usable instance on any candidate offer")
         emit_outcome("bad_instance", EXIT_BAD_INSTANCE, reason="exhausted launch attempts")
 
-    instance_id, test_url, auth_token = launch
+    instance_id, test_url, auth_token, machine_id = launch
 
     # 6. Monitor instance health in background.
     # Detects if instance goes non-running, disappears, or enters a terminal state.
@@ -1750,6 +1754,8 @@ def main():
         raw_output["stream_had_gap"] = stream_had_gap
         # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
         # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
+        if machine_id is not None:
+            raw_output["machine_id"] = machine_id
         if instance_id:
             raw_output["instance_id"] = instance_id
             if args.keep:

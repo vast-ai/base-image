@@ -404,3 +404,77 @@ def test_the_dockerfile_still_builds_without_the_arg():
         "an empty ARG must fall back to resolving the version in-build")
     assert "${SYNCTHING_VERSION#v}" in df, (
         "the tag_name carries a leading 'v' that the download URL adds back")
+
+
+# ---- redraw on any failure, and name the host (2026-08-19) -------------------
+
+QA_GATE = REPO / ".github" / "workflows" / "qa-gate.yml"
+
+
+def _qa_gate_run() -> str:
+    d = yaml.safe_load(QA_GATE.read_text())
+    steps = d["jobs"]["qa"]["steps"]
+    return " ".join(str(s.get("run", "")) for s in steps)
+
+
+def test_a_failing_cell_redraws_instead_of_blocking_on_one_host():
+    """Reproducibility is the discriminator, not the symptom.
+
+    The 2026-08-18 pytorch gate blocked six cells; every one investigated passed
+    on other hardware — an NCCL segfault inside libcuda on one machine (two
+    controls on the identical driver build passed), two collectives timeouts (the
+    same test then passed 10/10 on the same GPU model, driver and image digest),
+    and three supervisord boot races. A rule that only redrew when NO test failed
+    could not help with any of them, because a bad host makes real tests fail.
+    """
+    run = _qa_gate_run()
+    assert '[ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ]' in run, (
+        "a failing cell must redraw on any non-zero exit except config_error; "
+        "keying on 'no test failed' misses every host fault that breaks a test")
+    assert 'CODE=2' in run, "the redraw path must mark the attempt inconclusive"
+
+
+def test_config_error_is_never_retried():
+    """config_error is OUR bug. Retrying it hides it."""
+    run = _qa_gate_run()
+    assert '"$CODE" -ne 4' in run, (
+        "config_error (4) must be excluded from the redraw, or a broken gate "
+        "retries itself into looking healthy")
+
+
+def test_the_failing_machine_is_NAMED_before_the_instance_is_destroyed():
+    """A de-verification candidate is only actionable if the machine id is
+    captured at the moment it failed — the instance is destroyed immediately
+    after, and the offer is gone."""
+    run = _qa_gate_run()
+    assert ".machine_id" in run, (
+        "the gate never reads machine_id, so a bad host cannot be identified")
+    assert "SUSPECT-HOST" in run, "the failing host is not announced in the log"
+    assert "qa-suspect-hosts.txt" in run, (
+        "suspects must accumulate across attempts, not just the last one")
+
+
+def test_the_client_reports_the_machine_it_ran_on():
+    """qa-gate can only name the host if test_template.py puts it in --raw."""
+    src = (REPO / "tools" / "template_manager" / "test_template.py").read_text()
+    assert 'raw_output["machine_id"] = machine_id' in src, (
+        "the client does not surface machine_id, so the gate has nothing to read")
+    assert 'return instance_id, test_url, auth_token, offer.get("machine_id")' in src, (
+        "machine_id must travel out of the launch loop with the instance")
+
+
+def test_exoneration_is_distinguished_from_a_still_suspect_image():
+    """A machine list means opposite things depending on whether a redraw passed.
+
+    Passed after redraw -> the image is exonerated, the host is at fault, de-verify.
+    Never passed        -> the image is still a live suspect; those hosts are NOT
+                           evidence and must not be de-verified on this basis.
+    """
+    d = yaml.safe_load(QA_GATE.read_text())
+    step = [s for s in d["jobs"]["qa"]["steps"] if s.get("name") == "Report suspect hosts"]
+    assert step, "no step reports the suspect hosts"
+    body = str(step[0].get("run", ""))
+    assert "De-verification candidates" in body and "NOT exonerated" in body, (
+        "the report must distinguish a redraw-exonerated image from one that "
+        "never passed; otherwise good hosts get de-verified for an image bug")
+    assert 'FINAL_CODE' in body, "the distinction must key on the cell's final outcome"
