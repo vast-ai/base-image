@@ -59,6 +59,9 @@ jobs:
       - name: Notify Slack
         if: steps.slack-check.outputs.available == 'true'
         env:
+          TRIGGER: ${{ inputs.trigger }}
+          IMAGE_REF: ${{ inputs.image-ref }}
+          RUN_URL: ${{ inputs.run-url }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           IMAGE_TAGS: ${{ inputs.image-tags }}
           STATUS: ${{ inputs.status }}
@@ -135,8 +138,8 @@ jobs:
           # Build base blocks
           BLOCKS=$(jq -n \
             --arg header "$HEADER_TEXT" \
-            --arg trigger "${{ inputs.trigger }}" \
-            --arg ref "${{ inputs.image-ref }}" \
+            --arg trigger "$TRIGGER" \
+            --arg ref "$IMAGE_REF" \
             '[
               {
                 "type": "header",
@@ -216,7 +219,7 @@ jobs:
           
           # Add context block
           CONTEXT_BLOCK=$(jq -n \
-            --arg url "${{ inputs.run-url }}" \
+            --arg url "$RUN_URL" \
             '[{
               "type": "context",
               "elements": [{
@@ -226,7 +229,7 @@ jobs:
             }]')
           BLOCKS=$(echo "$BLOCKS" | jq --argjson ctx "$CONTEXT_BLOCK" '. + $ctx')
           
-          FALLBACK="${HEADER_TEXT} (${{ inputs.image-ref }})"
+          FALLBACK="${HEADER_TEXT} (${IMAGE_REF})"
 
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \

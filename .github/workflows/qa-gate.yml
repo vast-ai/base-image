@@ -354,15 +354,22 @@ jobs:
         env:
           SUSPECTS: ${{ steps.test.outputs.suspect-hosts }}
           FINAL_CODE: ${{ steps.test.outputs.exit_code }}
+          # Via env:, not spliced into bash. Two reasons, and the second is why
+          # the previous version could not be tested at all: a dispatch input is
+          # free text, and wfexec.step_script REFUSES a step carrying an
+          # unresolved expression rather than guess at it — so an untestable step
+          # stayed untested, which is how three grep-only guards shipped here.
+          QA_REPO: ${{ inputs.repo }}
+          QA_TAG: ${{ inputs.tag }}
         run: |
           {
             if [ "${FINAL_CODE}" = "0" ]; then
-              echo "### De-verification candidates — ${{ inputs.repo }} \`${{ inputs.tag }}\`"
+              echo "### De-verification candidates — ${QA_REPO} \`${QA_TAG}\`"
               echo ""
               echo "These machines failed, then the SAME image passed on a fresh draw."
               echo "The redraw exonerates the image, so the host is the fault:"
             else
-              echo "### Failed hosts (image NOT exonerated) — ${{ inputs.repo }} \`${{ inputs.tag }}\`"
+              echo "### Failed hosts (image NOT exonerated) — ${QA_REPO} \`${QA_TAG}\`"
               echo ""
               echo "The cell never passed, so these are NOT de-verification"
               echo "candidates — the image is still a live suspect:"
@@ -371,7 +378,12 @@ jobs:
             echo "| machine | instance | exit | failed tests |"
             echo "|---|---|---|---|"
             while IFS='|' read -r m i c f; do
-              [ -n "$m" ] && echo "| \`$m\` | $i | $c | $f |"
+              # Skip rows with no machine. exit 3 (bad_instance) is emitted before
+              # any machine is bound, so it records `unknown` — and presenting
+              # that under "de-verification candidates" is a wrong accusation
+              # with no way to act on it.
+              case "$m" in ''|unknown) continue;; esac
+              echo "| \`$m\` | $i | $c | $f |"
             done <<< "${SUSPECTS}"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "${SUSPECTS}"
