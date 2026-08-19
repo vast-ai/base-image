@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-_REDRAW_GUARD = re.compile(r'if \{? ?\[ "\$CODE" -eq 1 \].*?\n            fi', re.S)
+_REDRAW_GUARD = re.compile(r'if \[ "\$CODE" -ne 0 \].*?\n            fi', re.S)
 
 REPO = Path(__file__).resolve().parents[3]
 PROMOTE = REPO / ".github" / "workflows" / "promote-base-image.yml"
@@ -92,51 +92,54 @@ def test_an_all_clear_batch_is_untouched():
     assert _apply(clear) == clear, "the rewrite must be a no-op when nothing holds"
 
 
-def test_the_gate_redraws_on_a_zero_failure_block():
-    """A cell that blocks with no failed tests was never really tested."""
-    body = QA_GATE.read_text()          # raw: a json dump escapes the shell quoting
-    assert "stream_counts.failed" in body, (
-        "qa-gate must inspect the failed-test count to tell a bad host from a bad image")
-    assert "drawing another host" in body
+def test_the_gate_redraws_on_ANY_failure_not_just_a_zero_failure_block():
+    """SUPERSEDES the zero-failure redraw rule (2026-08-19).
 
+    The old rule redrew only when NO test had failed — written for a GPU-less
+    box, where the required-pass gate fires on skips. It could not help when a
+    bad HOST makes a real test FAIL, which is what actually happened: the
+    2026-08-18 pytorch gate blocked six cells, and every one investigated passed
+    on other hardware — an NCCL segfault inside libcuda on machine 35974 (two
+    controls on the identical driver build passed), two multi-GPU collectives
+    timeouts whose test then passed 10/10 on the same GPU model, driver and image
+    digest, and three supervisord boot races.
 
-def test_an_unreachable_instance_is_also_redrawn():
-    """A host that comes up and is then unreachable exits 5 (instance_error) with
-    no test results. test_template.py's own comment calls 5 "the image's problem",
-    which is true for a crash PART WAY THROUGH and false for a box that was never
-    reachable — `failed == 0` separates them. Observed live 2026-08-14."""
+    Reproducibility is the discriminator, not the symptom.
+    """
     body = QA_GATE.read_text()
-    assert re.search(r'\[ "\$CODE" -eq 5 \]', body), (
-        "instance_error must be eligible for a redraw when nothing was tested")
-    guard = _REDRAW_GUARD.search(body)
-    assert guard, "the redraw guard no longer matches"
-    assert re.search(r'\[\s*"\$\{_failed:?-?[^}]*\}"\s*=\s*"0"\s*\]', guard.group(0)), (
-        "the exit-5 redraw must be gated on zero failed tests, exactly like exit 1")
+    assert '[ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ]' in body, (
+        "the redraw must fire on any non-zero exit except config_error")
+    assert _REDRAW_GUARD.search(body), "no redraw guard block found"
 
 
-def test_config_error_and_bad_instance_are_NOT_redrawn():
-    """4 is our bug — retrying hides it. 3 already walked MAX_LAUNCH_ATTEMPTS
-    offers internally, so redrawing repeats work the client has done."""
-    guard = _REDRAW_GUARD.search(QA_GATE.read_text())
-    assert guard, "the redraw guard no longer matches"
-    block = guard.group(0)
-    assert '-eq 4' not in block and '-eq 3' not in block, (
-        "config_error/bad_instance must not be redrawn")
+def test_config_error_is_the_one_exit_never_redrawn():
+    """config_error is OUR bug; retrying it hides it.
 
-
-def test_a_genuine_failure_is_still_never_retried():
-    """The redraw must key on zero failed tests, never on exit 1 alone —
-    retrying a real red until it passes by luck is how a gate becomes
-    decoration, and that rule is unchanged."""
+    bad_instance is no longer excluded. The client's own launch attempts are
+    about reaching a RUNNING box, which says nothing about whether that box can
+    pass the suite — so exhausting them is not a reason to stop drawing.
+    """
     body = QA_GATE.read_text()
-    assert 'CODE" -eq 1' in body and "_failed" in body, (
-        "the redraw must be conditional on the failed-test count")
-    guard = _REDRAW_GUARD.search(body)
-    assert guard, "no exit-1 guard block found"
-    block = guard.group(0)
-    # Not "does _failed appear" — that survives replacing the condition with
-    # `if true`, because the assignment is still in the block. The redraw must be
-    # CONDITIONAL on the count being zero.
-    assert re.search(r'\[\s*"\$\{_failed:?-?[^}]*\}"\s*=\s*"0"\s*\]', block), (
-        "the redraw must be gated on the failed-test count being exactly 0; as "
-        "written it would retry a genuine red until it passed by luck")
+    assert '"$CODE" -ne 4' in body, "config_error must never be redrawn"
+
+
+def test_a_flaky_image_defect_can_now_pass_by_luck_AND_IS_RECORDED():
+    """The accepted cost of redrawing a red, stated rather than hidden.
+
+    A DETERMINISTIC image defect still blocks: it fails every draw, and the
+    attempt count bounds the loop. A FLAKY one — failing on some boxes, passing
+    on others — can now escape, because one passing redraw ends the loop. That is
+    a genuine weakening of the previous rule, taken deliberately: the alternative
+    cost six blocked cells on hosts that were simply bad.
+
+    What makes it survivable is that every failed attempt is RECORDED with the
+    machine it ran on, so an image failing across many DIFFERENT machines shows
+    as a pattern instead of being laundered into a green tick.
+    """
+    body = QA_GATE.read_text()
+    assert "SUSPECT-HOST" in body and ".machine_id" in body, (
+        "redrawing a red is only defensible if each failed attempt names the "
+        "host it failed on; without that a flaky image defect is invisible")
+    assert "qa-suspect-hosts.txt" in body, (
+        "every failed attempt must be kept, not just the last — one machine "
+        "failing is a bad host, five different machines failing is the image")

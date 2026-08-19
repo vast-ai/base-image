@@ -249,43 +249,41 @@ jobs:
             set -e
             echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
 
-            # DRAW ANOTHER HOST when the red is attributable to the BOX, not the
-            # image. On 2026-08-14 a cell rented a machine that presented no GPU:
-            # 60/61/62 skipped, `skip != pass` turned that into a block, and one
-            # bad draw held a tag on an image that was fine.
+            # DRAW ANOTHER HOST ON ANY FAILURE, AND NAME THE HOST.
             #
-            # The discriminator is whether any test actually FAILED. A host that
-            # cannot run the GPU tests makes them SKIP; a defective image makes
-            # them FAIL. So `failed == 0` with a non-zero exit means the required
-            # -pass gate fired on skips — nothing was tested, exactly like the
-            # no_offers case, and a fresh draw is the right answer.
+            # Reproducibility is the discriminator, not the symptom. A defect in
+            # the IMAGE reproduces on every box we draw, so it still blocks once
+            # the attempts are exhausted. A defect in the HOST does not survive a
+            # fresh draw. Deciding from a single run cannot tell them apart, and
+            # the 2026-08-18 pytorch gate proved it: six cells blocked, and every
+            # one that was investigated passed on other hardware — an NCCL
+            # segfault inside libcuda on machine 35974 (two controls on the
+            # identical driver build passed), two multi-GPU collectives timeouts
+            # (the same test then passed 10/10 on the same GPU model, driver and
+            # image digest), and three supervisord boot races.
             #
-            # 5 (instance_error) is included for the same reason, against its own
-            # comment in test_template.py ("treated as the image's problem"). That
-            # holds for an instance that crashes PART WAY THROUGH — but the same
-            # code covers an instance that came up and was then unreachable, which
-            # is the host's problem and produces zero test results. `failed == 0`
-            # separates them: something that ran and failed is the image, nothing
-            # having run at all is the box. Observed live 2026-08-14 on a cell
-            # whose machine had connectivity issues after a successful launch.
+            # This supersedes the narrower rule that only redrew when NO test had
+            # failed. That rule was written for a GPU-less box, where the required
+            # -pass gate fires on skips; it could not help when a host makes a
+            # real test fail, which is most of what actually happened.
             #
-            # NOT 3 (bad_instance): the client already walked MAX_LAUNCH_ATTEMPTS
-            # offers internally, so redrawing repeats work it has done. NOT 4
-            # (config_error): that is our bug, and retrying it hides it.
+            # The cost is real and accepted: retrying a red risks passing by luck.
+            # Two things bound it — the attempt count, and the fact that a genuine
+            # image defect has to pass EVERY redraw to escape, not just one.
             #
-            # A genuinely broken image that kills every instance it touches still
-            # blocks — it redraws at most `retries` times and then reports, since
-            # the attempt count bounds the loop.
-            #
-            # A single genuine failure still breaks immediately: retrying a real
-            # red until it passes by luck is how a gate becomes decoration, and
-            # that rule is unchanged.
-            if { [ "$CODE" -eq 1 ] || [ "$CODE" -eq 5 ]; } && [ -s /tmp/qa-raw.json ]; then
-              _failed=$(jq -r '.stream_counts.failed // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
-              if [ "${_failed:-x}" = "0" ]; then
-                echo "::warning::cell blocked with 0 failed tests — the host did not provide what the required tests need (e.g. no GPU); drawing another host"
-                CODE=2      # treat as inconclusive: retry on a fresh offer
-              fi
+            # NOT 4 (config_error): that is our bug, and retrying hides it.
+            if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ] && [ "$CODE" -ne 2 ]; then
+              # Name the box before redrawing. A machine that fails a test the
+              # image passes elsewhere is a de-verification candidate, and that is
+              # only actionable if the machine id is recorded at the moment it
+              # failed — the instance is destroyed immediately afterwards.
+              _mid=$(jq -r '.machine_id // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
+              _iid=$(jq -r '.instance_id // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
+              _failed_names=$(jq -r '[.tests[]? | select(.state=="failed") | .name] | join(",")' /tmp/qa-raw.json 2>/dev/null || echo "")
+              echo "SUSPECT-HOST machine=${_mid:-unknown} instance=${_iid:-unknown} exit=${CODE} failed=${_failed_names:-none}"
+              echo "${_mid:-unknown}|${_iid:-unknown}|${CODE}|${_failed_names:-none}" >> /tmp/qa-suspect-hosts.txt
+              echo "::warning::cell failed on machine ${_mid:-unknown} (exit ${CODE}, failed: ${_failed_names:-none}) — drawing another host; if a redraw passes, this machine is a de-verification candidate"
+              CODE=2      # treat as inconclusive: retry on a fresh offer
             fi
 
             [ "$CODE" -ne 2 ] && break
@@ -301,6 +299,44 @@ jobs:
           done
           echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
           echo "attempts=${attempt}" >> "$GITHUB_OUTPUT"
+          if [ -s /tmp/qa-suspect-hosts.txt ]; then
+            echo "suspect-hosts<<SUSPECT_EOF" >> "$GITHUB_OUTPUT"
+            cat /tmp/qa-suspect-hosts.txt >> "$GITHUB_OUTPUT"
+            echo "SUSPECT_EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A machine that failed a cell which then PASSED on another box is the
+      # actionable case: the image is exonerated by the redraw, so the fault is
+      # the host and it should be de-verified. If the cell never passed, the same
+      # machine list is NOT evidence against those hosts — the image is still a
+      # live suspect — so the two are reported differently rather than as one
+      # undifferentiated list.
+      - name: Report suspect hosts
+        if: always() && steps.test.outputs.suspect-hosts != ''
+        env:
+          SUSPECTS: ${{ steps.test.outputs.suspect-hosts }}
+          FINAL_CODE: ${{ steps.test.outputs.exit_code }}
+        run: |
+          {
+            if [ "${FINAL_CODE}" = "0" ]; then
+              echo "### De-verification candidates — ${{ inputs.repo }} \`${{ inputs.tag }}\`"
+              echo ""
+              echo "These machines failed, then the SAME image passed on a fresh draw."
+              echo "The redraw exonerates the image, so the host is the fault:"
+            else
+              echo "### Failed hosts (image NOT exonerated) — ${{ inputs.repo }} \`${{ inputs.tag }}\`"
+              echo ""
+              echo "The cell never passed, so these are NOT de-verification"
+              echo "candidates — the image is still a live suspect:"
+            fi
+            echo ""
+            echo "| machine | instance | exit | failed tests |"
+            echo "|---|---|---|---|"
+            while IFS='|' read -r m i c f; do
+              [ -n "$m" ] && echo "| \`$m\` | $i | $c | $f |"
+            done <<< "${SUSPECTS}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "${SUSPECTS}"
 
       - name: Delete the throwaway template (always)
         if: always() && steps.create.outputs.id != ''
