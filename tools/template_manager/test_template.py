@@ -1197,7 +1197,8 @@ def monitor_instance_health(api, instance_id, dead_event, set_dead,
 
 def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
                       max_attempts, on_instance_created, log,
-                      server_probe_timeout=NETWORK_PROBE_TIMEOUT):
+                      server_probe_timeout=NETWORK_PROBE_TIMEOUT,
+                      exclude_machines=()):
     """Try candidate offers until one launches and provisions adequate disk.
 
     Walks ``candidate_offers`` (assumed pre-sorted best-first), attempting
@@ -1219,7 +1220,15 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
     the others on the same machine will also fail.
     """
     offer_blacklist = set()
-    machine_blacklist = set()
+    # Seeded by the caller, because this set does NOT survive the process. The QA
+    # gate's redraw spawns a fresh test_template.py per attempt, so a machine that
+    # just failed is forgotten — and since offers are searched cheapest-first, the
+    # cheapest one has not changed, so the redraw re-picks the SAME box. Observed
+    # live on 2026-08-19, run 32236327488.
+    machine_blacklist = set(exclude_machines or ())
+    if machine_blacklist:
+        log(f"Excluding {len(machine_blacklist)} machine(s) that already failed: "
+            f"{sorted(machine_blacklist)}")
     attempts = 0
     last_error = ""
 
@@ -1308,6 +1317,13 @@ def parse_args():
     parser.add_argument("template_hash", help="Vast template hash to test")
     parser.add_argument("--api-key", metavar="KEY", help="Vast API key (default: $VAST_API_KEY)")
     parser.add_argument("--offer", type=int, metavar="ID", help="Use specific offer ID (skip search)")
+    parser.add_argument("--exclude-machine", type=int, action="append", default=[],
+                        metavar="ID", dest="exclude_machines",
+                        help="Never draw this machine (repeatable). The caller's retry loop "
+                             "spawns a fresh process per attempt, so the in-process machine "
+                             "blacklist starts empty every time; without this a redraw after a "
+                             "failure re-picks the SAME box, because offers are searched "
+                             "cheapest-first and the cheapest one has not changed.")
     parser.add_argument("--gpu", metavar="GPU", help="Filter to specific GPU model")
     parser.add_argument("--arch", metavar="ARCH", default="amd64",
                         help="CPU arch of the host (default: amd64). arm64 is opt-in "
@@ -1565,7 +1581,8 @@ def main():
 
     launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
                                max_attempts, _track_instance, log,
-                               server_probe_timeout=server_probe_timeout)
+                               server_probe_timeout=server_probe_timeout,
+                               exclude_machines=args.exclude_machines)
     if launch is None:
         log("Could not launch a usable instance on any candidate offer")
         emit_outcome("bad_instance", EXIT_BAD_INSTANCE, reason="exhausted launch attempts")
