@@ -68,6 +68,8 @@ jobs:
       has-multi: ${{ steps.matrix.outputs.has-multi }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
+      # Needed for configs/pytorch.json — this job previously ran with no checkout.
+      - uses: actions/checkout@v4
       - name: Generate matrices
         id: matrix
         run: |
@@ -80,70 +82,28 @@ jobs:
           # All pytorch versions and their configs
           # Config format: torch_ver|key|cuda_ver|torch_backend|arches|python_versions
           # Mini format:   torch_ver|key|mini_base_tag|torch_backend|python_versions (always multi-arch)
-          ALL_CONFIGS=(
-            # 2.6.0
-            "2.6.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312"
-            # 2.7.1
-            "2.7.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
-            "2.7.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313"
-            # 2.8.0
-            "2.8.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
-            "2.8.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64|310 311 312 313"
-            "2.8.0|cu129|12.9.2-cudnn-devel|cu129|linux/amd64|310 311 312 313"
-            # 2.9.1 (patch versions maintain ABI compat — 2.9.0 superseded)
-            "2.9.1|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
-            "2.9.1|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.1|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.10.0
-            "2.10.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
-            "2.10.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.11.0
-            "2.11.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64|310 311 312"
-            "2.11.0|cu128|12.8.1-cudnn-devel|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.12.0 — cu126 (non-Blackwell) + cu130 (Blackwell, on the 13.0.3
-            # base), both multi-arch cp310-cp314. cu132 is deferred: torch 2.12
-            # publishes cu132 wheels, but uv's --torch-backend has no cu132 value
-            # yet (tops out at cu130), so the build can't select it. Re-add
-            # cu132 on the 13.2.1 base once uv gains it, or switch the install to
-            # an explicit --index-url https://download.pytorch.org/whl/cu132.
-            "2.12.0|cu126|12.6.3-cudnn-devel|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu130|13.0.3-cudnn-devel|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-          )
+          # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t ALL_CONFIGS < <(jq -r '.configs[] | "\(.torch)|\(.key)|\(.cuda_ver)|\(.backend)|\(.arches | join(","))|\(.python_versions | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          [ "${#ALL_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_CONFIGS"; exit 1; }
 
           # Multi-torch configs: a primary mini pytorch image with
           # additional torch venvs layered in. Each produces
           #   ${NS}/pytorch:${key}-py${py}-${date}-${arch}
           # and is later merged into a multi-arch manifest.
           # Format: key|primary_torch|primary_backend|cuda_minor|arches|python_versions
-          ALL_MULTI_CONFIGS=(
-            "multi-210-291-271|2.10.0|cu128|12.9|linux/amd64,linux/arm64|312"
-          )
+          # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          # `extra_venvs` is derived from .venvs by dropping "main" (the base image's own
+          # venv, not something this build installs) and stripping the "torch-" prefix
+          # to get bare versions for install-torch-venv.sh. Deriving it here rather than
+          # storing a second list keeps ONE statement of what a variant contains — the
+          # same list 05-venv-manifest.sh asserts against at QA time.
+          mapfile -t ALL_MULTI_CONFIGS < <(jq -r '.multi[] | "\(.key)|\(.primary_torch)|\(.primary_backend)|\(.cuda_minor)|\(.arches | join(","))|\(.python_versions | join(" "))|\(.venvs | map(select(. != "main")) | map(ltrimstr("torch-")) | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          [ "${#ALL_MULTI_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_MULTI_CONFIGS"; exit 1; }
 
           # Mini format: torch_ver|key|mini_base_tag|torch_backend|arches|python_versions
-          ALL_MINI_CONFIGS=(
-            # 2.6.0 — cu126 is multi-arch
-            "2.6.0|cu126-mini|cuda-12.9-mini|cu126|linux/amd64,linux/arm64|310 311 312 313"
-            # 2.7.1 — cu128 is multi-arch
-            "2.7.1|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312 313"
-            # 2.8.0 — cu128 is amd64-only (no arm64 wheels)
-            "2.8.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64|310 311 312 313"
-            # 2.9.1 — cu128 multi-arch, cu130 multi-arch
-            "2.9.1|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.9.1|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.10.0 — cu128 multi-arch, cu130 multi-arch
-            "2.10.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.10.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.11.0 — cu128 multi-arch, cu130 multi-arch
-            "2.11.0|cu128-mini|cuda-12.9-mini|cu128|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.11.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-            # 2.12.0 — no cu128, so the CUDA-12 mini rides cu126 on the 12.9-mini
-            # base (minor-version compat); the CUDA-13 mini keeps cu130 on the
-            # 13.2-mini base (minor compat within 13.x). Both multi-arch.
-            "2.12.0|cu126-mini|cuda-12.9-mini|cu126|linux/amd64,linux/arm64|310 311 312 313 314"
-            "2.12.0|cu130-mini|cuda-13.2-mini|cu130|linux/amd64,linux/arm64|310 311 312 313 314"
-          )
+          # Config table lives in configs/pytorch.json (ADR 0019 pattern) — it was inline in three workflows, so a version bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
+          mapfile -t ALL_MINI_CONFIGS < <(jq -r '.mini[] | "\(.torch)|\(.key)|\(.mini_base_tag)|\(.backend)|\(.arches | join(","))|\(.python_versions | join(" "))"' "$GITHUB_WORKSPACE/configs/pytorch.json")
+          [ "${#ALL_MINI_CONFIGS[@]}" -gt 0 ] || { echo "::error::configs/pytorch.json yielded no ALL_MINI_CONFIGS"; exit 1; }
 
           BUILD_MATRIX="[]"
           MERGE_MATRIX="[]"
@@ -196,7 +156,7 @@ jobs:
           # it (e.g. FILTER=multi excludes every mini by substring).
           REQUIRED_MINI_PAIRS="|"
           for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
-            IFS='|' read -r mkey primary_torch primary_backend mcuda_minor marches mpython_versions <<< "$multi_config"
+            IFS='|' read -r mkey primary_torch primary_backend mcuda_minor marches mpython_versions mextra_venvs <<< "$multi_config"
             if [[ -n "$FILTER" && "$mkey" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
               continue
             fi
@@ -264,7 +224,8 @@ jobs:
           MULTI_MERGE_MATRIX="[]"
 
           for multi_config in "${ALL_MULTI_CONFIGS[@]}"; do
-            IFS='|' read -r key primary_torch primary_backend cuda_minor arches python_versions <<< "$multi_config"
+            IFS='|' read -r key primary_torch primary_backend cuda_minor arches python_versions extra_venvs <<< "$multi_config"
+            [ -n "$extra_venvs" ] || { echo "::error::${key}: no supplementary venvs derived from .venvs — a multi with only 'main' is not a multi"; exit 1; }
 
             # FILTER=mini also includes multi since multi layers on mini.
             if [[ -n "$FILTER" && "$key" != *"$FILTER"* && "$primary_torch" != *"$FILTER"* && "multi" != *"$FILTER"* && "mini" != *"$FILTER"* ]]; then
@@ -293,7 +254,8 @@ jobs:
                 --arg arch_suffix "$arch_suffix" \
                 --arg runs_on "$runs_on" \
                 --arg python_versions "$python_versions" \
-                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions}]')
+                --arg extra_venvs "$extra_venvs" \
+                '. + [{"config_key": $key, "primary_torch": $primary_torch, "primary_backend": $primary_backend, "cuda_minor": $cuda_minor, "arch": $arch, "arch_suffix": $arch_suffix, "runs_on": $runs_on, "python_versions": $python_versions, "extra_venvs": $extra_venvs}]')
             done
           done
 
@@ -648,6 +610,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           ARCH_SUFFIX: ${{ matrix.arch_suffix }}
           PYTHON_VERSIONS: ${{ matrix.python_versions }}
+          EXTRA_VENVS: ${{ matrix.extra_venvs }}
           BUILD_DATE: ${{ needs.generate-matrix.outputs.build-date }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/built-tags"
@@ -666,6 +629,7 @@ jobs:
               -f Dockerfile.multi-torch \
               --build-arg PYTORCH_BASE="${BASE}" \
               --build-arg PYTORCH_BACKEND="${PRIMARY_BACKEND}" \
+              --build-arg EXTRA_TORCH_VERSIONS="${EXTRA_VENVS}" \
               --tag "${TAG}" \
               --push .
 

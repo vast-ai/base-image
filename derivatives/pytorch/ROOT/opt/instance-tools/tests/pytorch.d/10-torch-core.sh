@@ -1,6 +1,13 @@
 #!/bin/bash
 # Test: PyTorch core — import, CUDA availability, tensor operations on GPU.
 # Iterates over all venvs in /venv/ that have torch installed.
+# TEST_TIMEOUT=1200
+# Sized for the VENV COUNT, not for one venv. This test loops over every
+# torch venv in /venv/; the `multi` image ships three, so base's single-venv
+# timing does not transfer. Read by runner.sh (per-test header beats the
+# INSTANCE_TEST_DEFAULT_TIMEOUT the workflow pushes). Under ADR 0020 a
+# timeout is inconclusive-and-retried rather than a block, so an under-sized
+# value costs real money in re-rentals instead of producing a false red.
 source "$(dirname "$0")/../lib.sh"
 
 # ── Discover torch venvs ──────────────────────────────────────────────
@@ -154,92 +161,18 @@ for venv_dir in "${TORCH_VENVS[@]}"; do
     test_venv "$venv_dir"
 done
 
-# ── Multi-GPU communication (NCCL) — once, not per-venv ───────────────
-
-echo ""
-if has_gpu && [[ "$_cuda_available" == "True" ]] && [[ "$_device_count" -gt 1 ]]; then
-    # Use the first torch venv for the NCCL test.
-    # mp.spawn needs a real script file — it pickles the worker function and the
-    # spawned subprocess re-imports __main__ to unpickle it. With python3 -c
-    # there is no __main__ file, so unpickling fails.
-    NCCL_PY="${TORCH_VENVS[0]}bin/python3"
-    NCCL_SCRIPT="/tmp/test_nccl.py"
-    cat > "$NCCL_SCRIPT" <<'NCCL_EOF'
-import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
-import sys, os
-
-def _worker(rank, world_size, results_path):
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'
-    try:
-        dist.init_process_group('nccl', rank=rank, world_size=world_size)
-        torch.cuda.set_device(rank)
-
-        # all_reduce: each GPU contributes rank+1, result should be sum of 1..N
-        t = torch.tensor([rank + 1], dtype=torch.float32, device=f'cuda:{rank}')
-        dist.all_reduce(t, op=dist.ReduceOp.SUM)
-        expected = world_size * (world_size + 1) / 2
-        assert t.item() == expected, f'rank {rank}: all_reduce expected {expected}, got {t.item()}'
-
-        # broadcast: rank 0 sends, all others receive
-        b = torch.tensor([42.0], device=f'cuda:{rank}') if rank == 0 else torch.zeros(1, device=f'cuda:{rank}')
-        dist.broadcast(b, src=0)
-        assert b.item() == 42.0, f'rank {rank}: broadcast expected 42, got {b.item()}'
-
-        # all_gather: collect rank IDs from every GPU
-        gather_list = [torch.zeros(1, device=f'cuda:{rank}') for _ in range(world_size)]
-        dist.all_gather(gather_list, torch.tensor([float(rank)], device=f'cuda:{rank}'))
-        gathered = sorted(int(g.item()) for g in gather_list)
-        assert gathered == list(range(world_size)), f'rank {rank}: all_gather got {gathered}'
-
-        dist.destroy_process_group()
-
-        with open(f'{results_path}.{rank}', 'w') as f:
-            f.write('ok')
-    except Exception as e:
-        with open(f'{results_path}.{rank}', 'w') as f:
-            f.write(str(e))
-
-if __name__ == '__main__':
-    world = torch.cuda.device_count()
-    results_path = '/tmp/nccl_test_result'
-
-    for i in range(world):
-        try:
-            os.remove(f'{results_path}.{i}')
-        except FileNotFoundError:
-            pass
-
-    mp.spawn(_worker, args=(world, results_path), nprocs=world, join=True)
-
-    failures = []
-    for i in range(world):
-        try:
-            with open(f'{results_path}.{i}') as f:
-                result = f.read().strip()
-            if result != 'ok':
-                failures.append(f'rank {i}: {result}')
-        except FileNotFoundError:
-            failures.append(f'rank {i}: no result file')
-
-    if failures:
-        for f in failures:
-            print(f'  FAIL: {f}')
-        sys.exit(1)
-
-    print(f'  NCCL all_reduce: ok ({world} GPUs)')
-    print(f'  NCCL broadcast: ok')
-    print(f'  NCCL all_gather: ok')
-NCCL_EOF
-    "$NCCL_PY" "$NCCL_SCRIPT" 2>&1 || fail_later "nccl" "multi-GPU NCCL communication failed"
-    rm -f "$NCCL_SCRIPT"
-elif has_gpu && [[ "$_cuda_available" == "True" ]]; then
-    echo "  skip: multi-GPU comms (single GPU)"
-else
-    echo "  skip: multi-GPU comms (no CUDA)"
-fi
+# ── Multi-GPU communication (NCCL) ────────────────────────────────────
+#
+# MOVED OUT (ADR 0021 decision 5). The collectives harness used to live here,
+# behind `device_count > 1`, falling through on a single GPU to a bare
+# `echo "  skip: multi-GPU comms (single GPU)"` — which left THIS test passing
+# either way. The required-pass gate matches on test states and cannot see a
+# branch inside a passing test, so the collectives were unreachable by any gate.
+#
+# They are now two sibling tests that can each be named and can each fail:
+#   40-nccl-init.sh        NCCL usable from torch.distributed (world_size=1) —
+#                          the image-owned surface; runs on every GPU box.
+#   41-nccl-collectives.sh the multi-GPU matrix; test_skips below 2 GPUs.
 
 report_failures
 test_pass "torch verified across ${#TORCH_VENVS[@]} venv(s) (CUDA: ${_first_cuda_version}, devices: ${_device_count})"

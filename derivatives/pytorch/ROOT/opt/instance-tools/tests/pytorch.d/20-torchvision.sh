@@ -1,6 +1,13 @@
 #!/bin/bash
 # Test: torchvision — import, transforms, model inference, image I/O, ops.
 # Runs against all venvs in /venv/ that have torch installed.
+# TEST_TIMEOUT=1200
+# Sized for the VENV COUNT, not for one venv. This test loops over every
+# torch venv in /venv/; the `multi` image ships three, so base's single-venv
+# timing does not transfer. Read by runner.sh (per-test header beats the
+# INSTANCE_TEST_DEFAULT_TIMEOUT the workflow pushes). Under ADR 0020 a
+# timeout is inconclusive-and-retried rather than a block, so an under-sized
+# value costs real money in re-rentals instead of producing a false red.
 source "$(dirname "$0")/../lib.sh"
 
 # ── Discover torch venvs ──────────────────────────────────────────────
