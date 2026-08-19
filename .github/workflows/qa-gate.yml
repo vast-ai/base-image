@@ -80,13 +80,24 @@ on:
         default: ""
       retries:
         description: >-
-          Extra attempts on an INFRA-inconclusive outcome only: no_offers, or a block
-          in which NO test actually failed (the host could not provide what the
-          required tests need — e.g. it presented no GPU — so nothing was tested and
-          a fresh draw is warranted). Never on a real failure, an instance crash or a
-          config error — retrying a red is how a gate becomes decoration.
-          bad_instance is excluded too: it already exhausted the client's own launch
-          attempts.
+          Extra attempts on ANY failure except config_error (4) and interrupted
+          (130) — ADR 0029. Reproducibility, not symptom, is what separates a bad
+          host from a bad image: a defect in the image fails every draw and still
+          blocks once attempts are exhausted, while a bad host does not survive a
+          fresh draw. Each failed attempt records the machine it ran on and
+          excludes it from the next draw.
+
+          This SUPERSEDES the previous "infra-inconclusive only" rule, which
+          redrew only when no test had failed. That was written for a GPU-less
+          box, where the required-pass gate fires on skips; it could not help when
+          a bad host makes a real test FAIL, which is most of what happens.
+
+          config_error is never retried (our own bug — retrying hides it), and
+          neither is 130 (a cancellation is a decision, not a bad draw).
+
+          NOTE: a deterministic image defect blocks, but a FLAKY one can now pass
+          by luck, because one passing redraw ends the loop. That cost is accepted
+          in ADR 0029 and the suspect-machine record is what makes it visible.
         required: false
         type: number
         default: 0
@@ -231,11 +242,13 @@ jobs:
           while IFS= read -r kv; do [ -n "$kv" ] && ARGS+=(--env "$kv"); done <<< "${EXTRA_ENV}"
           if [ "${{ inputs.require_floor }}" = "true" ]; then ARGS+=(--require-floor); fi
 
-          # Retry only an INFRA-inconclusive outcome (2 = no_offers: nothing in the
-          # market matched the floors, so the image was never tested). Never retry a
-          # real failure (1), an instance crash (5) or a config error (4) — retrying a
-          # red is how a gate turns into decoration. 3 (bad_instance) is excluded
-          # because the client already exhausted its own launch attempts internally.
+          # Retry ANY failure except config_error (4) and interrupted (130), and
+          # exclude the machine that failed (ADR 0029). Reproducibility rather than
+          # symptom is the discriminator: an image defect fails every draw and
+          # still blocks when attempts run out; a bad host does not survive a fresh
+          # one. Retrying a red does risk passing by luck — that cost is accepted
+          # in ADR 0029, bounded by the attempt count, and made visible by the
+          # per-attempt machine record.
           ATTEMPTS=$(( ${{ inputs.retries }} + 1 ))
           for attempt in $(seq 1 "$ATTEMPTS"); do
             [ "$attempt" -gt 1 ] && echo "::notice::attempt ${attempt}/${ATTEMPTS} after an inconclusive market result"
@@ -298,14 +311,23 @@ jobs:
             # image defect has to pass EVERY redraw to escape, not just one.
             #
             # NOT 4 (config_error): that is our bug, and retrying hides it.
-            if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ] && [ "$CODE" -ne 2 ]; then
+            # NOT 4 (config_error: our bug, retrying hides it) and NOT 130
+            # (interrupted: qa_verdict calls a cancellation "not a pass", and a
+            # cancelled run is a decision someone made, not a bad draw).
+            if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 4 ] && [ "$CODE" -ne 2 ] && [ "$CODE" -ne 130 ]; then
               # Name the box before redrawing. A machine that fails a test the
               # image passes elsewhere is a de-verification candidate, and that is
               # only actionable if the machine id is recorded at the moment it
               # failed — the instance is destroyed immediately afterwards.
-              _mid=$(jq -r '.machine_id // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
-              _iid=$(jq -r '.instance_id // empty' /tmp/qa-raw.json 2>/dev/null || echo "")
-              _failed_names=$(jq -r '[.tests[]? | select(.state=="failed") | .name] | join(",")' /tmp/qa-raw.json 2>/dev/null || echo "")
+              # Take the LAST complete {...} line, never the whole file — the same
+              # parse qa_verdict.py documents, after a whole-file parse once
+              # "turned a real PASS into a BLOCK". Anything the client prints on
+              # stdout alongside the payload would otherwise make jq fail, leave
+              # _mid empty, and the redraw would land back on the failed host.
+              grep '^{.*}$' /tmp/qa-raw.json 2>/dev/null | tail -n1 > /tmp/qa-raw-last.json || : > /tmp/qa-raw-last.json
+              _mid=$(jq -r '.machine_id // empty' /tmp/qa-raw-last.json 2>/dev/null || echo "")
+              _iid=$(jq -r '.instance_id // empty' /tmp/qa-raw-last.json 2>/dev/null || echo "")
+              _failed_names=$(jq -r '[.tests[]? | select(.state=="failed") | .name] | join(",")' /tmp/qa-raw-last.json 2>/dev/null || echo "")
               echo "SUSPECT-HOST machine=${_mid:-unknown} instance=${_iid:-unknown} exit=${CODE} failed=${_failed_names:-none}"
               echo "${_mid:-unknown}|${_iid:-unknown}|${CODE}|${_failed_names:-none}" >> /tmp/qa-suspect-hosts.txt
               echo "::warning::cell failed on machine ${_mid:-unknown} (exit ${CODE}, failed: ${_failed_names:-none}) — drawing another host; if a redraw passes, this machine is a de-verification candidate"

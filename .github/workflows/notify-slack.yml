@@ -107,7 +107,7 @@ jobs:
           # This file already truncates the tags section for its 3000 char limit.
           # The header was never clamped, so any caller could break the shared
           # notifier. Clamp here rather than only fixing the caller: this is the
-          # component that knows Slack's limits, and there are five callers.
+          # component that knows Slack's limits, and 29 workflows call it.
           HEADER_OVERFLOW=""
           if [[ ${#HEADER_TEXT} -gt 150 ]]; then
             HEADER_OVERFLOW="$HEADER_TEXT"

@@ -460,8 +460,9 @@ jobs:
           # chosen because atomic gating is p^n in per-cell reliability (~54% clean
           # at 12 cells x 95%), which drives operators to route around the gate. The
           # answer to that is not partial promotion, it is removing the flakiness:
-          # qa-gate.yml now draws a FRESH HOST when a cell blocks with zero failed
-          # tests, which is what that argument was really about.
+          # qa-gate.yml now draws a FRESH HOST on any failure and excludes the
+          # machine that failed (ADR 0029), which is what that argument was really
+          # about.
           #
           # What partial promotion assumed, and should not have: that a red cell is
           # evidence about one image. Every config shares the same ROOT overlay and

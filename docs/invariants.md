@@ -591,11 +591,26 @@ invariant:
 > An auto tag may only move to a digest that PASSED live-GPU QA in this run, on
 > that exact digest. Anything else HOLDS the tag at its current digest.
 
-**A failing cell redraws before it blocks (ADR 0029).** `qa-gate.yml` is shared by
-base, pytorch, comfyui and vllm, and none of them carries retry logic of its own —
-so base-image is the reference for how a QA cell behaves everywhere. A cell now
-redraws on any non-zero exit except `config_error`, because reproducibility rather
-than symptom is what separates a bad host from a bad image: measured on 2026-08-18,
+Not statically checkable — it is a property of ~420 lines of bash inside
+`promote-base-image.yml`, and a linter cannot see a working gate versus a copy of
+one. It has been disarmed three times, each time with the whole suite green:
+
+| how it was disarmed | why the tests missed it |
+|---|---|
+| the hold check was written into `dry-run`, not `promote` | the test grepped the whole file and found the stray copy |
+| the `continue` was deleted from the hold branch | the test asserted the `if` line exists, not that it skips |
+| five assignments were deleted from the `dry-run` loop | nothing asserted anything about `dry-run` |
+
+### A failing cell redraws before it blocks (ADR 0029)
+
+`qa-gate.yml` is shared by base, comfyui and vllm (and imagegen-tests), none
+of which carries retry logic of its own — so base-image is the reference for
+how a QA cell behaves everywhere. (pytorch's gate is real but lives on an
+unmerged branch; it is NOT on main, so a reader following this to
+`promote-pytorch.yml` will not find a QA job there yet.)
+
+A cell redraws on any non-zero exit except `config_error` (4) and `interrupted`
+(130), because reproducibility rather than symptom is what separates a bad host from a bad image: measured on 2026-08-18,
 six of seventy pytorch cells blocked and every one investigated passed on other
 hardware, all of them with FAILED tests that the previous zero-failure rule could
 not redraw.
@@ -612,15 +627,6 @@ rule would have blocked it. A deterministic one still fails every draw and block
 The suspect record is what makes the trade defensible — an image failing across
 many DIFFERENT machines shows as a pattern rather than a green tick.
 
-Not statically checkable — it is a property of ~420 lines of bash inside
-`promote-base-image.yml`, and a linter cannot see a working gate versus a copy of
-one. It has been disarmed three times, each time with the whole suite green:
-
-| how it was disarmed | why the tests missed it |
-|---|---|
-| the hold check was written into `dry-run`, not `promote` | the test grepped the whole file and found the stray copy |
-| the `continue` was deleted from the hold branch | the test asserted the `if` line exists, not that it skips |
-| five assignments were deleted from the `dry-run` loop | nothing asserted anything about `dry-run` |
 
 There is **no bypass**: the `SKIP_QA` dispatch input added on 2026-08-05 was
 removed on 2026-08-07 (ADR 0019 cond 3, amended). Its untested-ness stuck to the
@@ -716,3 +722,4 @@ oobabooga). The `new-image` skill + generator encode them.
   stub `nvidia-smi` + `nvcc` on PATH + `UNSLOTH_LLAMA_CUDA_ARCHS`) **and** carry a post-build
   `test -f …/libggml-cuda.so` assertion so the CPU-only regression fails the build instead of
   shipping. **L056** gates the assertion. Both `unsloth-studio` and `aio-studio` are fixed (ADR 0016).
+

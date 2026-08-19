@@ -183,3 +183,37 @@ def test_a_real_failure_classifies_as_block_not_inconclusive():
     assert qv.classify(2, raw, req)[0] == "inconclusive", (
         "exit 2 means no-box-obtained; this is exactly why the loop flag must "
         "never be emitted as the verdict")
+
+
+def test_a_usage_error_is_config_error_not_no_offers():
+    """argparse exits 2 on a bad flag — the SAME code as EXIT_NO_OFFERS.
+
+    qa_verdict maps 2 to `inconclusive`, which a scheduled run soft-passes and
+    promotes UNGATED while Slack blames a thin market. So any skew between the
+    gate and this client — a typo, a flag added on one side only — failed OPEN on
+    the unattended path. Latent until the gate started passing --exclude-machine,
+    which is a new place for that skew to appear.
+    """
+    import subprocess, sys as _s
+    r = subprocess.run([_s.executable, str(TM / "test_template.py"), "--bogus-flag", "x"],
+                       capture_output=True, text=True)
+    assert r.returncode == 4, (
+        f"a usage error exited {r.returncode}; 2 is EXIT_NO_OFFERS and soft-passes "
+        f"on the schedule path")
+    assert "config_error" in r.stdout
+
+
+def test_help_still_exits_zero():
+    """The guard must not swallow --help."""
+    import subprocess, sys as _s
+    r = subprocess.run([_s.executable, str(TM / "test_template.py"), "--help"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+
+
+def test_interrupted_is_not_redrawn():
+    """qa_verdict calls exit 130 'a cancellation is not a pass'. Redrawing it
+    would turn a decision someone made into a bad draw."""
+    g = _gate()
+    assert '[ "$CODE" -ne 130 ]' in g, (
+        "exit 130 (interrupted) is redrawn; a cancellation must not be retried")

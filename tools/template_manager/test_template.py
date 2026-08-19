@@ -1354,7 +1354,21 @@ def parse_args():
     parser.add_argument("--env", metavar="KEY=VAL", action="append", default=[],
                         help="Set instance env var (repeatable). Timeout overrides: "
                              "PROV_TIMEOUT, VLLM_HEALTH_TIMEOUT, INSTANCE_TEST_DEFAULT_TIMEOUT")
-    return parser.parse_args()
+    # argparse exits 2 on a usage error — the SAME code as EXIT_NO_OFFERS, which
+    # qa_verdict maps to `inconclusive`, which a scheduled run soft-passes and
+    # promotes UNGATED while Slack blames a thin market. A typo'd flag or any
+    # skew between the gate and this client would therefore fail OPEN on the
+    # unattended path. config_error is the one code the gate refuses to retry and
+    # the verdict tool maps to BLOCK, which is exactly right for "our harness is
+    # wrong". Latent until the gate began passing --exclude-machine.
+    try:
+        return parser.parse_args()
+    except SystemExit as e:
+        if e.code in (None, 0):
+            raise                      # --help and friends
+        print(json.dumps({"state": "config_error", "exit_code": EXIT_CONFIG_ERROR,
+                          "reason": "bad arguments to test_template.py"}))
+        sys.exit(EXIT_CONFIG_ERROR)
 
 
 def main():

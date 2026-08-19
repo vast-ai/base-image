@@ -452,8 +452,7 @@ arithmetic was right, but it treated per-cell flakiness as fixed. It is not.
 The first promote to run under this ADR held exactly one tag, and the cause was a
 rented host that presented **no GPU**: `60/61/62` skipped, `skip != pass` blocked
 the cell. Nothing about the image was tested or faulty. That is a *bad draw*, and
-the answer to a bad draw is another draw — not a partial promotion. The gate now
-distinguishes the two by whether any test actually **failed**:
+the answer to a bad draw is another draw — not a partial promotion.
 
 > **SUPERSEDED 2026-08-19 by ADR 0029.** The zero-failure rule below — and its
 > 2026-08-14 extension to exit 5 — no longer describes the gate. On 2026-08-18
@@ -463,8 +462,9 @@ distinguishes the two by whether any test actually **failed**:
 > tests FAIL. A cell now redraws on any non-zero exit except `config_error`, and
 > records the machine it failed on. The paragraph below is kept as the reasoning
 > that was current at the time, not as the rule.
- a host that cannot
-run the GPU tests makes them SKIP, a defective image makes them FAIL. Zero
+
+The gate distinguished the two by whether any test actually **failed**: a host
+that cannot run the GPU tests makes them SKIP, a defective image makes them FAIL. Zero
 failures with a non-zero exit means nothing was tested, which is the same class as
 `no_offers`, and it is retried on a fresh offer. A single genuine failure still
 breaks immediately — retrying a real red until it passes by luck remains the thing

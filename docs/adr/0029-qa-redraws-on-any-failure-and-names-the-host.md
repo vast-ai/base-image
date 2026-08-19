@@ -46,11 +46,11 @@ None was an image defect. All six produced **failed tests**, so the zero-failure
 rule could not redraw any of them. That is the flaw: it was built for a host that
 makes tests SKIP, and a bad host mostly makes tests FAIL.
 
-An earlier attempt at this — the fault-domain model of ADR 0020, on the pytorch
-config-table branch — was dropped on 2026-08-18 during a rebase, to keep main's
-conventions while that branch landed. This ADR reaches the same conclusion from
+An earlier attempt at this — the fault-domain model described in option C below,
+drafted on the pytorch config-table branch and never merged — was dropped on
+2026-08-18 during a rebase, to keep main's conventions while that branch landed. This ADR reaches the same conclusion from
 the opposite direction, with the evidence the first run produced, and adds the
-part ADR 0020 did not have: naming the host.
+part that draft did not have: naming the host.
 
 ## Options considered
 
@@ -77,13 +77,18 @@ would have excluded healthy capacity and still drawn the bad boxes.
 
 ### C. Fault-domain classification in `qa_verdict.py` (rejected for now)
 
-ADR 0020's model: classify each outcome into HOST or IMAGE, retry the former.
+Classify each outcome into a HOST or an IMAGE fault domain and retry only the
+former: a timeout, a dead instance, `no_offers` and `bad_instance` are the host's;
+a real assertion failure, a required-test miss and a config error are the image's.
 Cleaner in principle, and it moves the decision into tested Python.
+
+This was drafted as ADR 0020 on the pytorch config-table branch and **never
+landed on `main`** — the number is unallocated in `docs/adr/` here, so the model
+is summarised above rather than cited, and a reader should not go looking for it.
 
 Rejected as the immediate step because it is a larger change to a shared verdict
 path, and because the discriminator it needs — *does this reproduce?* — is
-exactly what a redraw already measures. Reconsider if the redraw proves too
-coarse; the two are compatible.
+exactly what a redraw already measures. Reconsider if the redraw proves too coarse; the two are compatible.
 
 ### D. Redraw on any failure, and record the host (chosen)
 
