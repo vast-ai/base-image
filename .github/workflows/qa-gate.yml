@@ -240,9 +240,24 @@ jobs:
           for attempt in $(seq 1 "$ATTEMPTS"); do
             [ "$attempt" -gt 1 ] && echo "::notice::attempt ${attempt}/${ATTEMPTS} after an inconclusive market result"
             set +e
+            # EXCLUDE THE MACHINES THAT ALREADY FAILED THIS CELL. The client's own
+            # machine blacklist lives inside one process, and this loop starts a
+            # fresh one per attempt — so without this the redraw re-picks the SAME
+            # box, because offers are searched cheapest-first and the cheapest has
+            # not changed. Observed live 2026-08-19 (run 32236327488): a cell
+            # redrew onto the host it had just failed on, which is the one outcome
+            # the redraw exists to avoid.
+            EXCL=()
+            if [ -s /tmp/qa-suspect-hosts.txt ]; then
+              for _m in $(cut -d'|' -f1 /tmp/qa-suspect-hosts.txt | grep -E '^[0-9]+$' | sort -u); do
+                EXCL+=(--exclude-machine "$_m")
+              done
+            fi
+            [ ${#EXCL[@]} -gt 0 ] && echo "excluding already-failed machines: ${EXCL[*]}"
             python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
               --destroy --raw --force --label "${{ inputs.label }}" \
               --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
+              "${EXCL[@]}" \
               "${ARGS[@]}" \
               > /tmp/qa-raw.json
             CODE=$?
