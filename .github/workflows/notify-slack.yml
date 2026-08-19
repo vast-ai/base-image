@@ -91,6 +91,34 @@ jobs:
             HEADER_TEXT="${STATUS_EMOJI} ${IMAGE_NAME} Image Build ${STATUS_TEXT}"
           fi
 
+          # CLAMP THE HEADER. Slack's header block is plain_text with a hard 150
+          # character limit, and the whole POST is rejected with HTTP 400 if it is
+          # exceeded — the notification is lost entirely, including the part that
+          # says whether anything shipped.
+          #
+          # Observed 2026-08-19 (run 32239585814): promote-pytorch built a 527
+          # character headline enumerating the QA'd artifacts. The promotion had
+          # fully SUCCEEDED — every tag pushed — and the run still reported failure,
+          # because the only thing that broke was the announcement of the success.
+          #
+          # This file already truncates the tags section for its 3000 char limit.
+          # The header was never clamped, so any caller could break the shared
+          # notifier. Clamp here rather than only fixing the caller: this is the
+          # component that knows Slack's limits, and there are five callers.
+          HEADER_OVERFLOW=""
+          if [[ ${#HEADER_TEXT} -gt 150 ]]; then
+            HEADER_OVERFLOW="$HEADER_TEXT"
+            # 147 + the ellipsis. Cut on a word boundary when one is near the end,
+            # so the header does not stop mid-token.
+            _cut="${HEADER_TEXT:0:147}"
+            case "${_cut##*[[:space:]]}" in
+              "$_cut") ;;                       # no space at all: hard cut
+              *) [[ ${#_cut} -gt 120 ]] && _cut="${_cut% *}" ;;
+            esac
+            HEADER_TEXT="${_cut}…"
+            echo "::notice::headline was ${#HEADER_OVERFLOW} chars; clamped to Slack's 150 char header limit (full text moved into the message body)"
+          fi
+
           # Show the promoted-tags block when something was promoted: a normal
           # success, OR a soft-pass warning (ungated promotion — show the tags).
           SHOW_TAGS="false"
@@ -126,6 +154,14 @@ jobs:
                 ]
               }
             ]')
+
+          # The clamped-away text is information, not decoration — put it back in
+          # the body, where the limit is 3000 rather than 150.
+          if [[ -n "$HEADER_OVERFLOW" ]]; then
+            BLOCKS=$(jq --arg full "${HEADER_OVERFLOW:0:2900}" \
+              '. + [{"type": "section",
+                     "text": {"type": "mrkdwn", "text": $full}}]' <<<"$BLOCKS")
+          fi
           
           # Add image tags when something was promoted (success or soft-pass warning)
           if [[ "$SHOW_TAGS" == "true" ]]; then
