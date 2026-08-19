@@ -591,6 +591,27 @@ invariant:
 > An auto tag may only move to a digest that PASSED live-GPU QA in this run, on
 > that exact digest. Anything else HOLDS the tag at its current digest.
 
+**A failing cell redraws before it blocks (ADR 0029).** `qa-gate.yml` is shared by
+base, pytorch, comfyui and vllm, and none of them carries retry logic of its own —
+so base-image is the reference for how a QA cell behaves everywhere. A cell now
+redraws on any non-zero exit except `config_error`, because reproducibility rather
+than symptom is what separates a bad host from a bad image: measured on 2026-08-18,
+six of seventy pytorch cells blocked and every one investigated passed on other
+hardware, all of them with FAILED tests that the previous zero-failure rule could
+not redraw.
+
+Every failed attempt records the `machine_id` it ran on (`SUSPECT-HOST`, and a
+job-summary table), because the instance is destroyed immediately afterwards and
+the evidence is otherwise lost. The table separates the two readings deliberately:
+a cell that PASSED after a redraw exonerates the image and makes that host a
+de-verification candidate; a cell that never passed does not, and de-verifying
+those hosts would be wrong.
+
+Accepted cost, stated: a FLAKY image defect can now pass by luck, where the old
+rule would have blocked it. A deterministic one still fails every draw and blocks.
+The suspect record is what makes the trade defensible — an image failing across
+many DIFFERENT machines shows as a pattern rather than a green tick.
+
 Not statically checkable — it is a property of ~420 lines of bash inside
 `promote-base-image.yml`, and a linter cannot see a working gate versus a copy of
 one. It has been disarmed three times, each time with the whole suite green:
