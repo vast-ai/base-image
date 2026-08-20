@@ -524,6 +524,66 @@ socket-backed appears earlier in the same file. Scope, deliberately narrow:
   `grep "[s]upervisord"` bracket idiom does not match the program name as
   written. Neither is in the tree; both would pass.
 
+### Runtime races found by audit 2026-08-20 — fixed, NOT gated
+
+Auditing the whole image surface for the pattern behind L069 and L071 —
+*readiness inferred from something other than the thing about to be used* —
+turned up four more, three of them reaching a paying customer's instance rather
+than a CI cell. None is gated: they are one-off structural fixes, not a rule a
+linter can express. Recorded so the pattern is recognisable next time.
+
+**`/etc/portal.yaml` was a presence-gated handshake with a non-atomic writer.**
+`exit_portal.sh` waited for the file to EXIST, then decided from its CONTENT.
+`caddy_config_manager.py` wrote it with `open(path,"w")`, which truncates
+immediately and only lands content at close — measured at ~0.5 ms idle and 90 ms
+under CPU throttling, with an independent observer reading an incomplete file in
+300/300 trials. Six services key their entire startup on that grep. Losing is not
+a retry: the self-skip is `sleep 6; exit 0`, and `autorestart=unexpected` +
+`exitcodes=0` makes supervisord treat it as intentional, so the service is gone
+for the life of the instance — and the portal HIDES it, because a skip marker
+means "not configured" rather than "failed". Worse, `caddy.sh` ran
+`touch /etc/portal.yaml` unconditionally, including when the configurator had
+raised, so one malformed `PORTAL_CONFIG` entry left a zero-byte file on `/etc`
+(which survives stop/start) and every subsequent boot lost the whole portal.
+Now: `tempfile` + `os.replace` (the pattern `provisioner/manifest.py` already
+used), `applications: {}` instead of a bare `touch`, and a bounded wait for a
+NON-EMPTY file that fails loudly rather than deciding from an unreadable config.
+
+**The `.syncing` marker was not the lock.** `35-sync-home-dirs.sh` and
+`37-sync-environment.sh` acquire with `mkdir "$dir"` — atomic — and then `touch
+"$dir/.syncing"` a syscall later. A co-located instance sharing the volume that
+observed the directory between the two found no marker, exited its wait on the
+first iteration, and ran `rm -rf /venv/main; ln -s ...` against a tree still
+being copied. Everything from boot stage 45 onward then runs against a dangling
+symlink with no python. Absence of an in-progress marker cannot distinguish "not
+started" from "finished", so both now wait for a `.synced` COMPLETION marker,
+with a legacy fallback for trees written before markers existed, and a bounded
+budget — `.syncing` lives on a shared volume, so an instance destroyed mid-sync
+would otherwise block every later instance forever at boot stage 35, before
+supervisord launches.
+
+**Provisioner-registered services could never reach FATAL.** The generated conf
+used `autorestart=true` + `startsecs=0` against the base convention of
+`unexpected` + `5`. `startsecs=0` is process presence as readiness, encoded as
+the default for every manifest-registered customer app; `autorestart=true`
+restarts even on a clean exit 0, so the self-skip idiom became a permanent
+six-second loop. Measured side by side against a crashing command: the base
+convention reaches FATAL and stops, while the generated one re-execs about once a
+second for the life of the instance with `supervisorctl status`, the portal
+process list and every health check reporting RUNNING.
+
+**The provisioner registered services against a supervisord that could not hear
+it.** `supervisorctl reread`/`update` ran at boot stage 75 — inside the window
+L069 measured — with `check=False`, and the result was discarded. The conf files
+were on disk, so it logged success, the caller wrote the stage hash (never
+retried), and the boot set `/.provisioning_complete`. Both detectors fail open:
+`base/12-provisioning` passes on the marker, and `65-conditional-services`
+downgrades the exact tell to a WARN. It now waits for the RPC socket and lets a
+failed `supervisorctl` propagate. Note where this sat: L069/L070/L071 all gate
+`supervisorctl` readiness in `tests/` only, and the one place in the SHIPPED
+RUNTIME that called it with no wait and ignored the exit code was covered by
+none of them.
+
 ### A restart is not a readiness event — **GATED (L071)**
 
 Two halves of one defect, both measured on live QA hosts, and the second is the

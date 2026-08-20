@@ -71,15 +71,39 @@ _sync_home() {
                 mv "${user_dir}" "${sync_home_dir}"
             done
 
+            # Completion before clearing in-progress: no instant where a
+            # finished tree carries neither marker.
+            touch "${sync_home_dir}/.synced"
             rm -f "${sync_home_dir}/.syncing"
         fi
     fi
 
-    # Wait until sync is complete
-    echo "Waiting for environment to sync..."
-    until [ ! -f "${sync_home_dir}/.syncing" ]; do
+    # Wait until sync is complete.
+    #
+    # Same defect as 37-sync-environment, against /root and /home/* instead of
+    # /venv: `mkdir` is the atomic lock, the `touch` is a separate syscall after
+    # it, so a co-located instance sharing this volume could see the directory,
+    # find no in-progress marker, and fall straight through to the symlinking
+    # below while the winner was still running `mv /root ...`. Wait for the
+    # completion marker, which is unambiguous.
+    _home_wait=0
+    while [[ ! -f "${sync_home_dir}/.synced" ]]; do
+        # Written by an older image: neither marker, but the move is done.
+        if [[ ! -f "${sync_home_dir}/.syncing" ]] && [[ -d "${sync_home_dir}/root" ]]; then
+            break
+        fi
+        # Bounded: .syncing lives on a SHARED volume, so an instance destroyed
+        # mid-sync would otherwise block every later instance here forever, at
+        # boot stage 35 — before supervisord launches.
+        if (( _home_wait >= 3600 )); then
+            echo "ERROR: home sync did not complete after ${_home_wait}s."
+            echo "  Refusing to symlink home directories against a partial tree. If an"
+            echo "  instance died mid-sync, remove ${sync_home_dir}/.syncing to clear it."
+            return 1
+        fi
         sleep 10
         echo "Waiting for home to sync..."
+        _home_wait=$((_home_wait + 10))
     done
 
     # Always symlink

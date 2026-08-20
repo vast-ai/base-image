@@ -243,7 +243,13 @@ print('' if v is None else v)
 # --max-time, because a refused connection returns instantly. Callers now record
 # the expiry as a named failure instead (ADR 0029).
 wait_for_caddy() {
-    local port="${1:-2019}"  # default: caddy admin API (always available)
+    # The port is REQUIRED. It used to default to 2019 — Caddy's admin endpoint,
+    # which is enabled by default and binds before the site listeners — so a bare
+    # call waited on a port no test probes. L071 blocks the obvious spelling, but
+    # `wait_for_caddy ""` and `wait_for_caddy "$unset_var"` reach the same place
+    # (${1:-} treats empty as unset) and a regex will not see them. Removing the
+    # default makes the defect unrepresentable, which is worth more than the rule.
+    local port="${1:?wait_for_caddy needs an explicit port — 2019 is the admin endpoint, not a site}"
     local proto="${2:-http}"
     local timeout="${3:-$CADDY_READY_TIMEOUT}"
     local deadline=$(( SECONDS + timeout ))
@@ -288,18 +294,39 @@ wait_for_caddy() {
 wait_for_caddy_ports() {
     local timeout="${1:-$CADDY_READY_TIMEOUT}"
     local deadline=$(( SECONDS + timeout ))
-    local line port missing
-    [[ -f /etc/Caddyfile ]] || return 0
+    local line port missing listeners why
     while :; do
         missing=""
-        while IFS= read -r line; do
-            port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
-            [[ -n "$port" && "$port" != "2019" ]] || continue
-            ss -tln | grep -q ":${port} " || { missing="$port"; break; }
-        done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
-        [[ -z "$missing" ]] && return 0
+        why=""
+        # An ABSENT or EMPTY Caddyfile is "cannot tell", not "ready". caddy.sh
+        # rewrites this file as part of the very restart being waited on, and
+        # caddy_config_manager.py writes it non-atomically (open-for-write
+        # truncates, then `caddy fmt --overwrite` truncates again), so a poll can
+        # land on zero bytes. Returning 0 there is the fail-open this helper
+        # exists to prevent — and the same read one line later decides whether
+        # 26-caddy-auth takes its silent test_skip.
+        if [[ ! -s /etc/Caddyfile ]]; then
+            why="/etc/Caddyfile is absent or empty"
+        else
+            # ONE `ss` per poll, not one per port. Two reasons: 240 process
+            # spawns per call is silly, and `ss | grep -q` is a SIGPIPE trap —
+            # grep exits on the match, ss dies 141, and under `set -o pipefail`
+            # a BOUND port would be recorded as missing. No base test sets
+            # pipefail today; this stops being true the first time one does.
+            listeners=$(ss -tln 2>/dev/null)
+            while IFS= read -r line; do
+                port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
+                [[ -n "$port" && "$port" != "2019" ]] || continue
+                grep -q ":${port} " <<< "$listeners" || { missing="$port"; break; }
+            done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
+            # Zero declared ports is a LEGITIMATE steady state (an instance with
+            # no mapped ports produces no site blocks), which is why emptiness is
+            # discriminated above rather than here.
+            [[ -z "$missing" ]] && return 0
+            why="port ${missing} not listening"
+        fi
         if (( SECONDS >= deadline )); then
-            echo "  WARN: caddy port ${missing} not listening after ${timeout}s"
+            echo "  WARN: caddy not ready after ${timeout}s (${why})"
             return 1
         fi
         sleep 1

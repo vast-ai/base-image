@@ -13,6 +13,7 @@ is decided entirely by exit codes and the clock.
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import subprocess
 import time
@@ -217,12 +218,30 @@ def _suite(tmp_path, base_tests: dict, d_tests: dict):
         f = root / "demo.d" / name
         f.write_text('#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n' + body)
         f.chmod(0o755)
+    results = tmp_path / "results.json"
     env = dict(os.environ,
                INSTANCE_TEST_LOG=str(tmp_path / "out.log"),
-               INSTANCE_TEST_RESULTS=str(tmp_path / "results.json"))
+               INSTANCE_TEST_RESULTS=str(results))
     p = subprocess.run(["bash", str(r), "--manual"], capture_output=True, text=True,
                        timeout=120, cwd=str(root), env=env)
-    return p.stdout + p.stderr
+    # The VERDICT, not just the narration. Asserting on banner strings alone let
+    # a mutation that cleared has_failure pass every gate test: the run would
+    # print the right words and still exit 0.
+    try:
+        state = json.loads(results.read_text())
+    except (OSError, ValueError):
+        state = {}
+    return _Run(p.stdout + p.stderr, p.returncode, state)
+
+
+class _Run(str):
+    """The combined output, with the exit code and results JSON attached, so a
+    test can assert on the narration AND the verdict without two call sites."""
+    def __new__(cls, text, rc, state):
+        o = super().__new__(cls, text)
+        o.rc = rc
+        o.state = state
+        return o
 
 
 def test_a_base_failure_stops_the_derivative_phase(tmp_path):
@@ -231,6 +250,9 @@ def test_a_base_failure_stops_the_derivative_phase(tmp_path):
                  {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
     assert "DERIVATIVE PHASE NOT ATTEMPTED" in out
     assert "EXPENSIVE-RAN" not in out, "the expensive tail ran despite a red base"
+    # ADR 0030 binding condition 1: this removes WORK, never a failure.
+    assert out.rc == 1, "the run must still fail"
+    assert out.state.get("state") == "failed", out.state.get("state")
 
 
 def test_the_whole_base_phase_still_runs_after_a_failure(tmp_path):
@@ -245,6 +267,39 @@ def test_the_whole_base_phase_still_runs_after_a_failure(tmp_path):
     assert "collateral" in out, "a later base test must still run and report"
     assert "LATE-BASE-RAN" in out, "the exonerating base test must still run"
     assert "EXPENSIVE-RAN" not in out
+
+
+def test_a_DERIVATIVE_failure_does_not_stop_the_derivative_phase(tmp_path):
+    """The gate keyed on `has_failure`, which ANY failing test sets — so the
+    second derivative test onwards tripped it. That applied ADR 0030's rejected
+    Option B inside the very phase the ADR is about, printed a banner blaming a
+    green base, and on a multi-suite image would skip an unrelated suite.
+
+    Co-failure in a *.d/ suite is diagnostic for exactly the reason ADR 0030
+    gives for base: three engine tests failing together identifies one root
+    cause, one failing identifies none. It is also NOT the expensive-tail
+    argument — that work is already being paid for by the time the first
+    derivative test fails.
+    """
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n'},
+                 {"10-first.sh": 'test_fail "derivative failure"\n',
+                  "20-second.sh": 'echo D2-RAN\ntest_pass ok\n',
+                  "30-third.sh": 'echo D3-RAN\ntest_pass ok\n'})
+    assert "D2-RAN" in out, "a derivative failure must not abort its own phase"
+    assert "D3-RAN" in out
+    assert "DERIVATIVE PHASE NOT ATTEMPTED" not in out, "base was green"
+    assert out.rc == 1 and out.state.get("state") == "failed"
+
+
+def test_the_banner_is_only_printed_when_BASE_actually_failed(tmp_path):
+    """The wording is load-bearing: someone triaging a red comfyui cell reads it
+    against a base phase that visibly passed."""
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n'},
+                 {"10-first.sh": 'test_fail "derivative failure"\n',
+                  "20-second.sh": 'test_pass ok\n'})
+    assert "A base/ test failed" not in out
 
 
 def test_a_green_base_runs_the_derivative_phase_normally(tmp_path):

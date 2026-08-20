@@ -391,7 +391,7 @@ post_test_webhook() {
 
 # ── Main ─────────────────────────────────────────────────────────────
 
-phase_gate_tripped=false
+base_failed=false
 declare -a TEST_NAMES=()
 declare -a TEST_STATES=()
 declare -a TEST_DURATIONS=()
@@ -471,14 +471,13 @@ for i in "${!ALL_TESTS[@]}"; do
     # functionality passing on the same endpoints 53s later is what proved the
     # host innocent. Cheap diagnostics are worth finishing; the expensive tail
     # is not. Same reasoning as 12-provisioning's existing test_fatal.
-    if [[ "$test_name" != base/* && "$has_failure" == "true" && "$phase_gate_tripped" != "true" ]]; then
-        phase_gate_tripped=true
+    if [[ "$test_name" != base/* && "$base_failed" == "true" ]]; then
         for ((j=i; j<${#ALL_TESTS[@]}; j++)); do
             TEST_STATES[$j]="skipped"
         done
         echo "" | log_output
         echo "─── DERIVATIVE PHASE NOT ATTEMPTED ───" | log_output
-        echo "  base/ reported a failure, so the ${test_name%%/*} suite was not run." | log_output
+        echo "  A base/ test failed, so the ${test_name%%/*} suite was not run." | log_output
         echo "  These tests are NOT passing and NOT skipped-by-design — they were" | log_output
         echo "  never started. The cell fails on the base failure above and is" | log_output
         echo "  redrawn (ADR 0029) without spending the derivative phase." | log_output
@@ -510,6 +509,7 @@ for i in "${!ALL_TESTS[@]}"; do
             # Fatal: test signalled the suite should abort (e.g. provisioning failed)
             TEST_STATES[$i]="failed"
             has_failure=true
+            [[ "$test_name" == base/* ]] && base_failed=true
             echo "  → FAILED [FATAL] (${TEST_DURATIONS[$i]}s)" | log_output
             # Mark remaining tests as skipped
             for ((j=i+1; j<${#ALL_TESTS[@]}; j++)); do
@@ -526,11 +526,13 @@ for i in "${!ALL_TESTS[@]}"; do
         124)
             TEST_STATES[$i]="failed"
             has_failure=true
+            [[ "$test_name" == base/* ]] && base_failed=true
             echo "  → FAILED (timeout after ${test_timeout}s)" | log_output
             ;;
         *)
             TEST_STATES[$i]="failed"
             has_failure=true
+            [[ "$test_name" == base/* ]] && base_failed=true
             echo "  → FAILED (exit code ${rc}, ${TEST_DURATIONS[$i]}s)" | log_output
             ;;
     esac

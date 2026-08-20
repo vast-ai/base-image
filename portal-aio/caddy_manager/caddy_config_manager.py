@@ -1,4 +1,5 @@
 import os
+import tempfile
 import yaml
 import subprocess
 import time
@@ -60,10 +61,34 @@ def load_config(yaml_path='/etc/portal.yaml'):
     # Persisting the cache is best-effort: we already have a usable config in hand, so
     # a read-only /etc or an unwritable file must not stop Caddy from starting. (The
     # same condition that makes the file unreadable above usually makes it unwritable.)
+    # ATOMICALLY. `open(path,"w")` truncates immediately and the content only
+    # lands at close, so this file spent ~0.5ms (90ms under CPU throttling)
+    # existing and empty on every write. Six services key their entire startup
+    # decision on it: exit_portal.sh waits for the file to EXIST and then greps
+    # it for their name, so a reader landing in that window sees no match,
+    # self-skips with `sleep 6; exit 0`, and — because conf.d carries
+    # autorestart=unexpected + exitcodes=0 — is never restarted. The service is
+    # gone for the life of the instance and the portal HIDES it, because a skip
+    # marker means "not configured" rather than "failed".
+    #
+    # tempfile + os.replace, the pattern provisioner/manifest.py already uses for
+    # exactly this reason: a reader sees either the old file or the new one.
     yaml_data = {"applications": apps}
     try:
-        with open(yaml_path, "w") as file:
-            yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
+        yaml_dir = os.path.dirname(yaml_path) or "."
+        fd, tmp = tempfile.mkstemp(dir=yaml_dir, suffix=".yaml")
+        try:
+            with os.fdopen(fd, "w") as file:
+                yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
+            os.replace(tmp, yaml_path)
+        except BaseException:
+            # Never leave the temp file behind, and never leave a HALF file at
+            # the real path — os.replace is the only thing that publishes.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except OSError as e:
         print(f"Could not write {yaml_path} ({type(e).__name__}: {e}); "
               f"continuing with the config from PORTAL_CONFIG")

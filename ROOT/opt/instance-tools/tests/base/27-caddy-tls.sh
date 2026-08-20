@@ -54,6 +54,12 @@ fi
 
 # ── Find a test port ──────────────────────────────────────────────────
 
+# Same silent-skip shape as 26-caddy-auth: find_caddy_ports keys on `ss -tln`,
+# and the test_skip below is a GREEN run that asserted nothing about TLS. This
+# file was only ever fixed for the other half (passing $test_port to
+# wait_for_caddy); it never had a readiness wait of its own.
+wait_for_caddy_ports || echo "  WARN: caddy ports not ready before enumeration"
+
 find_caddy_ports
 test_port="${REPLY[0]:-}"
 
@@ -167,7 +173,8 @@ if ! caddyfile_has_tls; then
     sed -i '/^ENABLE_HTTPS=/d' /etc/environment 2>/dev/null
     echo 'ENABLE_HTTPS="true"' >> /etc/environment
     export ENABLE_HTTPS=true
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy "$test_port" "https" \
         || test_fail "caddy did not come back after restart (see WARN above)"
 
@@ -185,7 +192,8 @@ if ! caddyfile_has_tls; then
     echo "  restoring HTTP mode..."
     sed -i '/^ENABLE_HTTPS=/d' /etc/environment
     export ENABLE_HTTPS=false
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy "$test_port" "http" \
         || test_fail "caddy did not come back after restart (see WARN above)"
 
@@ -195,7 +203,8 @@ else
     sed -i '/^ENABLE_HTTPS=/d' /etc/environment 2>/dev/null
     echo 'ENABLE_HTTPS="false"' >> /etc/environment
     export ENABLE_HTTPS=false
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy "$test_port" "http" \
         || test_fail "caddy did not come back after restart (see WARN above)"
 
@@ -210,7 +219,8 @@ else
     sed -i '/^ENABLE_HTTPS=/d' /etc/environment
     echo 'ENABLE_HTTPS="true"' >> /etc/environment
     export ENABLE_HTTPS=true
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy "$test_port" "https" \
         || test_fail "caddy did not come back after restart (see WARN above)"
 

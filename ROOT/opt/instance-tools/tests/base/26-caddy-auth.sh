@@ -52,7 +52,8 @@ if [[ -z "${WEB_PASSWORD:-}" ]]; then
     export WEB_PASSWORD="$test_web_pass"
 
     echo "  restarting caddy to pick up WEB_PASSWORD..."
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
     auth_modified=true
 else
@@ -66,8 +67,15 @@ echo "  WEB_USERNAME=${WEB_USERNAME:-<not set>} (basic auth user: ${basic_user})
 
 # find_caddy_ports keys on `ss -tln`, so a caddy that has not finished binding
 # yields NO ports and this file takes its `test_skip` exit below — a green run
-# that asserted nothing about auth. The wait above is what makes that skip mean
-# "this image has no external caddy ports" rather than "we asked too early".
+# that asserted nothing about auth.
+#
+# This wait is UNCONDITIONAL, not inside the WEB_PASSWORD branch above. It used
+# to sit there, so any template that SETS WEB_PASSWORD took the else-branch and
+# reached find_caddy_ports with no readiness at all — the fail-open re-opened by
+# a template variable. It is what makes the skip below mean "this image has no
+# external caddy ports" rather than "we asked too early".
+wait_for_caddy_ports || echo "  WARN: caddy ports not ready before enumeration"
+
 find_caddy_ports
 all_caddy_ports=("${REPLY[@]}")
 
@@ -82,10 +90,13 @@ done
 if [[ ${#all_caddy_ports[@]} -eq 0 ]]; then
     if $auth_modified; then
         sed -i '/^WEB_PASSWORD=/d' /etc/environment
-        supervisorctl restart caddy &>/dev/null
-        # Not optional even on the way out: 27-caddy-tls runs next and would
-        # inherit a caddy that is still rebinding.
-        wait_for_caddy_ports || echo "  WARN: caddy still rebinding on exit"
+        supervisorctl restart caddy &>/dev/null \
+            || echo "  WARN: could not restart caddy while cleaning up"
+        # Deliberately no wait here, and deliberately not the reverse. Reaching
+        # this line means the wait at the top SUCCEEDED and the Caddyfile still
+        # declares zero site ports, so wait_for_caddy_ports would iterate nothing
+        # and return 0 on its first poll — a guard that cannot fail is worse than
+        # none, because it reads as protection. 27-caddy-tls does its own wait.
     fi
     test_skip "no external caddy ports found"
 fi
@@ -195,7 +206,8 @@ elif [[ -n "$test_port" ]]; then
         echo "  setting WEB_USERNAME=${test_web_user} and restarting caddy..."
         sed -i '/^WEB_USERNAME=/d' /etc/environment 2>/dev/null
         echo "WEB_USERNAME=\"${test_web_user}\"" >> /etc/environment
-        supervisorctl restart caddy &>/dev/null
+        supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
         wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
 
         # Custom user + WEB_PASSWORD → should work
@@ -210,7 +222,8 @@ elif [[ -n "$test_port" ]]; then
 
         # Restore: remove custom username and restart
         sed -i '/^WEB_USERNAME=/d' /etc/environment
-        supervisorctl restart caddy &>/dev/null
+        supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
         wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
         echo "  WEB_USERNAME removed, caddy restored"
     fi
@@ -258,7 +271,8 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
     echo "  setting AUTH_EXCLUDE=${test_port} and restarting caddy..."
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment 2>/dev/null
     echo "AUTH_EXCLUDE=\"${test_port}\"" >> /etc/environment
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
 
     exc_proto=$(caddy_port_proto "$test_port")
@@ -275,7 +289,8 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
     fi
 
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
     echo "  AUTH_EXCLUDE removed, caddy restored"
 fi
@@ -335,7 +350,8 @@ if $auth_modified; then
     echo ""
     echo "  cleaning up test password and restarting caddy..."
     sed -i '/^WEB_PASSWORD=/d' /etc/environment
-    supervisorctl restart caddy &>/dev/null
+    supervisorctl restart caddy &>/dev/null \
+        || test_fail "supervisorctl restart caddy failed — supervisord unreachable?"
     wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
 fi
 

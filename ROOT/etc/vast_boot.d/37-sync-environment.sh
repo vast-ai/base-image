@@ -75,15 +75,48 @@ _sync_environment() {
                 
                 fi
             done
+            # Publish completion BEFORE clearing in-progress, so there is no
+            # instant where neither marker is present on a finished tree.
+            touch "${env_dir}/.synced"
             rm -f "${env_dir}/.syncing"
         fi
     fi
 
-    # Wait until sync is complete, even if this instance is not syncing
-    echo "Waiting for environment to sync..."
-    until [ ! -f "${env_dir}/.syncing" ]; do
-        sleep 10
+    # Wait until sync is complete, even if this instance is not syncing.
+    #
+    # This used to be `until [ ! -f "${env_dir}/.syncing" ]`, and absence of an
+    # in-progress marker is NOT the same event as the lock. `mkdir "$env_dir"`
+    # is atomic; the `touch` of the marker is a separate syscall after it. A
+    # co-located instance sharing this volume that observed the directory
+    # between the two found no marker, exited this loop on its first iteration,
+    # and went straight to `rm -rf /venv/main; ln -s ...` — pointing
+    # /venv/main at a tree the winner was still copying into. Everything from
+    # boot stage 45 onward (bashrc, TLS cert gen, supervisord, every service,
+    # provisioning) then runs against a dangling symlink with no python.
+    #
+    # Wait for a COMPLETION marker instead: "not started yet" and "finished" are
+    # indistinguishable by absence, but presence of done is unambiguous.
+    _sync_wait=0
+    while [[ ! -f "${env_dir}/.synced" ]]; do
+        # A tree written by an older image carries neither marker. Nothing in
+        # progress plus a populated venv dir means that sync finished before
+        # completion markers existed.
+        if [[ ! -f "${env_dir}/.syncing" ]] && compgen -G "${venv_dir}/*" >/dev/null 2>&1; then
+            break
+        fi
+        # Bounded, because .syncing is on a SHARED volume and an instance
+        # destroyed mid-sync leaves it there permanently — every later instance
+        # would block here forever at boot stage 37, before supervisord ever
+        # launches: no portal, no services, and no failing check to point at.
+        if (( _sync_wait >= 3600 )); then
+            echo "ERROR: environment sync did not complete after ${_sync_wait}s."
+            echo "  Refusing to relink /venv/* against a partial tree. If an instance"
+            echo "  died mid-sync, remove ${env_dir}/.syncing to clear the stale lock."
+            return 1
+        fi
         echo "Waiting for environment to sync..."
+        sleep 10
+        _sync_wait=$((_sync_wait + 10))
     done
 
     # Delete and link venv directories

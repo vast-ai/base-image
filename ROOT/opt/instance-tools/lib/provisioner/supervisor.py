@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import time
 import re
 
 from .schema import Service
@@ -47,14 +49,29 @@ cd {workdir}
 {pre_commands}{command}
 """
 
+# `autorestart=unexpected` + `startsecs=5`, matching every hand-written conf.d
+# unit, and for the same two reasons.
+#
+# `autorestart=true` made a customer's service unkillable by supervisord: it is
+# restarted even on a clean exit 0, so the self-skip idiom the generated script
+# inherits from exit_portal.sh (`sleep 6; exit 0`, meaning "I am not configured,
+# stay down") became a permanent six-second restart loop instead.
+#
+# `startsecs=0` marked the program RUNNING the instant it forked — process
+# presence as readiness, encoded as the default for every manifest-registered
+# customer app. Measured side by side against a crashing command: the base
+# convention reaches FATAL after its retries and stops; startsecs=0 with
+# autorestart=true re-execs about once a second for the life of the instance
+# while `supervisorctl status`, the portal process list and every health check
+# report RUNNING. There was no state for anyone to key on.
 _SUPERVISOR_CONF_TEMPLATE = """\
 [program:{name}]
 environment=PROC_NAME="%(program_name)s"
 command=/opt/supervisor-scripts/{name}.sh
 autostart=true
-autorestart=true
+autorestart=unexpected
 exitcodes=0
-startsecs=0
+startsecs=5
 stopasgroup=true
 killasgroup=true
 stopsignal=TERM
@@ -132,6 +149,34 @@ def _generate_supervisor_conf(service: Service) -> str:
     return _SUPERVISOR_CONF_TEMPLATE.format(name=service.name)
 
 
+def _wait_for_supervisord(timeout: int = 60) -> None:
+    """Block until supervisord's RPC socket answers, or raise.
+
+    Presence is not readiness — the lesson the shipped test suite learned the
+    expensive way (L069). `supervisorctl status` exits 4 on both ECONNREFUSED
+    and ENOENT against the serverurl, and 0 or 3 once it has been reached (3 =
+    some programs not running, which is expected this early).
+
+    Phase 7 can land inside supervisord's own startup: every earlier phase is a
+    no-op for a services-only manifest, so there is no work between the fork at
+    boot stage 65 and this call. Raising is correct — the caller marks the stage
+    complete on return, and a stage marked complete is never retried.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        rc = subprocess.run(["supervisorctl", "status"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL).returncode
+        if rc in (0, 3):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"supervisord's RPC socket did not answer within {timeout}s "
+                f"(supervisorctl exit {rc}) — refusing to register services "
+                "against a supervisord that cannot hear them")
+        time.sleep(1)
+
+
 def register_services(services: list[Service], dry_run: bool = False) -> None:
     """Register supervisor services by generating scripts and configs.
 
@@ -177,15 +222,17 @@ def register_services(services: list[Service], dry_run: bool = False) -> None:
         log.info("Wrote supervisor config: %s", conf_path)
 
     if not dry_run:
+        _wait_for_supervisord()
         log.info("Reloading supervisor configuration")
-        run_cmd(
-            ["supervisorctl", "reread"],
-            label="supervisorctl",
-            check=False,
-        )
-        run_cmd(
-            ["supervisorctl", "update"],
-            label="supervisorctl",
-            check=False,
-        )
+        # check=True, not check=False. These ran at boot stage 75 — inside the
+        # window where supervisord has forked (stage 65) but its RPC socket is
+        # not yet listening — and their failure was discarded. The conf files
+        # were on disk, so the log said "Supervisor services registered", the
+        # stage hash was written (so it is never retried), and
+        # /.provisioning_complete was set: a customer's declared service silently
+        # never started while the instance reported provisioning successful.
+        # Both detectors fail open — base/12-provisioning passes on the marker,
+        # and 65-conditional-services downgrades the exact tell to a WARN.
+        run_cmd(["supervisorctl", "reread"], label="supervisorctl")
+        run_cmd(["supervisorctl", "update"], label="supervisorctl")
         log.info("Supervisor services registered")

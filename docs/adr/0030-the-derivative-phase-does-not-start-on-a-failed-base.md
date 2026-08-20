@@ -79,12 +79,20 @@ Finish `base/` in full; refuse to enter the derivative phase if it failed.
 
 1. **The whole base phase always runs.** Cheap, and it is where the diagnosis
    lives.
-2. **The first non-`base/` test trips the gate.** Remaining tests are marked
+2. **Only a `base/` failure arms the gate**, tracked separately from the
+   suite-global failure flag. The first implementation keyed on that global
+   flag, which any failing test sets — so the second derivative test onwards
+   tripped it, silently applying rejected Option B inside the very phase this
+   ADR is about, under a banner blaming a green base. Co-failure in a `*.d/`
+   suite is diagnostic for exactly the reason given above, and the expensive-tail
+   argument does not apply once that phase has already started.
+
+3. **The first non-`base/` test trips the gate.** Remaining tests are marked
    `skipped` and the suite stops.
-3. **The report says the phase was NOT ATTEMPTED**, in those words, and states
+4. **The report says the phase was NOT ATTEMPTED**, in those words, and states
    that the tests are neither passing nor skipped-by-design. A wall of `skipped`
    reads as benign; this is the one place that misreading would be expensive.
-4. **The verdict is unchanged.** The failing base test is still recorded
+5. **The verdict is unchanged.** The failing base test is still recorded
    `failed`, so the cell fails on it and redraws under ADR 0029. The
    required-pass gate already treats a skipped required test as a failure, so a
    derivative test that never ran cannot be mistaken for one that passed.
@@ -99,6 +107,35 @@ Finish `base/` in full; refuse to enter the derivative phase if it failed.
    `test_the_whole_base_phase_still_runs_after_a_failure`.
 3. **`skipped` must not read as passed** in the human-facing summary. Guarded by
    `test_the_report_says_NOT_ATTEMPTED_rather_than_letting_skip_read_as_pass`.
+4. **A derivative failure must not abort the derivative phase.** Guarded by
+   `test_a_DERIVATIVE_failure_does_not_stop_the_derivative_phase` and
+   `test_the_banner_is_only_printed_when_BASE_actually_failed`. The guard tests
+   for conditions 1-3 all shipped a single derivative test, which is why the
+   first implementation passed them while doing the opposite of this decision.
+5. **The tests assert the VERDICT, not the narration.** They read the exit code
+   and `results.json`; asserting on banner strings alone let a mutation that
+   cleared the failure flag pass every gate test.
+
+## Note on the evidence for L071
+
+The symptom this work chased — `expected 401, got 000` in `26-caddy-auth` — had
+three causes attributed to it inside 48 hours (a bcrypt timeout, a 30s
+`wait_for_caddy` budget, and finally the admin-port wait). Each was argued from
+the same shape of circumstantial evidence, and two were wrong.
+
+The discriminating datum is the ELAPSED TIME of the failing check, and it was
+available the whole time. From the 2026-08-20 job log:
+
+    10:28:47.6019052   FAIL: basic testadmin_2252 ... got 000
+    10:28:47.6404190   FAIL: basic vastai:testpass (should reject) ... got 000
+
+38 milliseconds apart. A curl timeout at `--max-time 20` would put them twenty
+seconds apart; this is a refused connection, returning instantly — nothing was
+listening. That is the bind race, not starvation.
+
+The lesson is procedural and worth more than the fix: for a symptom with several
+plausible causes, find the measurement that separates them before writing the
+third explanation.
 
 ## Consequences
 
