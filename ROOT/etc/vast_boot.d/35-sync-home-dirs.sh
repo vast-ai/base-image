@@ -148,6 +148,15 @@ _sync_home() {
             # key-based SSH dead and the customer's home content invisible. The
             # stale marker is on the SHARED volume, so a restart repeats it.
             _restore_ssh_links
+            # Record it where a test can see it. boot_default.sh sources the
+            # stages and DISCARDS their status, so a `return 1` here is otherwise
+            # invisible to every detector in the image — which is why the SSH
+            # stranding this path used to cause could only be found by reading
+            # the code. Deliberate failures only: a blanket "any non-zero source"
+            # wrapper would fire on 10-prep-env.sh, whose last line is a
+            # legitimately-false conditional, and a check that cries wolf is
+            # worse than none.
+            echo "35-sync-home-dirs: home sync did not complete" >> /var/log/vast_boot_failures 2>/dev/null || true
             return 1
         fi
         sleep 10

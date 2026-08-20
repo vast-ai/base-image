@@ -70,7 +70,7 @@ def test_preflight_fails_when_the_key_is_missing(raw):
     assert "VAST_API_KEY" in block and "exit 1" in block
 
 
-def test_qa_cells_are_fail_closed_and_assert_the_gpu_trio(wf):
+def test_qa_cells_are_fail_closed_and_assert_the_gpu_required(wf):
     with_ = _job(wf, "qa")["with"]
     assert with_["require_key"] is True, "a missing key would skip and report green"
     for t in ("base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries"):
@@ -179,28 +179,34 @@ def test_qa_summary_runs_even_when_a_cell_failed(raw):
 
 # --- the required-test list, in every copy ---------------------------------
 
-def test_every_copy_of_the_required_trio_agrees(raw, wf):
-    """There are four independent copies of the GPU trio: the QA template's
+def test_every_copy_of_the_required_set_agrees(raw, wf):
+    """There are four independent copies of the required set: the QA template's
     INSTANCE_TEST_REQUIRE_PASS, the qa job's require_tests input, qa-summary's
     REQUIRE_TESTS, and the linter's list. qa-summary's copy is the ACTUAL
     arbiter — it re-classifies every cell and decides flip/hold — and it was the
-    one nothing pinned. Emptying it makes a GPU-trio self-skip classify as a pass
+    one nothing pinned. Emptying it makes a GPU-required self-skip classify as a pass
     and flip the tag, with the whole suite green."""
     import re as _re
-    trio = {"base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries"}
+    # 36 joined the GPU required when base-qa started running --sync-home /
+    # --sync-environment: boot stages 35 and 37 relink /root and /venv, and
+    # nothing exercised them, so a change there first ran on a customer. It
+    # self-skips when the flags are off, which is correct everywhere else and
+    # would be a hole here — hence required.
+    required = {"base/36-home-env-sync", "base/60-gpu-cuda",
+                "base/61-cuda-compute", "base/62-gpu-libraries"}
 
     cell = set(_job(wf, "qa")["with"]["require_tests"].split())
-    assert cell == trio, f"qa job require_tests drifted: {cell}"
+    assert cell == required, f"qa job require_tests drifted: {cell}"
 
     m = _re.search(r'export REQUIRE_TESTS="([^"]*)"', _job_block(raw, "qa-summary"))
     assert m, "qa-summary no longer exports REQUIRE_TESTS — the arbiter lost its list"
-    assert set(m.group(1).split()) == trio, (
-        f"qa-summary's REQUIRE_TESTS is {m.group(1)!r}, not the trio. This copy "
+    assert set(m.group(1).split()) == required, (
+        f"qa-summary's REQUIRE_TESTS is {m.group(1)!r}, not the required set. This copy "
         f"decides flip/hold; a weaker one silently reopens skip-as-pass.")
 
     tmpl = yaml.safe_load((REPO / "templates/base-qa/template.yml").read_text())
     env = tmpl.get("env", {}) if isinstance(tmpl, dict) else {}
-    assert set(str(env.get("INSTANCE_TEST_REQUIRE_PASS", "")).split()) == trio, (
+    assert set(str(env.get("INSTANCE_TEST_REQUIRE_PASS", "")).split()) == required, (
         "the QA template's required-pass list drifted from the CI-side one; the "
         "two layers are supposed to assert the SAME thing in different places")
 

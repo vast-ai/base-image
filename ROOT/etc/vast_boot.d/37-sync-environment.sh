@@ -129,6 +129,15 @@ _sync_environment() {
                 echo "  died after taking the lock and before writing anything. Delete"
                 echo "  ${env_dir} so the next instance can claim it."
             fi
+            # Record it where a test can see it. boot_default.sh sources the
+            # stages and DISCARDS their status, so a `return 1` here is otherwise
+            # invisible to every detector in the image — which is why the SSH
+            # stranding this path used to cause could only be found by reading
+            # the code. Deliberate failures only: a blanket "any non-zero source"
+            # wrapper would fire on 10-prep-env.sh, whose last line is a
+            # legitimately-false conditional, and a check that cries wolf is
+            # worse than none.
+            echo "37-sync-environment: environment sync did not complete" >> /var/log/vast_boot_failures 2>/dev/null || true
             return 1
         fi
         echo "Waiting for environment to sync..."
