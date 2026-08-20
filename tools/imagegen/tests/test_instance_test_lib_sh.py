@@ -13,6 +13,7 @@ is decided entirely by exit codes and the clock.
 from __future__ import annotations
 
 import itertools
+import re
 import json
 import os
 import subprocess
@@ -319,3 +320,57 @@ def test_the_report_says_NOT_ATTEMPTED_rather_than_letting_skip_read_as_pass(tmp
                  {"10-expensive.sh": 'test_pass ok\n'})
     assert "were never started" in out or "never started" in out
     assert "NOT passing and NOT skipped-by-design" in out
+
+
+# ── interactive_umask ─────────────────────────────────────────────────
+#
+# The value that is actually configured lives in the rc an INTERACTIVE shell
+# sources; a test process sources none and sees bash's 022 default. The trap is
+# that the same rc prints a coloured banner, so a naive capture returns the
+# banner instead of the umask — which turned this check into a hard failure on
+# all 10 QA cells after passing in a bare container where the banner never fires.
+
+def _umask_env(tmp_path, bashrc: str):
+    home = tmp_path / f"h{next(_SEQ)}"
+    home.mkdir()
+    (home / ".bashrc").write_text(bashrc)
+    return dict(os.environ, HOME=str(home))
+
+
+def test_it_reads_the_umask_past_a_noisy_rc(tmp_path):
+    """The real rc prints 'Activated conda/uv virtual environment at ...' in
+    colour before the shell is usable."""
+    env = _umask_env(tmp_path, 'umask 002\necho -e "\\033[32mActivated conda/uv environment\\033[0m"\n')
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert p.stdout.strip() == "0002", repr(p.stdout)
+
+
+def test_it_reads_a_quiet_rc_too(tmp_path):
+    env = _umask_env(tmp_path, "umask 002\n")
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert p.stdout.strip() == "0002"
+
+
+def test_an_rc_that_does_NOT_set_the_umask_reports_what_it_found(tmp_path):
+    """Must report the shell's actual value, not silently succeed — this is the
+    case the check exists to catch. Pinning the parent's umask makes it
+    deterministic: the child inherits the INVOKING shell's value, not a fixed
+    default, which is what made the first version of this test wrong."""
+    env = _umask_env(tmp_path, 'echo "no umask here"\n')
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60,
+                       preexec_fn=lambda: os.umask(0o027))
+    assert p.stdout.strip() == "0027", repr(p.stdout)
+
+
+def test_it_returns_nothing_rather_than_garbage_when_unreadable(tmp_path):
+    """A banner-only rc must yield an empty result, so the caller reports
+    'unknown' instead of asserting against a fragment of a log line."""
+    env = _umask_env(tmp_path, 'echo "banner with no umask value at all"\n')
+    env["BASH_ENV"] = "/nonexistent"
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    out = p.stdout.strip()
+    assert out == "" or re.fullmatch(r"0[0-7]{3}", out), repr(out)

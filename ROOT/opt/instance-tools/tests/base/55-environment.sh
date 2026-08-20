@@ -54,7 +54,7 @@ fi
 # execs each test as `env -u SHELLOPTS bash <test>` — non-interactive, no rc
 # sourced — so it observed bash's 022 default and reported 600 on a perfectly
 # correct image. It WARNed on every cell of every run and could never pass.
-_login_umask=$(bash -ic 'umask' 2>/dev/null | tr -d '[:space:]')
+_login_umask=$(interactive_umask)
 if [[ "$_login_umask" == "0002" ]]; then
     echo "  interactive umask: ${_login_umask} (group-writable, as configured)"
 else

@@ -15,6 +15,7 @@
 #   assert_command_exists CMD
 #   assert_service_running NAME [timeout_s]
 #   assert_service_stopped NAME
+#   interactive_umask — umask of an interactive login shell (empty if unreadable)
 #   assert_env_set VARNAME
 #   assert_user_exists USERNAME [UID]
 #   has_gpu          — predicate (return 0/1)
@@ -387,6 +388,20 @@ wait_for_port() {
         sleep 1
     done
     return 0
+}
+
+# The umask an INTERACTIVE login shell gets — the value that is actually
+# configured (45-user-write-bashrc writes it) and that a customer's session
+# inherits. A non-interactive shell sources no rc and reports bash's 022 default,
+# so measuring it from a test process says nothing about the image.
+#
+# Extract only a line that IS a umask. That rc also prints a coloured banner
+# ("Activated conda/uv virtual environment at ..."), and a naive capture grabs
+# the banner instead of the value — which turned this check into a hard failure
+# on all 10 QA cells, after passing in a bare container where the banner never
+# fires. Echoes nothing on failure; the caller decides.
+interactive_umask() {
+    bash -ic 'umask' 2>/dev/null | grep -oE '^0[0-7]{3}$' | tail -1
 }
 
 # ── Assertions ───────────────────────────────────────────────────────
