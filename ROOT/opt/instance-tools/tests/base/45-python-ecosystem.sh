@@ -11,7 +11,15 @@ uv --version &>/dev/null || test_fail "uv not available"
 echo "  uv: $(uv --version 2>&1)"
 
 # Functional check: uv pip can resolve a package (dry-run, no install)
-if uv pip install --dry-run pip 2>/dev/null | grep -qi "would\|already\|satisfied\|pip"; then
+# --python, because this check runs BEFORE /venv/main is activated below. With
+# no venv active, uv exits with "No virtual environment found" on stderr and
+# prints nothing to stdout, so the grep could never match — it has WARNed on
+# every cell of every run since it was written, asserting nothing.
+# 2>&1, not 2>/dev/null: uv writes its report ("Using Python ... / Checked 1
+# package / Would make no changes") to STDERR. Discarding stderr left an empty
+# stdout for the grep, so this could not pass even with a venv named.
+if uv pip install --dry-run --python /venv/main/bin/python pip 2>&1 \
+        | grep -qi "would\|already\|satisfied\|pip"; then
     echo "  uv pip install: functional (dry-run ok)"
 else
     echo "  WARN: uv pip install --dry-run did not produce expected output"
