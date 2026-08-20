@@ -125,7 +125,7 @@ _sync_home() {
         # boot stage 35 — before supervisord launches.
         if (( _home_wait >= 3600 )); then
             echo "ERROR: home sync did not complete after ${_home_wait}s."
-            echo "  Refusing to symlink home directories against a partial tree. If an"
+            echo "  Refusing to symlink home directories against a partial tree."
             # Two different shapes reach here and they need OPPOSITE remedies.
             # Saying "remove .syncing" for the second is actively harmful: it
             # makes a PARTIAL tree pass the legacy discriminator on the next

@@ -114,7 +114,7 @@ _sync_environment() {
         # launches: no portal, no services, and no failing check to point at.
         if (( _sync_wait >= 3600 )); then
             echo "ERROR: environment sync did not complete after ${_sync_wait}s."
-            echo "  Refusing to relink /venv/* against a partial tree. If an instance"
+            echo "  Refusing to relink /venv/* against a partial tree."
             # Two different shapes reach here and they need OPPOSITE remedies.
             # Saying "remove .syncing" for the second is actively harmful: it
             # makes a PARTIAL tree pass the legacy discriminator on the next
