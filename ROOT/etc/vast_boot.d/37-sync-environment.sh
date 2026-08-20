@@ -102,6 +102,10 @@ _sync_environment() {
         # progress plus a populated venv dir means that sync finished before
         # completion markers existed.
         if [[ ! -f "${env_dir}/.syncing" ]] && compgen -G "${venv_dir}/*" >/dev/null 2>&1; then
+            # Retire the legacy shape once, so a pre-marker tree does not
+            # re-take this branch on every boot forever. Best-effort: a
+            # read-only volume just keeps using the fallback.
+            touch "${env_dir}/.synced" 2>/dev/null || true
             break
         fi
         # Bounded, because .syncing is on a SHARED volume and an instance
@@ -111,7 +115,20 @@ _sync_environment() {
         if (( _sync_wait >= 3600 )); then
             echo "ERROR: environment sync did not complete after ${_sync_wait}s."
             echo "  Refusing to relink /venv/* against a partial tree. If an instance"
-            echo "  died mid-sync, remove ${env_dir}/.syncing to clear the stale lock."
+            # Two different shapes reach here and they need OPPOSITE remedies.
+            # Saying "remove .syncing" for the second is actively harmful: it
+            # makes a PARTIAL tree pass the legacy discriminator on the next
+            # boot and get symlinked, which is the outcome this wait exists to
+            # prevent.
+            if [[ -f "${env_dir}/.syncing" ]]; then
+                echo "  An instance died mid-sync and left ${env_dir}/.syncing on the"
+                echo "  shared volume. The tree is PARTIAL: delete ${env_dir} entirely"
+                echo "  so the next instance re-syncs it. Do not just remove the marker."
+            else
+                echo "  ${env_dir} exists with no markers and no content — an instance"
+                echo "  died after taking the lock and before writing anything. Delete"
+                echo "  ${env_dir} so the next instance can claim it."
+            fi
             return 1
         fi
         echo "Waiting for environment to sync..."

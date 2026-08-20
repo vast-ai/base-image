@@ -190,9 +190,10 @@ class TestRegisterServices:
         ]
         register_services(services, dry_run=True)
 
+    @patch("provisioner.supervisor._assert_registered")
     @patch("provisioner.supervisor._wait_for_supervisord")
     @patch("provisioner.supervisor.run_cmd")
-    def test_writes_files(self, mock_run, mock_wait, tmp_path):
+    def test_writes_files(self, mock_run, mock_wait, mock_assert, tmp_path):
         script_dir = tmp_path / "supervisor-scripts"
         conf_dir = tmp_path / "supervisor" / "conf.d"
 
@@ -215,12 +216,13 @@ class TestRegisterServices:
             # supervisorctl reread + update
             assert mock_run.call_count == 2
 
+    @patch("provisioner.supervisor._assert_registered")
     @patch("provisioner.supervisor._wait_for_supervisord")
     @patch("provisioner.supervisor.run_cmd")
     @patch("provisioner.supervisor.os.chmod")
     @patch("provisioner.supervisor.os.makedirs")
     def test_writes_correct_paths(self, mock_makedirs, mock_chmod, mock_run,
-                                  mock_wait, tmp_path):
+                                  mock_wait, mock_assert, tmp_path):
         svc = Service(name="test-svc", command="echo", workdir="/tmp")
         written = {}
 
@@ -287,20 +289,43 @@ class TestSupervisordReadiness:
             with pytest.raises(RuntimeError):
                 _wait_for_supervisord(timeout=2)
 
+    @patch("provisioner.supervisor.subprocess.run")
     @patch("provisioner.supervisor._wait_for_supervisord")
     @patch("provisioner.supervisor.run_cmd")
     @patch("provisioner.supervisor.os.chmod")
     @patch("provisioner.supervisor.os.makedirs")
-    def test_a_failed_supervisorctl_is_NOT_swallowed(self, _mk, _ch, mock_run,
-                                                     _wait, tmp_path):
-        """check=True, so run_cmd raises and register_services propagates —
-        which is what stops __main__ writing the stage hash."""
-        import subprocess as _sp
+    def test_a_service_supervisord_never_picked_up_RAISES(self, _mk, _ch, mock_run,
+                                                          _wait, mock_sp, tmp_path):
+        """The positive assertion: the conf being on disk is not the same as the
+        service existing. This is what the old check=False code skipped — it
+        logged success, the caller wrote the stage hash (so it is never retried)
+        and the boot set /.provisioning_complete, while the service had never
+        started."""
         from provisioner.supervisor import register_services
-        mock_run.side_effect = _sp.CalledProcessError(4, ["supervisorctl", "reread"])
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+        mock_sp.return_value = type("R", (), {
+            "stdout": "app: ERROR (no such process)", "stderr": ""})()
         with patch("builtins.open", create=True):
-            with pytest.raises(_sp.CalledProcessError):
+            with pytest.raises(RuntimeError, match="did not pick up"):
                 register_services([Service(name="app", command="echo", workdir="/tmp")])
+
+    @patch("provisioner.supervisor.subprocess.run")
+    @patch("provisioner.supervisor._wait_for_supervisord")
+    @patch("provisioner.supervisor.run_cmd")
+    @patch("provisioner.supervisor.os.chmod")
+    @patch("provisioner.supervisor.os.makedirs")
+    def test_someone_elses_broken_conf_does_not_fail_our_phase(self, _mk, _ch, mock_run,
+                                                               _wait, mock_sp, tmp_path):
+        """`reread` parses EVERY file in conf.d, so CANT_REREAD from a derivative's
+        unit or a customer's own write_files is not a statement about our
+        services. Failing on it aborted late file writes, post_commands and
+        PROVISIONING_SCRIPT for a file unrelated to this manifest."""
+        from provisioner.supervisor import register_services
+        mock_run.return_value = type("R", (), {"returncode": 1})()   # CANT_REREAD
+        mock_sp.return_value = type("R", (), {
+            "stdout": "app RUNNING pid 1, uptime 0:00:05", "stderr": ""})()
+        with patch("builtins.open", create=True):
+            register_services([Service(name="app", command="echo", workdir="/tmp")])
 
 
 class TestGeneratedConfConventions:

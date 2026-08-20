@@ -25,7 +25,25 @@ cd /opt/portal-aio/caddy_manager
 # `applications: {}` says "no apps configured" in the same shape a real config
 # has, so a reader can tell it apart from a half-written file.
 if [[ ! -s /etc/portal.yaml ]]; then
-    printf 'applications: {}\n' > /etc/portal.yaml
+    if [[ -n "${PORTAL_CONFIG:-}" ]]; then
+        # PORTAL_CONFIG names apps but the configurator produced no config, so it
+        # failed — its main() catches Exception and prints, so its exit status
+        # cannot be trusted to say so.
+        #
+        # Do NOT publish a placeholder here. `applications: {}` is well-formed
+        # and non-empty, so it sails past exit_portal.sh's non-empty wait; the
+        # grep then misses and all six services take the silent permanent
+        # self-skip. That would make the loud path unreachable in precisely the
+        # case it was added for. Leaving the file ABSENT is what lets those
+        # services wait and then report.
+        echo "ERROR: PORTAL_CONFIG is set but caddy_config_manager.py produced no" >&2
+        echo "  /etc/portal.yaml. Not publishing an empty config — services would read" >&2
+        echo "  it, find themselves absent, and self-skip for the life of the instance." >&2
+    else
+        # Genuinely nothing to publish. Parseable and empty, so a reader can tell
+        # it apart from a half-written file.
+        printf 'applications: {}\n' > /etc/portal.yaml
+    fi
 fi
 
 if [[ -f /etc/Caddyfile ]]; then

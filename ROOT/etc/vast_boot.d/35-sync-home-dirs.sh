@@ -7,6 +7,30 @@ sync_home() {
 }
 
 # Move /home and /root into workspace
+# Re-link the .ssh directories that the sync moved aside.
+#
+# _sync_home MOVES /root/.ssh and each /home/*/.ssh into ${ssh_home_dir} before
+# the sync wait, and the symlinks that make them reachable are only created
+# after it. Any exit between the two strands every key: boot_default.sh
+# discards a stage's exit status, so boot continues, supervisord starts and the
+# portal comes up while key-based SSH is dead — and 46-user-propagate-ssh-keys
+# then dies on its first line (`realpath /root/.ssh/authorized_keys` under
+# set -euo pipefail), so it does not even recreate an empty file.
+_restore_ssh_links() {
+    if [[ -d "${ssh_home_dir}/root/.ssh" && ! -e /root/.ssh ]]; then
+        ln -sfn "${ssh_home_dir}/root/.ssh" /root/.ssh
+    fi
+    local d username
+    for d in "${ssh_home_dir}"/*; do
+        [[ -d "$d" ]] || continue
+        username=$(basename "$d")
+        [[ "$username" == "root" ]] && continue
+        if [[ -d "${d}/.ssh" && -d "/home/${username}" && ! -e "/home/${username}/.ssh" ]]; then
+            ln -sfn "${d}/.ssh" "/home/${username}/.ssh"
+        fi
+    done
+}
+
 _sync_home() {
     workspace="${WORKSPACE:-/workspace}"
     sync_home_dir="${workspace}/home"
@@ -90,6 +114,10 @@ _sync_home() {
     while [[ ! -f "${sync_home_dir}/.synced" ]]; do
         # Written by an older image: neither marker, but the move is done.
         if [[ ! -f "${sync_home_dir}/.syncing" ]] && [[ -d "${sync_home_dir}/root" ]]; then
+            # Retire the legacy shape once, so a pre-marker tree does not
+            # re-take this branch on every boot forever. Best-effort: a
+            # read-only volume just keeps using the fallback.
+            touch "${sync_home_dir}/.synced" 2>/dev/null || true
             break
         fi
         # Bounded: .syncing lives on a SHARED volume, so an instance destroyed
@@ -98,7 +126,28 @@ _sync_home() {
         if (( _home_wait >= 3600 )); then
             echo "ERROR: home sync did not complete after ${_home_wait}s."
             echo "  Refusing to symlink home directories against a partial tree. If an"
-            echo "  instance died mid-sync, remove ${sync_home_dir}/.syncing to clear it."
+            # Two different shapes reach here and they need OPPOSITE remedies.
+            # Saying "remove .syncing" for the second is actively harmful: it
+            # makes a PARTIAL tree pass the legacy discriminator on the next
+            # boot and get symlinked, which is the outcome this wait exists to
+            # prevent.
+            if [[ -f "${sync_home_dir}/.syncing" ]]; then
+                echo "  An instance died mid-sync and left ${sync_home_dir}/.syncing on the"
+                echo "  shared volume. The tree is PARTIAL: delete ${sync_home_dir} entirely"
+                echo "  so the next instance re-syncs it. Do not just remove the marker."
+            else
+                echo "  ${sync_home_dir} exists with no markers and no content — an instance"
+                echo "  died after taking the lock and before writing anything. Delete"
+                echo "  ${sync_home_dir} so the next instance can claim it."
+            fi
+            # Put .ssh back before leaving. It was MOVED out to ${ssh_home_dir}
+            # above — before this wait — and the symlinks that make it reachable
+            # are below it. Returning between the two strands every key: boot
+            # continues (boot_default discards a stage's status), supervisord
+            # starts, the portal comes up, and the instance looks healthy with
+            # key-based SSH dead and the customer's home content invisible. The
+            # stale marker is on the SHARED volume, so a restart repeats it.
+            _restore_ssh_links
             return 1
         fi
         sleep 10

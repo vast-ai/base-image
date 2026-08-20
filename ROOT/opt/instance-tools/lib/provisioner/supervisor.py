@@ -149,7 +149,7 @@ def _generate_supervisor_conf(service: Service) -> str:
     return _SUPERVISOR_CONF_TEMPLATE.format(name=service.name)
 
 
-def _wait_for_supervisord(timeout: int = 60) -> None:
+def _wait_for_supervisord(timeout: int | None = None) -> None:
     """Block until supervisord's RPC socket answers, or raise.
 
     Presence is not readiness — the lesson the shipped test suite learned the
@@ -162,6 +162,14 @@ def _wait_for_supervisord(timeout: int = 60) -> None:
     boot stage 65 and this call. Raising is correct — the caller marks the stage
     complete on return, and a stage marked complete is never retried.
     """
+    # Overridable for the same reason lib.sh's budgets are (L070): this ships
+    # inside the image, so a baked number can only be corrected by rebuilding
+    # and re-promoting every image in the family.
+    if timeout is None:
+        try:
+            timeout = int(os.environ.get("SUPERVISOR_READY_TIMEOUT", "60"))
+        except ValueError:
+            timeout = 60
     deadline = time.monotonic() + timeout
     while True:
         rc = subprocess.run(["supervisorctl", "status"],
@@ -175,6 +183,27 @@ def _wait_for_supervisord(timeout: int = 60) -> None:
                 f"(supervisorctl exit {rc}) — refusing to register services "
                 "against a supervisord that cannot hear them")
         time.sleep(1)
+
+
+def _assert_registered(names: list[str]) -> None:
+    """Raise unless supervisord knows every service we just wrote.
+
+    `supervisorctl status <name>` prints `<name>: ERROR (no such process)` and
+    exits non-zero for a program it has not loaded, so this distinguishes "wrote
+    a file" from "supervisord picked it up" — which is the whole difference
+    between provisioning that worked and provisioning that reported success.
+    """
+    missing = []
+    for name in names:
+        out = subprocess.run(["supervisorctl", "status", name],
+                             capture_output=True, text=True)
+        if "no such process" in (out.stdout + out.stderr).lower():
+            missing.append(name)
+    if missing:
+        raise RuntimeError(
+            "supervisord did not pick up: " + ", ".join(missing)
+            + " — the .conf files were written but the services are not "
+              "registered, so they would never start")
 
 
 def register_services(services: list[Service], dry_run: bool = False) -> None:
@@ -233,6 +262,26 @@ def register_services(services: list[Service], dry_run: bool = False) -> None:
         # never started while the instance reported provisioning successful.
         # Both detectors fail open — base/12-provisioning passes on the marker,
         # and 65-conditional-services downgrades the exact tell to a WARN.
-        run_cmd(["supervisorctl", "reread"], label="supervisorctl")
-        run_cmd(["supervisorctl", "update"], label="supervisorctl")
+        # `reread`'s verdict is GLOBAL: it parses every file matched by
+        # `files = /etc/supervisor/conf.d/*.conf`, so CANT_REREAD from a
+        # malformed unit shipped by a derivative, or dropped in by a customer's
+        # own write_files, is not a statement about the services we just wrote.
+        # Failing the phase on it aborted the rest of provisioning — late file
+        # writes, post_commands and PROVISIONING_SCRIPT — for a file that has
+        # nothing to do with this manifest. Report it, do not own it.
+        r = run_cmd(["supervisorctl", "reread"], label="supervisorctl", check=False)
+        if r.returncode != 0:
+            log.warning(
+                "supervisorctl reread exited %s — a .conf in /etc/supervisor/conf.d "
+                "may be malformed (see the output above). Verifying our own "
+                "services directly rather than trusting the global verdict.",
+                r.returncode)
+        run_cmd(["supervisorctl", "update"], label="supervisorctl", check=False)
+        # THE assertion that is ours: did each service we just wrote actually
+        # reach supervisord? This is what the old check=False code silently
+        # skipped — the conf was on disk, so it logged success, the caller wrote
+        # the stage hash (never retried) and the boot set
+        # /.provisioning_complete, while the customer's service had never
+        # started. Positive, per-service, and immune to anyone else's bad conf.
+        _assert_registered([s.name for s in services])
         log.info("Supervisor services registered")

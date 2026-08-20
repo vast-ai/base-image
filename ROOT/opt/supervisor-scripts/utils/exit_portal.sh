@@ -50,7 +50,12 @@ if ! grep -qiE "^[^#].*${search_term}" /etc/portal.yaml; then
         # service (0755 root:root), syncthing's marker write fails with
         # "Permission denied" and the portal shows it as a dead process instead
         # of a correctly-skipped one. Ownership by arrival order is not a design.
-        mkdir -p /tmp/supervisor-skip 2>/dev/null
+        # -m sets the mode AT CREATION. `mkdir` then `chmod` is two syscalls —
+        # the same "atomic lock, separate marker" shape fixed in the boot stages
+        # above — and between them a non-root service's write still fails. The
+        # chmod stays only as the upgrade path for a 0755 directory left by an
+        # older image, where it is a no-op for a non-owner anyway.
+        mkdir -m 1777 -p /tmp/supervisor-skip 2>/dev/null
         chmod 1777 /tmp/supervisor-skip 2>/dev/null || true
         echo "${search_term}" > "/tmp/supervisor-skip/${PROC_NAME}"
     fi

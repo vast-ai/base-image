@@ -1,4 +1,5 @@
 import os
+import stat
 import tempfile
 import yaml
 import subprocess
@@ -75,9 +76,36 @@ def load_config(yaml_path='/etc/portal.yaml'):
     # exactly this reason: a reader sees either the old file or the new one.
     yaml_data = {"applications": apps}
     try:
+        # Resolve first: open(path,"w") wrote THROUGH a symlink, os.replace
+        # unlinks it and leaves a regular file. Nothing in-repo symlinks this,
+        # but exit_portal.sh and five provisioning scripts all resolve it with
+        # `realpath -q`, which is only meaningful if someone expected to. Also
+        # keeps the temp file on the target's own filesystem.
+        yaml_path = os.path.realpath(yaml_path)
         yaml_dir = os.path.dirname(yaml_path) or "."
         fd, tmp = tempfile.mkstemp(dir=yaml_dir, suffix=".yaml")
         try:
+            # mkstemp creates 0600 and ignores umask, and os.replace publishes
+            # THAT inode — so without this the restrictive mode travels with the
+            # rename and /etc/portal.yaml becomes root-only. syncthing.conf is
+            # the one base unit that drops privileges (`user=user`), so its grep
+            # here would get EACCES, `! grep` would be true, and it would take
+            # the self-skip path — `sleep 6; exit 0`, terminal under
+            # autorestart=unexpected — logging "not in /etc/portal.yaml" while
+            # Syncthing is plainly in PORTAL_CONFIG. That is the exact misleading
+            # skip this change exists to remove, reintroduced by the fix for it.
+            #
+            # Worse than it sounds: /etc is on the persisted overlay and the OLD
+            # code path preserves an existing file's mode, so an instance that
+            # booted once on a bad image would keep 0600 even after an image
+            # rollback. Match what open(path,"w") produced under umask 022.
+            try:
+                # Keep an operator's own chmod if they set one; otherwise match
+                # what open(path,"w") produced under the image's umask 022.
+                mode = stat.S_IMODE(os.stat(yaml_path).st_mode)
+            except OSError:
+                mode = 0o644
+            os.fchmod(fd, mode)
             with os.fdopen(fd, "w") as file:
                 yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
             os.replace(tmp, yaml_path)

@@ -1456,7 +1456,12 @@ _L071_BARE_CADDY = re.compile(r"(?<![\w-])wait_for_caddy\s*(\||&|;|$)")
 # wait here instead produces a guard that provably cannot fail (the skip path is
 # only reachable when zero ports are declared, so the wait iterates nothing),
 # and a guard that cannot fail is worse than none because it reads as protection.
-_L071_LEAVING = re.compile(r"(?<![\w-])(test_skip|test_fail|test_fatal|exit)\b")
+# Anchored: the line's FIRST command must be the exit. Matching these verbs
+# anywhere let an error handler on the racing probe itself exempt the restart —
+# `http_check ... || test_fail "..."` is a PROBE, not a departure, and it is the
+# house idiom this diff adds at ten sites. The rule would have been blind to the
+# population it created.
+_L071_LEAVING = re.compile(r"^\s*(test_skip|test_fail|test_fatal|exit)\b")
 
 
 def check_restart_is_followed_by_readiness(img: Image, repo: Path) -> Iterable[Finding]:
@@ -1534,7 +1539,13 @@ def check_restart_is_followed_by_readiness(img: Image, repo: Path) -> Iterable[F
                 # Leaving the test? Then there is no next probe here, and the
                 # next FILE guards its own entry.
                 leaving = False
-                for _, c in window:
+                # window[1:] — NOT window. window[0] is the remainder of the
+                # restart's OWN line, and `|| test_fail` matches _L071_LEAVING,
+                # so a restart with its error guarded inline exempted itself.
+                # This diff adds exactly that idiom at ten sites, making it house
+                # style: the rule would have been blind to precisely the
+                # population it had just created.
+                for _, c in window[1:]:
                     if _L071_WAIT.search(c):
                         break
                     if _L071_LEAVING.search(c):

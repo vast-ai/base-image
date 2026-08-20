@@ -315,8 +315,11 @@ wait_for_caddy_ports() {
             # pipefail today; this stops being true the first time one does.
             listeners=$(ss -tln 2>/dev/null)
             while IFS= read -r line; do
-                port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
-                [[ -n "$port" && "$port" != "2019" ]] || continue
+                # Bash regex, not echo|grep: two more processes per port per
+                # poll in the helper whose comment above objects to exactly that.
+                [[ "$line" =~ ^:([0-9]+)[[:space:]]*\{ ]] || continue
+                port="${BASH_REMATCH[1]}"
+                [[ "$port" != "2019" ]] || continue
                 grep -q ":${port} " <<< "$listeners" || { missing="$port"; break; }
             done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
             # Zero declared ports is a LEGITIMATE steady state (an instance with

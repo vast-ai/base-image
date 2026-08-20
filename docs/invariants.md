@@ -546,8 +546,24 @@ means "not configured" rather than "failed". Worse, `caddy.sh` ran
 raised, so one malformed `PORTAL_CONFIG` entry left a zero-byte file on `/etc`
 (which survives stop/start) and every subsequent boot lost the whole portal.
 Now: `tempfile` + `os.replace` (the pattern `provisioner/manifest.py` already
-used), `applications: {}` instead of a bare `touch`, and a bounded wait for a
-NON-EMPTY file that fails loudly rather than deciding from an unreadable config.
+used) and a bounded wait for a NON-EMPTY file.
+
+Three corrections came out of review, and each is the same mistake in a new
+place. `mkstemp` creates **0600** and `os.replace` publishes that inode, so the
+atomic write made `/etc/portal.yaml` root-only — and `syncthing.conf` is the one
+base unit that drops privileges (`user=user`), so its grep got EACCES and it
+self-skipped permanently. That is the exact failure being fixed, reintroduced by
+the fix, deterministically rather than as a race, and persisted on `/etc` where
+an image rollback would not clear it. The write now preserves an operator's mode
+or falls back to 0644, and resolves symlinks first, because `os.replace` unlinks
+a symlink where `open(w)` wrote through it.
+
+And the placeholder must not be published when the configurator FAILED.
+`applications: {}` is well-formed and non-empty, so it sails past the very
+non-empty wait added above; the grep then misses and all six services self-skip
+silently — making the loud path unreachable in precisely the case it was written
+for. `caddy.sh` now publishes it only when `PORTAL_CONFIG` is genuinely empty,
+and leaves the file absent otherwise so the waiters time out and report.
 
 **The `.syncing` marker was not the lock.** `35-sync-home-dirs.sh` and
 `37-sync-environment.sh` acquire with `mkdir "$dir"` — atomic — and then `touch
@@ -561,6 +577,19 @@ with a legacy fallback for trees written before markers existed, and a bounded
 budget — `.syncing` lives on a shared volume, so an instance destroyed mid-sync
 would otherwise block every later instance forever at boot stage 35, before
 supervisord launches.
+
+The bound needed two things review caught. `boot_default.sh` DISCARDS a stage's
+exit status, so `return 1` is not "fail loudly" — it is "carry on with the stage
+half-applied", and by then `35-sync-home-dirs.sh` has already MOVED every `.ssh`
+directory to `/home_ssh` with the symlinks back still below the return. The
+instance would boot to a green portal with key-based SSH dead and the customer's
+home invisible, and `46-user-propagate-ssh-keys.sh` would die on its first line
+(`realpath` under `set -euo pipefail`) rather than recreating anything. The
+timeout path now restores those links before returning. And the remediation text
+now distinguishes a partial tree (delete the directory) from a lock taken by an
+instance that died before writing anything (also delete it) — the original text
+said "remove `.syncing`", which for a partial tree tells the operator to make it
+pass the legacy discriminator and get symlinked.
 
 **Provisioner-registered services could never reach FATAL.** The generated conf
 used `autorestart=true` + `startsecs=0` against the base convention of
@@ -578,8 +607,12 @@ L069 measured — with `check=False`, and the result was discarded. The conf fil
 were on disk, so it logged success, the caller wrote the stage hash (never
 retried), and the boot set `/.provisioning_complete`. Both detectors fail open:
 `base/12-provisioning` passes on the marker, and `65-conditional-services`
-downgrades the exact tell to a WARN. It now waits for the RPC socket and lets a
-failed `supervisorctl` propagate. Note where this sat: L069/L070/L071 all gate
+downgrades the exact tell to a WARN. It now waits for the RPC socket, and asserts the thing that is actually ours:
+that each service it just wrote is known to supervisord. Not the global
+`reread` verdict — that parses EVERY file in `conf.d`, so a malformed unit from
+a derivative or a customer's own `write_files` would have failed the phase and
+aborted the remaining provisioning, including `post_commands` and
+`PROVISIONING_SCRIPT`, over a file with nothing to do with that manifest. Note where this sat: L069/L070/L071 all gate
 `supervisorctl` readiness in `tests/` only, and the one place in the SHIPPED
 RUNTIME that called it with no wait and ignored the exit code was covered by
 none of them.
