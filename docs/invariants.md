@@ -524,6 +524,64 @@ socket-backed appears earlier in the same file. Scope, deliberately narrow:
   `grep "[s]upervisord"` bracket idiom does not match the program name as
   written. Neither is in the tree; both would pass.
 
+### A restart is not a readiness event — **GATED (L071)**
+
+Two halves of one defect, both measured on live QA hosts, and the second is the
+one that cost cells.
+
+`supervisorctl restart` returns when the WRAPPER clears its `startsecs`, not when
+the service is usable. Measured in the shipped image with a wrapper that binds
+late: restart returned after **5145 ms** with the port still answering `000`.
+`26-caddy-auth`'s skip path restarted caddy with no wait at all, which also
+leaked a rebinding caddy into `27-caddy-tls` — the file that runs next.
+
+`wait_for_caddy`'s default port is **2019**, Caddy's admin endpoint. It is
+enabled by default (`caddy_config_manager.py` emits no `admin` directive) and it
+binds before the site listeners are provisioned. `26-caddy-auth` called it bare
+six times and then probed `:1111` and `:6006`; it returned success on 2019 with
+the site ports unbound, and the checks recorded `expected 401, got 000` — twice
+on one machine, on an image the same run proved healthy 12 seconds later.
+`27-caddy-tls` never had this defect: it passes `"$test_port"` explicitly.
+
+The silent variant is worse than the loud one. `find_caddy_ports` keys on
+`ss -tln`, so a caddy that has not finished binding yields NO ports and
+`26-caddy-auth` takes its `test_skip "no external caddy ports found"` exit — a
+green run that asserted nothing about auth at all.
+
+The fix is `wait_for_caddy_ports`, which waits until every port the Caddyfile
+DECLARES is listening — answerable from the Caddyfile before the listeners
+exist, which is the whole point.
+
+**L071** requires every `supervisorctl restart` in a shipped test to be followed
+by a readiness wait, and forbids a bare `wait_for_caddy`. Scoped honestly, in
+L066's phrasing: it gates that a wait EXISTS and that it NAMES a port, not that
+the port is the one the next assertion uses.
+
+### The derivative phase does not start on a failed base — ADR 0030
+
+`base/` is the platform contract and is cheap: 66 s mean across the 70 cells of
+the 2026-08-20 pytorch promote. The `*.d/` suites are the expensive part — 79 s
+on pytorch, but tens of minutes on an image that downloads model weights and runs
+inference.
+
+Under ADR 0019 a failed test meant BLOCK, so finishing the run bought diagnostic
+detail. Under ADR 0029 any failure redraws, so once base is red the cell is
+already lost and the tail can only spend a rented GPU to reach a conclusion
+already reached — then be discarded and paid for again on the redraw. A
+derivative PASS on a platform failing its own base contract is not evidence
+either.
+
+`runner.sh` now finishes the base phase and refuses to enter the derivative
+phase if it failed. The cut is at the phase boundary, NOT at the failing test:
+base tests cost seconds, and aborting on the first red would have destroyed the
+evidence that produced ADR 0029's amendment — `10-supervisor`, `20-portal` and
+`26-caddy-auth` failing together is what identified one shared root cause, and
+`67-service-functionality` passing 53 s later is what proved the host innocent.
+
+The report says **NOT ATTEMPTED** in those words. The required-pass gate already
+treats a skipped required test as a failure, so the machinery cannot mistake an
+unrun test for a passing one; the wording is for the human reading the summary.
+
 ### Readiness budgets are levers, and their floors are gated — **GATED (L070)**
 
 The same 2026-08-18 batch lost two more cells to timeouts that are judgement, not

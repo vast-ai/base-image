@@ -85,6 +85,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
     ("L068", ERROR, "No shipped script interpolates a `VAST_TCP_PORT_*` / `VAST_UDP_PORT_*` variable into the PORT position of a listen address without a guard. The platform injects these only when the template maps that port, and an unset one does not fail loudly — it yields a syntactically valid address with an empty port, which the server resolves to its OWN default. Measured: `syncthing.sh` built `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset, persisted `<listenAddress>tcp://0.0.0.0:</listenAddress>` into config.xml on overlayfs, and syncthing bound `[::]:22000` — a port nothing publishes, so direct sync (the entire point of syncthing) silently never worked, and the exposure allowlist keyed `env:VAST_TCP_PORT_72299` could never match the port actually bound. Scoped to the interpolation site, not the variable: reading the var to build a display URL or an `if` test is fine. The blessed idiom is already in the tree — coturn's `-p \"${VAST_UDP_PORT_70000:-3478}\"` (ADR 0028)"),
+    ("L071", ERROR, "In a shipped instance test, every `supervisorctl restart <program>` is followed by a readiness wait, and `wait_for_caddy` is never called bare. Two halves of one defect, both measured on a live QA host. (a) `supervisorctl restart` returns when the WRAPPER clears its `startsecs`, not when the service is usable — measured: restart returned after 5145ms with the port still answering 000, because supervisord times the process, not readiness. An unguarded restart in `26-caddy-auth`'s skip path also leaked a rebinding caddy into `27-caddy-tls`, which runs next. (b) `wait_for_caddy` defaults to port 2019, Caddy's DEFAULT admin endpoint (caddy_config_manager.py emits no `admin` directive, so it is always enabled), while the tests probe :1111 and :6006. It returned success on 2019 with the site ports unbound and the checks recorded `expected 401, got 000` — twice on one machine, on an image the same run proved healthy 12 seconds later, and under ADR 0029 that redraws a cell whose derivative phase can cost tens of minutes. The silent variant is worse: `find_caddy_ports` keys on `ss -tln`, so a caddy that has not finished binding yields NO ports and `26-caddy-auth` takes its `test_skip` exit — a green run asserting nothing about auth. Use `wait_for_caddy_ports` (every port the Caddyfile declares) or pass an explicit port as `27-caddy-tls` already does. Scope honestly: this gates that a wait EXISTS and that it names a port, not that the port is the right one (ADR 0029)"),
     ("L070", ERROR, "The readiness budgets in ROOT/opt/instance-tools/tests/lib.sh are env-overridable AND their defaults do not fall below the cost that was actually measured. docs/invariants.md called these \"fixed but NOT gated\" on the grounds that a linter cannot decide whether a number is large enough — true, and a dodge: it cannot decide SUFFICIENCY, but it can decide whether someone has quietly put a budget back below the measured floor. Proven: reverting `HTTP_CHECK_MAX_TIME` to 5 and the portal budget to 30 — the two exact values that failed cells on 2026-08-18 — passed every test in this repo. Floors, each from a measurement recorded in docs/invariants.md: HTTP_CHECK_MAX_TIME 20 (a cost-14 bcrypt verification of one wrong credential measures 4666ms at --cpus=0.12, and Caddy caches only successes), PORTAL_READY_TIMEOUT 120 (the portal cannot bind until caddy_config_manager.py has hashed once per proxied app; observed not serving at 30s and serving 53s later), CADDY_READY_TIMEOUT 120 (a caddy restart measured 43s on a contended host, against a 30s ceiling that only WARNed), SUPERVISOR_READY_TIMEOUT 60 (socket usable at 383ms idle, seconds under contention). Also gated: `http_check` must READ the variable rather than re-hardcode a literal, since a lever nothing uses is not a lever. The budgets stay overridable because the suite ships INSIDE the image — baked, a wrong number can only be corrected by rebuilding and re-promoting every image; behind a variable it is a template edit (ADR 0029)"),
     ("L069", ERROR, "No shipped instance test asserts that a supervisord-managed process is UP by process presence (`pgrep`/`pidof`) unless the supervisord RPC socket has already been reached earlier in the same file. Presence is satisfied the instant supervisord forks; the socket is what every downstream service assertion actually needs, and the gap between the two is real and load-dependent. Measured in the shipped image on an idle 16-core host: `pgrep -f supervisord` succeeded at 1.7ms, `supervisorctl status` only became usable at 383ms. base/10-supervisor.sh sat in exactly that window — `pgrep` gate on one line, socket call on the next — and on a contended QA host it failed `supervisorctl cannot communicate with supervisord (exit 4)` 0.09s into the suite, taking 20-portal and 26-caddy-auth down as collateral and blocking the whole promote batch; the same suite proved the image healthy 53s later. Presence may still be used for IDENTITY (which pid is caddy, so its listeners can be attributed) — it must not be the readiness gate. Exempt: negated assertions (`! pidof caddy` in serverless mode), because absence cannot be waited for and presence is the right instrument for it; and `if pgrep`/`if pidof` branch predicates, which are not assertions. Reach readiness through `wait_for_supervisor`, `assert_service_running` or `service_running`, which go through the socket with a bounded wait (ADR 0029)"),
     ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
@@ -1434,6 +1435,78 @@ _L070_FLOORS = (
 )
 
 
+_L071_RESTART = re.compile(r"(?<![\w-])supervisorctl\s+restart\s+(\S+)")
+# Anything that waits for the thing to be usable again.
+_L071_WAIT = re.compile(r"\b(wait_for_caddy_ports|wait_for_caddy|wait_for_url|wait_for_port"
+                        r"|wait_for_supervisor|assert_service_running)\b")
+# `wait_for_caddy` with no argument silently means port 2019 — the admin
+# endpoint, which no test probes.
+_L071_BARE_CADDY = re.compile(r"(?<![\w-])wait_for_caddy\s*(\||&|;|$)")
+
+
+def check_restart_is_followed_by_readiness(img: Image, repo: Path) -> Iterable[Finding]:
+    """L071 — a restart is not a readiness event, and 2019 is not the port.
+
+    `supervisorctl restart` returns when the wrapper has survived its
+    `startsecs`, which says nothing about whether the service is serving.
+    Measured in the shipped image with a wrapper that binds late: restart
+    returned after 5145ms and the port answered 000.
+
+    The second half is subtler and is what actually cost QA cells.
+    `wait_for_caddy`'s default port is 2019 — Caddy's admin endpoint, enabled by
+    default because the generated Caddyfile carries no `admin` directive. It
+    comes up while the site listeners are still being provisioned. Six bare calls
+    in `26-caddy-auth` therefore waited on a port the test never probes, returned
+    success, and the following checks hit :1111 and :6006 unbound. `27-caddy-tls`
+    sat beside it doing the same restarts correctly, passing `"$test_port"`.
+
+    Under ADR 0029 that is not a cosmetic flake: any failure redraws, and on a
+    derivative image the discarded cell may have spent tens of minutes on model
+    downloads and inference first.
+
+    Deliberately weak, following L066's phrasing: this gates that a wait EXISTS
+    after a restart and that `wait_for_caddy` NAMES a port. It cannot decide that
+    the named port is the one the next assertion uses — that is a review problem.
+    """
+    if img.cls != "base":
+        return
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").glob("*/ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sh in sorted(root.rglob("*.sh")):
+            if sh.name == "lib.sh":
+                continue
+            try:
+                rel = str(sh.relative_to(repo))
+            except ValueError:
+                rel = sh.name
+            lines = [(n, _strip_comment(t)) for n, t in _logical_lines(
+                sh.read_text(encoding="utf-8", errors="replace"))]
+            for i, (n, code) in enumerate(lines):
+                if _L071_BARE_CADDY.search(code):
+                    yield Finding("L071", ERROR, img.name, f"{rel}:{n}",
+                                  "wait_for_caddy called with no port — that waits on "
+                                  ":2019, Caddy's admin endpoint, which no test probes "
+                                  "and which binds before the site listeners; use "
+                                  "wait_for_caddy_ports or pass the port explicitly")
+                m = _L071_RESTART.search(code)
+                if not m:
+                    continue
+                # Look a few logical lines ahead: a comment or a `fi` between the
+                # restart and the wait is normal style.
+                window = lines[i + 1:i + 6]
+                if not any(_L071_WAIT.search(c) for _, c in window):
+                    yield Finding("L071", ERROR, img.name, f"{rel}:{n}",
+                                  f"restarts {m.group(1)} without waiting for it to be "
+                                  "usable again — supervisorctl restart returns when the "
+                                  "wrapper clears startsecs, not when the service serves; "
+                                  "the next probe (or the next test file) races it")
+
+
 def check_readiness_budget_floors(img: Image, repo: Path) -> Iterable[Finding]:
     """L070 — a budget may be raised or overridden, never quietly lowered.
 
@@ -2114,6 +2187,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_one_cert_usability_predicate(img, repo))
     out.extend(check_no_presence_as_readiness_gate(img, repo))
     out.extend(check_readiness_budget_floors(img, repo))
+    out.extend(check_restart_is_followed_by_readiness(img, repo))
     out.extend(check_base_tests_have_no_serverless_backend(img, repo))
     out.extend(check_template_disk_floor(img, repo))
     out.extend(check_launch_link_placeholder(img))

@@ -391,6 +391,7 @@ post_test_webhook() {
 
 # ── Main ─────────────────────────────────────────────────────────────
 
+phase_gate_tripped=false
 declare -a TEST_NAMES=()
 declare -a TEST_STATES=()
 declare -a TEST_DURATIONS=()
@@ -449,6 +450,41 @@ has_failure=false
 for i in "${!ALL_TESTS[@]}"; do
     test_path="${ALL_TESTS[$i]}"
     test_name="${TEST_NAMES[$i]}"
+
+    # ── Phase gate: do not start the expensive tail on a sick platform ──
+    #
+    # base/ is the platform contract and is cheap — the whole phase is ~60s.
+    # The derivative *.d/ suites are the expensive part: model downloads and
+    # inference, tens of minutes on an image like comfyui or vllm.
+    #
+    # If base failed, this cell is already lost. ADR 0029 redraws on ANY
+    # failure, so nothing downstream can change the verdict — it can only spend
+    # a rented GPU for tens of minutes to reach a conclusion already reached,
+    # and then be discarded. Worse, every derivative assertion after a broken
+    # base is measuring a degraded platform, so a PASS there is not evidence
+    # either.
+    #
+    # The cut is at the PHASE boundary, deliberately, not at the failing test.
+    # Aborting on the first red would have destroyed the evidence that produced
+    # ADR 0029's amendment: 10-supervisor, 20-portal and 26-caddy-auth failing
+    # TOGETHER is what identified the shared root cause, and 67-service-
+    # functionality passing on the same endpoints 53s later is what proved the
+    # host innocent. Cheap diagnostics are worth finishing; the expensive tail
+    # is not. Same reasoning as 12-provisioning's existing test_fatal.
+    if [[ "$test_name" != base/* && "$has_failure" == "true" && "$phase_gate_tripped" != "true" ]]; then
+        phase_gate_tripped=true
+        for ((j=i; j<${#ALL_TESTS[@]}; j++)); do
+            TEST_STATES[$j]="skipped"
+        done
+        echo "" | log_output
+        echo "─── DERIVATIVE PHASE NOT ATTEMPTED ───" | log_output
+        echo "  base/ reported a failure, so the ${test_name%%/*} suite was not run." | log_output
+        echo "  These tests are NOT passing and NOT skipped-by-design — they were" | log_output
+        echo "  never started. The cell fails on the base failure above and is" | log_output
+        echo "  redrawn (ADR 0029) without spending the derivative phase." | log_output
+        write_results "running"
+        break
+    fi
 
     echo "─── Running: ${test_name} ───" | log_output
     TEST_STATES[$i]="running"

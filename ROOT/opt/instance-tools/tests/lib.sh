@@ -266,6 +266,46 @@ wait_for_caddy() {
     return 1
 }
 
+# Wait until every port the Caddyfile DECLARES is actually listening.
+#
+# wait_for_caddy answers for ONE port, and its default is 2019 — Caddy's admin
+# endpoint, which is enabled by default (caddy_config_manager.py emits no `admin`
+# directive) and comes up while the site listeners are still being provisioned.
+# base/26-caddy-auth called it bare, six times, then probed :1111 and :6006. It
+# returned success on 2019 with the site ports not yet bound, and the checks
+# recorded `expected 401, got 000` — measured on a live QA host, twice on the
+# same machine, on an image the same run proved healthy twelve seconds later.
+# 27-caddy-tls never had this: it passes "$test_port" explicitly.
+#
+# The silent variant is worse than the loud one. find_caddy_ports below keys on
+# `ss -tln`, so a caddy that has not finished binding yields NO ports and
+# 26-caddy-auth takes its `test_skip "no external caddy ports found"` exit — a
+# green run that asserted nothing about auth at all.
+#
+# So the readiness question here is not "is some caddy answering" but "is every
+# port this test is about to use bound", and that is answerable from the
+# Caddyfile before the listeners exist.
+wait_for_caddy_ports() {
+    local timeout="${1:-$CADDY_READY_TIMEOUT}"
+    local deadline=$(( SECONDS + timeout ))
+    local line port missing
+    [[ -f /etc/Caddyfile ]] || return 0
+    while :; do
+        missing=""
+        while IFS= read -r line; do
+            port=$(echo "$line" | grep -oP ':\K[0-9]+(?= \{)')
+            [[ -n "$port" && "$port" != "2019" ]] || continue
+            ss -tln | grep -q ":${port} " || { missing="$port"; break; }
+        done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
+        [[ -z "$missing" ]] && return 0
+        if (( SECONDS >= deadline )); then
+            echo "  WARN: caddy port ${missing} not listening after ${timeout}s"
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 # Populate REPLY array with active external Caddy ports from Caddyfile.
 # Excludes admin port (2019), only includes ports with active listeners.
 find_caddy_ports() {

@@ -1889,6 +1889,70 @@ def test_L069_every_scanned_root_is_locked_in(tmp_path, rel):
     assert has(img, tmp_path, "L069", "presence is true at fork")
 
 
+# ---- L071: a restart is not a readiness event -----------------------------
+#
+# `supervisorctl restart` returns when the WRAPPER clears startsecs — measured
+# at 5145ms with the port still answering 000. And `wait_for_caddy` bare waits
+# on :2019, Caddy's default admin endpoint, which binds before the site
+# listeners; six bare calls in 26-caddy-auth waited on a port the test never
+# probes, and the checks that followed recorded `expected 401, got 000`.
+
+def test_L071_a_bare_wait_for_caddy_fires(tmp_path):
+    """THE defect. :2019 is the admin endpoint; the checks target :1111/:6006."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'wait_for_caddy || test_fail "x"\n')
+    assert has(img, tmp_path, "L071", "no port")
+
+
+def test_L071_a_restart_with_no_wait_at_all_fires(tmp_path):
+    """The cleanup path before test_skip had none — and it leaked a rebinding
+    caddy into 27-caddy-tls, which runs next."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'test_skip "no external caddy ports found"\n')
+    assert has(img, tmp_path, "L071", "without waiting for it to be")
+
+
+def test_L071_wait_for_caddy_ports_satisfies_it(tmp_path):
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'wait_for_caddy_ports || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_L071_an_explicit_port_satisfies_it(tmp_path):
+    """27-caddy-tls was always correct: it passes "$test_port"."""
+    img = _tests_repo(tmp_path, "27-caddy-tls.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'wait_for_caddy "$test_port" "https" || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_L071_a_comment_between_restart_and_wait_is_fine(tmp_path):
+    """House style puts the reasoning between the two lines."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      '# it needs a moment to rebind\n'
+                      'wait_for_caddy_ports || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_mut_L071_the_real_suite_with_the_bare_call_restored_fires(tmp_path):
+    """Mutation against a copy of the real tree."""
+    repo, img = _real("base-image")
+    work = tmp_path / "repo"
+    shutil.copytree(repo / "ROOT", work / "ROOT")
+    (work / "Dockerfile").write_text((repo / "Dockerfile").read_text())
+    mutant = replace(img, dir=work, root=work / "ROOT")
+    assert "L071" not in errs(mutant, work), "the copy must start clean"
+    t = work / "ROOT/opt/instance-tools/tests/base/26-caddy-auth.sh"
+    t.write_text(t.read_text().replace(
+        'wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"',
+        'wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"'))
+    assert has(mutant, work, "L071", "no port")
+
+
 # ---- L070: a budget may be raised, never quietly lowered -----------------
 #
 # L069 gates the STRUCTURE of a readiness check; L070 gates the NUMBERS, which

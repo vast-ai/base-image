@@ -53,7 +53,7 @@ if [[ -z "${WEB_PASSWORD:-}" ]]; then
 
     echo "  restarting caddy to pick up WEB_PASSWORD..."
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
+    wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
     auth_modified=true
 else
     echo "  WEB_PASSWORD=${WEB_PASSWORD:0:8}..."
@@ -64,6 +64,10 @@ echo "  WEB_USERNAME=${WEB_USERNAME:-<not set>} (basic auth user: ${basic_user})
 
 # ── Find external ports ──────────────────────────────────────────────
 
+# find_caddy_ports keys on `ss -tln`, so a caddy that has not finished binding
+# yields NO ports and this file takes its `test_skip` exit below — a green run
+# that asserted nothing about auth. The wait above is what makes that skip mean
+# "this image has no external caddy ports" rather than "we asked too early".
 find_caddy_ports
 all_caddy_ports=("${REPLY[@]}")
 
@@ -79,6 +83,9 @@ if [[ ${#all_caddy_ports[@]} -eq 0 ]]; then
     if $auth_modified; then
         sed -i '/^WEB_PASSWORD=/d' /etc/environment
         supervisorctl restart caddy &>/dev/null
+        # Not optional even on the way out: 27-caddy-tls runs next and would
+        # inherit a caddy that is still rebinding.
+        wait_for_caddy_ports || echo "  WARN: caddy still rebinding on exit"
     fi
     test_skip "no external caddy ports found"
 fi
@@ -189,7 +196,7 @@ elif [[ -n "$test_port" ]]; then
         sed -i '/^WEB_USERNAME=/d' /etc/environment 2>/dev/null
         echo "WEB_USERNAME=\"${test_web_user}\"" >> /etc/environment
         supervisorctl restart caddy &>/dev/null
-        wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
+        wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
 
         # Custom user + WEB_PASSWORD → should work
         http_check \
@@ -204,7 +211,7 @@ elif [[ -n "$test_port" ]]; then
         # Restore: remove custom username and restart
         sed -i '/^WEB_USERNAME=/d' /etc/environment
         supervisorctl restart caddy &>/dev/null
-        wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
+        wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
         echo "  WEB_USERNAME removed, caddy restored"
     fi
 fi
@@ -252,7 +259,7 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment 2>/dev/null
     echo "AUTH_EXCLUDE=\"${test_port}\"" >> /etc/environment
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
+    wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
 
     exc_proto=$(caddy_port_proto "$test_port")
     tls_flag=""
@@ -269,7 +276,7 @@ if [[ -z "${AUTH_EXCLUDE:-}" && -n "$test_port" ]]; then
 
     sed -i '/^AUTH_EXCLUDE=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
+    wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
     echo "  AUTH_EXCLUDE removed, caddy restored"
 fi
 
@@ -329,7 +336,7 @@ if $auth_modified; then
     echo "  cleaning up test password and restarting caddy..."
     sed -i '/^WEB_PASSWORD=/d' /etc/environment
     supervisorctl restart caddy &>/dev/null
-    wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"
+    wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"
 fi
 
 # ── Report ───────────────────────────────────────────────────────────

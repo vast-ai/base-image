@@ -187,3 +187,80 @@ def test_the_supervisor_budget_lever_actually_reaches_the_wait(tmp_path):
                          {"SUPERVISOR_READY_TIMEOUT": "2"})
     assert "GAVEUP" in p.stdout
     assert elapsed < 10, "the default 60 was used instead of the override"
+
+
+# ── runner.sh phase gate ──────────────────────────────────────────────
+#
+# base/ is the platform contract and costs ~60s. The derivative *.d/ suites are
+# model downloads and inference — tens of minutes. ADR 0029 redraws on ANY
+# failure, so once base is red the cell is already lost: running the tail can
+# only spend a rented GPU to reach a conclusion already reached, and every
+# assertion it makes is measuring a degraded platform anyway.
+
+RUNNER = Path(__file__).resolve().parents[3] / "ROOT/opt/instance-tools/tests/runner.sh"
+
+
+def _suite(tmp_path, base_tests: dict, d_tests: dict):
+    """Build a throwaway tests tree and run runner.sh --manual against it."""
+    root = tmp_path / "tests"
+    (root / "base").mkdir(parents=True)
+    (root / "demo.d").mkdir(parents=True)
+    (root / "lib.sh").write_text(LIB.read_text())
+    r = root / "runner.sh"
+    r.write_text(RUNNER.read_text())
+    r.chmod(0o755)
+    for name, body in base_tests.items():
+        f = root / "base" / name
+        f.write_text('#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n' + body)
+        f.chmod(0o755)
+    for name, body in d_tests.items():
+        f = root / "demo.d" / name
+        f.write_text('#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n' + body)
+        f.chmod(0o755)
+    env = dict(os.environ,
+               INSTANCE_TEST_LOG=str(tmp_path / "out.log"),
+               INSTANCE_TEST_RESULTS=str(tmp_path / "results.json"))
+    p = subprocess.run(["bash", str(r), "--manual"], capture_output=True, text=True,
+                       timeout=120, cwd=str(root), env=env)
+    return p.stdout + p.stderr
+
+
+def test_a_base_failure_stops_the_derivative_phase(tmp_path):
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n', "26-bad.sh": 'test_fail "caddy flake"\n'},
+                 {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
+    assert "DERIVATIVE PHASE NOT ATTEMPTED" in out
+    assert "EXPENSIVE-RAN" not in out, "the expensive tail ran despite a red base"
+
+
+def test_the_whole_base_phase_still_runs_after_a_failure(tmp_path):
+    """The cut is at the PHASE boundary, not the failing test. Aborting on the
+    first red would have destroyed the evidence behind ADR 0029's amendment:
+    seeing 10, 20 and 26 fail TOGETHER is what found the shared root cause."""
+    out = _suite(tmp_path,
+                 {"10-bad.sh": 'test_fail "first"\n',
+                  "20-bad.sh": 'test_fail "collateral"\n',
+                  "67-ok.sh": 'echo LATE-BASE-RAN\ntest_pass ok\n'},
+                 {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
+    assert "collateral" in out, "a later base test must still run and report"
+    assert "LATE-BASE-RAN" in out, "the exonerating base test must still run"
+    assert "EXPENSIVE-RAN" not in out
+
+
+def test_a_green_base_runs_the_derivative_phase_normally(tmp_path):
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n'},
+                 {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
+    assert "EXPENSIVE-RAN" in out
+    assert "DERIVATIVE PHASE NOT ATTEMPTED" not in out
+
+
+def test_the_report_says_NOT_ATTEMPTED_rather_than_letting_skip_read_as_pass(tmp_path):
+    """A wall of `skipped` reads as benign. The required-pass gate already
+    treats a skipped required test as a failure, so the machinery is safe — this
+    is about the human who reads the summary and infers nothing happened."""
+    out = _suite(tmp_path,
+                 {"26-bad.sh": 'test_fail "caddy flake"\n'},
+                 {"10-expensive.sh": 'test_pass ok\n'})
+    assert "were never started" in out or "never started" in out
+    assert "NOT passing and NOT skipped-by-design" in out
