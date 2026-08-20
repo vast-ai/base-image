@@ -524,6 +524,30 @@ socket-backed appears earlier in the same file. Scope, deliberately narrow:
   `grep "[s]upervisord"` bracket idiom does not match the program name as
   written. Neither is in the tree; both would pass.
 
+### The home/environment sync is exercised by the gate — base-qa runs it
+
+Boot stages 35 and 37 move `/root`, `/home/*` and `/venv/*` onto `$WORKSPACE` and
+symlink them back. **Nothing in this repo turned them on**, so a change to that
+code first executed on a customer instance — which is how a bounded-wait fix
+shipped with a `return 1` sitting between the `.ssh` MOVE and the symlink back,
+leaving an instance that boots green with key-based SSH dead and
+`46-user-propagate-ssh-keys.sh` dying on `realpath` under `set -euo pipefail`.
+
+`templates/base-qa` now sets `--sync-home --sync-environment`, deliberately
+**without a volume**. No volume is needed to exercise it: `$WORKSPACE` defaults to
+a container directory, and the lock, the completion markers, the wait, the
+relinking and the `.ssh` round-trip are all identical. Only the multi-instance
+race needs a shared volume, and that is a different question from "does this code
+still work at all". Measured cost on base: ~17s.
+
+`base/36-home-env-sync.sh` asserts the outcome — that `/root` and `/venv/main`
+resolve, that `.synced` is present and `.syncing` is gone, that `.ssh` was
+relinked rather than stranded, and that the interpreter in the synced venv
+actually executes, because a relink to a half-copied tree resolves fine and runs
+nothing. It self-skips when the flags are off, which is correct for every other
+image, so `base-qa` names it in `INSTANCE_TEST_REQUIRE_PASS` where that would be
+a hole (ADR 0019).
+
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
 
 Auditing the whole image surface for the pattern behind L069 and L071 —
