@@ -37,6 +37,16 @@ env:
   OPEN_BUTTON_TOKEN: "1"
   JUPYTER_DIR: "/"
   DATA_DIRECTORY: "/workspace/"
+  # Required-pass gate (ADR 0019, widened to this template by ADR 0031). The GPU
+  # trio self-skips when nvidia-smi or libcuda never came up, and
+  # `comfyui.d/10-comfyui-serving` self-skips three ways — no GPU, no payloads
+  # directory, no API-format workflows in it. The last two are the ones that bite
+  # here: this gate's whole subject is the workflow POSTed through the API wrapper,
+  # and if provisioning silently fetched nothing, the test skips and the suite
+  # reports green over an image that generated no image. Enforced twice — by the
+  # runner in-instance and by qa_verdict.py in CI, via the matching `require_tests`
+  # in build-comfyui.yml. Gated by linter rules L057 and L072.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries comfyui.d/10-comfyui-serving"
   PROVISIONING_COMFYUI_WORKFLOWS: "https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json"
 # QA gate floors (ADR 0005): smallest viable box at/above these, VRAM bounded 3x.
 extra_filters:

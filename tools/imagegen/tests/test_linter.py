@@ -143,6 +143,19 @@ def _write_template(img, body):
     (tdir / "template.yml").write_text(body)
 
 
+def _wire_gate(repo, template_dir):
+    """Hand a template dir to qa-gate.yml, the way a build workflow does.
+
+    L057/L072 scope on this wiring rather than on the template's NAME, so the tests
+    have to create it: a template no workflow boots is deliberately exempt.
+    """
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      template_dir: " + template_dir + "\n")
+
+
 def test_L050_template_missing_compute_cap_floor(tmp_path):
     img = make(tmp_path)
     _write_template(img, "name: QA\nimage: vastai/x\nextra_filters:\n  gpu_total_ram:\n    gte: 8192\n")
@@ -693,6 +706,9 @@ _FLOORS = "extra_filters:\n  compute_cap:\n    gte: 750\n"
 
 def _base_qa(img, env_line):
     _write_template(img, f"name: Base QA\nimage: vastai/base-image\n{env_line}{_FLOORS}")
+    # base-qa is gated by promote-base-image.yml; L057 keys on that wiring, not on
+    # the image class, so the fixture has to supply it.
+    _wire_gate(img.dir.parent, "img/templates/qa")
 
 
 def test_L057_base_qa_template_without_require_pass_fires(tmp_path):
@@ -725,13 +741,103 @@ def test_L057_accepts_comma_separated(tmp_path):
     assert "L057" not in errs(img, tmp_path)
 
 
-def test_L057_is_scoped_to_base_for_now(tmp_path):
-    """comfyui-qa/vllm-qa have the same hole, but widening the rule to them must
-    re-validate two live, currently-passing gates — not something a linter rule
-    should do silently. Scope is deliberate; this pins it."""
+def test_L057_applies_to_a_non_base_gating_template(tmp_path):
+    """The rule was base-only from ADR 0019 until ADR 0031 re-validated the other
+    two gates. Scope is now the gate WIRING, not the image class: a pytorch-nested
+    image whose template is handed to qa-gate.yml owes the same declaration."""
     img = make(tmp_path, cls="pytorch-nested")
     _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "img/templates/qa")
+    assert has(img, tmp_path, "L057", "no env.INSTANCE_TEST_REQUIRE_PASS")
+
+
+def test_L057_ignores_a_template_no_gate_boots(tmp_path):
+    """The asymmetry that keeps this rule honest: a template nothing gates on
+    certifies nothing, so it owes nothing. Only the wiring creates the obligation
+    — which is why the rule reads the workflows instead of matching `*-qa`."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "img/templates/some-other-dir")
     assert "L057" not in errs(img, tmp_path)
+
+
+def test_L057_ignores_an_unresolvable_expression(tmp_path):
+    """A `template_dir` built from a ${{ }} expression cannot be resolved at lint
+    time. Skipping it loses coverage loudly rather than guessing a path and
+    reporting a finding against a template that may not be the gated one."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "${{ inputs.template_dir }}")
+    assert "L057" not in errs(img, tmp_path)
+
+
+# ---- L072: a gating template must require the image's OWN suite (ADR 0031) ----
+
+
+def _own_suite(img, dirname="app.d", tests=("10-serving",)):
+    """Give the image a suite of its own, the way a derivative ships one."""
+    d = img.dir / "ROOT/opt/instance-tools/tests" / dirname
+    d.mkdir(parents=True, exist_ok=True)
+    for t in tests:
+        f = d / f"{t}.sh"
+        f.write_text('#!/bin/bash\ntest_fail "nope"\n')
+        f.chmod(0o755)      # L065 — a 0644 test is silently not discovered
+
+
+def _gated(img, required):
+    _write_template(img, f"name: QA\nimage: vastai/x\n"
+                         f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {required}\n{_FLOORS}")
+    _wire_gate(img.dir.parent, "img/templates/qa")
+
+
+def test_L072_trio_only_fires_on_an_image_with_its_own_suite(tmp_path):
+    """THE mutation, and the shape ADR 0031 found live: the template names only the
+    GPU trio, which is inherited from base and identical on every image. The gate
+    then certifies that the rented BOX has a working GPU while the app suite could
+    self-skip — `vllm.d/10-vllm-serving` skips on one missing env var — and promote
+    green."""
+    img = make(tmp_path)
+    _own_suite(img)
+    _gated(img, _TRIO)
+    assert has(img, tmp_path, "L072", "names no test from this image's own suite")
+
+
+def test_L072_naming_an_own_test_is_clean(tmp_path):
+    img = make(tmp_path)
+    _own_suite(img)
+    _gated(img, f"{_TRIO} app.d/10-serving")
+    assert "L072" not in errs(img, tmp_path)
+
+
+def test_L072_does_not_fire_when_the_image_ships_no_suite(tmp_path):
+    """An image whose only tests are base's inherits base's coverage and owes
+    nothing extra — the rule must not invent an obligation it cannot be satisfied."""
+    img = make(tmp_path)
+    _gated(img, _TRIO)
+    assert "L072" not in errs(img, tmp_path)
+
+
+def test_L072_ignores_the_exposure_allowlist_dir(tmp_path):
+    """`exposure-allowlist/` sits beside the suites and holds .conf data, not tests.
+    Counting it as an own suite would demand a required test that cannot exist —
+    which is why a suite dir is defined by holding an NN-*.sh, not by its name."""
+    img = make(tmp_path)
+    d = img.dir / "ROOT/opt/instance-tools/tests/exposure-allowlist"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "00-base.conf").write_text("# allowlist\n")
+    _gated(img, _TRIO)
+    assert "L072" not in errs(img, tmp_path)
+
+
+def test_L072_stays_silent_when_L057_already_reports(tmp_path):
+    """One finding per defect: a template with NO declaration is L057's report. Two
+    errors for one missing line reads as two problems."""
+    img = make(tmp_path)
+    _own_suite(img)
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "img/templates/qa")
+    e = errs(img, tmp_path)
+    assert "L057" in e and "L072" not in e
 
 
 def test_L050_L054_now_apply_to_base(tmp_path):
