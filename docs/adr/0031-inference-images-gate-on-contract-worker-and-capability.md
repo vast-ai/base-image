@@ -183,12 +183,25 @@ worker, and a cell that dies in the bootstrap decides nothing. It is passed to
 for log masking and never appears in an input that is plain text in the caller's
 YAML.
 
-**The serverless cell lands advisory.** It is deliberately absent from
-`merge-manifests`' `needs`, so a red alerts without blocking a promote — decision
-7's ramp applied to the cell itself, which matters most here because this mode has
-never executed anywhere and its first runs are as likely to find harness gaps as
-image defects. Adding the job to that `needs` list after two consecutive green runs
-is the single line that makes it gating.
+**The serverless cell lands advisory — but ORDERED.** Ordering and blocking are
+separate properties and the first attempt at this conflated them. Leaving the cell
+out of `merge-manifests`' `needs` made it non-blocking, and also made it unordered:
+the job became eligible the moment the standard cells finished, so the production
+approval prompt could appear while the serverless cell was still running, and a
+human would be approving before its evidence existed — the one thing the gate is
+for. It is therefore IN `needs` (ordering) and absent from the `if` (not blocking).
+
+Naming `needs.build.result` and `needs.qa.result` explicitly in that `if` is
+load-bearing: `!cancelled()` is what stops a failed serverless cell from skipping
+the promote, and it simultaneously switches off the implicit "skip if any needed
+job failed", so the two results that must still block have to be restated. Dropping
+either would promote a broken image silently.
+
+This is decision 7's ramp applied to the cell itself, which matters most here
+because the mode has never executed anywhere and its first runs are as likely to
+find harness gaps as image defects. Promoting it to gating means adding
+`needs.qa-serverless.result == 'success'` to that `if` after two consecutive green
+runs.
 
 ### 4. The worker assertion is the score, not the process
 

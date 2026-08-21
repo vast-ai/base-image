@@ -312,10 +312,13 @@ jobs:
   # drift, and the only difference that matters would stop being visible in the diff.
   #
   # IT DOES NOT GATE YET, and that is the ADR 0006 condition 2 ramp, not an oversight.
-  # `merge-manifests` deliberately does NOT list this job in `needs`, so a red here
-  # alerts (qa-gate fires a per-cell Slack alert) without blocking a promote. Add it
-  # to that `needs` list after two consecutive green runs — one line, and the only
-  # thing standing between advisory and gating.
+  # `merge-manifests` DOES list this job in `needs` — that orders it ahead of the
+  # production approval prompt, so a human is never asked to approve before this
+  # cell's evidence exists — but its `if` deliberately does not require the result,
+  # so a red here alerts (qa-gate fires a per-cell Slack alert) without blocking a
+  # promote. Ordering and blocking are separate; only the second is being ramped.
+  # Promoting it to gating means adding `needs.qa-serverless.result == 'success'` to
+  # that `if`, after two consecutive green runs.
   qa-serverless:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
@@ -355,8 +358,25 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   merge-manifests:
-    needs: [preflight, build, qa]
-    if: needs.preflight.outputs.should-run == 'true'
+    # qa-serverless is in `needs` to ORDER it, and absent from the `if` so it cannot
+    # BLOCK. Those are two different things and only the first was wired before.
+    #
+    # Without the dependency, this job becomes eligible the moment `qa` finishes, so
+    # the production approval prompt can appear while the serverless cell is still
+    # running — a human would be approving before its evidence exists, which is the
+    # one thing the gate is for. With it, the prompt waits for the cell and the `if`
+    # below still promotes whatever that cell said (ADR 0031 decision 3's ramp).
+    #
+    # `!cancelled()` is what makes a FAILED qa-serverless not skip this job — but it
+    # also switches off the implicit "skip if any needed job failed", so the two
+    # results that must still block are named explicitly. Dropping either one would
+    # promote a broken image silently.
+    needs: [preflight, build, qa, qa-serverless]
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
+      && needs.qa.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
