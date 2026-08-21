@@ -71,7 +71,7 @@ env:
   # still cannot produce a passing verdict. Gated by linter rules L057 (declaration
   # present, trio covered) and L072 (an OWN-suite test is named, not just the
   # inherited trio).
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries vllm.d/10-vllm-serving"
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries vllm.d/10-vllm-serving vllm.d/12-vllm-contract"
   VLLM_MODEL: "Qwen/Qwen2.5-0.5B-Instruct"   # tiny chat model (~1 GB), fast load
   # --enforce-eager is a QA-only delta: it disables torch.compile + CUDA-graph capture
   # (VLLM_COMPILE captures 50+ graph sizes). That phase is silent, multi-minute and

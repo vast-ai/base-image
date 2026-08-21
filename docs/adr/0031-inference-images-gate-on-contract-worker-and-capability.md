@@ -269,13 +269,26 @@ The asymmetry is the point: **discovery can never manufacture a red.** Drift in
 the discovery layer can lose advisory coverage, loudly, but can never block a
 healthy image nor silently drop something a human declared.
 
-### 7. Advisory before required
+### 7. Advisory before required — one clean run, not two
 
-Every new assertion lands advisory and may only be named in
-`INSTANCE_TEST_REQUIRE_PASS` after **two consecutive green promotes with its
-advisory block clean**. This is ADR 0006 condition 2's ramp applied to assertions
-instead of scans. On a gate where every red costs a redraw rental, the ramp is the
-budget control.
+Every new assertion lands advisory and is promoted to required once it has run
+clean on real hardware. This is ADR 0006 condition 2's ramp applied to assertions
+instead of scans: on a gate where every red costs a redraw rental, an unproven
+assertion is a budget risk.
+
+**The original text of this decision demanded TWO consecutive green promotes. That
+is amended to one, on the evidence of the first run.** The contract assertions
+returned 10 ok, 0 errors and a single violation — and that violation was a defect
+in the CHECKER (`len()` of a BatchEncoding counted dict keys as tokens), not in the
+image. The ramp's purpose is to find exactly that before it can block a promote,
+and one run against a live engine found it. A second identical run would have
+demonstrated nothing further, and the cost of waiting is measured in coverage:
+every promote in between is gated by the weaker assertions the strict ones replace.
+
+The ramp is not abandoned, it is spent per assertion. Anything added later starts
+advisory again. And the ramp still stands unspent for the serverless CELL, which is
+a different kind of claim — a whole rented box and an upstream bootstrap, rather
+than a deterministic assertion about a response.
 
 ## Binding conditions
 

@@ -7,11 +7,13 @@
 # gate today, and mixing a ramping assertion set into a required test would promote
 # every new check to blocking on the day it was written.
 #
-# ADVISORY BY DEFAULT, and that is ADR 0006 condition 2's ramp, not timidity. Every
-# assertion here lands reporting-only and may be promoted after two consecutive green
-# promotes with its advisory block clean; `VLLM_CONTRACT_ENFORCE=true` is the single
-# lever that flips it, exactly as EXPOSURE_ENFORCE does for base/28. On a gate where
-# every red costs a redraw rental (ADR 0029), the ramp is the budget control.
+# ENFORCING BY DEFAULT, with `VLLM_CONTRACT_ENFORCE=false` as the escape hatch —
+# the inverse of how this file first shipped. It landed advisory under ADR 0006
+# condition 2's ramp, ran clean on real hardware (10 ok, 0 errors), and the one
+# violation it raised was a bug in the checker rather than the image. The ramp did
+# its job in a single run; keeping it after that would be caution costing coverage.
+# See the note at the `enforce=` assignment for the one assertion most likely to
+# need the escape hatch.
 #
 # The one thing that is NEVER advisory is a check that could not DECIDE. A tooling
 # failure means the assertion did not run, which is the skip-as-pass shape the QA gate
@@ -60,7 +62,26 @@ echo "  interpreter: ${PY}"
 
 echo ""
 echo "  -- contract --"
-enforce="${VLLM_CONTRACT_ENFORCE:-false}"
+# ENFORCING BY DEFAULT. Every assertion this runs is forced — token arithmetic,
+# max_tokens=1, a grammar, a named tool, a status class, a socket address — so a
+# violation is a defect in what the server returned, not a sampling accident. The
+# ADR 0006 ramp exists to stop unproven assertions blocking a promote; these ran
+# clean on real hardware first (10 ok, 0 errors) and the single violation they did
+# raise was a bug in the checker, which is what the ramp caught and why the ramp
+# was worth having.
+#
+# This default has NO customer reach, which is what makes enforcing by default the
+# easy call rather than a trade. The whole suite only runs when INSTANCE_TEST=true
+# (`70-instance-test.sh` returns immediately otherwise), and the only thing that
+# sets it is the QA client. A customer instance never starts the runner at all.
+#
+# `false` therefore exists for a QA TEMPLATE that legitimately diverges, not for a
+# customer. The assertion most likely to want it is bind-loopback: `vllm serve`
+# binds ALL interfaces when --host is absent (api_server.py:
+# `sock_addr = (args.host or "", args.port)`) and vllm.sh injects no host, so a
+# template whose VLLM_ARGS omits --host fails here — correctly, since that cell
+# would be serving the engine past the Caddy auth gate.
+enforce="${VLLM_CONTRACT_ENFORCE:-true}"
 report=$(mktemp)
 # `--opt=value`, not `--opt value`, for the two operator-supplied strings. argparse
 # treats a value beginning with `-` as an option UNLESS it contains a space, so a

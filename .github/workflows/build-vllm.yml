@@ -280,7 +280,7 @@ jobs:
       # Declared in BOTH places on purpose: the runner enforces it in-instance, and
       # this enforces it against the verdict payload, so a template edit that drops
       # the env var still cannot produce a passing gate.
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries vllm.d/10-vllm-serving"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries vllm.d/10-vllm-serving vllm.d/12-vllm-contract"
       # ADR 0029 condition 5: the redraw rule is not forked per image. This gate ran
       # retries: 0 while base and pytorch ran 2, so a bad host red here blocked a
       # promote that the same image would have survived on any other image's gate.
@@ -357,8 +357,8 @@ jobs:
         BACKEND=openai
         MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
         MODEL_LOG=/var/log/portal/vllm.log
-        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/20-serverless-pyworker
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/20-serverless-pyworker"
+        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
       retries: 2
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
