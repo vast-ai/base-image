@@ -62,17 +62,22 @@ echo ""
 echo "  -- contract --"
 enforce="${VLLM_CONTRACT_ENFORCE:-false}"
 report=$(mktemp)
+# `--opt=value`, not `--opt value`, for the two operator-supplied strings. argparse
+# treats a value beginning with `-` as an option UNLESS it contains a space, so a
+# single-token VLLM_ARGS — `--enforce-eager`, which is a legitimate value — is read
+# as an unknown FLAG and the checker exits 2 on a usage error before asserting
+# anything. The `=` form has no such ambiguity. Found by a unit test, not on a box.
 "$PY" "$CHECKER" \
-    --base-url "$VLLM_API" \
-    --port "$VLLM_INTERNAL_PORT" \
-    --model "$VLLM_MODEL" \
-    --vllm-args "${VLLM_ARGS:-}" \
-    --expect-caps "${VLLM_EXPECT_CAPS:-}" \
+    --base-url="$VLLM_API" \
+    --port="$VLLM_INTERNAL_PORT" \
+    --model="$VLLM_MODEL" \
+    --vllm-args="${VLLM_ARGS:-}" \
+    --expect-caps="${VLLM_EXPECT_CAPS:-}" \
     > "$report" 2>&1
 rc=$?
 
 # Human lines first: whatever the verdict, the run log carries the full evidence.
-grep -vE '^(VIOLATION|ADVISORY|ERROR|NA) ' "$report"
+grep -vE '^(VIOLATION|ADVISORY|ERROR|NA|CONTRACT-COMPLETE) ' "$report"
 
 # A check that could not decide is never advisory — the same rule base/28 applies to
 # a scan that failed to run. Report these before the violations: an image whose
@@ -99,17 +104,23 @@ if (( violations > 0 )); then
     fi
 fi
 
-rm -f "$report"
-
-# rc 2 (could-not-decide) has already been turned into fail_later entries above; this
-# catches the case where the checker died before printing any ERROR line at all —
-# an interpreter that could not start, or a traceback. Silence is the failure mode
-# that matters, so it is asserted rather than assumed.
-if (( rc == 2 )) && (( ${#FAILURES[@]} == 0 )); then
+# The checker prints CONTRACT-COMPLETE as its LAST line and only on an explicit
+# exit, so its absence means the interpreter died — a traceback, an OOM, a kill.
+# That matters because an unhandled Python exception exits 1, which is also the
+# "violations found" code: without this the caller would see rc=1, find no VIOLATION
+# lines to report, and pass. A crash must never be quieter than a finding, and this
+# is NOT subject to the advisory ramp — a checker that did not run decided nothing.
+if ! grep -q '^CONTRACT-COMPLETE ' "$report"; then
+    fail_later "contract-checker" "contract_check.py exited ${rc} without reaching its completion marker — it crashed rather than deciding (last lines above)"
+elif (( rc == 2 )) && (( ${#FAILURES[@]} == 0 )); then
     fail_later "contract-checker" "contract_check.py exited 2 (could not decide) without reporting a reason"
+elif (( rc == 1 )) && (( violations == 0 )); then
+    fail_later "contract-checker" "contract_check.py exited 1 (violations) but reported none"
 elif (( rc > 2 )); then
-    fail_later "contract-checker" "contract_check.py exited ${rc} — it did not run to completion"
+    fail_later "contract-checker" "contract_check.py exited ${rc} — an exit code it does not define"
 fi
+
+rm -f "$report"
 
 report_failures
 if [[ "${enforce,,}" == "true" ]]; then

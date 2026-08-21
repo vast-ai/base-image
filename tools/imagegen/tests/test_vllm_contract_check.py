@@ -140,8 +140,11 @@ def run(client, *, expect_caps="", model=MODEL, args=ARGS):
     monkey = cc.Client
     cc.Client = lambda *a, **k: client                       # noqa: ARG005
     try:
-        code = cc.main(["--model", model, "--vllm-args", args,
-                        "--expect-caps", expect_caps], out=out)
+        # `--opt=value`, matching the wrapper: argparse reads a value starting with
+        # `-` as an option unless it contains a space, so `--vllm-args --enforce-eager`
+        # dies on a usage error. The tests send what the shell sends.
+        code = cc.main([f"--model={model}", f"--vllm-args={args}",
+                        f"--expect-caps={expect_caps}"], out=out)
     finally:
         cc.Client = monkey
     return code, out.getvalue()
@@ -459,3 +462,34 @@ def test_prompt_roundtrip_is_na_when_a_chat_template_is_overridden():
     own, so a local count is not comparable. n/a, not a violation."""
     code, text = run(FakeClient(), args=ARGS + " --chat-template /opt/tpl.jinja")
     assert any("prompt-roundtrip" in f for f in findings(text, "NA")), text
+
+
+# ---------------------------------------------------------------- completion marker
+
+
+def test_every_exit_path_prints_the_completion_marker():
+    """The caller keys on this line to tell a crash from a finding.
+
+    An unhandled Python exception exits 1 — the SAME code as "violations found". A
+    caller that trusted the code alone would see rc=1, find no VIOLATION lines to
+    report, and pass. So the marker is printed only on an explicit exit, and every
+    explicit exit must print it, including the two early ones that abandon the run
+    before any assertion is made."""
+    healthy, _ = run(FakeClient()), None
+    for label, kwargs in [("healthy", {}),
+                          ("bad args", {"args": '--host "unterminated'}),
+                          ("no model named", {"model": "", "args": "--enforce-eager"})]:
+        _, text = run(FakeClient(), **kwargs)
+        marker = [ln for ln in text.splitlines() if ln.startswith("CONTRACT-COMPLETE ")]
+        assert len(marker) == 1, f"{label}: {text}"
+        assert marker[0] == text.rstrip().splitlines()[-1], f"{label}: marker must be last"
+
+
+def test_models_endpoint_down_still_marks_completion():
+    """The one early return that is a legitimate verdict rather than a crash: the
+    server did not answer /v1/models, which is an ERROR, and the run stops there."""
+    class Down(FakeClient):
+        def get(self, path):
+            return 503, "upstream down"
+    code, text = run(Down())
+    assert code == 2 and "CONTRACT-COMPLETE" in text, text

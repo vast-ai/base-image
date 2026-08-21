@@ -60,7 +60,15 @@ env:
   # RAM/compile-heavy; on the smallest box it collided with the boot test sweep and the
   # instance dropped before serving. A smoke proves the serving path works, not compiled
   # throughput, so eager is the right trade — production keeps full compilation.
-  VLLM_ARGS: "--enforce-eager --max-model-len 4096 --download-dir /workspace/models --host 127.0.0.1 --port 18000"
+  # --revision pins the model, and that is a QA property rather than a vLLM one
+  # (ADR 0031 decision 2). VLLM_MODEL names a FLOATING third-party ref: the gate's
+  # identity and prompt-token round-trip assertions compare what the server serves
+  # against what this template asked for, and an upstream re-upload of the repo —
+  # a changed chat template is the realistic one — would move both sides at once
+  # and read as an image regression on a build that changed nothing. The sha is
+  # Qwen/Qwen2.5-0.5B-Instruct as of 2024-09-25; bump it deliberately, never as a
+  # side effect.
+  VLLM_ARGS: "--enforce-eager --max-model-len 4096 --revision 7ae557604adf67be50417f59c2c2f167def9a775 --download-dir /workspace/models --host 127.0.0.1 --port 18000"
 # QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
 extra_filters:
   compute_cap:

@@ -617,21 +617,21 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
         tokens = shlex.split(args.vllm_args)
     except ValueError as e:
         rep.error("vllm-args", f"VLLM_ARGS is not parseable as a shell word list: {e}")
-        return rep.exit_code()
+        return _finish(rep, out)
 
     cli = Client(args.base_url, args.timeout)
     status, body = cli.get("/v1/models")
     models_doc = as_json(body)
     if status != 200 or models_doc is None:
         rep.error("identity", f"/v1/models returned HTTP {status}: {body[:200]}")
-        return rep.exit_code()
+        return _finish(rep, out)
 
     # `--served-model-name` is what the id becomes when it is given; vLLM uses the
     # FIRST as the id and the rest as aliases, so the first is what must come back.
     expected = first(arg_values(tokens, "--served-model-name"), args.model)
     if not expected:
         rep.error("identity", "neither VLLM_MODEL nor --served-model-name names a model")
-        return rep.exit_code()
+        return _finish(rep, out)
 
     check_identity(rep, models_doc, expected)
 
@@ -653,9 +653,25 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
     declared = {c for c in args.expect_caps.replace(",", " ").split() if c}
     run_capabilities(rep, cli, model, tokens, declared)
 
+    return _finish(rep, out)
+
+
+def _finish(rep: Report, out) -> int:
+    """Summary line, completion sentinel, exit code — the only way main() returns.
+
+    The sentinel is the last line and the caller REQUIRES it. Every exit through
+    main() is an explicit one that has already reported its reason; anything else —
+    an unhandled exception, a killed interpreter, an OOM — exits without it. Without
+    the sentinel a traceback exits 1, prints no VIOLATION line, and the caller reads
+    "1 = violations, none listed" as nothing to report: a crash that passes. Silence
+    is the failure mode that matters, so it is asserted rather than assumed.
+    """
+    total = (len(rep.passed) + len(rep.violations) + len(rep.advisories)
+             + len(rep.na) + len(rep.errors))
     print(f"    summary: {len(rep.passed)} ok, {len(rep.violations)} violation(s), "
           f"{len(rep.advisories)} advisory, {len(rep.na)} n/a, {len(rep.errors)} error(s)",
           file=out)
+    print(f"CONTRACT-COMPLETE {total}", file=out)
     return rep.exit_code()
 
 
