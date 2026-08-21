@@ -524,6 +524,181 @@ socket-backed appears earlier in the same file. Scope, deliberately narrow:
   `grep "[s]upervisord"` bracket idiom does not match the program name as
   written. Neither is in the tree; both would pass.
 
+### The home/environment sync is exercised by the gate — base-qa runs it
+
+Boot stages 35 and 37 move `/root`, `/home/*` and `/venv/*` onto `$WORKSPACE` and
+symlink them back. **Nothing in this repo turned them on**, so a change to that
+code first executed on a customer instance — which is how a bounded-wait fix
+shipped with a `return 1` sitting between the `.ssh` MOVE and the symlink back,
+leaving an instance that boots green with key-based SSH dead and
+`46-user-propagate-ssh-keys.sh` dying on `realpath` under `set -euo pipefail`.
+
+`templates/base-qa` now sets `--sync-home --sync-environment`, deliberately
+**without a volume**. No volume is needed to exercise it: `$WORKSPACE` defaults to
+a container directory, and the lock, the completion markers, the wait, the
+relinking and the `.ssh` round-trip are all identical. Only the multi-instance
+race needs a shared volume, and that is a different question from "does this code
+still work at all". Measured cost on base: ~17s.
+
+`base/36-home-env-sync.sh` asserts the outcome — that `/root` and `/venv/main`
+resolve, that `.synced` is present and `.syncing` is gone, that `.ssh` was
+relinked rather than stranded, and that the interpreter in the synced venv
+actually executes, because a relink to a half-copied tree resolves fine and runs
+nothing. It self-skips when the flags are off, which is correct for every other
+image, so `base-qa` names it in `INSTANCE_TEST_REQUIRE_PASS` where that would be
+a hole (ADR 0019).
+
+### Runtime races found by audit 2026-08-20 — fixed, NOT gated
+
+Auditing the whole image surface for the pattern behind L069 and L071 —
+*readiness inferred from something other than the thing about to be used* —
+turned up four more, three of them reaching a paying customer's instance rather
+than a CI cell. None is gated: they are one-off structural fixes, not a rule a
+linter can express. Recorded so the pattern is recognisable next time.
+
+**`/etc/portal.yaml` was a presence-gated handshake with a non-atomic writer.**
+`exit_portal.sh` waited for the file to EXIST, then decided from its CONTENT.
+`caddy_config_manager.py` wrote it with `open(path,"w")`, which truncates
+immediately and only lands content at close — measured at ~0.5 ms idle and 90 ms
+under CPU throttling, with an independent observer reading an incomplete file in
+300/300 trials. Six services key their entire startup on that grep. Losing is not
+a retry: the self-skip is `sleep 6; exit 0`, and `autorestart=unexpected` +
+`exitcodes=0` makes supervisord treat it as intentional, so the service is gone
+for the life of the instance — and the portal HIDES it, because a skip marker
+means "not configured" rather than "failed". Worse, `caddy.sh` ran
+`touch /etc/portal.yaml` unconditionally, including when the configurator had
+raised, so one malformed `PORTAL_CONFIG` entry left a zero-byte file on `/etc`
+(which survives stop/start) and every subsequent boot lost the whole portal.
+Now: `tempfile` + `os.replace` (the pattern `provisioner/manifest.py` already
+used) and a bounded wait for a NON-EMPTY file.
+
+Three corrections came out of review, and each is the same mistake in a new
+place. `mkstemp` creates **0600** and `os.replace` publishes that inode, so the
+atomic write made `/etc/portal.yaml` root-only — and `syncthing.conf` is the one
+base unit that drops privileges (`user=user`), so its grep got EACCES and it
+self-skipped permanently. That is the exact failure being fixed, reintroduced by
+the fix, deterministically rather than as a race, and persisted on `/etc` where
+an image rollback would not clear it. The write now preserves an operator's mode
+or falls back to 0644, and resolves symlinks first, because `os.replace` unlinks
+a symlink where `open(w)` wrote through it.
+
+And the placeholder must not be published when the configurator FAILED.
+`applications: {}` is well-formed and non-empty, so it sails past the very
+non-empty wait added above; the grep then misses and all six services self-skip
+silently — making the loud path unreachable in precisely the case it was written
+for. `caddy.sh` now publishes it only when `PORTAL_CONFIG` is genuinely empty,
+and leaves the file absent otherwise so the waiters time out and report.
+
+**The `.syncing` marker was not the lock.** `35-sync-home-dirs.sh` and
+`37-sync-environment.sh` acquire with `mkdir "$dir"` — atomic — and then `touch
+"$dir/.syncing"` a syscall later. A co-located instance sharing the volume that
+observed the directory between the two found no marker, exited its wait on the
+first iteration, and ran `rm -rf /venv/main; ln -s ...` against a tree still
+being copied. Everything from boot stage 45 onward then runs against a dangling
+symlink with no python. Absence of an in-progress marker cannot distinguish "not
+started" from "finished", so both now wait for a `.synced` COMPLETION marker,
+with a legacy fallback for trees written before markers existed, and a bounded
+budget — `.syncing` lives on a shared volume, so an instance destroyed mid-sync
+would otherwise block every later instance forever at boot stage 35, before
+supervisord launches.
+
+The bound needed two things review caught. `boot_default.sh` DISCARDS a stage's
+exit status, so `return 1` is not "fail loudly" — it is "carry on with the stage
+half-applied", and by then `35-sync-home-dirs.sh` has already MOVED every `.ssh`
+directory to `/home_ssh` with the symlinks back still below the return. The
+instance would boot to a green portal with key-based SSH dead and the customer's
+home invisible, and `46-user-propagate-ssh-keys.sh` would die on its first line
+(`realpath` under `set -euo pipefail`) rather than recreating anything. The
+timeout path now restores those links before returning. And the remediation text
+now distinguishes a partial tree (delete the directory) from a lock taken by an
+instance that died before writing anything (also delete it) — the original text
+said "remove `.syncing`", which for a partial tree tells the operator to make it
+pass the legacy discriminator and get symlinked.
+
+**Provisioner-registered services could never reach FATAL.** The generated conf
+used `autorestart=true` + `startsecs=0` against the base convention of
+`unexpected` + `5`. `startsecs=0` is process presence as readiness, encoded as
+the default for every manifest-registered customer app; `autorestart=true`
+restarts even on a clean exit 0, so the self-skip idiom became a permanent
+six-second loop. Measured side by side against a crashing command: the base
+convention reaches FATAL and stops, while the generated one re-execs about once a
+second for the life of the instance with `supervisorctl status`, the portal
+process list and every health check reporting RUNNING.
+
+**The provisioner registered services against a supervisord that could not hear
+it.** `supervisorctl reread`/`update` ran at boot stage 75 — inside the window
+L069 measured — with `check=False`, and the result was discarded. The conf files
+were on disk, so it logged success, the caller wrote the stage hash (never
+retried), and the boot set `/.provisioning_complete`. Both detectors fail open:
+`base/12-provisioning` passes on the marker, and `65-conditional-services`
+downgrades the exact tell to a WARN. It now waits for the RPC socket, and asserts the thing that is actually ours:
+that each service it just wrote is known to supervisord. Not the global
+`reread` verdict — that parses EVERY file in `conf.d`, so a malformed unit from
+a derivative or a customer's own `write_files` would have failed the phase and
+aborted the remaining provisioning, including `post_commands` and
+`PROVISIONING_SCRIPT`, over a file with nothing to do with that manifest. Note where this sat: L069/L070/L071 all gate
+`supervisorctl` readiness in `tests/` only, and the one place in the SHIPPED
+RUNTIME that called it with no wait and ignored the exit code was covered by
+none of them.
+
+### A restart is not a readiness event — **GATED (L071)**
+
+Two halves of one defect, both measured on live QA hosts, and the second is the
+one that cost cells.
+
+`supervisorctl restart` returns when the WRAPPER clears its `startsecs`, not when
+the service is usable. Measured in the shipped image with a wrapper that binds
+late: restart returned after **5145 ms** with the port still answering `000`.
+`26-caddy-auth`'s skip path restarted caddy with no wait at all, which also
+leaked a rebinding caddy into `27-caddy-tls` — the file that runs next.
+
+`wait_for_caddy`'s default port is **2019**, Caddy's admin endpoint. It is
+enabled by default (`caddy_config_manager.py` emits no `admin` directive) and it
+binds before the site listeners are provisioned. `26-caddy-auth` called it bare
+six times and then probed `:1111` and `:6006`; it returned success on 2019 with
+the site ports unbound, and the checks recorded `expected 401, got 000` — twice
+on one machine, on an image the same run proved healthy 12 seconds later.
+`27-caddy-tls` never had this defect: it passes `"$test_port"` explicitly.
+
+The silent variant is worse than the loud one. `find_caddy_ports` keys on
+`ss -tln`, so a caddy that has not finished binding yields NO ports and
+`26-caddy-auth` takes its `test_skip "no external caddy ports found"` exit — a
+green run that asserted nothing about auth at all.
+
+The fix is `wait_for_caddy_ports`, which waits until every port the Caddyfile
+DECLARES is listening — answerable from the Caddyfile before the listeners
+exist, which is the whole point.
+
+**L071** requires every `supervisorctl restart` in a shipped test to be followed
+by a readiness wait, and forbids a bare `wait_for_caddy`. Scoped honestly, in
+L066's phrasing: it gates that a wait EXISTS and that it NAMES a port, not that
+the port is the one the next assertion uses.
+
+### The derivative phase does not start on a failed base — ADR 0030
+
+`base/` is the platform contract and is cheap: 66 s mean across the 70 cells of
+the 2026-08-20 pytorch promote. The `*.d/` suites are the expensive part — 79 s
+on pytorch, but tens of minutes on an image that downloads model weights and runs
+inference.
+
+Under ADR 0019 a failed test meant BLOCK, so finishing the run bought diagnostic
+detail. Under ADR 0029 any failure redraws, so once base is red the cell is
+already lost and the tail can only spend a rented GPU to reach a conclusion
+already reached — then be discarded and paid for again on the redraw. A
+derivative PASS on a platform failing its own base contract is not evidence
+either.
+
+`runner.sh` now finishes the base phase and refuses to enter the derivative
+phase if it failed. The cut is at the phase boundary, NOT at the failing test:
+base tests cost seconds, and aborting on the first red would have destroyed the
+evidence that produced ADR 0029's amendment — `10-supervisor`, `20-portal` and
+`26-caddy-auth` failing together is what identified one shared root cause, and
+`67-service-functionality` passing 53 s later is what proved the host innocent.
+
+The report says **NOT ATTEMPTED** in those words. The required-pass gate already
+treats a skipped required test as a failure, so the machinery cannot mistake an
+unrun test for a passing one; the wording is for the human reading the summary.
+
 ### Readiness budgets are levers, and their floors are gated — **GATED (L070)**
 
 The same 2026-08-18 batch lost two more cells to timeouts that are judgement, not

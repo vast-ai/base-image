@@ -29,11 +29,20 @@ else
     echo "  WARN: no .log files found in /var/log/portal/"
 fi
 
-# Every portal log should have a clean copy in /var/log/
+# Every SERVICE log should have a clean copy in /var/log/.
+#
+# Scoped to conf.d programs, because only they route through logging.sh ->
+# log-tee, which is what derives the clean copy. Boot scripts write the portal
+# path directly with plain `tee` — propagate_ssh_keys.sh does — so their output
+# carries no ANSI in the first place and a second copy would assert nothing.
+# Expecting one for every file in the directory produced a permanent WARN about
+# ssh-keys.log on every cell of every run, which is noise that trains people to
+# skim this section.
 missing_clean=0
 for logfile in /var/log/portal/*.log; do
     [[ -f "$logfile" ]] || continue
     name=$(basename "$logfile")
+    [[ -f "/etc/supervisor/conf.d/${name%.log}.conf" ]] || continue
     if [[ -f "/var/log/${name}" ]]; then
         # Clean copy must not contain ANSI escape codes
         if grep -Pq '\x1b\[' "/var/log/${name}" 2>/dev/null; then

@@ -20,7 +20,18 @@ image: vastai/base-image
 tag: latest                       # CI overrides with the staging tag
 private: true
 readme_visible: false
-onstart: entrypoint.sh
+# --sync-home and --sync-environment are ON here, and deliberately WITHOUT a
+# volume. Boot stages 35 and 37 move /root, /home/* and /venv/* onto $WORKSPACE
+# and symlink them back; nothing in this repo exercised them, so a change to that
+# code first executed on a customer instance. That is how a bounded-wait fix
+# shipped with a `return 1` between the .ssh MOVE and the symlink back, which
+# would have left an instance booting green with key-based SSH dead.
+#
+# No volume is needed to exercise it: $WORKSPACE defaults to a container
+# directory and the lock, completion markers, wait, relinking and .ssh round-trip
+# are identical. Only the multi-instance race needs a shared volume, and that is
+# not what this gate is for. Measured cost on base: ~17s.
+onstart: entrypoint.sh --sync-home --sync-environment
 runtype: jupyter                  # production launch mode
 jup_direct: true
 ssh_direct: true
@@ -56,7 +67,9 @@ env:
   # exercised. Naming them here makes that outcome red. Enforced twice: by the runner
   # in-instance, and by qa_verdict.py in CI, so a template that lost this line still
   # cannot produce a passing verdict. Gated by linter rule L057.
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+  # 36 is required so it cannot skip its way to green: it self-skips when the
+  # sync flags are off, which is correct everywhere else and would be a hole here.
+  INSTANCE_TEST_REQUIRE_PASS: "base/36-home-env-sync base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
   # Promote the exposure scan from advisory to gating, for base only (ADR 0006
   # condition 2 always intended this flip once a clean baseline existed; base is
   # the image that OWNS exposure-allowlist/00-base.conf, so its baseline is the

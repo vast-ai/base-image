@@ -75,15 +75,74 @@ _sync_environment() {
                 
                 fi
             done
+            # Publish completion BEFORE clearing in-progress, so there is no
+            # instant where neither marker is present on a finished tree.
+            touch "${env_dir}/.synced"
             rm -f "${env_dir}/.syncing"
         fi
     fi
 
-    # Wait until sync is complete, even if this instance is not syncing
-    echo "Waiting for environment to sync..."
-    until [ ! -f "${env_dir}/.syncing" ]; do
-        sleep 10
+    # Wait until sync is complete, even if this instance is not syncing.
+    #
+    # This used to be `until [ ! -f "${env_dir}/.syncing" ]`, and absence of an
+    # in-progress marker is NOT the same event as the lock. `mkdir "$env_dir"`
+    # is atomic; the `touch` of the marker is a separate syscall after it. A
+    # co-located instance sharing this volume that observed the directory
+    # between the two found no marker, exited this loop on its first iteration,
+    # and went straight to `rm -rf /venv/main; ln -s ...` — pointing
+    # /venv/main at a tree the winner was still copying into. Everything from
+    # boot stage 45 onward (bashrc, TLS cert gen, supervisord, every service,
+    # provisioning) then runs against a dangling symlink with no python.
+    #
+    # Wait for a COMPLETION marker instead: "not started yet" and "finished" are
+    # indistinguishable by absence, but presence of done is unambiguous.
+    _sync_wait=0
+    while [[ ! -f "${env_dir}/.synced" ]]; do
+        # A tree written by an older image carries neither marker. Nothing in
+        # progress plus a populated venv dir means that sync finished before
+        # completion markers existed.
+        if [[ ! -f "${env_dir}/.syncing" ]] && compgen -G "${venv_dir}/*" >/dev/null 2>&1; then
+            # Retire the legacy shape once, so a pre-marker tree does not
+            # re-take this branch on every boot forever. Best-effort: a
+            # read-only volume just keeps using the fallback.
+            touch "${env_dir}/.synced" 2>/dev/null || true
+            break
+        fi
+        # Bounded, because .syncing is on a SHARED volume and an instance
+        # destroyed mid-sync leaves it there permanently — every later instance
+        # would block here forever at boot stage 37, before supervisord ever
+        # launches: no portal, no services, and no failing check to point at.
+        if (( _sync_wait >= 3600 )); then
+            echo "ERROR: environment sync did not complete after ${_sync_wait}s."
+            echo "  Refusing to relink /venv/* against a partial tree."
+            # Two different shapes reach here and they need OPPOSITE remedies.
+            # Saying "remove .syncing" for the second is actively harmful: it
+            # makes a PARTIAL tree pass the legacy discriminator on the next
+            # boot and get symlinked, which is the outcome this wait exists to
+            # prevent.
+            if [[ -f "${env_dir}/.syncing" ]]; then
+                echo "  An instance died mid-sync and left ${env_dir}/.syncing on the"
+                echo "  shared volume. The tree is PARTIAL: delete ${env_dir} entirely"
+                echo "  so the next instance re-syncs it. Do not just remove the marker."
+            else
+                echo "  ${env_dir} exists with no markers and no content — an instance"
+                echo "  died after taking the lock and before writing anything. Delete"
+                echo "  ${env_dir} so the next instance can claim it."
+            fi
+            # Record it where a test can see it. boot_default.sh sources the
+            # stages and DISCARDS their status, so a `return 1` here is otherwise
+            # invisible to every detector in the image — which is why the SSH
+            # stranding this path used to cause could only be found by reading
+            # the code. Deliberate failures only: a blanket "any non-zero source"
+            # wrapper would fire on 10-prep-env.sh, whose last line is a
+            # legitimately-false conditional, and a check that cries wolf is
+            # worse than none.
+            echo "37-sync-environment: environment sync did not complete" >> /var/log/vast_boot_failures 2>/dev/null || true
+            return 1
+        fi
         echo "Waiting for environment to sync..."
+        sleep 10
+        _sync_wait=$((_sync_wait + 10))
     done
 
     # Delete and link venv directories

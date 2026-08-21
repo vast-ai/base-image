@@ -1,4 +1,6 @@
 import os
+import stat
+import tempfile
 import yaml
 import subprocess
 import time
@@ -60,10 +62,61 @@ def load_config(yaml_path='/etc/portal.yaml'):
     # Persisting the cache is best-effort: we already have a usable config in hand, so
     # a read-only /etc or an unwritable file must not stop Caddy from starting. (The
     # same condition that makes the file unreadable above usually makes it unwritable.)
+    # ATOMICALLY. `open(path,"w")` truncates immediately and the content only
+    # lands at close, so this file spent ~0.5ms (90ms under CPU throttling)
+    # existing and empty on every write. Six services key their entire startup
+    # decision on it: exit_portal.sh waits for the file to EXIST and then greps
+    # it for their name, so a reader landing in that window sees no match,
+    # self-skips with `sleep 6; exit 0`, and — because conf.d carries
+    # autorestart=unexpected + exitcodes=0 — is never restarted. The service is
+    # gone for the life of the instance and the portal HIDES it, because a skip
+    # marker means "not configured" rather than "failed".
+    #
+    # tempfile + os.replace, the pattern provisioner/manifest.py already uses for
+    # exactly this reason: a reader sees either the old file or the new one.
     yaml_data = {"applications": apps}
     try:
-        with open(yaml_path, "w") as file:
-            yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
+        # Resolve first: open(path,"w") wrote THROUGH a symlink, os.replace
+        # unlinks it and leaves a regular file. Nothing in-repo symlinks this,
+        # but exit_portal.sh and five provisioning scripts all resolve it with
+        # `realpath -q`, which is only meaningful if someone expected to. Also
+        # keeps the temp file on the target's own filesystem.
+        yaml_path = os.path.realpath(yaml_path)
+        yaml_dir = os.path.dirname(yaml_path) or "."
+        fd, tmp = tempfile.mkstemp(dir=yaml_dir, suffix=".yaml")
+        try:
+            # mkstemp creates 0600 and ignores umask, and os.replace publishes
+            # THAT inode — so without this the restrictive mode travels with the
+            # rename and /etc/portal.yaml becomes root-only. syncthing.conf is
+            # the one base unit that drops privileges (`user=user`), so its grep
+            # here would get EACCES, `! grep` would be true, and it would take
+            # the self-skip path — `sleep 6; exit 0`, terminal under
+            # autorestart=unexpected — logging "not in /etc/portal.yaml" while
+            # Syncthing is plainly in PORTAL_CONFIG. That is the exact misleading
+            # skip this change exists to remove, reintroduced by the fix for it.
+            #
+            # Worse than it sounds: /etc is on the persisted overlay and the OLD
+            # code path preserves an existing file's mode, so an instance that
+            # booted once on a bad image would keep 0600 even after an image
+            # rollback. Match what open(path,"w") produced under umask 022.
+            try:
+                # Keep an operator's own chmod if they set one; otherwise match
+                # what open(path,"w") produced under the image's umask 022.
+                mode = stat.S_IMODE(os.stat(yaml_path).st_mode)
+            except OSError:
+                mode = 0o644
+            os.fchmod(fd, mode)
+            with os.fdopen(fd, "w") as file:
+                yaml.dump(yaml_data, file, default_flow_style=False, sort_keys=False)
+            os.replace(tmp, yaml_path)
+        except BaseException:
+            # Never leave the temp file behind, and never leave a HALF file at
+            # the real path — os.replace is the only thing that publishes.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except OSError as e:
         print(f"Could not write {yaml_path} ({type(e).__name__}: {e}); "
               f"continuing with the config from PORTAL_CONFIG")

@@ -375,6 +375,73 @@ YAML
     fi
 fi
 
+# ── Supervisor service registration, for real ────────────────────────
+#
+# Everything above this point runs --dry-run, and register_services() returns
+# BEFORE the supervisord work when dry_run is set. So the code that waits for
+# the RPC socket and asserts supervisord actually picked the service up had only
+# mocked coverage, and would first execute on a customer instance.
+#
+# That matters because of what it replaced: `supervisorctl reread`/`update` ran
+# with check=False and the result was discarded. The conf file was on disk, so
+# provisioning logged success, wrote its stage hash (so it is never retried) and
+# set /.provisioning_complete — while the customer's service had never started.
+#
+# Registers one trivial service, asserts supervisord knows it and runs it, then
+# removes it. Scratch state dir so the real provisioning ledger is untouched.
+_svc_name="selftest_$$"
+_svc_conf="/etc/supervisor/conf.d/${_svc_name}.conf"
+_svc_script="/opt/supervisor-scripts/${_svc_name}.sh"
+_svc_cleanup() {
+    supervisorctl stop "$_svc_name" &>/dev/null || true
+    rm -f "$_svc_conf" "$_svc_script"
+    supervisorctl update &>/dev/null || true
+}
+
+cat > "$_tmp/svc.yaml" <<YAML
+version: 1
+services:
+  - name: ${_svc_name}
+    command: "sleep 600"
+    workdir: /tmp
+YAML
+
+# Only when supervisord is actually there. On a real instance it always is —
+# boot stage 65 launches it before stage 70 starts this suite, and
+# base/10-supervisor asserts it independently and runs first. But this file is
+# also exercised by a harness container with no supervisord, where the
+# provisioner would correctly wait out its readiness budget and fail. That is an
+# environment precondition, not a provisioner defect, so check it cheaply first
+# rather than burning the budget to rediscover it.
+if ! wait_for_supervisor 5 >/dev/null 2>&1; then
+    echo "  service registration: skipped (no supervisord in this environment)"
+elif svc_out=$(PROVISIONER_STATE_DIR="$_tmp/state" _prov "$_tmp/svc.yaml" 2>&1); then
+    # supervisord must KNOW it — "wrote a file" is not "the service exists".
+    if supervisorctl status "$_svc_name" 2>&1 | grep -qi "no such process"; then
+        fail_later "provisioner-register" \
+            "provisioner reported success but supervisord does not know ${_svc_name}"
+    else
+        # ...and it must actually come up, not merely be registered.
+        # service_running is the PREDICATE; assert_service_running calls
+        # test_fail, which exits, so an else-branch after it is unreachable.
+        _svc_deadline=$(( SECONDS + 30 ))
+        _svc_up=false
+        while (( SECONDS < _svc_deadline )); do
+            if service_running "$_svc_name"; then _svc_up=true; break; fi
+            sleep 1
+        done
+        if [[ "$_svc_up" == "true" ]]; then
+            echo "  registered a real service and it reached RUNNING"
+        else
+            fail_later "provisioner-service-start" \
+                "${_svc_name} was registered but never reached RUNNING"
+        fi
+    fi
+else
+    fail_later "provisioner-register-run" "registering a service failed: $(echo "$svc_out" | tail -3)"
+fi
+_svc_cleanup
+
 report_failures
 
 # The summary must describe what actually ran. Claiming "real download" after the

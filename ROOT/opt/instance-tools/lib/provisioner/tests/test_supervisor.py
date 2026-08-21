@@ -190,8 +190,10 @@ class TestRegisterServices:
         ]
         register_services(services, dry_run=True)
 
+    @patch("provisioner.supervisor._assert_registered")
+    @patch("provisioner.supervisor._wait_for_supervisord")
     @patch("provisioner.supervisor.run_cmd")
-    def test_writes_files(self, mock_run, tmp_path):
+    def test_writes_files(self, mock_run, mock_wait, mock_assert, tmp_path):
         script_dir = tmp_path / "supervisor-scripts"
         conf_dir = tmp_path / "supervisor" / "conf.d"
 
@@ -214,10 +216,13 @@ class TestRegisterServices:
             # supervisorctl reread + update
             assert mock_run.call_count == 2
 
+    @patch("provisioner.supervisor._assert_registered")
+    @patch("provisioner.supervisor._wait_for_supervisord")
     @patch("provisioner.supervisor.run_cmd")
     @patch("provisioner.supervisor.os.chmod")
     @patch("provisioner.supervisor.os.makedirs")
-    def test_writes_correct_paths(self, mock_makedirs, mock_chmod, mock_run, tmp_path):
+    def test_writes_correct_paths(self, mock_makedirs, mock_chmod, mock_run,
+                                  mock_wait, mock_assert, tmp_path):
         svc = Service(name="test-svc", command="echo", workdir="/tmp")
         written = {}
 
@@ -236,3 +241,103 @@ class TestRegisterServices:
         assert "/opt/supervisor-scripts/test-svc.sh" in written
         assert "/etc/supervisor/conf.d/test-svc.conf" in written
         mock_chmod.assert_called_once()
+
+
+class TestSupervisordReadiness:
+    """Registration must not run against a supervisord that cannot hear it.
+
+    Phase 7 lands at boot stage 75, inside the window where supervisord has
+    forked (stage 65) but its RPC socket is not yet listening. Every earlier
+    phase is a no-op for a services-only manifest, so nothing separates the two.
+
+    The old code ran `reread`/`update` with check=False and discarded the result:
+    the conf files were on disk, so it logged "Supervisor services registered",
+    the caller wrote the stage hash (so it is never retried), and the boot set
+    /.provisioning_complete. A customer's declared service silently never
+    started while the instance reported provisioning successful.
+    """
+
+    @patch("provisioner.supervisor.subprocess.run")
+    def test_a_late_socket_is_waited_for(self, mock_run):
+        from provisioner.supervisor import _wait_for_supervisord
+        mock_run.side_effect = [
+            type("R", (), {"returncode": 4})(),   # ECONNREFUSED / ENOENT
+            type("R", (), {"returncode": 4})(),
+            type("R", (), {"returncode": 3})(),   # reached it; some not running
+        ]
+        with patch("provisioner.supervisor.time.sleep"):
+            _wait_for_supervisord(timeout=30)
+        assert mock_run.call_count == 3
+
+    @patch("provisioner.supervisor.subprocess.run")
+    def test_a_socket_that_never_answers_RAISES(self, mock_run):
+        """Raising is the point: the caller marks the stage complete on return,
+        and a stage marked complete is never retried."""
+        from provisioner.supervisor import _wait_for_supervisord
+        mock_run.return_value = type("R", (), {"returncode": 4})()
+        with patch("provisioner.supervisor.time.sleep"):
+            with pytest.raises(RuntimeError, match="did not answer"):
+                _wait_for_supervisord(timeout=2)
+
+    @patch("provisioner.supervisor.subprocess.run")
+    def test_an_unclassified_error_is_not_treated_as_ready(self, mock_run):
+        """Only 0 and 3 mean the socket was reached. Exit 1 is supervisorctl's
+        generic error — a readiness probe must not fail OPEN on it."""
+        from provisioner.supervisor import _wait_for_supervisord
+        mock_run.return_value = type("R", (), {"returncode": 1})()
+        with patch("provisioner.supervisor.time.sleep"):
+            with pytest.raises(RuntimeError):
+                _wait_for_supervisord(timeout=2)
+
+    @patch("provisioner.supervisor.subprocess.run")
+    @patch("provisioner.supervisor._wait_for_supervisord")
+    @patch("provisioner.supervisor.run_cmd")
+    @patch("provisioner.supervisor.os.chmod")
+    @patch("provisioner.supervisor.os.makedirs")
+    def test_a_service_supervisord_never_picked_up_RAISES(self, _mk, _ch, mock_run,
+                                                          _wait, mock_sp, tmp_path):
+        """The positive assertion: the conf being on disk is not the same as the
+        service existing. This is what the old check=False code skipped — it
+        logged success, the caller wrote the stage hash (so it is never retried)
+        and the boot set /.provisioning_complete, while the service had never
+        started."""
+        from provisioner.supervisor import register_services
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+        mock_sp.return_value = type("R", (), {
+            "stdout": "app: ERROR (no such process)", "stderr": ""})()
+        with patch("builtins.open", create=True):
+            with pytest.raises(RuntimeError, match="did not pick up"):
+                register_services([Service(name="app", command="echo", workdir="/tmp")])
+
+    @patch("provisioner.supervisor.subprocess.run")
+    @patch("provisioner.supervisor._wait_for_supervisord")
+    @patch("provisioner.supervisor.run_cmd")
+    @patch("provisioner.supervisor.os.chmod")
+    @patch("provisioner.supervisor.os.makedirs")
+    def test_someone_elses_broken_conf_does_not_fail_our_phase(self, _mk, _ch, mock_run,
+                                                               _wait, mock_sp, tmp_path):
+        """`reread` parses EVERY file in conf.d, so CANT_REREAD from a derivative's
+        unit or a customer's own write_files is not a statement about our
+        services. Failing on it aborted late file writes, post_commands and
+        PROVISIONING_SCRIPT for a file unrelated to this manifest."""
+        from provisioner.supervisor import register_services
+        mock_run.return_value = type("R", (), {"returncode": 1})()   # CANT_REREAD
+        mock_sp.return_value = type("R", (), {
+            "stdout": "app RUNNING pid 1, uptime 0:00:05", "stderr": ""})()
+        with patch("builtins.open", create=True):
+            register_services([Service(name="app", command="echo", workdir="/tmp")])
+
+
+class TestGeneratedConfConventions:
+    def test_it_matches_the_hand_written_units(self):
+        """autorestart=true restarted a service even on a clean exit 0, so the
+        self-skip idiom (`sleep 6; exit 0`) became a permanent restart loop; and
+        startsecs=0 marked it RUNNING the instant it forked, so a crash-looping
+        app reported RUNNING to supervisorctl, the portal and every health check.
+        """
+        from provisioner.supervisor import _generate_supervisor_conf
+        conf = _generate_supervisor_conf(Service(name="app", command="echo", workdir="/tmp"))
+        assert "autorestart=unexpected" in conf
+        assert "autorestart=true" not in conf
+        assert "startsecs=5" in conf
+        assert "startsecs=0" not in conf

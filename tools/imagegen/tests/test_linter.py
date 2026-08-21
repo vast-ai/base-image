@@ -1889,6 +1889,143 @@ def test_L069_every_scanned_root_is_locked_in(tmp_path, rel):
     assert has(img, tmp_path, "L069", "presence is true at fork")
 
 
+# ---- L071: a restart is not a readiness event -----------------------------
+#
+# `supervisorctl restart` returns when the WRAPPER clears startsecs — measured
+# at 5145ms with the port still answering 000. And `wait_for_caddy` bare waits
+# on :2019, Caddy's default admin endpoint, which binds before the site
+# listeners; six bare calls in 26-caddy-auth waited on a port the test never
+# probes, and the checks that followed recorded `expected 401, got 000`.
+
+def test_L071_a_bare_wait_for_caddy_fires(tmp_path):
+    """THE defect. :2019 is the admin endpoint; the checks target :1111/:6006."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'wait_for_caddy || test_fail "x"\n')
+    assert has(img, tmp_path, "L071", "no port")
+
+
+def test_L071_a_restart_with_no_wait_before_the_next_probe_fires(tmp_path):
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'http_check "after restart" 401 http://127.0.0.1:1111/\n'
+                      'report_failures\n')
+    assert has(img, tmp_path, "L071", "without waiting for it to be")
+
+
+def test_L071_a_restart_on_the_way_OUT_of_a_test_is_exempt(tmp_path):
+    """No next probe to race, and the cross-FILE hazard is closed at the other
+    end: 26-caddy-auth and 27-caddy-tls each wait for the ports before
+    enumerating them, so every file guards its own entry rather than trusting
+    its predecessor's exit. Requiring a wait there produced one that provably
+    could not fail — the skip path is only reachable when zero ports are
+    declared, so it iterates nothing — and a guard that cannot fail reads as
+    protection while giving none."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'test_skip "no external caddy ports found"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_L071_a_long_comment_between_restart_and_wait_does_not_fire(tmp_path):
+    """The window counted LINES, and _strip_comment blanks a comment into an
+    empty line that still consumed a slot — so a five-line explanation pushed
+    the wait out of view. Same class as the window that started at i+1: the rule
+    reading layout instead of behaviour."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      '# one\n# two\n# three\n# four\n# five\n# six\n'
+                      'wait_for_caddy_ports || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_L071_wait_for_caddy_ports_satisfies_it(tmp_path):
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'wait_for_caddy_ports || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_L071_an_explicit_port_satisfies_it(tmp_path):
+    """27-caddy-tls was always correct: it passes "$test_port"."""
+    img = _tests_repo(tmp_path, "27-caddy-tls.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      'wait_for_caddy "$test_port" "https" || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_L071_a_comment_between_restart_and_wait_is_fine(tmp_path):
+    """House style puts the reasoning between the two lines."""
+    img = _tests_repo(tmp_path, "26-caddy-auth.sh",
+                      'supervisorctl restart caddy &>/dev/null\n'
+                      '# it needs a moment to rebind\n'
+                      'wait_for_caddy_ports || test_fail "x"\n')
+    assert "L071" not in errs(img, tmp_path)
+
+
+def test_mut_L071_the_real_suite_with_the_bare_call_restored_fires(tmp_path):
+    """Mutation against a copy of the real tree."""
+    repo, img = _real("base-image")
+    work = tmp_path / "repo"
+    shutil.copytree(repo / "ROOT", work / "ROOT")
+    (work / "Dockerfile").write_text((repo / "Dockerfile").read_text())
+    mutant = replace(img, dir=work, root=work / "ROOT")
+    assert "L071" not in errs(mutant, work), "the copy must start clean"
+    t = work / "ROOT/opt/instance-tools/tests/base/26-caddy-auth.sh"
+    t.write_text(t.read_text().replace(
+        'wait_for_caddy_ports || test_fail "caddy did not rebind its ports after restart (see WARN above)"',
+        'wait_for_caddy || test_fail "caddy did not come back after restart (see WARN above)"'))
+    assert has(mutant, work, "L071", "no port")
+
+
+@pytest.mark.parametrize("body", [
+    'supervisorctl restart caddy && wait_for_caddy_ports || test_fail "x"\n',
+    'supervisorctl restart caddy; wait_for_caddy_ports\n',
+    'supervisorctl restart caddy \\\n    && wait_for_caddy_ports\n',
+])
+def test_L071_restart_and_wait_on_ONE_line_is_clean(tmp_path, body):
+    """The window used to start at the NEXT logical line, so the two most
+    natural spellings were rejected — and so was the backslash-continued form,
+    because _logical_lines folds it into this same line. A rule that accepts only
+    one layout is a formatting opinion, and the author reformats to silence it."""
+    d = tmp_path / str(abs(hash(body)))
+    d.mkdir()
+    img = _tests_repo(d, "26-caddy-auth.sh", body)
+    assert "L071" not in errs(img, d), body
+
+
+@pytest.mark.parametrize("wait", ["assert_service_running caddy", "wait_for_supervisor"])
+def test_L071_a_WRAPPER_state_wait_does_not_satisfy_it(tmp_path, wait):
+    """These were on the allowlist and should never have been. Both wait for the
+    wrapper to reach RUNNING (or for supervisord's own socket), and the premise
+    of this rule is that neither says anything about the restarted program:
+    caddy.sh clears startsecs=5 while caddy_config_manager.py is still hashing.
+    `restart && assert_service_running caddy` reproduced the exact defect the
+    rule exists to stop, and was lint-clean."""
+    d = tmp_path / wait.split()[0]
+    d.mkdir()
+    img = _tests_repo(d, "26-caddy-auth.sh",
+                      f'supervisorctl restart caddy &>/dev/null\n{wait}\n')
+    assert has(img, d, "L071", "without waiting for it to be")
+
+
+@pytest.mark.parametrize("rel", [
+    "derivatives/llama-cpp/ROOT/opt/instance-tools/tests/llama.d/10-serving.sh",
+    "derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/tests/comfyui.d/10-serving.sh",
+    "external/vllm/ROOT/opt/instance-tools/tests/vllm.d/10-serving.sh",
+])
+def test_L071_every_scanned_root_is_locked_in(tmp_path, rel):
+    """Same coverage guarantee L069 has. Without one per root, deleting a root
+    from the scan list is a silent regression on the trees where the newest
+    tests live."""
+    img = make(tmp_path, cls="base")
+    t = tmp_path / rel
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text('supervisorctl restart caddy &>/dev/null\ntest_pass ok\n')
+    t.chmod(0o755)
+    assert has(img, tmp_path, "L071", "without waiting for it to be")
+
+
 # ---- L070: a budget may be raised, never quietly lowered -----------------
 #
 # L069 gates the STRUCTURE of a readiness check; L070 gates the NUMBERS, which

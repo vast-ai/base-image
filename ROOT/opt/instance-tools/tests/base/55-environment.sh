@@ -43,15 +43,25 @@ else
     echo "  WARN: DATA_DIRECTORY not set"
 fi
 
-# Umask — Dockerfile sets 002 in .bashrc for group-writable files
-tmpfile=$(mktemp -p "${WORKSPACE:-/tmp}" .umask-test-XXXXXX)
-file_perms=$(stat -c '%a' "$tmpfile")
-rm -f "$tmpfile"
-echo "  new file permissions: ${file_perms} (umask $(umask))"
-if [[ "$file_perms" == "664" ]]; then
-    echo "  umask enforcement: correct (664)"
+# Umask — 45-user-write-bashrc sets 002 in .bashrc for group-writable files.
+#
+# The umask that matters is the one an INTERACTIVE shell gets, because that is
+# where it is set and what a customer's session inherits: 45-user-write-bashrc
+# writes it into /root/.bashrc (and /home/user/.bashrc). boot_default.sh's
+# `umask 002` on line 3 is convenience for that shell only.
+#
+# This used to create a temp file from THIS process and expect 664. The runner
+# execs each test as `env -u SHELLOPTS bash <test>` — non-interactive, no rc
+# sourced — so it observed bash's 022 default and reported 600 on a perfectly
+# correct image. It WARNed on every cell of every run and could never pass.
+_login_umask=$(interactive_umask)
+if [[ "$_login_umask" == "0002" ]]; then
+    echo "  interactive umask: ${_login_umask} (group-writable, as configured)"
 else
-    echo "  WARN: expected 664, got ${file_perms} (umask may not be 002)"
+    fail_later "umask" "interactive shell umask is ${_login_umask:-unknown}, expected 0002 — check the bashrc written by 45-user-write-bashrc"
 fi
+echo "  (this test process: $(umask) — non-interactive, no rc sourced, so not the configured value)"
+
+report_failures
 
 test_pass "environment variables verified"

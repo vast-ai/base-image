@@ -359,7 +359,7 @@ jobs:
       template_dir: templates/base-qa
       label: base-image-qa-base
       require_key: true
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+      require_tests: "base/36-home-env-sync base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       # Base QA pulls a 10-20 GB image and downloads no model; observed passing
@@ -421,7 +421,7 @@ jobs:
           # trusted from the payload, so the link is checked at the point of use.
           export STAGING_NS="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}"
           export RUN_ID="${{ github.run_id }}"
-          export REQUIRE_TESTS="base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+          export REQUIRE_TESTS="base/36-home-env-sync base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
           python - <<'PY' > evidence.json
           import json, os, pathlib, subprocess, sys
           sys.path.insert(0, "tools/template_manager")

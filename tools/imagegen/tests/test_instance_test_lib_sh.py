@@ -13,6 +13,8 @@ is decided entirely by exit codes and the clock.
 from __future__ import annotations
 
 import itertools
+import re
+import json
 import os
 import subprocess
 import time
@@ -187,3 +189,188 @@ def test_the_supervisor_budget_lever_actually_reaches_the_wait(tmp_path):
                          {"SUPERVISOR_READY_TIMEOUT": "2"})
     assert "GAVEUP" in p.stdout
     assert elapsed < 10, "the default 60 was used instead of the override"
+
+
+# ── runner.sh phase gate ──────────────────────────────────────────────
+#
+# base/ is the platform contract and costs ~60s. The derivative *.d/ suites are
+# model downloads and inference — tens of minutes. ADR 0029 redraws on ANY
+# failure, so once base is red the cell is already lost: running the tail can
+# only spend a rented GPU to reach a conclusion already reached, and every
+# assertion it makes is measuring a degraded platform anyway.
+
+RUNNER = Path(__file__).resolve().parents[3] / "ROOT/opt/instance-tools/tests/runner.sh"
+
+
+def _suite(tmp_path, base_tests: dict, d_tests: dict):
+    """Build a throwaway tests tree and run runner.sh --manual against it."""
+    root = tmp_path / "tests"
+    (root / "base").mkdir(parents=True)
+    (root / "demo.d").mkdir(parents=True)
+    (root / "lib.sh").write_text(LIB.read_text())
+    r = root / "runner.sh"
+    r.write_text(RUNNER.read_text())
+    r.chmod(0o755)
+    for name, body in base_tests.items():
+        f = root / "base" / name
+        f.write_text('#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n' + body)
+        f.chmod(0o755)
+    for name, body in d_tests.items():
+        f = root / "demo.d" / name
+        f.write_text('#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n' + body)
+        f.chmod(0o755)
+    results = tmp_path / "results.json"
+    env = dict(os.environ,
+               INSTANCE_TEST_LOG=str(tmp_path / "out.log"),
+               INSTANCE_TEST_RESULTS=str(results))
+    p = subprocess.run(["bash", str(r), "--manual"], capture_output=True, text=True,
+                       timeout=120, cwd=str(root), env=env)
+    # The VERDICT, not just the narration. Asserting on banner strings alone let
+    # a mutation that cleared has_failure pass every gate test: the run would
+    # print the right words and still exit 0.
+    try:
+        state = json.loads(results.read_text())
+    except (OSError, ValueError):
+        state = {}
+    return _Run(p.stdout + p.stderr, p.returncode, state)
+
+
+class _Run(str):
+    """The combined output, with the exit code and results JSON attached, so a
+    test can assert on the narration AND the verdict without two call sites."""
+    def __new__(cls, text, rc, state):
+        o = super().__new__(cls, text)
+        o.rc = rc
+        o.state = state
+        return o
+
+
+def test_a_base_failure_stops_the_derivative_phase(tmp_path):
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n', "26-bad.sh": 'test_fail "caddy flake"\n'},
+                 {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
+    assert "DERIVATIVE PHASE NOT ATTEMPTED" in out
+    assert "EXPENSIVE-RAN" not in out, "the expensive tail ran despite a red base"
+    # ADR 0030 binding condition 1: this removes WORK, never a failure.
+    assert out.rc == 1, "the run must still fail"
+    assert out.state.get("state") == "failed", out.state.get("state")
+
+
+def test_the_whole_base_phase_still_runs_after_a_failure(tmp_path):
+    """The cut is at the PHASE boundary, not the failing test. Aborting on the
+    first red would have destroyed the evidence behind ADR 0029's amendment:
+    seeing 10, 20 and 26 fail TOGETHER is what found the shared root cause."""
+    out = _suite(tmp_path,
+                 {"10-bad.sh": 'test_fail "first"\n',
+                  "20-bad.sh": 'test_fail "collateral"\n',
+                  "67-ok.sh": 'echo LATE-BASE-RAN\ntest_pass ok\n'},
+                 {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
+    assert "collateral" in out, "a later base test must still run and report"
+    assert "LATE-BASE-RAN" in out, "the exonerating base test must still run"
+    assert "EXPENSIVE-RAN" not in out
+
+
+def test_a_DERIVATIVE_failure_does_not_stop_the_derivative_phase(tmp_path):
+    """The gate keyed on `has_failure`, which ANY failing test sets — so the
+    second derivative test onwards tripped it. That applied ADR 0030's rejected
+    Option B inside the very phase the ADR is about, printed a banner blaming a
+    green base, and on a multi-suite image would skip an unrelated suite.
+
+    Co-failure in a *.d/ suite is diagnostic for exactly the reason ADR 0030
+    gives for base: three engine tests failing together identifies one root
+    cause, one failing identifies none. It is also NOT the expensive-tail
+    argument — that work is already being paid for by the time the first
+    derivative test fails.
+    """
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n'},
+                 {"10-first.sh": 'test_fail "derivative failure"\n',
+                  "20-second.sh": 'echo D2-RAN\ntest_pass ok\n',
+                  "30-third.sh": 'echo D3-RAN\ntest_pass ok\n'})
+    assert "D2-RAN" in out, "a derivative failure must not abort its own phase"
+    assert "D3-RAN" in out
+    assert "DERIVATIVE PHASE NOT ATTEMPTED" not in out, "base was green"
+    assert out.rc == 1 and out.state.get("state") == "failed"
+
+
+def test_the_banner_is_only_printed_when_BASE_actually_failed(tmp_path):
+    """The wording is load-bearing: someone triaging a red comfyui cell reads it
+    against a base phase that visibly passed."""
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n'},
+                 {"10-first.sh": 'test_fail "derivative failure"\n',
+                  "20-second.sh": 'test_pass ok\n'})
+    assert "A base/ test failed" not in out
+
+
+def test_a_green_base_runs_the_derivative_phase_normally(tmp_path):
+    out = _suite(tmp_path,
+                 {"10-ok.sh": 'test_pass ok\n'},
+                 {"10-expensive.sh": 'echo EXPENSIVE-RAN\ntest_pass ok\n'})
+    assert "EXPENSIVE-RAN" in out
+    assert "DERIVATIVE PHASE NOT ATTEMPTED" not in out
+
+
+def test_the_report_says_NOT_ATTEMPTED_rather_than_letting_skip_read_as_pass(tmp_path):
+    """A wall of `skipped` reads as benign. The required-pass gate already
+    treats a skipped required test as a failure, so the machinery is safe — this
+    is about the human who reads the summary and infers nothing happened."""
+    out = _suite(tmp_path,
+                 {"26-bad.sh": 'test_fail "caddy flake"\n'},
+                 {"10-expensive.sh": 'test_pass ok\n'})
+    assert "were never started" in out or "never started" in out
+    assert "NOT passing and NOT skipped-by-design" in out
+
+
+# ── interactive_umask ─────────────────────────────────────────────────
+#
+# The value that is actually configured lives in the rc an INTERACTIVE shell
+# sources; a test process sources none and sees bash's 022 default. The trap is
+# that the same rc prints a coloured banner, so a naive capture returns the
+# banner instead of the umask — which turned this check into a hard failure on
+# all 10 QA cells after passing in a bare container where the banner never fires.
+
+def _umask_env(tmp_path, bashrc: str):
+    home = tmp_path / f"h{next(_SEQ)}"
+    home.mkdir()
+    (home / ".bashrc").write_text(bashrc)
+    return dict(os.environ, HOME=str(home))
+
+
+def test_it_reads_the_umask_past_a_noisy_rc(tmp_path):
+    """The real rc prints 'Activated conda/uv virtual environment at ...' in
+    colour before the shell is usable."""
+    env = _umask_env(tmp_path, 'umask 002\necho -e "\\033[32mActivated conda/uv environment\\033[0m"\n')
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert p.stdout.strip() == "0002", repr(p.stdout)
+
+
+def test_it_reads_a_quiet_rc_too(tmp_path):
+    env = _umask_env(tmp_path, "umask 002\n")
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert p.stdout.strip() == "0002"
+
+
+def test_an_rc_that_does_NOT_set_the_umask_reports_what_it_found(tmp_path):
+    """Must report the shell's actual value, not silently succeed — this is the
+    case the check exists to catch. Pinning the parent's umask makes it
+    deterministic: the child inherits the INVOKING shell's value, not a fixed
+    default, which is what made the first version of this test wrong."""
+    env = _umask_env(tmp_path, 'echo "no umask here"\n')
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60,
+                       preexec_fn=lambda: os.umask(0o027))
+    assert p.stdout.strip() == "0027", repr(p.stdout)
+
+
+def test_it_returns_nothing_rather_than_garbage_when_unreadable(tmp_path):
+    """A banner-only rc must yield an empty result, so the caller reports
+    'unknown' instead of asserting against a fragment of a log line."""
+    env = _umask_env(tmp_path, 'echo "banner with no umask value at all"\n')
+    env["BASH_ENV"] = "/nonexistent"
+    p = subprocess.run(["bash", "-c", f'source "{LIB}"; interactive_umask'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    out = p.stdout.strip()
+    assert out == "" or re.fullmatch(r"0[0-7]{3}", out), repr(out)

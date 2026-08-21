@@ -15,6 +15,7 @@
 #   assert_command_exists CMD
 #   assert_service_running NAME [timeout_s]
 #   assert_service_stopped NAME
+#   interactive_umask — umask of an interactive login shell (empty if unreadable)
 #   assert_env_set VARNAME
 #   assert_user_exists USERNAME [UID]
 #   has_gpu          — predicate (return 0/1)
@@ -243,7 +244,13 @@ print('' if v is None else v)
 # --max-time, because a refused connection returns instantly. Callers now record
 # the expiry as a named failure instead (ADR 0029).
 wait_for_caddy() {
-    local port="${1:-2019}"  # default: caddy admin API (always available)
+    # The port is REQUIRED. It used to default to 2019 — Caddy's admin endpoint,
+    # which is enabled by default and binds before the site listeners — so a bare
+    # call waited on a port no test probes. L071 blocks the obvious spelling, but
+    # `wait_for_caddy ""` and `wait_for_caddy "$unset_var"` reach the same place
+    # (${1:-} treats empty as unset) and a regex will not see them. Removing the
+    # default makes the defect unrepresentable, which is worth more than the rule.
+    local port="${1:?wait_for_caddy needs an explicit port — 2019 is the admin endpoint, not a site}"
     local proto="${2:-http}"
     local timeout="${3:-$CADDY_READY_TIMEOUT}"
     local deadline=$(( SECONDS + timeout ))
@@ -264,6 +271,70 @@ wait_for_caddy() {
     done
     echo "  WARN: caddy not responding on ${proto}://${port} after ${timeout}s"
     return 1
+}
+
+# Wait until every port the Caddyfile DECLARES is actually listening.
+#
+# wait_for_caddy answers for ONE port, and its default is 2019 — Caddy's admin
+# endpoint, which is enabled by default (caddy_config_manager.py emits no `admin`
+# directive) and comes up while the site listeners are still being provisioned.
+# base/26-caddy-auth called it bare, six times, then probed :1111 and :6006. It
+# returned success on 2019 with the site ports not yet bound, and the checks
+# recorded `expected 401, got 000` — measured on a live QA host, twice on the
+# same machine, on an image the same run proved healthy twelve seconds later.
+# 27-caddy-tls never had this: it passes "$test_port" explicitly.
+#
+# The silent variant is worse than the loud one. find_caddy_ports below keys on
+# `ss -tln`, so a caddy that has not finished binding yields NO ports and
+# 26-caddy-auth takes its `test_skip "no external caddy ports found"` exit — a
+# green run that asserted nothing about auth at all.
+#
+# So the readiness question here is not "is some caddy answering" but "is every
+# port this test is about to use bound", and that is answerable from the
+# Caddyfile before the listeners exist.
+wait_for_caddy_ports() {
+    local timeout="${1:-$CADDY_READY_TIMEOUT}"
+    local deadline=$(( SECONDS + timeout ))
+    local line port missing listeners why
+    while :; do
+        missing=""
+        why=""
+        # An ABSENT or EMPTY Caddyfile is "cannot tell", not "ready". caddy.sh
+        # rewrites this file as part of the very restart being waited on, and
+        # caddy_config_manager.py writes it non-atomically (open-for-write
+        # truncates, then `caddy fmt --overwrite` truncates again), so a poll can
+        # land on zero bytes. Returning 0 there is the fail-open this helper
+        # exists to prevent — and the same read one line later decides whether
+        # 26-caddy-auth takes its silent test_skip.
+        if [[ ! -s /etc/Caddyfile ]]; then
+            why="/etc/Caddyfile is absent or empty"
+        else
+            # ONE `ss` per poll, not one per port. Two reasons: 240 process
+            # spawns per call is silly, and `ss | grep -q` is a SIGPIPE trap —
+            # grep exits on the match, ss dies 141, and under `set -o pipefail`
+            # a BOUND port would be recorded as missing. No base test sets
+            # pipefail today; this stops being true the first time one does.
+            listeners=$(ss -tln 2>/dev/null)
+            while IFS= read -r line; do
+                # Bash regex, not echo|grep: two more processes per port per
+                # poll in the helper whose comment above objects to exactly that.
+                [[ "$line" =~ ^:([0-9]+)[[:space:]]*\{ ]] || continue
+                port="${BASH_REMATCH[1]}"
+                [[ "$port" != "2019" ]] || continue
+                grep -q ":${port} " <<< "$listeners" || { missing="$port"; break; }
+            done < <(grep -P '^:\d+ \{' /etc/Caddyfile)
+            # Zero declared ports is a LEGITIMATE steady state (an instance with
+            # no mapped ports produces no site blocks), which is why emptiness is
+            # discriminated above rather than here.
+            [[ -z "$missing" ]] && return 0
+            why="port ${missing} not listening"
+        fi
+        if (( SECONDS >= deadline )); then
+            echo "  WARN: caddy not ready after ${timeout}s (${why})"
+            return 1
+        fi
+        sleep 1
+    done
 }
 
 # Populate REPLY array with active external Caddy ports from Caddyfile.
@@ -317,6 +388,20 @@ wait_for_port() {
         sleep 1
     done
     return 0
+}
+
+# The umask an INTERACTIVE login shell gets — the value that is actually
+# configured (45-user-write-bashrc writes it) and that a customer's session
+# inherits. A non-interactive shell sources no rc and reports bash's 022 default,
+# so measuring it from a test process says nothing about the image.
+#
+# Extract only a line that IS a umask. That rc also prints a coloured banner
+# ("Activated conda/uv virtual environment at ..."), and a naive capture grabs
+# the banner instead of the value — which turned this check into a hard failure
+# on all 10 QA cells, after passing in a bare container where the banner never
+# fires. Echoes nothing on failure; the caller decides.
+interactive_umask() {
+    bash -ic 'umask' 2>/dev/null | grep -oE '^0[0-7]{3}$' | tail -1
 }
 
 # ── Assertions ───────────────────────────────────────────────────────
