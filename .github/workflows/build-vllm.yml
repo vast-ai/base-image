@@ -300,12 +300,19 @@ jobs:
   # SERVERLESS=true (ADR 0006, deferred pending ADR 0019's fail-not-skip work, which
   # has landed).
   #
-  # ONE cell, deliberately NOT crossed with the CUDA matrix. The serverless delta is
-  # overlay and worker wiring, orthogonal to the CUDA minor, which the standard cells
-  # already cover on every variant. Stated as a limitation rather than implied
-  # coverage: this does not certify serverless on each CUDA variant, only that the
-  # mode works on the image. It pins the first variant of the merge matrix rather
-  # than a hardcoded CUDA version so it cannot rot when upstream drops one.
+  # EVERY CUDA VARIANT, same matrix as the standard cells. ADR 0031 decision 3
+  # originally specified ONE serverless cell on the argument that the serverless
+  # delta — worker wiring and the service overlay — is orthogonal to the CUDA minor.
+  # That argument is sound and it is not the whole question: an image is promoted per
+  # variant, so a variant whose serverless mode was never booted is promoted on an
+  # inference, and "orthogonal" is exactly the kind of assumption a gate exists to
+  # stop us making. The extra GPU cell per variant is a deliberate, accepted cost.
+  #
+  # It also removes a quieter defect. The single cell derived its tag from
+  # `fromJson(merge-matrix)[0].cuda` — the FIRST matrix entry, positional rather than
+  # chosen. Which variant serverless got tested on was therefore decided by matrix
+  # ordering, and a reordering upstream would have silently moved it with nothing
+  # announcing the change. Running the whole matrix makes the question moot.
   #
   # SAME TEMPLATE AS THE STANDARD CELL, by override. A second template file would be
   # the obvious way to express "a second cell" and it is the wrong one: the two would
@@ -322,10 +329,14 @@ jobs:
   qa-serverless:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
     uses: ./.github/workflows/qa-gate.yml
     with:
       repo: ${{ inputs.DOCKERHUB_REPO || 'vllm' }}
-      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.vllm-version }}-cuda-${{ fromJson(needs.preflight.outputs.merge-matrix)[0].cuda }}-amd64
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.vllm-version }}-cuda-${{ matrix.cuda }}-amd64
       template_dir: external/vllm/templates/vllm-qa
       label: base-image-qa-vllm-serverless
       # The worker's own logs as well as the engine's: on this cell a failure is as

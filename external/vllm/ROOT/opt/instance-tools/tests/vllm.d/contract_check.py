@@ -258,6 +258,39 @@ def check_token_arithmetic(rep: Report, cli: Client, model: str) -> dict:
     return usage
 
 
+def _token_count(encoded) -> int | None:
+    """Number of prompt tokens in whatever apply_chat_template handed back.
+
+    `len()` on the raw return value is WRONG and was: newer transformers returns a
+    BatchEncoding from `tokenize=True`, and len() of that is the number of KEYS —
+    input_ids and attention_mask — so a 31-token Qwen prompt measured as 2 and the
+    check reported "the served chat template is not the model's own" against a server
+    that was entirely correct. Caught on the first serverless cell, while the
+    assertion was still advisory, which is the whole reason ADR 0031 decision 7 lands
+    new assertions that way.
+
+    Handles the four shapes the API returns across versions: a flat list of ids, a
+    batch of one (list of lists), a BatchEncoding/dict carrying input_ids, and an
+    object exposing .input_ids. Returns None rather than guessing on anything else —
+    a wrong count here is indistinguishable from a real defect.
+    """
+    ids = encoded
+    if hasattr(ids, "input_ids"):
+        ids = ids.input_ids
+    elif isinstance(ids, dict):
+        if "input_ids" not in ids:
+            return None
+        ids = ids["input_ids"]
+    if not isinstance(ids, (list, tuple)) or not ids:
+        return None
+    first = ids[0]
+    if isinstance(first, (list, tuple)):          # batch of one
+        return len(first) if len(ids) == 1 else None
+    if isinstance(first, int):
+        return len(ids)
+    return None
+
+
 def check_prompt_roundtrip(rep: Report, args, tokens: list[str], usage: dict) -> None:
     """Apply the chat template locally and assert the server counted the same.
 
@@ -299,10 +332,24 @@ def check_prompt_roundtrip(rep: Report, args, tokens: list[str], usage: dict) ->
         kwargs["trust_remote_code"] = True
     try:
         tok = AutoTokenizer.from_pretrained(ref, **kwargs)
+    except Exception as e:                                        # noqa: BLE001
+        rep.not_applicable("prompt-roundtrip", f"could not load the tokenizer ({type(e).__name__}: {e})")
+        return
+    # No template means there is nothing to compare — the server is not applying one
+    # either, so a count mismatch would say nothing about the image.
+    if not getattr(tok, "chat_template", None):
+        rep.not_applicable("prompt-roundtrip", "tokenizer declares no chat template")
+        return
+    try:
         local = tok.apply_chat_template(PROBE, add_generation_prompt=True, tokenize=True)
-        n_local = len(local)
+        n_local = _token_count(local)
     except Exception as e:                                        # noqa: BLE001
         rep.not_applicable("prompt-roundtrip", f"could not tokenize locally ({type(e).__name__}: {e})")
+        return
+    if n_local is None:
+        rep.error("prompt-roundtrip",
+                  f"apply_chat_template returned {type(local).__name__}, which this check "
+                  "cannot count — refusing to guess a token count")
         return
 
     served = usage["prompt_tokens"]

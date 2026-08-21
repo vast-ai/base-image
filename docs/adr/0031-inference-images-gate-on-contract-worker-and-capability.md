@@ -141,10 +141,24 @@ Both are ordinary on-demand rentals; the serverless one differs only by
 `SERVERLESS=true` in env. The autoscaler path itself is out of scope — this gates
 the instance-side behaviour that setting entails.
 
-**One serverless cell, not crossed with the CUDA matrix.** The serverless delta
-is overlay and worker wiring, orthogonal to the CUDA minor, which the standard
-cells already cover on every variant. Stated as a limitation rather than implied
-coverage.
+**The serverless cell runs on every CUDA variant** — the same matrix as the
+standard cells. This SUPERSEDES the original text of this decision, which
+specified one serverless cell not crossed with the matrix, on the argument that
+the serverless delta is overlay and worker wiring and therefore orthogonal to the
+CUDA minor.
+
+That argument is sound and it was not the whole question. An image is promoted
+**per variant**, so a variant whose serverless mode was never booted is promoted
+on an inference — and "orthogonal" is exactly the class of assumption a gate
+exists to stop us making. The extra GPU cell per variant is a deliberate, accepted
+cost, chosen over stating the gap as a limitation.
+
+Reversing this decision also removed a quieter defect in its implementation. The
+single cell derived its tag from `fromJson(merge-matrix)[0].cuda` — the FIRST
+matrix entry, positional rather than chosen. Which variant serverless was tested
+on was therefore decided by matrix ordering, and a reordering upstream would have
+moved it with nothing announcing the change. Running the whole matrix makes that
+question moot rather than merely documented.
 
 **One template, two cells — not two templates.** A second template file is the
 obvious way to express a second cell and it is the wrong one: the two drift, and

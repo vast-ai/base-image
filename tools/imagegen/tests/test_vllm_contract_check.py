@@ -493,3 +493,45 @@ def test_models_endpoint_down_still_marks_completion():
             return 503, "upstream down"
     code, text = run(Down())
     assert code == 2 and "CONTRACT-COMPLETE" in text, text
+
+
+# ---------------------------------------------------------------- token counting
+
+
+class _BatchEncoding(dict):
+    """What newer transformers returns from apply_chat_template(tokenize=True).
+
+    The shape that caused the false positive: it is dict-like with TWO keys, so
+    `len()` reports 2 regardless of how many tokens the prompt actually has.
+    """
+    def __init__(self, ids):
+        super().__init__(input_ids=ids, attention_mask=[1] * len(ids))
+        self.input_ids = ids
+
+
+def test_token_count_reads_input_ids_not_the_container_length():
+    """THE bug, measured live: a 31-token Qwen prompt counted as 2 — the number of
+    KEYS in the BatchEncoding — and the check reported 'the served chat template is
+    not the model's own' against a server that was completely correct."""
+    ids = list(range(31))
+    assert len(_BatchEncoding(ids)) == 2          # the trap, pinned
+    assert cc._token_count(_BatchEncoding(ids)) == 31
+
+
+def test_token_count_handles_a_flat_list():
+    assert cc._token_count([5, 6, 7]) == 3
+
+
+def test_token_count_handles_a_batch_of_one():
+    assert cc._token_count([[5, 6, 7]]) == 3
+
+
+def test_token_count_handles_a_plain_dict():
+    assert cc._token_count({"input_ids": [1, 2, 3, 4], "attention_mask": [1, 1, 1, 1]}) == 4
+
+
+def test_token_count_refuses_to_guess():
+    """Returning a wrong number is indistinguishable from a real defect, so an
+    unrecognised shape must decide nothing rather than decide wrongly."""
+    for bad in (None, "31 tokens", {}, {"attention_mask": [1]}, [], [[1], [2]], [object()]):
+        assert cc._token_count(bad) is None, bad
