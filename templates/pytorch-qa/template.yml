@@ -121,12 +121,33 @@ extra_filters:
     gte: 0.95
   # A host that forwards very few ports is usually proxied/VPN-fronted, and
   # those pull images pathologically slowly even when they ADVERTISE fast links.
-  # That is why this is a port floor and not an inet_down floor: measured across
+  # That is why the inet_down floor above does not REPLACE this one: measured across
   # 930 live offers at these same floors, hosts with <8 forwardable ports still
-  # advertised a median 253 Mbps, so a bandwidth floor would not have excluded
-  # them. Reported bandwidth is a claim; port count is structural.
+  # advertised a median 253 Mbps, so a bandwidth floor alone would not have excluded
+  # them. Reported bandwidth is a claim; port count is structural. The two are
+  # complementary — this covers the overstated link, inet_down the honestly slow one.
   #
   # DIRECTION: a LOWER bound. An `lte` would select FOR the hosts this avoids.
+  # Bandwidth floor. The cell pulls a multi-GB image before a single test can run,
+  # and that pull sits inside the launch window the client bounds with poll_timeout —
+  # so a slow link does not merely make the run late, it can burn the whole attempt
+  # and force a redraw (ADR 0029) on a host that had nothing wrong with the image.
+  #
+  # Measured against the live pool matching these same floors: median ~900 Mbps, but
+  # the bottom decile advertises 326-524 and the slowest offer 34 Mbps. At 34 Mbps a
+  # ~25 GB image is over an hour of pull before the suite starts; 500 bounds it to
+  # single-digit minutes and still keeps 65-88% of the pool depending on the template.
+  #
+  # This is COMPLEMENTARY to direct_port_count, not a replacement — the two exclude
+  # different failures, and neither subsumes the other. Advertised bandwidth is a
+  # claim, so this floor cannot catch a host that overstates its link; the port floor
+  # is what covers that. What this floor catches is the host that is honestly slow,
+  # which the port floor does not look at.
+  #
+  # DIRECTION: a LOWER bound. Tunable: raise toward 1000 if pulls still drag, at the
+  # cost of roughly two thirds of the offer pool.
+  inet_down:
+    gte: 500                      # Mbps
   direct_port_count:
     gte: 64
   # THE DISK FLOOR THAT ACTUALLY FILTERS, and it is NOT about image size.

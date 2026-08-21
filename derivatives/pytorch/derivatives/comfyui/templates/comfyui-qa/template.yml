@@ -56,4 +56,30 @@ extra_filters:
     gte: 13.2                     # host driver must satisfy the newer matrix variant (cuda-13.2)
   gpu_total_ram:
     gte: 8192                     # 8 GB floor (SD1.5 + headroom); selection bounds to [8,24] GB
+  # Bandwidth floor. The cell pulls a multi-GB image before a single test can run,
+  # and that pull sits inside the launch window the client bounds with poll_timeout —
+  # so a slow link does not merely make the run late, it can burn the whole attempt
+  # and force a redraw (ADR 0029) on a host that had nothing wrong with the image.
+  #
+  # Measured against the live pool matching these same floors: median ~900 Mbps, but
+  # the bottom decile advertises 326-524 and the slowest offer 34 Mbps. At 34 Mbps a
+  # ~25 GB image is over an hour of pull before the suite starts; 500 bounds it to
+  # single-digit minutes and still keeps 65-88% of the pool depending on the template.
+  #
+  # This is COMPLEMENTARY to direct_port_count, not a replacement — the two exclude
+  # different failures, and neither subsumes the other. Advertised bandwidth is a
+  # claim, so this floor cannot catch a host that overstates its link; the port floor
+  # is what covers that. What this floor catches is the host that is honestly slow,
+  # which the port floor does not look at.
+  #
+  # DIRECTION: a LOWER bound. Tunable: raise toward 1000 if pulls still drag, at the
+  # cost of roughly two thirds of the offer pool.
+  inet_down:
+    gte: 500                      # Mbps
+  # Host-networking floor, matching base-qa and pytorch-qa. See the longer note in
+  # templates/base-qa/template.yml for the measurement behind the value.
+  #
+  # DIRECTION: a LOWER bound. An `lte` here would select FOR the hosts it excludes.
+  direct_port_count:
+    gte: 64
 recommended_disk_space: 40.0      # ComfyUI image + 2.1 GB SD1.5 checkpoint + workspace
