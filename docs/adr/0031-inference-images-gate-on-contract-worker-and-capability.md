@@ -134,7 +134,7 @@ double-add — the one defect class in this family that has real precedent.
 The QA model is additionally pinned by `--revision`, because `VLLM_MODEL` names a
 floating third-party ref today.
 
-### 3. Two cells, both on-demand
+### 3. Two cells, both on-demand, from ONE template
 
 A serverless-capable image gets a **standard** cell and a **serverless** cell.
 Both are ordinary on-demand rentals; the serverless one differs only by
@@ -145,6 +145,50 @@ the instance-side behaviour that setting entails.
 is overlay and worker wiring, orthogonal to the CUDA minor, which the standard
 cells already cover on every variant. Stated as a limitation rather than implied
 coverage.
+
+**One template, two cells — not two templates.** A second template file is the
+obvious way to express a second cell and it is the wrong one: the two drift, and
+the only difference that matters stops being visible in the diff. The serverless
+cell overrides `SERVERLESS=true` and the worker env at launch. This required one
+fix in the client: `test_template.py` detected serverless from the TEMPLATE's env
+and onstart only, so a cell whose flag arrives as an override launched with
+`is_serverless` false. That happened to be harmless solely because the vLLM QA
+template already carries `OPEN_BUTTON_TOKEN=1` — it worked by coincidence, not by
+rule. An override *is* the instance's environment and is now read as such.
+
+**The gated path is the SUPERVISOR path.** There are two ways a worker gets onto
+a box, and the distinction was invisible until this cell was built:
+
+- **supervisor path** — `onstart: entrypoint.sh`, `SERVERLESS=true` as the
+  trigger, and base `pyworker.sh` performs the bootstrap as a supervisord
+  program. Every new template uses this.
+- **onstart-curl path** — `onstart: entrypoint.sh & ; curl .../start_server.sh | bash`,
+  which every *shipped* serverless template uses today. It stays supported for
+  backwards compatibility and is **not** what this gate exercises. Recorded as a
+  coverage limitation, not implied coverage.
+
+This distinction was not academic. `pyworker.sh` explicitly stands down when it
+sees `start_server.sh` referenced in `/root/onstart.sh`, so on the legacy path the
+supervisord program is `EXITED` **by design** — and the pre-existing test opened
+with `assert_service_running pyworker`, which would have failed on the exact path
+every shipped serverless template takes. Because that test had never executed
+anywhere, nothing said so. The assertions are therefore written to hold on either
+path: the supervisord state is REPORTED, and what is asserted is that something
+serves `:3000` and reached a score.
+
+**The serverless cell needs a read-only `HF_TOKEN` secret.** `start_server.sh`
+aborts with `HF_TOKEN must be set when BACKEND is set!` before it ever reaches the
+worker, and a cell that dies in the bootstrap decides nothing. It is passed to
+`qa-gate.yml` as a *secret* rather than through `extra_env`, so it is registered
+for log masking and never appears in an input that is plain text in the caller's
+YAML.
+
+**The serverless cell lands advisory.** It is deliberately absent from
+`merge-manifests`' `needs`, so a red alerts without blocking a promote — decision
+7's ramp applied to the cell itself, which matters most here because this mode has
+never executed anywhere and its first runs are as likely to find harness gaps as
+image defects. Adding the job to that `needs` list after two consecutive green runs
+is the single line that makes it gating.
 
 ### 4. The worker assertion is the score, not the process
 

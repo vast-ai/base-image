@@ -141,6 +141,16 @@ on:
         required: false
       SLACK_WEBHOOK_URL:
         required: false
+      HF_TOKEN:
+        description: >-
+          Optional READ-ONLY HuggingFace token, appended to the instance env as
+          HF_TOKEN when present. Passed as a secret rather than through extra_env so
+          it is registered for log masking and never appears in the argument list a
+          run step echoes. Only callers that need it pass it: the serverless cell
+          does, because pyworker's start_server.sh aborts with
+          "HF_TOKEN must be set when BACKEND is set!" before it ever reaches the
+          worker, and a cell that dies in the bootstrap decides nothing.
+        required: false
     outputs:
       gated:
         description: "true if the live QA test actually ran (VAST_API_KEY present); false = advisory-skipped. Identical across matrix cells (repo-secret driven), so relaying it via needs.qa.outputs is matrix-safe — unlike a per-cell verdict."
@@ -238,10 +248,15 @@ jobs:
           QA_REPO: ${{ inputs.repo }}
           QA_TAG: ${{ inputs.tag }}
           EXTRA_ENV: ${{ inputs.extra_env }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           ARGS=()
           for p in ${LOG_PATHS}; do ARGS+=(--log "$p"); done
           while IFS= read -r kv; do [ -n "$kv" ] && ARGS+=(--env "$kv"); done <<< "${EXTRA_ENV}"
+          # Appended here rather than folded into extra_env by the caller: a secret
+          # reaching the instance must not travel through an input, which is plain
+          # text in the caller's YAML and in the job's own `with` context.
+          [ -n "${HF_TOKEN:-}" ] && ARGS+=(--env "HF_TOKEN=${HF_TOKEN}")
           if [ "${{ inputs.require_floor }}" = "true" ]; then ARGS+=(--require-floor); fi
 
           # Retry ANY failure except config_error (4) and interrupted (130), and

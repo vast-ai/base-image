@@ -292,6 +292,68 @@ jobs:
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
+  # Serverless cell (ADR 0031 decision 3). An ordinary on-demand rental that differs
+  # from the standard cells ONLY by SERVERLESS=true and the worker env that entails —
+  # the autoscaler path itself is out of scope; what this gates is the instance-side
+  # behaviour that setting the flag produces. Until this ran, vllm.d/20-serverless-pyworker
+  # and base/85-serverless-services had executed ZERO times, anywhere: no template set
+  # SERVERLESS=true (ADR 0006, deferred pending ADR 0019's fail-not-skip work, which
+  # has landed).
+  #
+  # ONE cell, deliberately NOT crossed with the CUDA matrix. The serverless delta is
+  # overlay and worker wiring, orthogonal to the CUDA minor, which the standard cells
+  # already cover on every variant. Stated as a limitation rather than implied
+  # coverage: this does not certify serverless on each CUDA variant, only that the
+  # mode works on the image. It pins the first variant of the merge matrix rather
+  # than a hardcoded CUDA version so it cannot rot when upstream drops one.
+  #
+  # SAME TEMPLATE AS THE STANDARD CELL, by override. A second template file would be
+  # the obvious way to express "a second cell" and it is the wrong one: the two would
+  # drift, and the only difference that matters would stop being visible in the diff.
+  #
+  # IT DOES NOT GATE YET, and that is the ADR 0006 condition 2 ramp, not an oversight.
+  # `merge-manifests` deliberately does NOT list this job in `needs`, so a red here
+  # alerts (qa-gate fires a per-cell Slack alert) without blocking a promote. Add it
+  # to that `needs` list after two consecutive green runs — one line, and the only
+  # thing standing between advisory and gating.
+  qa-serverless:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'vllm' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.vllm-version }}-cuda-${{ fromJson(needs.preflight.outputs.merge-matrix)[0].cuda }}-amd64
+      template_dir: external/vllm/templates/vllm-qa
+      label: base-image-qa-vllm-serverless
+      # The worker's own logs as well as the engine's: on this cell a failure is as
+      # likely to be the upstream bootstrap as the image, and ADR 0031 decision 5
+      # requires that the two be distinguishable from the run output alone.
+      log_paths: "/var/log/portal/vllm.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
+      # BACKEND=openai selects pyworker's workers/openai/worker.py, which hardcodes
+      # THIS image's internals — MODEL_SERVER_PORT 18000, /var/log/portal/vllm.log,
+      # and the supervisord strings "INFO exited: vllm" — with no test on either
+      # side until now. MODEL_NAME is not decoration: the benchmark generator raises
+      # ValueError("MODEL_NAME environment variable not set") and no score is ever
+      # written, so it must equal the served id exactly.
+      # INSTANCE_TEST_REQUIRE_PASS is overridden rather than widened in the template,
+      # because 20-serverless-pyworker is inert (is_serverless) on the standard cells
+      # and requiring it there would demand a pass from a test with nothing to assert.
+      extra_env: |
+        SERVERLESS=true
+        BACKEND=openai
+        MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
+        MODEL_LOG=/var/log/portal/vllm.log
+        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/20-serverless-pyworker
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/20-serverless-pyworker"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
+      # Read-only token — the worker only pulls the tiny QA model.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
   merge-manifests:
     needs: [preflight, build, qa]
     if: needs.preflight.outputs.should-run == 'true'
@@ -374,7 +436,7 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, qa, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, qa-serverless, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
@@ -383,7 +445,14 @@ jobs:
       # build broke vs QA caught a bad image vs promotion (crane) failed. Empty on
       # success -> notify-slack renders the default "✅ ... Successful". (Soft-pass
       # is a separate ⚠️ alert fired per-cell inside qa-gate.yml.)
-      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
+      #
+      # The serverless clause sits AFTER promotion succeeded and says "promoted"
+      # first, because that cell does not gate yet: without it a red serverless cell
+      # marks the whole run failed while merge-manifests promoted the image, and the
+      # Slack line would read "promoted — QA passed" beside a failed run. Saying both
+      # is the honest report; hiding either is not. Delete this clause when the cell
+      # joins merge-manifests' `needs` and becomes blocking.
+      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'vLLM promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM"
       image-ref: ${{ needs.preflight.outputs.vllm-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

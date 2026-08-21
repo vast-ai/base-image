@@ -1371,6 +1371,27 @@ def parse_args():
         sys.exit(EXIT_CONFIG_ERROR)
 
 
+def detect_serverless(template: dict, env_overrides=()) -> bool:
+    """True if this launch will run in serverless mode.
+
+    Three places the flag can come from, and the third is the one that was missing.
+    An `--env SERVERLESS=true` override IS the instance's environment: the QA gate
+    runs the standard and serverless cells from ONE template so the two cannot drift
+    apart, which means the serverless cell's flag can only arrive as an override.
+    Reading the template alone made that cell launch with is_serverless False and
+    skip the OPEN_BUTTON_TOKEN override, which happened to be harmless only because
+    the vLLM QA template already carries OPEN_BUTTON_TOKEN=1 — it worked by
+    coincidence rather than by rule (ADR 0031 decision 3).
+
+    Substring, not a parse, because the two template fields are opaque strings in
+    the platform's own format ("-e SERVERLESS=true", "export SERVERLESS=true").
+    """
+    haystacks = [template.get("env", "") or "",
+                 template.get("onstart", "") or ""]
+    haystacks.extend(env_overrides or ())
+    return any("SERVERLESS=true" in h for h in haystacks)
+
+
 def main():
     global _RAW_MODE
     args = parse_args()
@@ -1413,12 +1434,10 @@ def main():
             f"Use --force to override")
         emit_outcome("config_error", EXIT_CONFIG_ERROR, reason="non-vastai image")
 
-    # Detect serverless templates — SERVERLESS=true appears in the env string
-    # (e.g. "-e SERVERLESS=true") or in onstart (e.g. "export SERVERLESS=true").
-    template_env = template.get("env", "") or ""
-    template_onstart = template.get("onstart", "") or ""
-    is_serverless = ("SERVERLESS=true" in template_env
-                     or "SERVERLESS=true" in template_onstart)
+    # Template env, template onstart, or an --env override — see detect_serverless.
+    # The override case is load-bearing: the QA gate runs both cells from one
+    # template, so the serverless flag can only arrive that way (ADR 0031).
+    is_serverless = detect_serverless(template, args.env)
 
     try:
         extra_filters = _coerce_extra_filters(template.get("extra_filters", "{}"))
