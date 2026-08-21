@@ -125,20 +125,58 @@ def test_evidence_upload_runs_even_when_the_cell_blocked():
     )
 
 
-# --- the existing consumers, unchanged -------------------------------------
+# --- adding an input must not change a caller that ignores it ---------------
+#
+# This replaces a test that asserted NO existing caller passed any of the ADR 0019
+# inputs. That was the right guard for its moment: it made "the defaults preserve
+# behaviour" a complete argument rather than a partial one, and its failure message
+# said to re-validate the gate before relying on that argument. ADR 0031 is that
+# re-validation — build-vllm.yml and build-comfyui.yml now pass `require_tests` and
+# `retries` deliberately, proven on live cells.
+#
+# The caller-side assertion had to go because it decayed by design: every legitimate
+# opt-in broke it, so it would have been deleted eventually with no replacement. The
+# invariant underneath it does not decay, and is checked directly instead — an input
+# added to qa-gate.yml defaults to the behaviour that existed before it.
+
+BEHAVIOUR_PRESERVING_DEFAULTS = {
+    "require_key": False,      # advisory-skip on a missing key, as before ADR 0019
+    "require_tests": "",       # no name required to have passed
+    "retries": 0,              # one attempt
+    "evidence_name": "",       # no artifact uploaded
+}
+
+
+@pytest.mark.parametrize("name,expected", sorted(BEHAVIOUR_PRESERVING_DEFAULTS.items()))
+def test_new_inputs_default_to_prior_behaviour(name, expected):
+    """A caller that ignores an input must behave exactly as it did before the input
+    existed. This is what lets qa-gate.yml grow without re-validating every gate."""
+    data = yaml.safe_load((REPO / ".github/workflows/qa-gate.yml").read_text())
+    # PyYAML resolves the bare `on:` key to the boolean True.
+    trigger = data[True] if True in data else data["on"]
+    inputs = trigger["workflow_call"]["inputs"]
+    assert name in inputs, f"{name} is gone — a caller relying on its default now behaves differently"
+    assert inputs[name].get("default") == expected, (
+        f"{name} defaults to {inputs[name].get('default')!r}, not {expected!r} — changing a "
+        "default silently changes every caller that does not pass it"
+    )
+
 
 @pytest.mark.parametrize("caller", ["build-vllm.yml", "build-comfyui.yml"])
-def test_existing_callers_pass_none_of_the_new_inputs(caller):
-    """If a caller ever needs one it can opt in — but today neither does, which is
-    what makes 'defaults preserve behaviour' a complete argument rather than a
-    partial one."""
+def test_a_caller_that_opts_into_require_tests_names_something(caller):
+    """Opting in with an empty value is worse than not opting in: it reads as a gate
+    in the diff and asserts nothing at runtime. The same trap L057 closes on the
+    template side, checked here on the caller side."""
     data = yaml.safe_load((REPO / ".github/workflows" / caller).read_text())
+    seen = False
     for job in data["jobs"].values():
         if "qa-gate.yml" not in (job.get("uses") or ""):
             continue
-        passed = set(job.get("with") or {})
-        new = {"require_key", "require_tests", "retries", "retry_delay", "evidence_name"}
-        assert not (passed & new), (
-            f"{caller} now passes {passed & new} — re-validate that gate before relying "
-            f"on the 'existing consumers are untouched' argument"
+        with_ = job.get("with") or {}
+        if "require_tests" not in with_:
+            continue
+        seen = True
+        assert str(with_["require_tests"]).split(), (
+            f"{caller} passes an empty require_tests — that is a gate in name only"
         )
+    assert seen, f"{caller} no longer passes require_tests — its gate lost its fail-not-skip half"

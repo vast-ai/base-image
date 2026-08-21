@@ -117,6 +117,11 @@ fi
 
 # ── Jupyter ──────────────────────────────────────────────────────────
 
+# Env-overridable like the readiness budgets in lib.sh: this suite ships INSIDE the
+# image, so a baked-in wrong number can only be corrected by rebuilding and
+# re-promoting, while behind a variable it is a template edit (ADR 0029).
+JUPYTER_READY_TIMEOUT="${JUPYTER_READY_TIMEOUT:-60}"
+
 check_jupyter_functional() {
     local port="$1"
     local label="$2"
@@ -138,12 +143,38 @@ check_jupyter_functional() {
         token_param="?token=${JUPYTER_TOKEN}"
     fi
 
-    # Root page — follows redirects (jupyter redirects / → /lab or /tree)
-    body=$(curl -s $curl_opts "${base_url}/${token_param}" 2>/dev/null)
+    # Root page — follows redirects (jupyter redirects / → /lab or /tree).
+    #
+    # BOUNDED WAIT, not a single probe, because presence is not readiness (ADR 0029).
+    # The caller's gate is `pgrep` plus a bound port, and both are satisfied the
+    # instant jupyter starts listening — which is before it serves. A single 5s curl
+    # then races startup.
+    #
+    # Measured on the first serverless cell ever run: base/65 found NO jupyter
+    # process, and base/67 one second later found the port bound and `/` empty, so
+    # the whole cell failed and ADR 0030's phase gate then refused to start the
+    # derivative phase. The standard cells passed the identical check on the
+    # identical template, because there jupyter had been up since boot and answered
+    # first time. Same image, same template — the only variable was WHEN jupyter came
+    # up, which is the definition of a race rather than a defect.
+    local deadline=$(( SECONDS + JUPYTER_READY_TIMEOUT ))
+    local body=""
+    while :; do
+        body=$(curl -s $curl_opts "${base_url}/${token_param}" 2>/dev/null)
+        [[ -n "$body" ]] && break
+        (( SECONDS >= deadline )) && break
+        sleep 2
+    done
     if [[ -n "$body" ]]; then
         echo "  jupyter (${label}): / returns content"
     else
-        fail_later "jupyter" "/ returned empty response on port ${port}"
+        # Name the process holding the port. "empty response" alone cannot
+        # distinguish jupyter-not-ready from something-else-is-bound, and that
+        # ambiguity cost a full cell to resolve from logs after the fact.
+        local owner
+        owner=$(ss -tlnpH 2>/dev/null | awk -v p=":${port}$" '"'"'$4 ~ p'"'"' | head -1)
+        echo "  listener on ${port}: ${owner:-<none>}"
+        fail_later "jupyter" "/ returned empty response on port ${port} after ${JUPYTER_READY_TIMEOUT}s"
         return
     fi
 

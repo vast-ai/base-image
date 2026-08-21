@@ -228,6 +228,31 @@ themselves as running after provisioning were racing it. **L065**
 `ROOT/opt/instance-tools/tests/**` and the derivative/external overlays;
 `lib.sh` is exempt because it is sourced, not executed.
 
+### A gating template requires the image's own suite — **GATED (L057, L072)**
+
+**L057** was base-only from ADR 0019 until 2026-08-21, on the stated grounds that
+widening it had to re-validate two live, currently-passing gates rather than turn
+them red from a linter. ADR 0031 is that re-validation, and the scope is now the
+gate *wiring* rather than the image class: a template is gating iff some workflow
+hands it to `qa-gate.yml` as `template_dir:`. That is read from the workflows, not
+from the template's name, because the generator points the gate at
+`templates/default` (ADR 0010/0011 — the template users launch IS the template QA
+boots), so a `*-qa` name match would exempt precisely the images with no separate
+QA template. A `${{ }}` expression is skipped rather than guessed at.
+
+**L072** closes the level above it. The GPU trio is inherited from base and is the
+same three names on every image, so a template that names only the trio has a gate
+certifying that the *rented box* has a working GPU while asserting nothing about
+the app the image exists to ship. Measured on the case that prompted ADR 0031:
+`vllm.d/10-vllm-serving.sh` opens `[[ -n "${VLLM_MODEL:-}" ]] || test_skip`, so
+dropping one env var from the template deletes every vLLM assertion at once and
+the image promotes green — and `build-vllm.yml` passed no `require_tests` either,
+so *neither* of the two enforcement layers would have caught it. Scoped to images
+that ship an own suite: a suite dir is a subdirectory of the image's
+`ROOT/opt/instance-tools/tests/` holding at least one `NN-*.sh`, which excludes
+`exposure-allowlist/` (`.conf` data) without a name blocklist. An image whose only
+tests are base's inherits base's coverage and owes nothing extra.
+
 ### A required test must be able to fail — **GATED (L059)**
 
 L057 makes a gating QA template *name* the tests that must have PASSED. This
@@ -238,8 +263,9 @@ nothing. Not hypothetical — `base/62-gpu-libraries.sh` was in base-qa's
 require-pass set with every branch an `echo`/`WARN` and zero `fail_later` calls,
 so the third of three gating tests asserted exactly `has_gpu`, which the other
 two already assert. **L059** (`check_required_tests_can_fail`) resolves each name
-in `INSTANCE_TEST_REQUIRE_PASS` against the base overlay and each derivative
-tests dir, and requires at least one real `test_fail`/`fail_later` **call** — a
+in `INSTANCE_TEST_REQUIRE_PASS` against the base overlay and every derivative
+**and external** tests dir, and requires at least one real
+`test_fail`/`fail_later` **call** — a
 mention in a comment does not count, which is exactly how the defect hid.
 Deliberately weak: it asserts a failure path *exists*, not that it is a good one.
 Whether a test can fail at all is decidable by reading the file; whether it fails

@@ -177,6 +177,17 @@ jobs:
       log_paths: "/var/log/portal/comfyui.log /var/log/portal/api-wrapper.log"
       # SHA-pinned so the QA box provisions the workflow on the ref under test.
       extra_env: "PROVISIONING_COMFYUI_WORKFLOWS=https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json"
+      # CI-side half of the template's INSTANCE_TEST_REQUIRE_PASS (ADR 0019/0031).
+      # Declared in BOTH places on purpose: the runner enforces it in-instance, and
+      # this enforces it against the verdict payload, so a template edit that drops
+      # the env var still cannot produce a passing gate.
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries comfyui.d/10-comfyui-serving"
+      # ADR 0029 condition 5: the redraw rule is not forked per image. This gate ran
+      # retries: 0 while base and pytorch ran 2, so a bad host red here blocked a
+      # promote that the same image would have survived on any other image's gate.
+      # A real defect still blocks — it fails every draw — and each failed attempt
+      # records its machine and excludes it from the next.
+      retries: 2
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}

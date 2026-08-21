@@ -37,6 +37,16 @@ env:
   OPEN_BUTTON_TOKEN: "1"
   JUPYTER_DIR: "/"
   DATA_DIRECTORY: "/workspace/"
+  # Required-pass gate (ADR 0019, widened to this template by ADR 0031). The GPU
+  # trio self-skips when nvidia-smi or libcuda never came up, and
+  # `comfyui.d/10-comfyui-serving` self-skips three ways — no GPU, no payloads
+  # directory, no API-format workflows in it. The last two are the ones that bite
+  # here: this gate's whole subject is the workflow POSTed through the API wrapper,
+  # and if provisioning silently fetched nothing, the test skips and the suite
+  # reports green over an image that generated no image. Enforced twice — by the
+  # runner in-instance and by qa_verdict.py in CI, via the matching `require_tests`
+  # in build-comfyui.yml. Gated by linter rules L057 and L072.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries comfyui.d/10-comfyui-serving"
   PROVISIONING_COMFYUI_WORKFLOWS: "https://raw.githubusercontent.com/vast-ai/base-image/main/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json"
 # QA gate floors (ADR 0005): smallest viable box at/above these, VRAM bounded 3x.
 extra_filters:
@@ -46,4 +56,30 @@ extra_filters:
     gte: 13.2                     # host driver must satisfy the newer matrix variant (cuda-13.2)
   gpu_total_ram:
     gte: 8192                     # 8 GB floor (SD1.5 + headroom); selection bounds to [8,24] GB
+  # Bandwidth floor. The cell pulls a multi-GB image before a single test can run,
+  # and that pull sits inside the launch window the client bounds with poll_timeout —
+  # so a slow link does not merely make the run late, it can burn the whole attempt
+  # and force a redraw (ADR 0029) on a host that had nothing wrong with the image.
+  #
+  # Measured against the live pool matching these same floors: median ~900 Mbps, but
+  # the bottom decile advertises 326-524 and the slowest offer 34 Mbps. At 34 Mbps a
+  # ~25 GB image is over an hour of pull before the suite starts; 500 bounds it to
+  # single-digit minutes and still keeps 65-88% of the pool depending on the template.
+  #
+  # This is COMPLEMENTARY to direct_port_count, not a replacement — the two exclude
+  # different failures, and neither subsumes the other. Advertised bandwidth is a
+  # claim, so this floor cannot catch a host that overstates its link; the port floor
+  # is what covers that. What this floor catches is the host that is honestly slow,
+  # which the port floor does not look at.
+  #
+  # DIRECTION: a LOWER bound. Tunable: raise toward 1000 if pulls still drag, at the
+  # cost of roughly two thirds of the offer pool.
+  inet_down:
+    gte: 500                      # Mbps
+  # Host-networking floor, matching base-qa and pytorch-qa. See the longer note in
+  # templates/base-qa/template.yml for the measurement behind the value.
+  #
+  # DIRECTION: a LOWER bound. An `lte` here would select FOR the hosts it excludes.
+  direct_port_count:
+    gte: 64
 recommended_disk_space: 40.0      # ComfyUI image + 2.1 GB SD1.5 checkpoint + workspace
