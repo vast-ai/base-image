@@ -1,4 +1,19 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-06-15
+# torch 2.8.0, NOT the 2.7.1 its siblings use, and not a free choice. Whisper-WebUI
+# v1.0.8 — the release this image builds — declares in requirements.txt
+#
+#     torchaudio>=2.8.0,<2.9.0
+#
+# and the strip below removes that line, because the pytorch base is the single
+# source of truth for the torch ecosystem. So the pin was silently unsatisfied: the
+# 2.7.1 base ships torchaudio 2.7.1, BELOW upstream's floor, and the drift-guard at
+# the end of the RUN then dutifully asserted that nothing had changed. Stripping a
+# constraint moves the obligation to this line; it does not discharge it.
+#
+# 2.8.0 satisfies the range exactly (torch-companions.json: 2.8.0 -> torchaudio
+# 2.8.0). The UPPER bound is real too — upstream master carries
+# "# 2.9 deprecates used functions" against it — so this is a fixed point, not a
+# floor to raise later: do not move it to 2.9.x without re-reading upstream.
+ARG PYTORCH_BASE=vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py312-2026-08-21
 
 FROM ${PYTORCH_BASE}
 

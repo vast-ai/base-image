@@ -16,7 +16,7 @@ example below pins a tag for a reproducible local build; pass any commit/branch/
 ```bash
 docker buildx build \
     --platform linux/amd64 \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-06-15 \
+    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-08-21 \
     --build-arg OOBABOOGA_REF=v4.9 \
     . -t repo/image:tag --push
 ```
