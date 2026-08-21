@@ -33,6 +33,24 @@ ports:
   - "8080:8080"                   # Jupyter
   - "8000:8000"                   # vLLM API
   - "8265:8265"                   # Ray Dashboard (ray.sh gates on this portal entry)
+  # The serverless worker's port, MANDATORY for the serverless cell rather than
+  # decorative. The platform injects VAST_TCP_PORT_<n> only for ports a template
+  # MAPS, and the pyworker SDK does an unguarded lookup of exactly that:
+  #
+  #     worker_port = os.environ[f"VAST_TCP_PORT_{os.environ['WORKER_PORT']}"]
+  #
+  # (vastai/serverless/server/lib/metrics.py). With 3000 unmapped that is a KeyError
+  # in Metrics() during Backend construction — measured live on the first serverless
+  # cell ever run: `KeyError: 'VAST_TCP_PORT_3000'`, `PyWorker exited with status 1`,
+  # before it bound the port or ran a benchmark.
+  #
+  # This is L068's defect from the other side of the boundary: L068 gates OUR scripts
+  # against interpolating an unset VAST_TCP_PORT_*, and cannot see an upstream SDK
+  # doing the same lookup. Here it at least fails loudly. Gated by L073.
+  #
+  # Harmless on the standard cells: nothing binds 3000 there, and base/28 scans
+  # LISTENERS rather than mappings, so an unused mapping is not an exposure.
+  - "3000:3000"                   # serverless worker (pyworker)
 env:
   OPEN_BUTTON_PORT: "1111"
   OPEN_BUTTON_TOKEN: "1"

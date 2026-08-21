@@ -2352,3 +2352,97 @@ def test_mut_the_shipped_syncthing_reconciles_and_guards(tmp_path):
     assert 'no direct TCP listener' in body, (
         "when the port is unmapped the script must configure no listener and say "
         "so, rather than silently binding a default that cannot receive")
+
+
+# ---- L073: a serverless gate's template must map the worker port (ADR 0031) ----
+
+
+def _wire_serverless_gate(repo, template_dir, extra_env="SERVERLESS=true\nBACKEND=openai\n"):
+    """A qa-gate caller that turns serverless ON, the way build-vllm.yml's does."""
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n"
+        "  qa:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: " + template_dir + "\n"
+        "  qa-serverless:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: " + template_dir + "\n"
+        "      extra_env: |\n"
+        + "".join(f"        {ln}\n" for ln in extra_env.strip().splitlines()))
+
+
+def _tpl_with_ports(img, ports):
+    body = "name: QA\nimage: vastai/x\n"
+    if ports is not None:
+        body += "ports:\n" + "".join(f'  - "{p}"\n' for p in ports)
+    _write_template(img, body + _FLOORS)
+
+
+def test_L073_serverless_gate_without_the_worker_port_fires(tmp_path):
+    """THE mutation, and it is the defect as measured. The platform injects
+    VAST_TCP_PORT_<n> only for MAPPED ports, and the SDK looks it up unguarded:
+    with 3000 unmapped the worker died `KeyError: 'VAST_TCP_PORT_3000'` inside
+    Metrics(), before binding the port or running a benchmark."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111", "8080:8080"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa")
+    assert has(img, tmp_path, "L073", "does not map port 3000")
+
+
+def test_L073_mapping_the_worker_port_is_clean(tmp_path):
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111", "3000:3000"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa")
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_does_not_fire_when_no_gate_enables_serverless(tmp_path):
+    """A template is never asked to map a port for a mode it is not run in. This is
+    what keeps the rule off every non-serverless QA template in the repo."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111"])
+    _wire_gate(tmp_path, "img/templates/qa")          # plain gate, no SERVERLESS
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_reads_the_worker_port_from_the_caller(tmp_path):
+    """WORKER_PORT is what the SDK interpolates, so a gate that moves it moves the
+    obligation with it — a hardcoded 3000 would check the wrong port silently."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["3000:3000"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa",
+                          "SERVERLESS=true\nWORKER_PORT=3100\n")
+    assert has(img, tmp_path, "L073", "does not map port 3100")
+
+
+def test_L073_pairs_extra_env_with_its_OWN_template_dir(tmp_path):
+    """The pair that matters is (template_dir, extra_env) on the SAME job. A workflow
+    with a standard `qa` and a `qa-serverless` — which build-vllm.yml has — would fool
+    any rule that grepped the file for SERVERLESS=true and a template_dir separately."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111"])
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n"
+        "  qa:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: img/templates/qa\n"
+        "  qa-serverless:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: img/templates/somewhere-else\n"
+        "      extra_env: |\n        SERVERLESS=true\n")
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_accepts_a_bare_port(tmp_path):
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["3000"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa")
+    assert "L073" not in errs(img, tmp_path)

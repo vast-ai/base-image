@@ -77,6 +77,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L072", ERROR, "A gating QA template's env.INSTANCE_TEST_REQUIRE_PASS names at least one test from the image's OWN suite (ROOT/opt/instance-tools/tests/<name>.d/), not only the GPU trio it inherits from base. L057 gets the declaration written; this closes the level above it. The trio is the same three names on every image, so a template that stops there has a gate certifying that the RENTED BOX has a working GPU while asserting nothing about the app the image exists to ship. Measured on vLLM, which prompted ADR 0031: `vllm.d/10-vllm-serving.sh` opens `[[ -n \"${VLLM_MODEL:-}\" ]] || test_skip`, so dropping one env var from the template deletes every vLLM assertion at once and the image promotes green — and build-vllm.yml passed no `require_tests`, so neither of the two enforcement layers would have caught it. ADR 0005 named that exact file as the canonical skip-as-pass hole in June 2026; base and pytorch closed it and vLLM did not, for fourteen months. Scoped to images that actually ship an own suite — an image whose only tests are base's inherits base's coverage and owes nothing extra (ADR 0031)"),
+    ("L073", ERROR, "A QA template booted by a gate that sets SERVERLESS=true MAPS the serverless worker port (WORKER_PORT, default 3000). The platform injects VAST_TCP_PORT_<n> ONLY for ports a template maps, and the pyworker SDK looks that variable up without a guard — `worker_port = os.environ[f\"VAST_TCP_PORT_{os.environ['WORKER_PORT']}\"]` in vastai/serverless/server/lib/metrics.py — so an unmapped port is a KeyError inside Metrics() during Backend construction. Measured live on the first serverless cell ever run: `KeyError: 'VAST_TCP_PORT_3000'` and `PyWorker exited with status 1`, before the worker bound the port or ran a benchmark. This is L068's defect from the other side of the boundary: L068 gates OUR scripts against interpolating an unset VAST_TCP_PORT_*, and by construction cannot see an upstream SDK doing the same lookup on an artifact this repo does not build — so the obligation moves to the template, which is the one side we control. Scoped to gates that actually enable serverless, read from the caller's extra_env, so a template is never asked to map a port for a mode it is not run in (ADR 0031)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
     ("L059", ERROR, "Every test named in a gating QA template's INSTANCE_TEST_REQUIRE_PASS contains at least one real test_fail/fail_later CALL (a mention in a comment does not count) — L057 makes the template name the tests that must pass, and this closes the next hole down: a named test with no failure path reports `passed` on every box, so requiring it asserts nothing beyond the script reaching its test_pass, and the gate reads as coverage while certifying nothing (ADR 0019)"),
     ("L065", ERROR, "Every shipped instance test (ROOT/opt/instance-tools/tests/**/*.sh, and the same path under derivatives/external overlays) is executable — runner.sh discovers tests with `find … -executable`, so a 0644 test is not skipped, not reported missing, and emits no line at all: it silently does not exist. base/11-instance-metadata.sh and base/12-provisioning.sh shipped 0644 from their first commit and had therefore never run once, which also meant lib.sh's instance_field() always returned empty and nothing ever waited for provisioning to finish. Same failure and same fix as L051 for supervisor scripts"),
@@ -669,6 +670,98 @@ def _own_test_prefixes(img: Image) -> list[str]:
         if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
             out.append(sub.name)
     return out
+
+
+def _serverless_gate_callers(repo: Path) -> dict[str, int]:
+    """{repo-relative template dir: worker port} for every gate that turns serverless ON.
+
+    Parsed from the workflow YAML rather than grepped: the pair that matters is
+    (template_dir, extra_env) on the SAME job, and a regex over the file cannot tell
+    which `extra_env` belongs to which caller when a workflow has more than one — and
+    build-vllm.yml has exactly that, a standard `qa` and a `qa-serverless`.
+    """
+    out: dict[str, int] = {}
+    wfdir = repo / ".github" / "workflows"
+    if not wfdir.is_dir():
+        return out
+    import yaml  # lazy
+    for wf in sorted(wfdir.iterdir()):
+        if wf.suffix not in (".yml", ".yaml") or not wf.is_file():
+            continue
+        try:
+            data = yaml.safe_load(wf.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for job in (data.get("jobs") or {}).values():
+            if not isinstance(job, dict):
+                continue
+            if not str(job.get("uses", "")).endswith("qa-gate.yml"):
+                continue
+            with_ = job.get("with")
+            if not isinstance(with_, dict):
+                continue
+            tdir = str(with_.get("template_dir", "")).strip().rstrip("/")
+            env = str(with_.get("extra_env", "") or "")
+            if not tdir or "${{" in tdir:
+                continue
+            pairs = dict(
+                ln.split("=", 1) for ln in env.splitlines()
+                if "=" in ln and not ln.lstrip().startswith("#"))
+            if pairs.get("SERVERLESS", "").strip().lower() != "true":
+                continue
+            try:
+                port = int(pairs.get("WORKER_PORT", "3000").strip())
+            except ValueError:
+                port = 3000
+            out[tdir] = port
+    return out
+
+
+def check_serverless_template_maps_worker_port(img: Image, repo: Path) -> Iterable[Finding]:
+    """L073 — a serverless gate's template must map the worker port (ADR 0031)."""
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    gates = _serverless_gate_callers(repo)
+    if not gates:
+        return
+    import yaml  # lazy
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            reldir = str(tpl.parent.relative_to(repo))
+        except ValueError:
+            continue
+        if reldir not in gates:
+            continue
+        port = gates[reldir]
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            ports = entry.get("ports") or []
+            mapped = set()
+            for spec in ports if isinstance(ports, list) else []:
+                # "3000:3000" and a bare "3000" both map the port; take the INTERNAL
+                # side, which is what the platform names the variable after.
+                text = str(spec).strip().strip('"').strip("'")
+                head = text.split(":")[-1] if ":" in text else text
+                if head.isdigit():
+                    mapped.add(int(head))
+            if port not in mapped:
+                yield Finding("L073", ERROR, img.name, rel,
+                              f"gate sets SERVERLESS=true but the template does not map port {port} — "
+                              f"the platform injects VAST_TCP_PORT_{port} only for MAPPED ports, and the "
+                              "pyworker SDK looks it up unguarded, so the worker dies with a KeyError "
+                              "inside Metrics() before it binds or benchmarks")
 
 
 def check_own_suite_is_required(img: Image, repo: Path) -> Iterable[Finding]:
@@ -2365,6 +2458,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
     out.extend(check_own_suite_is_required(img, repo))
+    out.extend(check_serverless_template_maps_worker_port(img, repo))
     out.extend(check_instance_tests_executable(img, repo))
     out.extend(check_required_tests_can_fail(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))
