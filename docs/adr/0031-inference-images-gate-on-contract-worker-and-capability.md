@@ -269,6 +269,34 @@ The asymmetry is the point: **discovery can never manufacture a red.** Drift in
 the discovery layer can lose advisory coverage, loudly, but can never block a
 healthy image nor silently drop something a human declared.
 
+### 6a. A known upstream deviation is DECLARED, and expires by itself
+
+Added 2026-08-24, from the first SGLang cell. The engines do not implement the same
+contract: SGLang answers HTTP 200 for a `model` that does not exist and serves
+whatever it loaded, where vLLM returns 404. Nothing this image configures changes
+that, so the choice was between blocking an image on upstream behaviour and turning
+the assertion off — and turning it off is the exemption cycle this ADR rejected
+option B for.
+
+Neither. `ENGINE["deviations"]` names the check and the reason; a declared deviation
+is REPORTED on every run and does not block. **A deviation that stops reproducing is
+a VIOLATION**, so if the engine starts behaving, the gate says so and the declaration
+gets deleted. That is decision 6's declared-but-not-discovered rule pointed the other
+way, and it is what makes this different from an exemption: it expires by itself
+instead of accumulating.
+
+Two conditions, both stated in the reason text or it is not admissible:
+
+- **UPSTREAM** — the defect is not something this image can configure away.
+- **BOUNDED** — another assertion in the same file still covers the hazard. For the
+  SGLang case that is `identity`, which asserts `/v1/models` advertises EXACTLY the
+  model the template asked for, so a client that reads the model list can always tell
+  what it is talking to. What is missing is only the engine refusing a request that
+  names something else.
+
+A deviation is per-engine and lives in the one ENGINE block the copies differ in, so
+it is visible in the same diff as any other engine difference.
+
 ### 7. Advisory before required — one clean run, not two
 
 Every new assertion lands advisory and is promoted to required once it has run

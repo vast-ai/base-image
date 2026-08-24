@@ -68,6 +68,19 @@ ENGINE = {
     "context_flag": "--max-model-len",
     # Presence of this flag is how "the deployment offers tool calling" is DISCOVERED.
     "tools_flag": "--enable-auto-tool-choice",
+    # Checks this engine is KNOWN to fail, name -> why. A declared deviation is
+    # REPORTED and does not block.
+    #
+    # The asymmetry that stops this becoming the exemption cycle ADR 0031 was written
+    # against: a deviation that STOPS reproducing is a VIOLATION. If the engine starts
+    # behaving, the gate says so and the declaration gets deleted — an exemption here
+    # expires by itself rather than accumulating. That is decision 6's
+    # declared-but-not-discovered rule pointed the other way.
+    #
+    # A deviation is only admissible when the defect is UPSTREAM (we cannot fix it)
+    # and BOUNDED by another assertion in this file (so the hazard is still covered).
+    # Both halves must be stated in the reason.
+    "deviations": {},
 }
 
 PROBE = [{"role": "user", "content": "contract probe"}]
@@ -118,12 +131,14 @@ class Report:
     prose is how log formats become APIs by accident, so both are written here.
     """
 
-    def __init__(self, out=sys.stdout) -> None:
+    def __init__(self, out=sys.stdout, deviations=None) -> None:
         self.out = out
+        self.deviations = dict(ENGINE.get("deviations", {}) if deviations is None else deviations)
         self.violations: list[tuple[str, str]] = []
         self.advisories: list[tuple[str, str]] = []
         self.errors: list[tuple[str, str]] = []
         self.na: list[tuple[str, str]] = []
+        self.deviated: list[tuple[str, str]] = []
         self.passed: list[str] = []
 
     def _emit(self, human: str, machine: str = "") -> None:
@@ -132,10 +147,26 @@ class Report:
             print(machine, file=self.out)
 
     def ok(self, check: str, detail: str = "") -> None:
+        # A declared deviation that PASSES is the declaration outliving the defect.
+        # Reported as a violation so the exemption expires by itself: the engine
+        # behaves, the gate says so, and someone deletes the line. Without this,
+        # a deviation is just an exemption with better manners.
+        if check in self.deviations:
+            self.violation(check,
+                           "declared a known deviation, but the engine now behaves "
+                           "correctly — delete the entry from ENGINE['deviations'] "
+                           f"(was: {self.deviations.pop(check)})")
+            return
         self.passed.append(check)
         self._emit(f"    ok       {check}" + (f" — {detail}" if detail else ""))
 
     def violation(self, check: str, detail: str) -> None:
+        why = self.deviations.get(check)
+        if why:
+            self.deviated.append((check, detail))
+            self._emit(f"    DEVIATION {check} — {detail}\n             known and declared: {why}",
+                       f"DEVIATION {check} {detail}")
+            return
         self.violations.append((check, detail))
         self._emit(f"    VIOLATION {check} — {detail}", f"VIOLATION {check} {detail}")
 
@@ -737,10 +768,10 @@ def _finish(rep: Report, out) -> int:
     is the failure mode that matters, so it is asserted rather than assumed.
     """
     total = (len(rep.passed) + len(rep.violations) + len(rep.advisories)
-             + len(rep.na) + len(rep.errors))
+             + len(rep.na) + len(rep.errors) + len(rep.deviated))
     print(f"    summary: {len(rep.passed)} ok, {len(rep.violations)} violation(s), "
-          f"{len(rep.advisories)} advisory, {len(rep.na)} n/a, {len(rep.errors)} error(s)",
-          file=out)
+          f"{len(rep.deviated)} declared deviation(s), {len(rep.advisories)} advisory, "
+          f"{len(rep.na)} n/a, {len(rep.errors)} error(s)", file=out)
     print(f"CONTRACT-COMPLETE {total}", file=out)
     return rep.exit_code()
 

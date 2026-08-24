@@ -101,7 +101,7 @@ report=$(mktemp)
 rc=$?
 
 # Human lines first: whatever the verdict, the run log carries the full evidence.
-grep -vE '^(VIOLATION|ADVISORY|ERROR|NA|CONTRACT-COMPLETE) ' "$report"
+grep -vE '^(VIOLATION|ADVISORY|ERROR|NA|DEVIATION|CONTRACT-COMPLETE) ' "$report"
 
 # A check that could not decide is never advisory — the same rule base/28 applies to
 # a scan that failed to run. Report these before the violations: an image whose
