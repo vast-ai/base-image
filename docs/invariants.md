@@ -228,6 +228,97 @@ themselves as running after provisioning were racing it. **L065**
 `ROOT/opt/instance-tools/tests/**` and the derivative/external overlays;
 `lib.sh` is exempt because it is sourced, not executed.
 
+### Ray's public listeners are an OPEN defect, not a declared exception
+
+Recorded here because the tempting resolutions are both worse than the finding, and
+because an undocumented open defect gets rediscovered as a surprise.
+
+`base/28` reports six to seven public listeners on the vLLM and vLLM-omni images —
+raylet (2), the dashboard agent (2), and two agent processes — on ports that change
+every boot.
+
+**The range is known, and it is not the kernel's.** Ray does not `bind(0)` and let
+the OS assign from `ip_local_port_range`; it draws its own numbers
+(`ray/_private/services.py`):
+
+```python
+def new_port(lower_bound=10000, upper_bound=65535, denylist=None):
+    port = random.randint(lower_bound, upper_bound)
+```
+
+So the window is **10000-65535**, 55,536 ports, which matches every port observed
+live (33365, 39753, 42437, 44217, 44227, 46163, 53265). It is far too wide to
+declare: an allowlist entry covering it would pass essentially any high port, which
+is not a declaration but a disabled check.
+
+**A second consequence, and the more serious one.** That helper checks its choice
+against an in-process `denylist` only — the ports Ray has already picked this run.
+It does **not** test whether the port is free on the machine. (The bind-test in
+`services.py` around line 1235 is specific to the dashboard port and does not cover
+this path.) So Ray can select a port another service holds, or is about to hold.
+
+Our own fixed ports inside that window include `10199` (the instance-test harness),
+`18000` (vLLM's internal listener), `11111`, `16006`, `18080`, `18384` and `28265`.
+Boot order makes the exposure concrete: `ray.sh` starts Ray, Ray draws roughly six
+ports, and only then does `vllm.sh` start vLLM on 18000. A collision is around one
+boot in a thousand and presents as an unreproducible startup failure on an image
+that is otherwise fine — rare, loud rather than silent, and very hard to diagnose
+without this note.
+
+Two attempts to remove the listeners failed, both measured on live cells rather than
+reasoned about:
+
+- **Bind loopback.** Refused upstream. `--node-ip-address 127.0.0.1` is routed
+  through `services.resolve_ip_for_localhost()`, documented as "Convert to a
+  remotely reachable IP if the address is localhost or 127.0.0.1". The cell logged
+  `Local node IP: 172.17.0.2` with the flag passed.
+- **Pin the ports.** `--node-manager-port`, `--object-manager-port`,
+  `--dashboard-agent-*`, `--metrics-export-port`, `--runtime-env-agent-port` and
+  `--min/--max-worker-port` are all accepted — Ray rejects unknown options, and
+  `--dashboard-port` in the same string took effect — and the observed ports were
+  still ephemeral. Those services open more listeners than any flag governs.
+
+**Only `6379` (GCS) is declared**, as class `internal`, because it is the only one
+provably pinned. The rest stay VIOLATIONS and stay visible.
+
+**Two fixes that must not be adopted**, both of which make the report go away
+without changing what a customer runs:
+
+1. **Do not stop starting Ray on single-GPU deployments.** It would clean the QA
+   cells while leaving the exposure intact for anyone running tensor parallelism —
+   hiding the defect from ourselves, which is worse than the defect.
+2. **Do not widen the allowlist to cover the ephemeral range.** That declares 120
+   ports nothing binds and states a pin that was measured not to hold.
+
+The consequence is accepted: `EXPOSURE_ENFORCE` cannot go true on these images until
+this is resolved upstream or a real control is found. A gate that cannot be enforced
+yet is an honest state; a gate enforced over a declaration nobody established is not.
+
+### A gating template requires the image's own suite — **GATED (L057, L072)**
+
+**L057** was base-only from ADR 0019 until 2026-08-21, on the stated grounds that
+widening it had to re-validate two live, currently-passing gates rather than turn
+them red from a linter. ADR 0031 is that re-validation, and the scope is now the
+gate *wiring* rather than the image class: a template is gating iff some workflow
+hands it to `qa-gate.yml` as `template_dir:`. That is read from the workflows, not
+from the template's name, because the generator points the gate at
+`templates/default` (ADR 0010/0011 — the template users launch IS the template QA
+boots), so a `*-qa` name match would exempt precisely the images with no separate
+QA template. A `${{ }}` expression is skipped rather than guessed at.
+
+**L072** closes the level above it. The GPU trio is inherited from base and is the
+same three names on every image, so a template that names only the trio has a gate
+certifying that the *rented box* has a working GPU while asserting nothing about
+the app the image exists to ship. Measured on the case that prompted ADR 0031:
+`vllm.d/10-vllm-serving.sh` opens `[[ -n "${VLLM_MODEL:-}" ]] || test_skip`, so
+dropping one env var from the template deletes every vLLM assertion at once and
+the image promotes green — and `build-vllm.yml` passed no `require_tests` either,
+so *neither* of the two enforcement layers would have caught it. Scoped to images
+that ship an own suite: a suite dir is a subdirectory of the image's
+`ROOT/opt/instance-tools/tests/` holding at least one `NN-*.sh`, which excludes
+`exposure-allowlist/` (`.conf` data) without a name blocklist. An image whose only
+tests are base's inherits base's coverage and owes nothing extra.
+
 ### A required test must be able to fail — **GATED (L059)**
 
 L057 makes a gating QA template *name* the tests that must have PASSED. This
@@ -238,8 +329,9 @@ nothing. Not hypothetical — `base/62-gpu-libraries.sh` was in base-qa's
 require-pass set with every branch an `echo`/`WARN` and zero `fail_later` calls,
 so the third of three gating tests asserted exactly `has_gpu`, which the other
 two already assert. **L059** (`check_required_tests_can_fail`) resolves each name
-in `INSTANCE_TEST_REQUIRE_PASS` against the base overlay and each derivative
-tests dir, and requires at least one real `test_fail`/`fail_later` **call** — a
+in `INSTANCE_TEST_REQUIRE_PASS` against the base overlay and every derivative
+**and external** tests dir, and requires at least one real
+`test_fail`/`fail_later` **call** — a
 mention in a comment does not count, which is exactly how the defect hid.
 Deliberately weak: it asserts a failure path *exists*, not that it is a good one.
 Whether a test can fail at all is decidable by reading the file; whether it fails

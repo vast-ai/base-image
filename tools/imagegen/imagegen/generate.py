@@ -527,8 +527,21 @@ ssh_direct: true
 use_ssh: true
 use_jupyter_lab: false
 runtype: jupyter
-# >>> FILL: complete the launch spec — ports / env / PORTAL_CONFIG, wiring the app's real
-# interface:port into the portal (model this on how the supervisor launches the app). <<<
+# >>> FILL: complete the launch spec — ports / PORTAL_CONFIG and the app's own env, wiring
+# the app's real interface:port into the portal (model this on how the supervisor launches
+# the app). Add them to the `env:` block below, which already exists. <<<
+env:
+  # Required-pass gate (ADR 0019, extended to every gating template by ADR 0031).
+  # This template is BOTH the user-facing launch template and the one the live-GPU QA
+  # gate boots (ADR 0010/0011), so the gate's declaration belongs here. Without it the
+  # GPU trio self-skips on a box whose driver or CUDA userland never came up, the suite
+  # reports green, and the gate certifies an image it never exercised.
+  # As you write this image's OWN tests under ROOT/opt/instance-tools/tests/@@NAME@@.d/,
+  # ADD them here too — linter L072 requires at least one own-suite test once that
+  # directory exists, because the trio is inherited from base and identical on every
+  # image, so a gate that stops there certifies the rented BOX and not the app.
+  # Delete the trio only if this image is genuinely CPU-only.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
 extra_filters:
   compute_cap:
     # >>> FILL: set the real minimum compute capability for this image (sm_XX x 10). <<<

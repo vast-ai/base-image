@@ -76,6 +76,9 @@ RULES: list[tuple[str, str, str]] = [
     ("L055", ERROR, "External images set ENV TCLLIBPATH=/usr/lib/tcltk/default (they FROM upstream, not our base, so don't inherit it) — else the pty helper's unbuffer/Expect fails and the app launch dies at boot"),
     ("L056", ERROR, "An image that source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST carry a real post-build file-existence assertion for the CUDA backend (`test -f …libggml-cuda.so`; a bare mention of the name does not count) — setup.sh gates -DGGML_CUDA=ON on a runtime GPU probe absent in `docker build`, so without the assert it silently ships a CPU-only binary and every inference runs on CPU (ADR 0016)"),
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
+    ("L072", ERROR, "A gating QA template's env.INSTANCE_TEST_REQUIRE_PASS names at least one test from the image's OWN suite (ROOT/opt/instance-tools/tests/<name>.d/), not only the GPU trio it inherits from base. L057 gets the declaration written; this closes the level above it. The trio is the same three names on every image, so a template that stops there has a gate certifying that the RENTED BOX has a working GPU while asserting nothing about the app the image exists to ship. Measured on vLLM, which prompted ADR 0031: `vllm.d/10-vllm-serving.sh` opens `[[ -n \"${VLLM_MODEL:-}\" ]] || test_skip`, so dropping one env var from the template deletes every vLLM assertion at once and the image promotes green — and build-vllm.yml passed no `require_tests`, so neither of the two enforcement layers would have caught it. ADR 0005 named that exact file as the canonical skip-as-pass hole in June 2026; base and pytorch closed it and vLLM did not, for fourteen months. Scoped to images that actually ship an own suite — an image whose only tests are base's inherits base's coverage and owes nothing extra (ADR 0031)"),
+    ("L073", ERROR, "A QA template booted by a gate that sets SERVERLESS=true MAPS the serverless worker port (WORKER_PORT, default 3000). The platform injects VAST_TCP_PORT_<n> ONLY for ports a template maps, and the pyworker SDK looks that variable up without a guard — `worker_port = os.environ[f\"VAST_TCP_PORT_{os.environ['WORKER_PORT']}\"]` in vastai/serverless/server/lib/metrics.py — so an unmapped port is a KeyError inside Metrics() during Backend construction. Measured live on the first serverless cell ever run: `KeyError: 'VAST_TCP_PORT_3000'` and `PyWorker exited with status 1`, before the worker bound the port or ran a benchmark. This is L068's defect from the other side of the boundary: L068 gates OUR scripts against interpolating an unset VAST_TCP_PORT_*, and by construction cannot see an upstream SDK doing the same lookup on an artifact this repo does not build — so the obligation moves to the template, which is the one side we control. Scoped to gates that actually enable serverless, read from the caller's extra_env, so a template is never asked to map a port for a mode it is not run in (ADR 0031)"),
+    ("L074", ERROR, "No template maps a port an exposure-allowlist fragment declares `internal`. The `internal` class means a service may bind a public interface INSIDE the container but must never appear in the published port map — the declaration permits the bind, never the publication. It exists for a service with no auth of its own that cannot be moved to loopback, and Ray is the case that produced it: `ray start` refuses to bind loopback (services.resolve_ip_for_localhost converts 127.0.0.1 to a routable address on purpose, measured live as `Local node IP: 172.17.0.2`), so its GCS, raylet, dashboard agent and workers are declared as a pinned range instead. An allowlist entry passes a port REGARDLESS of what is listening on it, so declaring that range without this rule silently permits a template to publish an unauthenticated cluster control plane to the internet — and the scan would print `ok`. base/28 catches it at runtime; this catches it before the image ships, which is the difference between a red cell and a red diff (ADR 0028)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
     ("L059", ERROR, "Every test named in a gating QA template's INSTANCE_TEST_REQUIRE_PASS contains at least one real test_fail/fail_later CALL (a mention in a comment does not count) — L057 makes the template name the tests that must pass, and this closes the next hole down: a named test with no failure path reports `passed` on every box, so requiring it asserts nothing beyond the script reaching its test_pass, and the gate reads as coverage while certifying nothing (ADR 0019)"),
     ("L065", ERROR, "Every shipped instance test (ROOT/opt/instance-tools/tests/**/*.sh, and the same path under derivatives/external overlays) is executable — runner.sh discovers tests with `find … -executable`, so a 0644 test is not skipped, not reported missing, and emits no line at all: it silently does not exist. base/11-instance-metadata.sh and base/12-provisioning.sh shipped 0644 from their first commit and had therefore never run once, which also meant lib.sh's instance_field() always returned empty and nothing ever waited for provisioning to finish. Same failure and same fix as L051 for supervisor scripts"),
@@ -559,25 +562,69 @@ def check_template_vram(img: Image, repo: Path) -> Iterable[Finding]:
 _REQUIRED_GPU_TESTS = ("base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries")
 
 
+_TEMPLATE_DIR_REF = re.compile(r"^\s*template_dir:\s*(\S+)\s*$", re.M)
+
+
+def _gating_template_dirs(repo: Path) -> set[str]:
+    """Repo-relative template dirs that a live-GPU QA gate actually boots.
+
+    A template is GATING iff some workflow hands it to `qa-gate.yml` as
+    `template_dir:`. That is the definition, not a naming convention, and it is why
+    this reads the workflows instead of matching `*-qa`: the generator wires the
+    gate at `templates/default` (ADR 0010/0011 — the template users launch IS the
+    template QA boots), so a name-based rule would exempt precisely the images that
+    have no separate QA template.
+
+    Read as text, not YAML: every caller writes a plain literal here, and a
+    `${{ }}` expression could not be resolved at lint time anyway — those are
+    skipped rather than guessed at.
+    """
+    wfdir = repo / ".github" / "workflows"
+    dirs: set[str] = set()
+    if not wfdir.is_dir():
+        return dirs
+    for wf in sorted(wfdir.iterdir()):
+        if wf.suffix not in (".yml", ".yaml") or not wf.is_file():
+            continue
+        try:
+            text = wf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _TEMPLATE_DIR_REF.finditer(text):
+            val = m.group(1).strip().strip("'\"")
+            if "${{" in val or not val:
+                continue
+            dirs.add(val.rstrip("/"))
+    return dirs
+
+
 def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
     """L057 — a gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS (ADR 0019).
 
-    Scoped to the base image's QA template for now. comfyui-qa and vllm-qa have the
-    same hole, but widening the rule to them is a separate change that has to
-    re-validate two live, currently-passing gates — a linter rule is not the place to
-    quietly turn those red. Widen once each has been re-validated.
+    Scope is the gate wiring, not the image class. This was base-only from ADR 0019
+    until 2026-08-21, on the stated grounds that widening it had to re-validate two
+    live, currently-passing gates rather than turn them red from a linter. ADR 0031
+    is that re-validation: vllm-qa and comfyui-qa now carry the declaration and the
+    callers pass the matching `require_tests`, so the exemption is spent.
 
     Format only: this asserts the declaration exists and covers the GPU trio. Whether
     the tests then pass is the runner's job (INSTANCE_TEST_REQUIRE_PASS) and CI's
     (qa_verdict) — the two enforcement layers this declaration feeds.
     """
-    if img.cls != "base":
-        return
     tdir = img.dir / "templates"
     if not tdir.is_dir():
         return
+    gating = _gating_template_dirs(repo)
+    if not gating:
+        return
     import yaml  # lazy — only template-bearing images
     for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            reldir = str(tpl.parent.relative_to(repo))
+        except ValueError:
+            continue
+        if reldir not in gating:
+            continue        # not wired into a gate — it certifies nothing, so it owes nothing
         try:
             rel = str(tpl.relative_to(img.dir))
         except ValueError:
@@ -602,6 +649,247 @@ def check_template_require_pass(img: Image, repo: Path) -> Iterable[Finding]:
                 yield Finding("L057", ERROR, img.name, rel,
                               "env.INSTANCE_TEST_REQUIRE_PASS omits " + ", ".join(missing) +
                               " — these skip themselves when the GPU/driver is unavailable")
+
+
+def _own_test_prefixes(img: Image) -> list[str]:
+    """Test-name prefixes for the suites THIS image ships.
+
+    A suite dir is a subdirectory of the image's `ROOT/opt/instance-tools/tests/`
+    holding at least one `NN-*.sh`. That excludes `exposure-allowlist/`, which sits
+    beside the suites and holds `.conf` data, without needing a name blocklist.
+
+    The prefix is the name the RUNNER uses, which is not always the directory name:
+    derivatives store `vllm.d/` on disk and report `vllm.d/10-vllm-serving`, while
+    base stores and reports `base/`. Both are returned verbatim as they appear on
+    disk, because that is what the runner emits.
+    """
+    tests = img.root / "opt/instance-tools/tests"
+    if not tests.is_dir():
+        return []
+    out = []
+    for sub in sorted(tests.iterdir()):
+        if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
+            out.append(sub.name)
+    return out
+
+
+def _serverless_gate_callers(repo: Path) -> dict[str, int]:
+    """{repo-relative template dir: worker port} for every gate that turns serverless ON.
+
+    Parsed from the workflow YAML rather than grepped: the pair that matters is
+    (template_dir, extra_env) on the SAME job, and a regex over the file cannot tell
+    which `extra_env` belongs to which caller when a workflow has more than one — and
+    build-vllm.yml has exactly that, a standard `qa` and a `qa-serverless`.
+    """
+    out: dict[str, int] = {}
+    wfdir = repo / ".github" / "workflows"
+    if not wfdir.is_dir():
+        return out
+    import yaml  # lazy
+    for wf in sorted(wfdir.iterdir()):
+        if wf.suffix not in (".yml", ".yaml") or not wf.is_file():
+            continue
+        try:
+            data = yaml.safe_load(wf.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for job in (data.get("jobs") or {}).values():
+            if not isinstance(job, dict):
+                continue
+            if not str(job.get("uses", "")).endswith("qa-gate.yml"):
+                continue
+            with_ = job.get("with")
+            if not isinstance(with_, dict):
+                continue
+            tdir = str(with_.get("template_dir", "")).strip().rstrip("/")
+            env = str(with_.get("extra_env", "") or "")
+            if not tdir or "${{" in tdir:
+                continue
+            pairs = dict(
+                ln.split("=", 1) for ln in env.splitlines()
+                if "=" in ln and not ln.lstrip().startswith("#"))
+            if pairs.get("SERVERLESS", "").strip().lower() != "true":
+                continue
+            try:
+                port = int(pairs.get("WORKER_PORT", "3000").strip())
+            except ValueError:
+                port = 3000
+            out[tdir] = port
+    return out
+
+
+def _internal_ports(img: Image) -> dict[int, str]:
+    """Ports this image declares `internal` -> the fragment line that declares them.
+
+    Literals and `range:` only. An `env:` spec cannot be resolved without an
+    instance, so it is skipped rather than guessed at — this rule reports what it can
+    prove and leaves the runtime scan to cover the rest.
+    """
+    out: dict[int, str] = {}
+    d = img.root / "opt/instance-tools/tests/exposure-allowlist"
+    if not d.is_dir():
+        return out
+    for conf in sorted(d.glob("*.conf")):
+        for lineno, raw in enumerate(conf.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = line.split(None, 2)
+            if len(parts) < 2 or parts[1] != "internal" or "/" not in parts[0]:
+                continue
+            spec, _, proto = parts[0].rpartition("/")
+            src = f"{conf.name}:{lineno}"
+            if spec.isdigit():
+                out[int(spec)] = src
+            elif spec.startswith("range:"):
+                m = re.fullmatch(r"(\d+)-(\d+)", spec[6:])
+                if m and int(m.group(1)) <= int(m.group(2)):
+                    for port in range(int(m.group(1)), int(m.group(2)) + 1):
+                        out[port] = src
+    return out
+
+
+def check_no_template_publishes_an_internal_port(img: Image, repo: Path) -> Iterable[Finding]:
+    """L074 — a template must not publish a port declared `internal` (ADR 0028)."""
+    internal = _internal_ports(img)
+    if not internal:
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            for spec in (entry.get("ports") or []):
+                text = str(spec).strip().strip('"').strip("'")
+                # "external:internal", or a bare port. The INTERNAL side is what the
+                # service actually binds, and therefore what publication exposes.
+                inner = text.split(":")[-1] if ":" in text else text
+                if not inner.isdigit():
+                    continue
+                port = int(inner)
+                if port in internal:
+                    yield Finding("L074", ERROR, img.name, rel,
+                                  f"maps port {port}, which {internal[port]} declares `internal` — "
+                                  "that class permits the BIND and never the publication; an "
+                                  "internal service has no auth of its own, so publishing it puts "
+                                  "it on the internet unauthenticated")
+
+
+def check_serverless_template_maps_worker_port(img: Image, repo: Path) -> Iterable[Finding]:
+    """L073 — a serverless gate's template must map the worker port (ADR 0031)."""
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    gates = _serverless_gate_callers(repo)
+    if not gates:
+        return
+    import yaml  # lazy
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            reldir = str(tpl.parent.relative_to(repo))
+        except ValueError:
+            continue
+        if reldir not in gates:
+            continue
+        port = gates[reldir]
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            ports = entry.get("ports") or []
+            mapped = set()
+            for spec in ports if isinstance(ports, list) else []:
+                # "3000:3000" and a bare "3000" both map the port; take the INTERNAL
+                # side, which is what the platform names the variable after.
+                text = str(spec).strip().strip('"').strip("'")
+                head = text.split(":")[-1] if ":" in text else text
+                if head.isdigit():
+                    mapped.add(int(head))
+            if port not in mapped:
+                yield Finding("L073", ERROR, img.name, rel,
+                              f"gate sets SERVERLESS=true but the template does not map port {port} — "
+                              f"the platform injects VAST_TCP_PORT_{port} only for MAPPED ports, and the "
+                              "pyworker SDK looks it up unguarded, so the worker dies with a KeyError "
+                              "inside Metrics() before it binds or benchmarks")
+
+
+def check_own_suite_is_required(img: Image, repo: Path) -> Iterable[Finding]:
+    """L072 — a gating QA template requires at least one of the image's OWN tests.
+
+    L057 makes the template name the GPU trio, which is inherited from base and is
+    the same three names on every image. An engine image that names only those has a
+    gate certifying that the box has a working GPU — not that the engine serves.
+
+    Measured on the thing that prompted ADR 0031: `vllm.d/10-vllm-serving.sh` opens
+    with `[[ -n "${VLLM_MODEL:-}" ]] || test_skip`, so a template that lost
+    `VLLM_MODEL` deletes the entire vLLM assertion set and promotes green — and the
+    caller passed no `require_tests` either, so neither enforcement layer noticed.
+    ADR 0005 named that file, by name, as the canonical skip-as-pass hole in June
+    2026; base and pytorch closed it and vLLM did not.
+
+    Scoped to images that HAVE an own suite: an image whose only tests are base's
+    inherits base's coverage and owes nothing extra.
+    """
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    prefixes = _own_test_prefixes(img)
+    if not prefixes:
+        return
+    gating = _gating_template_dirs(repo)
+    if not gating:
+        return
+    import yaml  # lazy — only template-bearing images
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            reldir = str(tpl.parent.relative_to(repo))
+        except ValueError:
+            continue
+        if reldir not in gating:
+            continue
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            env = entry.get("env")
+            declared = env.get("INSTANCE_TEST_REQUIRE_PASS", "") if isinstance(env, dict) else ""
+            names = str(declared).replace(",", " ").split()
+            if not names:
+                continue        # L057's report, not ours — one finding per defect
+            if any(n.split("/")[0] in prefixes for n in names):
+                continue
+            yield Finding("L072", ERROR, img.name, rel,
+                          "env.INSTANCE_TEST_REQUIRE_PASS names no test from this image's own "
+                          "suite (" + ", ".join(prefixes) + ") — the GPU trio is inherited from "
+                          "base, so the gate certifies the BOX and the app suite could self-skip "
+                          "or vanish entirely and still promote green")
 
 
 
@@ -707,8 +995,15 @@ def check_required_tests_can_fail(img: Image, repo: Path) -> Iterable[Finding]:
     # A required test may live in the base overlay OR in a derivative's own tests
     # dir. Looking only in ROOT/ would silently skip every derivative test — the
     # rule would report clean precisely where the newest tests are.
+    # `**` and external/, not `derivatives/*`: the old glob reached exactly one
+    # level, so it missed BOTH nested derivatives
+    # (derivatives/pytorch/derivatives/comfyui) and every external image
+    # (external/vllm). L059 therefore reported clean on `vllm.d/10-vllm-serving`
+    # by failing to find it — the rule was silent precisely where ADR 0031 found
+    # the hole.
     test_roots = [repo / "ROOT/opt/instance-tools/tests"]
-    test_roots += sorted((repo / "derivatives").glob("*/ROOT/opt/instance-tools/tests"))
+    test_roots += sorted(repo.glob("derivatives/**/ROOT/opt/instance-tools/tests"))
+    test_roots += sorted(repo.glob("external/*/ROOT/opt/instance-tools/tests"))
 
     def _find(name: str) -> Path | None:
         for root in test_roots:
@@ -2231,6 +2526,9 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_floor(img, repo))
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
+    out.extend(check_own_suite_is_required(img, repo))
+    out.extend(check_serverless_template_maps_worker_port(img, repo))
+    out.extend(check_no_template_publishes_an_internal_port(img, repo))
     out.extend(check_instance_tests_executable(img, repo))
     out.extend(check_required_tests_can_fail(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))

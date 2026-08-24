@@ -143,6 +143,19 @@ def _write_template(img, body):
     (tdir / "template.yml").write_text(body)
 
 
+def _wire_gate(repo, template_dir):
+    """Hand a template dir to qa-gate.yml, the way a build workflow does.
+
+    L057/L072 scope on this wiring rather than on the template's NAME, so the tests
+    have to create it: a template no workflow boots is deliberately exempt.
+    """
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      template_dir: " + template_dir + "\n")
+
+
 def test_L050_template_missing_compute_cap_floor(tmp_path):
     img = make(tmp_path)
     _write_template(img, "name: QA\nimage: vastai/x\nextra_filters:\n  gpu_total_ram:\n    gte: 8192\n")
@@ -693,6 +706,9 @@ _FLOORS = "extra_filters:\n  compute_cap:\n    gte: 750\n"
 
 def _base_qa(img, env_line):
     _write_template(img, f"name: Base QA\nimage: vastai/base-image\n{env_line}{_FLOORS}")
+    # base-qa is gated by promote-base-image.yml; L057 keys on that wiring, not on
+    # the image class, so the fixture has to supply it.
+    _wire_gate(img.dir.parent, "img/templates/qa")
 
 
 def test_L057_base_qa_template_without_require_pass_fires(tmp_path):
@@ -725,13 +741,103 @@ def test_L057_accepts_comma_separated(tmp_path):
     assert "L057" not in errs(img, tmp_path)
 
 
-def test_L057_is_scoped_to_base_for_now(tmp_path):
-    """comfyui-qa/vllm-qa have the same hole, but widening the rule to them must
-    re-validate two live, currently-passing gates — not something a linter rule
-    should do silently. Scope is deliberate; this pins it."""
+def test_L057_applies_to_a_non_base_gating_template(tmp_path):
+    """The rule was base-only from ADR 0019 until ADR 0031 re-validated the other
+    two gates. Scope is now the gate WIRING, not the image class: a pytorch-nested
+    image whose template is handed to qa-gate.yml owes the same declaration."""
     img = make(tmp_path, cls="pytorch-nested")
     _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "img/templates/qa")
+    assert has(img, tmp_path, "L057", "no env.INSTANCE_TEST_REQUIRE_PASS")
+
+
+def test_L057_ignores_a_template_no_gate_boots(tmp_path):
+    """The asymmetry that keeps this rule honest: a template nothing gates on
+    certifies nothing, so it owes nothing. Only the wiring creates the obligation
+    — which is why the rule reads the workflows instead of matching `*-qa`."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "img/templates/some-other-dir")
     assert "L057" not in errs(img, tmp_path)
+
+
+def test_L057_ignores_an_unresolvable_expression(tmp_path):
+    """A `template_dir` built from a ${{ }} expression cannot be resolved at lint
+    time. Skipping it loses coverage loudly rather than guessing a path and
+    reporting a finding against a template that may not be the gated one."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "${{ inputs.template_dir }}")
+    assert "L057" not in errs(img, tmp_path)
+
+
+# ---- L072: a gating template must require the image's OWN suite (ADR 0031) ----
+
+
+def _own_suite(img, dirname="app.d", tests=("10-serving",)):
+    """Give the image a suite of its own, the way a derivative ships one."""
+    d = img.dir / "ROOT/opt/instance-tools/tests" / dirname
+    d.mkdir(parents=True, exist_ok=True)
+    for t in tests:
+        f = d / f"{t}.sh"
+        f.write_text('#!/bin/bash\ntest_fail "nope"\n')
+        f.chmod(0o755)      # L065 — a 0644 test is silently not discovered
+
+
+def _gated(img, required):
+    _write_template(img, f"name: QA\nimage: vastai/x\n"
+                         f"env:\n  INSTANCE_TEST_REQUIRE_PASS: {required}\n{_FLOORS}")
+    _wire_gate(img.dir.parent, "img/templates/qa")
+
+
+def test_L072_trio_only_fires_on_an_image_with_its_own_suite(tmp_path):
+    """THE mutation, and the shape ADR 0031 found live: the template names only the
+    GPU trio, which is inherited from base and identical on every image. The gate
+    then certifies that the rented BOX has a working GPU while the app suite could
+    self-skip — `vllm.d/10-vllm-serving` skips on one missing env var — and promote
+    green."""
+    img = make(tmp_path)
+    _own_suite(img)
+    _gated(img, _TRIO)
+    assert has(img, tmp_path, "L072", "names no test from this image's own suite")
+
+
+def test_L072_naming_an_own_test_is_clean(tmp_path):
+    img = make(tmp_path)
+    _own_suite(img)
+    _gated(img, f"{_TRIO} app.d/10-serving")
+    assert "L072" not in errs(img, tmp_path)
+
+
+def test_L072_does_not_fire_when_the_image_ships_no_suite(tmp_path):
+    """An image whose only tests are base's inherits base's coverage and owes
+    nothing extra — the rule must not invent an obligation it cannot be satisfied."""
+    img = make(tmp_path)
+    _gated(img, _TRIO)
+    assert "L072" not in errs(img, tmp_path)
+
+
+def test_L072_ignores_the_exposure_allowlist_dir(tmp_path):
+    """`exposure-allowlist/` sits beside the suites and holds .conf data, not tests.
+    Counting it as an own suite would demand a required test that cannot exist —
+    which is why a suite dir is defined by holding an NN-*.sh, not by its name."""
+    img = make(tmp_path)
+    d = img.dir / "ROOT/opt/instance-tools/tests/exposure-allowlist"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "00-base.conf").write_text("# allowlist\n")
+    _gated(img, _TRIO)
+    assert "L072" not in errs(img, tmp_path)
+
+
+def test_L072_stays_silent_when_L057_already_reports(tmp_path):
+    """One finding per defect: a template with NO declaration is L057's report. Two
+    errors for one missing line reads as two problems."""
+    img = make(tmp_path)
+    _own_suite(img)
+    _write_template(img, f"name: QA\nimage: vastai/x\n{_FLOORS}")
+    _wire_gate(tmp_path, "img/templates/qa")
+    e = errs(img, tmp_path)
+    assert "L057" in e and "L072" not in e
 
 
 def test_L050_L054_now_apply_to_base(tmp_path):
@@ -2246,3 +2352,151 @@ def test_mut_the_shipped_syncthing_reconciles_and_guards(tmp_path):
     assert 'no direct TCP listener' in body, (
         "when the port is unmapped the script must configure no listener and say "
         "so, rather than silently binding a default that cannot receive")
+
+
+# ---- L073: a serverless gate's template must map the worker port (ADR 0031) ----
+
+
+def _wire_serverless_gate(repo, template_dir, extra_env="SERVERLESS=true\nBACKEND=openai\n"):
+    """A qa-gate caller that turns serverless ON, the way build-vllm.yml's does."""
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n"
+        "  qa:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: " + template_dir + "\n"
+        "  qa-serverless:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: " + template_dir + "\n"
+        "      extra_env: |\n"
+        + "".join(f"        {ln}\n" for ln in extra_env.strip().splitlines()))
+
+
+def _tpl_with_ports(img, ports):
+    body = "name: QA\nimage: vastai/x\n"
+    if ports is not None:
+        body += "ports:\n" + "".join(f'  - "{p}"\n' for p in ports)
+    _write_template(img, body + _FLOORS)
+
+
+def test_L073_serverless_gate_without_the_worker_port_fires(tmp_path):
+    """THE mutation, and it is the defect as measured. The platform injects
+    VAST_TCP_PORT_<n> only for MAPPED ports, and the SDK looks it up unguarded:
+    with 3000 unmapped the worker died `KeyError: 'VAST_TCP_PORT_3000'` inside
+    Metrics(), before binding the port or running a benchmark."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111", "8080:8080"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa")
+    assert has(img, tmp_path, "L073", "does not map port 3000")
+
+
+def test_L073_mapping_the_worker_port_is_clean(tmp_path):
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111", "3000:3000"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa")
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_does_not_fire_when_no_gate_enables_serverless(tmp_path):
+    """A template is never asked to map a port for a mode it is not run in. This is
+    what keeps the rule off every non-serverless QA template in the repo."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111"])
+    _wire_gate(tmp_path, "img/templates/qa")          # plain gate, no SERVERLESS
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_reads_the_worker_port_from_the_caller(tmp_path):
+    """WORKER_PORT is what the SDK interpolates, so a gate that moves it moves the
+    obligation with it — a hardcoded 3000 would check the wrong port silently."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["3000:3000"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa",
+                          "SERVERLESS=true\nWORKER_PORT=3100\n")
+    assert has(img, tmp_path, "L073", "does not map port 3100")
+
+
+def test_L073_pairs_extra_env_with_its_OWN_template_dir(tmp_path):
+    """The pair that matters is (template_dir, extra_env) on the SAME job. A workflow
+    with a standard `qa` and a `qa-serverless` — which build-vllm.yml has — would fool
+    any rule that grepped the file for SERVERLESS=true and a template_dir separately."""
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["1111:1111"])
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n"
+        "  qa:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: img/templates/qa\n"
+        "  qa-serverless:\n"
+        "    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n"
+        "      template_dir: img/templates/somewhere-else\n"
+        "      extra_env: |\n        SERVERLESS=true\n")
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_accepts_a_bare_port(tmp_path):
+    img = make(tmp_path)
+    _tpl_with_ports(img, ["3000"])
+    _wire_serverless_gate(tmp_path, "img/templates/qa")
+    assert "L073" not in errs(img, tmp_path)
+
+
+# ---- L074: a template must not publish an `internal` port (ADR 0028) ----
+
+
+def _allowlist(img, body):
+    d = img.dir / "ROOT/opt/instance-tools/tests/exposure-allowlist"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "50-x.conf").write_text(body)
+
+
+def test_L074_publishing_an_internal_port_fires(tmp_path):
+    """THE hole, and it was live for one commit. Declaring Ray's pinned range made
+    every port in it pass the exposure scan unconditionally — including one a
+    template maps. Ray's GCS has no auth of its own, which is the only reason it was
+    allowed to bind wide, so publishing 6379 puts an unauthenticated cluster control
+    plane on the internet and the scan prints `ok`."""
+    img = make(tmp_path)
+    _allowlist(img, "range:6379-6499/tcp internal Ray\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "6379:6379"\n' + _FLOORS)
+    assert has(img, tmp_path, "L074", "declares `internal`")
+
+
+def test_L074_a_port_outside_the_range_is_clean(tmp_path):
+    img = make(tmp_path)
+    _allowlist(img, "range:6379-6499/tcp internal Ray\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "8000:8000"\n' + _FLOORS)
+    assert "L074" not in errs(img, tmp_path)
+
+
+def test_L074_reads_the_internal_side_of_the_mapping(tmp_path):
+    """Vast writes external:internal. The INTERNAL side is what the service binds and
+    therefore what publication exposes — matching on the external side would miss the
+    mapping that actually opens the port."""
+    img = make(tmp_path)
+    _allowlist(img, "range:6379-6499/tcp internal Ray\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "40001:6390"\n' + _FLOORS)
+    assert has(img, tmp_path, "L074", "maps port 6390")
+
+
+def test_L074_only_the_internal_class_constrains(tmp_path):
+    """sshd and syncthing are allowlisted AND published, correctly — they
+    authenticate. Only `internal` makes the negative claim."""
+    img = make(tmp_path)
+    _allowlist(img, "22/tcp raw sshd\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "22:22"\n' + _FLOORS)
+    assert "L074" not in errs(img, tmp_path)
+
+
+def test_L074_literal_internal_entries_count_too(tmp_path):
+    img = make(tmp_path)
+    _allowlist(img, "9001/tcp internal something\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "9001:9001"\n' + _FLOORS)
+    assert has(img, tmp_path, "L074", "maps port 9001")
