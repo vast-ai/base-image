@@ -209,12 +209,19 @@ pass it did not actually decide.
 ### Caddy-fronted ports are NOT (and must not be) in the allowlist
 
 A port served by Caddy — Instance Portal `1111`, Tensorboard `6006`, the WebUI/API
-fronts, etc. — is intentionally **absent** from the allowlist. The test passes any
-listener whose **owning process is `caddy`**, so every PORTAL_CONFIG-proxied front is
-handled by that rule automatically. (The test does *not* parse PORTAL_CONFIG; it reasons
-from the live owning process. Caddy builds its front sites from PORTAL_CONFIG at runtime,
-so the net effect is automatic — but the mechanism is "is the listener `caddy`," and the
-proxied backends bind `127.0.0.1` so they aren't public at all.)
+fronts, etc. — is intentionally **absent** from the allowlist, and every
+PORTAL_CONFIG-proxied front is handled automatically. The proxied backends bind
+`127.0.0.1`, so they are not public at all.
+
+**Corrected (ADR 0028 binding condition 5).** This section used to say the mechanism
+was "is the listener `caddy`" — that the test reasons from the live owning process.
+That is being replaced, because identity was never the right question: it proved
+caddy owned the socket, never that the front actually *gates*. It also carried a
+latent trap, since caddy is attributable today only because it runs as root, so an
+identity-based pass would flip every front to violation the day caddy is dropped to
+an unprivileged uid. The ADR 0028 scanner passes a port as a Caddy front iff it is a
+Caddyfile site address **and** an unauthenticated request is challenged with 401/403
+— behaviour, not identity. It runs in shadow mode until it takes over the verdict.
 
 **Do not "fix" a missing front port by allowlisting it.** The allowlist passes a port
 *regardless of what is listening on it*, so allowlisting e.g. `6006` would let an app

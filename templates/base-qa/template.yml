@@ -83,9 +83,18 @@ env:
   # and reported as green. An advisory gate nobody ever promotes is a permanent
   # pass.
   #
-  # Costs no extra runtime: the scan already runs. Its own false-red source is
-  # already handled in the test — a platform-injected listener with no owning
-  # process degrades to WARN, not VIOLATION.
+  # Costs no extra runtime: the scan already runs.
+  #
+  # CORRECTED (ADR 0028 binding condition 5). This used to claim the scan's own
+  # false-red source was "already handled" because an unattributable listener
+  # degrades to WARN rather than VIOLATION. That was documenting a guarantee that
+  # does not exist, and in the wrong direction: the degradation is not a false-red
+  # guard, it is a false-GREEN one. `ss -p` cannot attribute a socket owned by
+  # another uid without CAP_SYS_PTRACE, which Vast containers do not grant, so
+  # every service that drops privileges takes that branch — and WARNs do not set
+  # the return code. With EXPOSURE_ENFORCE true, this gate has been passing on
+  # precisely the listeners it cannot see. The ADR 0028 scanner runs in shadow
+  # alongside it and takes over after one clean promotion cycle.
   EXPOSURE_ENFORCE: "true"
 # QA gate floors (ADR 0005): smallest viable box above the declared floors, VRAM
 # bounded at 3x so a small claim is never tested on a huge box.

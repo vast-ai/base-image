@@ -8,8 +8,23 @@
 # sniffing the protocol (a curl probe is fail-open: e.g. jupyter:8080 is HTTP but
 # probes http=000). curl is used ONLY to enrich the message.
 #
-# Raw TCP/UDP (e.g. VNC) has no global auth mechanism, so an UNATTRIBUTABLE
-# (no-owning-process / platform) listener and any UDP are WARNed, not failed.
+# SHADOW MODE (ADR 0028 binding condition 3). Two verdicts are computed on every
+# run: the legacy one below, which still drives the exit code, and the ADR 0028 one
+# from exposure_scan.py, which is printed and decides nothing. It stays that way for
+# one full base promotion cycle across all twelve configs plus the comfyui and vLLM
+# gates, then the new verdict takes over. This replaces "advisory forever", which
+# ADR 0006's own amendment identified as a permanent green.
+#
+# WHAT THE LEGACY VERDICT GETS WRONG, and why it is still here: it treats an
+# UNATTRIBUTABLE listener as a WARN, on the inference that a socket with no owning
+# process belongs to the platform. That inference is false. `ss -p` resolves
+# /proc/<pid>/fd/*, which needs PTRACE_MODE_READ_FSCREDS for another uid, and Vast
+# containers do not grant CAP_SYS_PTRACE — measured, as root:
+#     ls /proc/783/fd          -> OK
+#     readlink /proc/783/fd/3  -> DENIED
+# So every service that drops privileges is invisible, WARNs, and does not set the
+# return code. On base-qa, where EXPOSURE_ENFORCE is true, the enforced gate passes
+# on exactly the listeners it cannot see (ADR 0028).
 #
 # ADVISORY until a clean baseline is proven across all images (ADR 0006 cond 2):
 # violations are reported but the test PASSES unless EXPOSURE_ENFORCE=true.
@@ -119,7 +134,10 @@ for proto, port, proc, pid in list(listeners("tcp", ["ss", "-ltnp"])) + \
     elif (port, proto) in allow:
         print(f"ok        {tag:<12} allowlisted ({allow[(port, proto)]}; {proc or '?'})")
     elif not proc and not pid:
-        print(f"WARN      {tag:<12} public, no owning process (platform/injected?) — unattributable")
+        print(f"WARN      {tag:<12} public, unattributable — NOT evidence of a platform "
+              f"listener: ss -p cannot see another uid's socket without CAP_SYS_PTRACE, "
+              f"so an in-container service that dropped privileges lands here too. "
+              f"This WARN does not set the return code; see the ADR 0028 shadow verdict below")
         warns += 1
     elif proto == "udp":
         print(f"WARN      {tag:<12} public UDP ({proc}) — no global auth gate; declare in exposure-allowlist/ if intended")
@@ -136,6 +154,21 @@ PY
 )
 rc=$?
 [[ -n "$scan_out" ]] && echo "$scan_out" | sed 's/^/  /'
+
+# ── ADR 0028 verdict, shadow mode: printed, decides nothing yet ───────────────
+# Deliberately does NOT touch rc. Binding condition 3 requires one full promotion
+# cycle of visible-but-inert output before this becomes the verdict, so that the
+# derivative fallout (linux-desktop's x11vnc, UnrealPixelStreaming's coturn) is
+# budgeted from real runs rather than discovered by a red gate.
+NEW_SCAN="$(dirname "$0")/exposure_scan.py"
+if [[ -f "$NEW_SCAN" ]]; then
+    echo "  ── ADR 0028 verdict (SHADOW — not gating) ──"
+    new_out=$(python3 "$NEW_SCAN" "$ALLOW_DIR" 2>&1); new_rc=$?
+    echo "$new_out" | sed 's/^/  /'
+    echo "  shadow verdict: exit ${new_rc} (0=clean 1=violations 2=decided nothing) — NOT applied"
+else
+    echo "  WARN: exposure_scan.py missing — the ADR 0028 shadow verdict did not run"
+fi
 
 # rc: 0 = clean, 1 = violations found, 2 = the scan itself could not run.
 # A tooling failure is never advisory — it means the check decided nothing, so it

@@ -3,7 +3,15 @@
 ## Status
 
 Accepted (conditional — see Binding conditions). **Supersedes ADR 0006 decision
-step 2 and amends binding conditions 1 and 5.** Not yet built.
+step 2 and amends binding conditions 1 and 5.**
+
+**Build status: shadow mode, 2026-08-24.** The scanner is implemented in
+`ROOT/opt/instance-tools/tests/base/exposure_scan.py` and runs on every cell
+alongside the legacy scan, printing its verdict and deciding nothing — binding
+condition 3. It takes over the exit code after one full base promotion cycle across
+all twelve configs plus the comfyui and vLLM gates. Binding conditions 1, 2 and 5
+are discharged; 4 (derivative fallout for linux-desktop and UnrealPixelStreaming) is
+what the shadow cycle is for.
 
 ## Date
 
