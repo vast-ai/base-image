@@ -234,9 +234,39 @@ Recorded here because the tempting resolutions are both worse than the finding, 
 because an undocumented open defect gets rediscovered as a surprise.
 
 `base/28` reports six to seven public listeners on the vLLM and vLLM-omni images —
-raylet (2), the dashboard agent (2), and two agent processes — on ephemeral ports
-that change every boot. Two attempts to remove them failed, both measured on live
-cells rather than reasoned about:
+raylet (2), the dashboard agent (2), and two agent processes — on ports that change
+every boot.
+
+**The range is known, and it is not the kernel's.** Ray does not `bind(0)` and let
+the OS assign from `ip_local_port_range`; it draws its own numbers
+(`ray/_private/services.py`):
+
+```python
+def new_port(lower_bound=10000, upper_bound=65535, denylist=None):
+    port = random.randint(lower_bound, upper_bound)
+```
+
+So the window is **10000-65535**, 55,536 ports, which matches every port observed
+live (33365, 39753, 42437, 44217, 44227, 46163, 53265). It is far too wide to
+declare: an allowlist entry covering it would pass essentially any high port, which
+is not a declaration but a disabled check.
+
+**A second consequence, and the more serious one.** That helper checks its choice
+against an in-process `denylist` only — the ports Ray has already picked this run.
+It does **not** test whether the port is free on the machine. (The bind-test in
+`services.py` around line 1235 is specific to the dashboard port and does not cover
+this path.) So Ray can select a port another service holds, or is about to hold.
+
+Our own fixed ports inside that window include `10199` (the instance-test harness),
+`18000` (vLLM's internal listener), `11111`, `16006`, `18080`, `18384` and `28265`.
+Boot order makes the exposure concrete: `ray.sh` starts Ray, Ray draws roughly six
+ports, and only then does `vllm.sh` start vLLM on 18000. A collision is around one
+boot in a thousand and presents as an unreproducible startup failure on an image
+that is otherwise fine — rare, loud rather than silent, and very hard to diagnose
+without this note.
+
+Two attempts to remove the listeners failed, both measured on live cells rather than
+reasoned about:
 
 - **Bind loopback.** Refused upstream. `--node-ip-address 127.0.0.1` is routed
   through `services.resolve_ip_for_localhost()`, documented as "Convert to a
