@@ -584,6 +584,17 @@ def check_bind(rep: Report, rep_port: int, tokens: list[str]) -> None:
 
 # ─────────────────────────────────────────────────────────── capability tiers
 
+# Statuses that mean "this deployment does not OFFER the capability", as opposed to
+# "it offers it and it is broken". 501 Not Implemented belongs here and was missing:
+# llama-server answers /v1/embeddings with
+#   501 {"message":"This server does not support embeddings. Start it with
+#        `--embeddings`","type":"not_supported_error"}
+# which is the engine answering the discovery question correctly, and the checker was
+# reporting it as a capability that failed. Discovery must not manufacture a finding
+# out of a clean "no" (ADR 0031 decision 6).
+NOT_OFFERED = (400, 404, 422, 501)
+
+
 def cap_tools(cli: Client, model: str, tokens: list[str]):
     """Forced tool choice: the model has no say in whether a call is emitted."""
     if not arg_present(tokens, ENGINE["tools_flag"]):
@@ -624,7 +635,7 @@ def cap_structured(cli: Client, model: str, _tokens: list[str]):
             "name": "probe", "schema": schema, "strict": True}},
     })
     doc = as_json(body)
-    if status in (400, 404, 422):
+    if status in NOT_OFFERED:
         return None, f"structured output not offered here (HTTP {status})"
     if status != 200 or doc is None:
         return False, f"json_schema request returned HTTP {status}: {body[:200]}"
@@ -641,7 +652,7 @@ def cap_embeddings(cli: Client, model: str, _tokens: list[str]):
     """Shape only: N inputs -> N vectors of one non-zero width."""
     status, body = cli.post("/v1/embeddings", {"model": model, "input": ["alpha", "beta"]})
     doc = as_json(body)
-    if status in (400, 404, 422):
+    if status in NOT_OFFERED:
         return None, f"this model does not serve embeddings (HTTP {status})"
     if status != 200 or doc is None:
         return False, f"/v1/embeddings returned HTTP {status}: {body[:200]}"

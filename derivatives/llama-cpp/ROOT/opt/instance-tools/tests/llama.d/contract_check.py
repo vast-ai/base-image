@@ -85,7 +85,27 @@ ENGINE = {
     # A deviation is only admissible when the defect is UPSTREAM (we cannot fix it)
     # and BOUNDED by another assertion in this file (so the hazard is still covered).
     # Both halves must be stated in the reason.
-    "deviations": {},
+    "deviations": {
+        "error-unknown-model":
+            "llama-server does not police the request's `model` field — it answers "
+            "HTTP 200 and serves whatever was loaded. UPSTREAM: no flag changes it. "
+            "BOUNDED: `identity` asserts /v1/models advertises EXACTLY --alias, so a "
+            "client that reads the model list can always tell what it is talking to. "
+            "Same deviation SGLang carries.",
+        "error-context-overflow":
+            "max_tokens beyond --ctx-size is accepted (HTTP 200) and silently clamped "
+            "rather than refused. UPSTREAM. BOUNDED: `token-arithmetic` and "
+            "`finish-reason` both pass, so the response reports what was actually "
+            "produced and a caller can see it got fewer tokens than it asked for.",
+        "error-malformed-body":
+            "A truncated JSON body gives HTTP 500 where the spec says 4xx. UPSTREAM. "
+            "BOUND IS WEAK, and saying so is the point: nothing else in this file "
+            "covers it. The only mitigation is that it fails LOUDLY — the caller gets "
+            "a 5xx, never a wrong answer — so a malformed request is never silently "
+            "mis-served. Declared on that basis rather than argued to be harmless, "
+            "and recorded in docs/invariants.md. If llama.cpp ever returns 4xx here "
+            "the self-expiry turns this into a violation and the entry goes.",
+    },
 }
 
 PROBE = [{"role": "user", "content": "contract probe"}]
@@ -586,6 +606,17 @@ def check_bind(rep: Report, rep_port: int, tokens: list[str]) -> None:
 
 # ─────────────────────────────────────────────────────────── capability tiers
 
+# Statuses that mean "this deployment does not OFFER the capability", as opposed to
+# "it offers it and it is broken". 501 Not Implemented belongs here and was missing:
+# llama-server answers /v1/embeddings with
+#   501 {"message":"This server does not support embeddings. Start it with
+#        `--embeddings`","type":"not_supported_error"}
+# which is the engine answering the discovery question correctly, and the checker was
+# reporting it as a capability that failed. Discovery must not manufacture a finding
+# out of a clean "no" (ADR 0031 decision 6).
+NOT_OFFERED = (400, 404, 422, 501)
+
+
 def cap_tools(cli: Client, model: str, tokens: list[str]):
     """Forced tool choice: the model has no say in whether a call is emitted."""
     if not arg_present(tokens, ENGINE["tools_flag"]):
@@ -626,7 +657,7 @@ def cap_structured(cli: Client, model: str, _tokens: list[str]):
             "name": "probe", "schema": schema, "strict": True}},
     })
     doc = as_json(body)
-    if status in (400, 404, 422):
+    if status in NOT_OFFERED:
         return None, f"structured output not offered here (HTTP {status})"
     if status != 200 or doc is None:
         return False, f"json_schema request returned HTTP {status}: {body[:200]}"
@@ -643,7 +674,7 @@ def cap_embeddings(cli: Client, model: str, _tokens: list[str]):
     """Shape only: N inputs -> N vectors of one non-zero width."""
     status, body = cli.post("/v1/embeddings", {"model": model, "input": ["alpha", "beta"]})
     doc = as_json(body)
-    if status in (400, 404, 422):
+    if status in NOT_OFFERED:
         return None, f"this model does not serve embeddings (HTTP {status})"
     if status != 200 or doc is None:
         return False, f"/v1/embeddings returned HTTP {status}: {body[:200]}"

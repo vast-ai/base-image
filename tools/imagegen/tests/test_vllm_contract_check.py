@@ -592,3 +592,16 @@ def test_no_deviations_declared_leaves_behaviour_unchanged():
     code, text = run_dev(c, {})
     assert any("error-unknown-model" in v for v in findings(text, "VIOLATION")), text
     assert code == 1
+
+
+def test_a_501_means_the_capability_is_not_offered_not_broken():
+    """llama-server answers /v1/embeddings with 501 and an explicit
+    "This server does not support embeddings. Start it with `--embeddings`".
+    That is the engine answering the discovery question correctly; reporting it as a
+    failed capability manufactures a finding out of a clean no."""
+    c = FakeClient(embeddings_status=501)
+    code, text = run(c)
+    assert any("cap:embeddings" in f for f in findings(text, "NA")), text
+    # and specifically NOT reported as a capability that exists and failed
+    assert not any("cap:embeddings" in f for f in findings(text, "ADVISORY")), text
+    assert not any("cap:embeddings" in f for f in findings(text, "VIOLATION")), text
