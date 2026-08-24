@@ -101,8 +101,28 @@ mkdir -p "$_tmp/home" "$_tmp/ws" "$_tmp/state" "$_tmp/hfhome"
 # proper, so this is not a privilege boundary — but "complete by construction"
 # has to mean the values too, or it is just a shorter deny-list.
 #
-#   PATH        pinned. The shim prepends its own venv, so this only has to
-#               cover the system tools the provisioner shells out to.
+#   PATH        pinned, and it must include the IMAGE-OWNED tool directories, not
+#               only the system ones. This used to read "the shim prepends its own
+#               venv, so this only has to cover the system tools" — which is true of
+#               production and false here, because `env -i` is exactly what removes
+#               the shim. The provisioner shells out to `supervisorctl` to register a
+#               service, and supervisor is installed into /opt/sys-venv by
+#               tools/convert-non-vast-image.sh, so it is reachable ONLY through
+#               these two directories.
+#
+#               Measured on the first SGLang QA cell ever run:
+#                 Service registration failed: [Errno 2] No such file or directory:
+#                 'supervisorctl'
+#               deterministically, on both cells and on the retry. vLLM passes the
+#               identical test only because its upstream base happens to ALSO put
+#               supervisorctl in /usr/local/bin — so the check's outcome depended on
+#               an accident of the base image rather than on anything this repo owns.
+#               That is the same fault the thread-cap note below names: a self-test
+#               that runs a configuration the fleet never runs.
+#
+#               Adding them does not weaken the allowlist. The point of pinning is to
+#               refuse a TEMPLATE-set PATH; these are baked, root-owned image paths
+#               that no template can influence.
 #   HOME        uv/pip write caches; without it they fall back to '/' and warn
 #   LANG        python's stdio encoding; a C locale mangles log output
 #   WORKSPACE   manifest.py defaults GIT-REPO dest paths under it
@@ -125,7 +145,7 @@ mkdir -p "$_tmp/home" "$_tmp/ws" "$_tmp/state" "$_tmp/hfhome"
 # CONTAINER_ID and CONTAINER_API_KEY are absent ON PURPOSE, not by oversight:
 # they are what failure.py needs to call the API, so without them the destroy
 # path cannot fire even if some future edit re-enables it.
-_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+_PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Validate each thread cap and collect the survivors as VAR=value assignments.
 _thread_env=()

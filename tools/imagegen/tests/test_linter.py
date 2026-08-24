@@ -2500,3 +2500,45 @@ def test_L074_literal_internal_entries_count_too(tmp_path):
     _allowlist(img, "9001/tcp internal something\n")
     _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "9001:9001"\n' + _FLOORS)
     assert has(img, tmp_path, "L074", "maps port 9001")
+
+
+# ---- L075: the selftest's pinned PATH must reach the image's own tools ----
+
+
+def _selftest(img, path_line):
+    d = img.dir / "ROOT/opt/instance-tools/tests/base"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "13-provisioner-selftest.sh").write_text(
+        "#!/bin/bash\n" + path_line + "\ntest_pass \"ok\"\n")
+
+
+def test_L075_a_system_only_path_fires(tmp_path):
+    """THE regression, measured on the first SGLang QA cell ever run:
+    `Service registration failed: [Errno 2] No such file or directory: 'supervisorctl'`
+    — deterministic on both cells and on the retry, while vLLM passed the identical
+    test because its upstream base also ships supervisorctl in /usr/local/bin. A
+    self-test whose verdict depends on the base image is testing the base image."""
+    img = make(tmp_path, cls="base")
+    _selftest(img, "_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    assert has(img, tmp_path, "L075", "/opt/sys-venv/shim")
+
+
+def test_L075_including_the_image_tool_dirs_is_clean(tmp_path):
+    img = make(tmp_path, cls="base")
+    _selftest(img, "_PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:/usr/bin:/bin")
+    assert "L075" not in errs(img, tmp_path)
+
+
+def test_L075_a_missing_pin_is_itself_the_finding(tmp_path):
+    """The pinned PATH is the point of the `env -i` run. If it is gone, the run is no
+    longer pinned and the rule cannot check what it exists to check."""
+    img = make(tmp_path, cls="base")
+    _selftest(img, "# no pin here")
+    assert has(img, tmp_path, "L075", "no _PATH assignment")
+
+
+def test_L075_is_scoped_to_base(tmp_path):
+    """The file ships in base and every other image inherits it; only base owns it."""
+    img = make(tmp_path, cls="pytorch-nested")
+    _selftest(img, "_PATH=/usr/bin:/bin")
+    assert "L075" not in errs(img, tmp_path)
