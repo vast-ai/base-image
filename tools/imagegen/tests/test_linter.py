@@ -1585,6 +1585,15 @@ _RULES_PATH_PLACEHOLDERS = {
     "/opt/supervisor-scripts/NAME.sh",     # L010: NAME stands for the app name
 }
 
+# Paths that are REAL on an instance but absent from ROOT/ because a build step
+# creates them. Allowing these by name would be a free pass, so each maps to the
+# file that creates it and the test asserts the path is still mentioned there — if
+# the creator stops making it, this fails instead of silently excusing a dead path.
+_RULES_BUILD_TIME_PATHS = {
+    "/opt/sys-venv": "tools/convert-non-vast-image.sh",
+    "/opt/sys-venv/shim": "tools/convert-non-vast-image.sh",
+}
+
 
 def test_rules_text_cites_paths_that_exist():
     """Every /opt path a RULES entry names must be real.
@@ -1606,6 +1615,14 @@ def test_rules_text_cites_paths_that_exist():
     for code, _sev, text in RULES:
         for p in sorted(set(pat.findall(text))):
             if p in _RULES_PATH_PLACEHOLDERS:
+                continue
+            creator = _RULES_BUILD_TIME_PATHS.get(p)
+            if creator:
+                # Not a free pass: the creator must still create it.
+                text_of = (repo / creator).read_text(encoding="utf-8", errors="replace")
+                if p not in text_of:
+                    missing.append(f"{code} cites {p} as build-time, but {creator} "
+                                   "no longer mentions it")
                 continue
             if not (root / p.lstrip("/")).exists():
                 missing.append(f"{code} cites {p}, which is not in ROOT/")

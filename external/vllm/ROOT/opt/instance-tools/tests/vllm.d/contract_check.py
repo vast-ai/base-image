@@ -68,6 +68,9 @@ ENGINE = {
     "context_flag": "--max-model-len",
     # Presence of this flag is how "the deployment offers tool calling" is DISCOVERED.
     "tools_flag": "--enable-auto-tool-choice",
+    # The flag that renames what /v1/models advertises. Identity is checked
+    # against this when present, and against the model env var otherwise.
+    "served_name_flag": "--served-model-name",
     # Checks this engine is KNOWN to fail, name -> why. A declared deviation is
     # REPORTED and does not block.
     #
@@ -729,7 +732,7 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
 
     # `--served-model-name` is what the id becomes when it is given; vLLM uses the
     # FIRST as the id and the rest as aliases, so the first is what must come back.
-    expected = first(arg_values(tokens, "--served-model-name"), args.model)
+    expected = first(arg_values(tokens, ENGINE["served_name_flag"]), args.model)
     if not expected:
         rep.error("identity", f"neither {ENGINE['model_env']} nor --served-model-name names a model")
         return _finish(rep, out)

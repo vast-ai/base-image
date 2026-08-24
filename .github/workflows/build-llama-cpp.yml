@@ -172,9 +172,74 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005). This image had NO gate: merge-manifests depended only
+  # on build, so an image that COMPILED was promoted whether or not it served.
+  #
+  # ONE cell, not a matrix: unlike vLLM and SGLang this workflow's matrix is over BASE
+  # IMAGES and there is currently exactly one, so the tag is derived the same way the
+  # build job derives it rather than from a merge-matrix that does not exist here.
+  qa:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'llama-cpp' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-12.9', needs.preflight.outputs.llama-cpp-version) }}-amd64
+      template_dir: derivatives/llama-cpp/templates/llama-cpp-qa
+      label: base-image-qa-llama-cpp
+      log_paths: "/var/log/portal/llama.log"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries llama.d/10-llama-serving llama.d/12-llama-contract"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Serverless cell (ADR 0031 decision 3). The ONLY product difference from the
+  # standard cell is SERVERLESS=true — BACKEND, MODEL_NAME and MODEL_LOG are all
+  # deliberately absent, because the image bakes BACKEND=llama and pyworker's core.py
+  # resolves the benchmark model from LLAMA_MODEL and the log path from its own
+  # EngineDefaults. Passing them would test our values instead of the image's.
+  #
+  # INSTANCE_TEST_REQUIRE_PASS is not a product difference: no customer template
+  # carries it. It is how the gate asserts, and this mode has more tests that must
+  # have passed because base/85 and the pyworker score stop being inert.
+  #
+  # IT DOES NOT GATE YET: merge-manifests lists it in `needs` so it is ORDERED ahead
+  # of the approval prompt, and its `if` does not require the result.
+  qa-serverless:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'llama-cpp' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-12.9', needs.preflight.outputs.llama-cpp-version) }}-amd64
+      template_dir: derivatives/llama-cpp/templates/llama-cpp-qa
+      label: base-image-qa-llama-cpp-serverless
+      log_paths: "/var/log/portal/llama.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
+      extra_env: |
+        SERVERLESS=true
+        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/12-llama-contract llama.d/20-serverless-pyworker
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/12-llama-contract llama.d/20-serverless-pyworker"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # start_server.sh aborts when BACKEND is set and HF_TOKEN is not.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  merge-manifests:
+    # qa-serverless is in `needs` to ORDER it ahead of the approval prompt and absent
+    # from the `if` so it cannot BLOCK. `!cancelled()` is what stops a failed
+    # serverless cell skipping this job, and it also switches off the implicit
+    # "skip if any needed job failed" — so the results that MUST still block are named.
+    needs: [preflight, build, qa, qa-serverless]
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
+      && needs.qa.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -257,11 +322,17 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, qa-serverless, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.merge-manifests.result }}
+      # Distinct failure labels from AGGREGATED .result: build broke vs the image
+      # built and does not serve vs promotion failed. The serverless clause sits
+      # AFTER promotion and leads with "promoted", because that cell does not gate —
+      # without it a red serverless cell marks the run failed while merge-manifests
+      # promoted, and Slack would read "Successful" beside a failed run.
+      headline: ${{ (needs.build.result != 'success' && 'llama.cpp build failed') || (needs.qa.result == 'failure' && 'llama.cpp QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'llama.cpp promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'llama.cpp promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'llama.cpp promoted — live-GPU QA passed') || '' }}
       image-name: "Llama.cpp"
       image-ref: ${{ needs.preflight.outputs.llama-cpp-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

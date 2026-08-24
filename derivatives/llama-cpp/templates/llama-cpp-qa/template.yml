@@ -1,0 +1,77 @@
+# llama.cpp QA template (ADR 0005 live-GPU QA gate; gate wiring per ADR 0031).
+#
+# Mirrors external/sglang/templates/sglang-qa, which mirrors vllm-qa. The genuine
+# differences are all llama.cpp's, and each is called out where it bites.
+#
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag.
+name: "llama.cpp QA — tiny-model smoke"
+image: vastai/llama-cpp
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8000:8000"                   # llama.cpp API (Caddy front; llama-server binds 18000)
+  # Mandatory for the serverless cell (L073): the platform injects VAST_TCP_PORT_<n>
+  # only for MAPPED ports, and the pyworker SDK looks that variable up unguarded.
+  - "3000:3000"                   # serverless worker (pyworker)
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # llama.sh sources exit_portal.sh "Llama.cpp", so it self-skips without a matching
+  # entry — the API entry is load-bearing for the launch path, not decoration.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/:Llama.cpp API|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  # Required-pass gate (ADR 0019/0031). 10-llama-serving opens with
+  #   [[ -n "${LLAMA_MODEL:-}" ]] || test_skip
+  # so without this, losing one line of this env block deletes the whole llama
+  # assertion set and the image still promotes green. Gated by L057 and L072.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries llama.d/10-llama-serving llama.d/12-llama-contract"
+  # The SAME model as the vLLM and SGLang gates, in the format this engine eats — the
+  # official Qwen GGUF repo rather than a third-party requant, so one fewer variable
+  # when comparing a failure across the three images. q8_0 is the least-lossy
+  # practical quant; this smoke certifies the serving path, not quantisation quality.
+  LLAMA_MODEL: "Qwen/Qwen2.5-0.5B-Instruct-GGUF:q8_0"
+  # EVERY ONE OF THESE IS LOAD-BEARING, and llama.cpp is unforgiving here:
+  #
+  #  --port      llama.sh is `${LLAMA_ARGS:---port 18000}`, so setting LLAMA_ARGS AT
+  #              ALL drops that default. Without it llama-server binds its own 8080
+  #              and every probe on 18000 times out. 10-llama-serving carries an
+  #              explicit hint for exactly this trap.
+  #  --host      stated rather than inherited, per the repo's explicit-bind rule.
+  #  --alias     llama-server advertises the GGUF PATH in /v1/models by default, so
+  #              the contract test's exact-identity check would fail against
+  #              LLAMA_MODEL. --alias is llama.cpp's --served-model-name.
+  #  --ctx-size  context window, read by the contract test to force a 4xx overflow.
+  LLAMA_ARGS: "--host 127.0.0.1 --port 18000 --alias Qwen/Qwen2.5-0.5B-Instruct-GGUF:q8_0 --ctx-size 4096"
+# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
+extra_filters:
+  # sm_75, not 800: llama.cpp builds generic CUDA kernels rather than requiring the
+  # newer feature levels vLLM and SGLang do, so it runs on a wider pool and there is
+  # no reason to exclude it.
+  compute_cap:
+    gte: 750
+  cuda_max_good:
+    gte: 12.9                     # matches the single base image this is built on
+  # A 0.5B q8_0 GGUF is well under a gigabyte, so this floor is headroom for the
+  # context and the CUDA runtime rather than the weights. Per-GPU, not summed:
+  # llama-server loads on one device here.
+  gpu_ram:
+    gte: 8192
+  reliability2:
+    gte: 0.95
+  inet_down:
+    gte: 500                      # Mbps — bounds the image pull inside the launch window
+  direct_port_count:
+    gte: 64                       # see templates/base-qa for the measurement
+  disk_space:
+    gte: 32                       # L058: must match recommended_disk_space or the rent fails late
+recommended_disk_space: 32.0

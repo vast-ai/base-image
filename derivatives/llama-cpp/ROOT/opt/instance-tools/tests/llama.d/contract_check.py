@@ -59,18 +59,20 @@ import urllib.request
 # DRIFT NOTE: nothing detects divergence between the copies. If you change anything
 # outside this block, change it in every copy.
 ENGINE = {
-    "name": "sglang",
-    "model_env": "SGLANG_MODEL",
-    "args_env": "SGLANG_ARGS",
-    "caps_env": "SGLANG_EXPECT_CAPS",
+    "name": "llama",
+    "model_env": "LLAMA_MODEL",
+    "args_env": "LLAMA_ARGS",
+    "caps_env": "LLAMA_EXPECT_CAPS",
     "default_port": 18000,
-    # SGLang calls the context window --context-length, not --max-model-len. Both are
-    # dataclass fields on ServerArgs, so the flag names are generated from them.
-    "context_flag": "--context-length",
-    # SGLang gates tool calling on a parser choice rather than an enable switch, so
-    # presence of --tool-call-parser is what DISCOVERS the capability here.
-    "tools_flag": "--tool-call-parser",
-    "served_name_flag": "--served-model-name",
+    # llama-server calls the context window --ctx-size (-c).
+    "context_flag": "--ctx-size",
+    # llama.cpp gates tool calling on the Jinja chat-template path, so --jinja is
+    # what DISCOVERS the capability here rather than a dedicated tool flag.
+    "tools_flag": "--jinja",
+    # llama-server names the served model with --alias, not --served-model-name. Its
+    # default is the GGUF file path, so a template that does not set --alias will
+    # legitimately fail `identity` — the template sets it to LLAMA_MODEL.
+    "served_name_flag": "--alias",
     # Checks this engine is KNOWN to fail, name -> why. A declared deviation is
     # REPORTED and does not block.
     #
@@ -83,16 +85,7 @@ ENGINE = {
     # A deviation is only admissible when the defect is UPSTREAM (we cannot fix it)
     # and BOUNDED by another assertion in this file (so the hazard is still covered).
     # Both halves must be stated in the reason.
-    "deviations": {
-        "error-unknown-model":
-            "SGLang does not police the request's `model` field — it answers HTTP 200 "
-            "and serves whatever it loaded, where vLLM returns 404. Measured on the "
-            "first SGLang QA cell. UPSTREAM: nothing this image can configure changes "
-            "it. BOUNDED: `identity` asserts /v1/models advertises EXACTLY the model "
-            "the template asked for, so a client that reads the model list can always "
-            "tell what it is talking to; what is missing is only the engine refusing a "
-            "request naming something else.",
-    },
+    "deviations": {},
 }
 
 PROBE = [{"role": "user", "content": "contract probe"}]
