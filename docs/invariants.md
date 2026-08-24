@@ -228,6 +228,38 @@ themselves as running after provisioning were racing it. **L065**
 `ROOT/opt/instance-tools/tests/**` and the derivative/external overlays;
 `lib.sh` is exempt because it is sourced, not executed.
 
+### The engines do not implement the same OpenAI contract — DECLARED (ADR 0031 6a)
+
+Measured on the first contract run of each engine, not inferred from documentation.
+Every one of these is upstream and unfixable from this repo, so each is a declared
+deviation in that image's `ENGINE["deviations"]` block: reported on every run, not
+blocking, and **automatically a violation again the day it stops reproducing**, so
+the entry cannot outlive the defect.
+
+| deviation | vLLM | SGLang | llama.cpp |
+|---|---|---|---|
+| unknown `model` refused with 4xx | yes | **no — 200** | **no — 200** |
+| malformed JSON refused with 4xx | yes | yes | **no — 500** |
+| `max_tokens` > context refused with 4xx | yes | yes | **no — 200, clamped** |
+
+**vLLM is the only one that implements all three.** That is worth knowing when
+choosing an engine for a customer who integrates against error codes.
+
+Each declaration must state UPSTREAM and BOUNDED, and two of the three are properly
+bounded: the unknown-model case by `identity` (which asserts `/v1/models` advertises
+exactly the requested name, so a client can always tell what it is talking to), and
+the context-overflow case by `token-arithmetic` and `finish-reason` (which report
+what was actually produced, so a caller can see it got fewer tokens than it asked
+for).
+
+**llama.cpp's malformed-body deviation is the one with a WEAK bound, recorded here
+because it was accepted knowingly rather than because it is harmless.** Nothing else
+in the suite covers it. Its only mitigation is that it fails LOUDLY — the caller
+receives a 5xx, never a wrong answer — so a malformed request is never silently
+mis-served. It is the single place in the contract suite where an assertion is
+switched off without another assertion standing behind it, and it should be the first
+thing revisited if llama.cpp's error handling changes.
+
 ### Ray's public listeners are an OPEN defect, not a declared exception
 
 Recorded here because the tempting resolutions are both worse than the finding, and

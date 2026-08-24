@@ -180,3 +180,38 @@ def test_a_caller_that_opts_into_require_tests_names_something(caller):
             f"{caller} passes an empty require_tests — that is a gate in name only"
         )
     assert seen, f"{caller} no longer passes require_tests — its gate lost its fail-not-skip half"
+
+
+# --- the throwaway template must be per-CELL, not per-template-file -----------
+
+
+def test_the_create_step_passes_a_per_cell_name_suffix():
+    """Template creation UPSERTS on the NAME, so cells sharing a template FILE share
+    one throwaway TEMPLATE — and the first to finish deletes it out from under the
+    rest.
+
+    Measured on the SGLang gate: four cells produced two template ids (607556,
+    607557); the serverless cu129 cell deleted 607557 at 14:12:51 and the standard
+    cu129 cell, still working through offers on that same template, got
+    "invalid template hash or id or template not accessible by user" on every attempt
+    after that instant. It surfaced as config_error and blocked the gate.
+
+    ADR 0031 decision 3 is what created the collision — "one template, two cells" —
+    so the fix belongs here rather than in the templates."""
+    body = _step("Create throwaway QA template")["run"]
+    assert "--name-suffix" in body, (
+        "cells sharing a template file would share one throwaway template id"
+    )
+    # label alone repeats across CUDA variants and tag alone repeats across the
+    # standard/serverless pair; only the two together are unique per cell.
+    assert "QA_LABEL" in body and "QA_TAG" in body
+
+
+def test_the_create_step_exports_what_the_suffix_reads():
+    """A suffix built from an unset variable silently degrades to a shared name —
+    the exact failure it exists to prevent, back again and harder to see."""
+    step = _step("Create throwaway QA template")
+    env = step.get("env") or {}
+    assert "QA_LABEL" in env and "QA_TAG" in env, (
+        f"the suffix reads QA_LABEL/QA_TAG; step env declares {sorted(env)}"
+    )

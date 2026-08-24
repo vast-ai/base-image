@@ -343,20 +343,29 @@ jobs:
       # likely to be the upstream bootstrap as the image, and ADR 0031 decision 5
       # requires that the two be distinguishable from the run output alone.
       log_paths: "/var/log/portal/vllm.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
-      # BACKEND=openai selects pyworker's workers/openai/worker.py, which hardcodes
-      # THIS image's internals — MODEL_SERVER_PORT 18000, /var/log/portal/vllm.log,
-      # and the supervisord strings "INFO exited: vllm" — with no test on either
-      # side until now. MODEL_NAME is not decoration: the benchmark generator raises
-      # ValueError("MODEL_NAME environment variable not set") and no score is ever
-      # written, so it must equal the served id exactly.
-      # INSTANCE_TEST_REQUIRE_PASS is overridden rather than widened in the template,
-      # because 20-serverless-pyworker is inert (is_serverless) on the standard cells
-      # and requiring it there would demand a pass from a test with nothing to assert.
+      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS SERVERLESS=true. That is
+      # the whole claim of the serverless-enablement work — one template, one env var
+      # — so a gate that quietly needed three more variables would not be testing it.
+      #
+      # MODEL_NAME is GONE and its absence is now part of the test. pyworker's
+      # core.py resolves the benchmark model from MODEL_NAME, VLLM_MODEL,
+      # SGLANG_MODEL or LLAMA_MODEL, precisely so an on-demand template that sets only
+      # the engine var works unchanged in serverless. The template sets the engine var,
+      # so passing MODEL_NAME here would paper over that resolution instead of
+      # exercising it. If it fails, the benchmark raises and 20-serverless-pyworker
+      # reds on a missing score — loudly, which is what we want.
+      #
+      # MODEL_LOG is GONE for the same reason: the worker's EngineDefaults already
+      # carry this engine's log path, and passing it tested our value rather than the
+      # image's.
+      #
+      # INSTANCE_TEST_REQUIRE_PASS stays, and is NOT a product difference. No customer
+      # template carries it — it is how the gate asserts, and the serverless cell has
+      # more tests that must have passed (base/85 and the pyworker score) because in
+      # this mode they are no longer inert. Keeping it here is the difference between
+      # QA scaffolding and the template's own configuration.
       extra_env: |
         SERVERLESS=true
-        BACKEND=openai
-        MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
-        MODEL_LOG=/var/log/portal/vllm.log
         INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
       require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
       retries: 2

@@ -222,13 +222,25 @@ jobs:
         env:
           STAGING_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
           SET_FILTERS: ${{ inputs.set_filters }}
+          QA_LABEL: ${{ inputs.label }}
+          QA_TAG: ${{ inputs.tag }}
         run: |
           IMAGE="${STAGING_NS}/${{ inputs.repo }}"
           echo "Testing ${IMAGE}:${{ inputs.tag }}"
           SF=()
           for f in ${SET_FILTERS}; do SF+=(--set-filter "$f"); done
+          # --name-suffix is not cosmetic. Template creation UPSERTS on the NAME, so
+          # every cell launching from the same template file shares ONE throwaway
+          # template — and the first cell to finish deletes it out from under the
+          # rest. Measured on the SGLang gate: four cells produced two ids, the
+          # serverless cu129 cell deleted 607557 at 14:12:51, and the standard cu129
+          # cell got "invalid template hash or id or template not accessible by user"
+          # on every launch attempt after that instant, which read as a config_error
+          # and blocked the gate. label+tag is unique per cell, which is exactly the
+          # granularity that was missing.
           python "${TM}/create.py" "${{ github.workspace }}/${{ inputs.template_dir }}" \
             --image "${IMAGE}" --tag "${{ inputs.tag }}" \
+            --name-suffix "${QA_LABEL} ${QA_TAG}" \
             "${SF[@]}" \
             --emit-result /tmp/qa-create.json
           python - <<'PY' >> "$GITHUB_OUTPUT"

@@ -59,18 +59,20 @@ import urllib.request
 # DRIFT NOTE: nothing detects divergence between the copies. If you change anything
 # outside this block, change it in every copy.
 ENGINE = {
-    "name": "vllm",
-    "model_env": "VLLM_MODEL",
-    "args_env": "VLLM_ARGS",
-    "caps_env": "VLLM_EXPECT_CAPS",
+    "name": "llama",
+    "model_env": "LLAMA_MODEL",
+    "args_env": "LLAMA_ARGS",
+    "caps_env": "LLAMA_EXPECT_CAPS",
     "default_port": 18000,
-    # The flag that declares the context window, used to force a 4xx overflow.
-    "context_flag": "--max-model-len",
-    # Presence of this flag is how "the deployment offers tool calling" is DISCOVERED.
-    "tools_flag": "--enable-auto-tool-choice",
-    # The flag that renames what /v1/models advertises. Identity is checked
-    # against this when present, and against the model env var otherwise.
-    "served_name_flag": "--served-model-name",
+    # llama-server calls the context window --ctx-size (-c).
+    "context_flag": "--ctx-size",
+    # llama.cpp gates tool calling on the Jinja chat-template path, so --jinja is
+    # what DISCOVERS the capability here rather than a dedicated tool flag.
+    "tools_flag": "--jinja",
+    # llama-server names the served model with --alias, not --served-model-name. Its
+    # default is the GGUF file path, so a template that does not set --alias will
+    # legitimately fail `identity` — the template sets it to LLAMA_MODEL.
+    "served_name_flag": "--alias",
     # Checks this engine is KNOWN to fail, name -> why. A declared deviation is
     # REPORTED and does not block.
     #
@@ -83,7 +85,27 @@ ENGINE = {
     # A deviation is only admissible when the defect is UPSTREAM (we cannot fix it)
     # and BOUNDED by another assertion in this file (so the hazard is still covered).
     # Both halves must be stated in the reason.
-    "deviations": {},
+    "deviations": {
+        "error-unknown-model":
+            "llama-server does not police the request's `model` field — it answers "
+            "HTTP 200 and serves whatever was loaded. UPSTREAM: no flag changes it. "
+            "BOUNDED: `identity` asserts /v1/models advertises EXACTLY --alias, so a "
+            "client that reads the model list can always tell what it is talking to. "
+            "Same deviation SGLang carries.",
+        "error-context-overflow":
+            "max_tokens beyond --ctx-size is accepted (HTTP 200) and silently clamped "
+            "rather than refused. UPSTREAM. BOUNDED: `token-arithmetic` and "
+            "`finish-reason` both pass, so the response reports what was actually "
+            "produced and a caller can see it got fewer tokens than it asked for.",
+        "error-malformed-body":
+            "A truncated JSON body gives HTTP 500 where the spec says 4xx. UPSTREAM. "
+            "BOUND IS WEAK, and saying so is the point: nothing else in this file "
+            "covers it. The only mitigation is that it fails LOUDLY — the caller gets "
+            "a 5xx, never a wrong answer — so a malformed request is never silently "
+            "mis-served. Declared on that basis rather than argued to be harmless, "
+            "and recorded in docs/invariants.md. If llama.cpp ever returns 4xx here "
+            "the self-expiry turns this into a violation and the entry goes.",
+    },
 }
 
 PROBE = [{"role": "user", "content": "contract probe"}]

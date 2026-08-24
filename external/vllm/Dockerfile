@@ -67,6 +67,30 @@ RUN \
 # vllm pick them up.  Also enables volume sync of the environment.
 RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
 
+# Serverless (autoscaler) PyWorker defaults, overridable by the launch template
+# (docker -e / template env: wins over image ENV). No-op on-demand: pyworker.sh runs the
+# worker only when SERVERLESS=true. BACKEND=vllm selects workers/vllm — a thin adapter
+# over the shared OpenAI-compatible core in workers/openai/core.py — now that the
+# per-engine split has landed upstream. `openai` remains a backwards-compatible alias
+# that imports the same module, so this could say either; `vllm` is the honest name and
+# matches what sglang and llama.cpp bake, rather than leaving one image on the legacy
+# alias. The cost of the choice is that this image now REQUIRES a pyworker containing the
+# split — which is always true, because pyworker.sh fetches main at every boot, and is
+# only a consideration if that split were ever reverted.
+#
+# MODEL_LOAD_LOG_MSG is the log line the worker waits on to mark the model loaded. It was
+# inert until the split — the old worker had it as a Python constant — and core.py now
+# reads it via os.environ. It can change between engine versions, and the image is the
+# only layer version-locked to the engine build, so the image owns it.
+ENV BACKEND=vllm
+ENV MODEL_LOAD_LOG_MSG="Application startup complete."
+
+# Reserve the serverless worker port (WORKER_PORT default 3000). EXPOSE makes Vast map
+# it, so VAST_TCP_PORT_3000 is set for the worker's self-report with NO template
+# port entry. Only on these serverless images (not base-inherited); unbound and harmless
+# on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
+EXPOSE 3000
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 

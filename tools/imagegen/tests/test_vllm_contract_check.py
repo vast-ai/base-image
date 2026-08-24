@@ -143,7 +143,7 @@ def run(client, *, expect_caps="", model=MODEL, args=ARGS):
         # `--opt=value`, matching the wrapper: argparse reads a value starting with
         # `-` as an option unless it contains a space, so `--vllm-args --enforce-eager`
         # dies on a usage error. The tests send what the shell sends.
-        code = cc.main([f"--model={model}", f"--vllm-args={args}",
+        code = cc.main([f"--model={model}", f"--engine-args={args}",
                         f"--expect-caps={expect_caps}"], out=out)
     finally:
         cc.Client = monkey
@@ -440,9 +440,9 @@ def test_unknown_declared_capability_is_an_error():
 # ---------------------------------------------------------------- exit codes
 
 
-def test_unparseable_vllm_args_stops_before_asserting_anything():
+def test_unparseable_engine_args_stops_before_asserting_anything():
     code, text = run(FakeClient(), args='--host "unterminated')
-    assert any("vllm-args" in f for f in findings(text, "ERROR")), text
+    assert any("engine-args" in f for f in findings(text, "ERROR")), text
     assert code == 2
 
 
@@ -535,3 +535,73 @@ def test_token_count_refuses_to_guess():
     unrecognised shape must decide nothing rather than decide wrongly."""
     for bad in (None, "31 tokens", {}, {"attention_mask": [1]}, [], [[1], [2]], [object()]):
         assert cc._token_count(bad) is None, bad
+
+
+# ---------------------------------------------------------------- declared deviations
+
+
+def run_dev(client, deviations, **kw):
+    """Drive main() with a deviation set, the way an ENGINE block would supply one."""
+    out = io.StringIO()
+    real_report, real_client = cc.Report, cc.Client
+    cc.Client = lambda *a, **k: client                            # noqa: ARG005
+    cc.Report = lambda o=out, d=None: real_report(o, deviations)  # noqa: ARG005
+    try:
+        code = cc.main([f"--model={kw.get('model', MODEL)}",
+                        f"--vllm-args={kw.get('args', ARGS)}".replace("--vllm-args", "--engine-args"),
+                        "--expect-caps="], out=out)
+    finally:
+        cc.Report, cc.Client = real_report, real_client
+    return code, out.getvalue()
+
+
+def test_a_declared_deviation_is_reported_and_does_not_block():
+    """SGLang answers HTTP 200 for a model that does not exist, where vLLM returns
+    404. Upstream, unfixable here, and BOUNDED — `identity` still asserts /v1/models
+    advertises exactly the requested model, so a client can always tell what it is
+    talking to."""
+    c = FakeClient(unknown_status=200)
+    code, text = run_dev(c, {"error-unknown-model": "SGLang does not police `model`"})
+    assert findings(text, "DEVIATION"), text
+    assert not findings(text, "VIOLATION"), text
+    assert code == 0
+
+
+def test_a_deviation_that_stops_reproducing_becomes_a_violation():
+    """THE property that stops this being an exemption cycle. If the engine starts
+    behaving, the declaration has outlived the defect and the gate must say so —
+    otherwise a deviation is an exemption with better manners, and it accumulates
+    exactly the way ADR 0031 says option B's opt-outs did."""
+    c = FakeClient(unknown_status=404)                    # engine now behaves
+    code, text = run_dev(c, {"error-unknown-model": "SGLang does not police `model`"})
+    viol = findings(text, "VIOLATION")
+    assert any("error-unknown-model" in v and "delete the entry" in v for v in viol), text
+    assert code == 1
+
+
+def test_an_undeclared_failure_is_still_a_violation():
+    """A deviation set must not soften anything it does not name."""
+    c = FakeClient(malformed_status=200)
+    code, text = run_dev(c, {"error-unknown-model": "unrelated"})
+    assert any("error-malformed-body" in v for v in findings(text, "VIOLATION")), text
+    assert code == 1
+
+
+def test_no_deviations_declared_leaves_behaviour_unchanged():
+    c = FakeClient(unknown_status=200)
+    code, text = run_dev(c, {})
+    assert any("error-unknown-model" in v for v in findings(text, "VIOLATION")), text
+    assert code == 1
+
+
+def test_a_501_means_the_capability_is_not_offered_not_broken():
+    """llama-server answers /v1/embeddings with 501 and an explicit
+    "This server does not support embeddings. Start it with `--embeddings`".
+    That is the engine answering the discovery question correctly; reporting it as a
+    failed capability manufactures a finding out of a clean no."""
+    c = FakeClient(embeddings_status=501)
+    code, text = run(c)
+    assert any("cap:embeddings" in f for f in findings(text, "NA")), text
+    # and specifically NOT reported as a capability that exists and failed
+    assert not any("cap:embeddings" in f for f in findings(text, "ADVISORY")), text
+    assert not any("cap:embeddings" in f for f in findings(text, "VIOLATION")), text

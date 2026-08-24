@@ -266,9 +266,109 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005), calling the reusable qa-gate.yml once per promoted
+  # variant (amd64). Per-image specifics live here; the shared core lives in
+  # qa-gate.yml. This image had NO gate at all until now — merge-manifests depended
+  # only on build, so an image that compiled was promoted whether or not it served.
+  qa:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'sglang' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.sglang-version }}-cuda-${{ matrix.cuda }}-amd64
+      template_dir: external/sglang/templates/sglang-qa
+      label: base-image-qa-sglang
+      log_paths: "/var/log/portal/sglang.log"
+      # CI-side half of the template's INSTANCE_TEST_REQUIRE_PASS (ADR 0019/0031).
+      # Declared in BOTH places on purpose: the runner enforces it in-instance, and
+      # this enforces it against the verdict payload, so a template edit that drops
+      # the env var still cannot produce a passing gate.
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries sglang.d/10-sglang-serving sglang.d/12-sglang-contract"
+      # ADR 0029 condition 5: the redraw rule is not forked per image.
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Serverless cell (ADR 0031 decision 3), on every CUDA variant. An ordinary
+  # on-demand rental differing only by SERVERLESS=true and the worker env that
+  # entails; the autoscaler path itself is out of scope.
+  #
+  # BACKEND is deliberately ABSENT: the image bakes ENV BACKEND=sglang, and that bake
+  # is the claim under test. Setting it here would override it with docker -e and
+  # test the template instead. It also fails loudly if the bake is missing —
+  # start_server.sh resolves workers/$BACKEND/worker.py, an empty BACKEND matches
+  # nothing, and 20-serverless-pyworker reds on "nothing is listening on :3000".
+  #
+  # IT DOES NOT GATE YET (ADR 0006 condition 2's ramp). merge-manifests lists it in
+  # `needs` so it is ORDERED ahead of the production approval prompt — a human is
+  # never asked to approve before this cell's evidence exists — but its `if` does not
+  # require the result. Promote it by adding needs.qa-serverless.result == 'success'
+  # to that `if` after two consecutive green runs.
+  qa-serverless:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'sglang' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.sglang-version }}-cuda-${{ matrix.cuda }}-amd64
+      template_dir: external/sglang/templates/sglang-qa
+      label: base-image-qa-sglang-serverless
+      log_paths: "/var/log/portal/sglang.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
+      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS SERVERLESS=true. That is
+      # the whole claim of the serverless-enablement work — one template, one env var
+      # — so a gate that quietly needed three more variables would not be testing it.
+      #
+      # MODEL_NAME is GONE and its absence is now part of the test. pyworker's
+      # core.py resolves the benchmark model from MODEL_NAME, VLLM_MODEL,
+      # SGLANG_MODEL or LLAMA_MODEL, precisely so an on-demand template that sets only
+      # the engine var works unchanged in serverless. The template sets the engine var,
+      # so passing MODEL_NAME here would paper over that resolution instead of
+      # exercising it. If it fails, the benchmark raises and 20-serverless-pyworker
+      # reds on a missing score — loudly, which is what we want.
+      #
+      # MODEL_LOG is GONE for the same reason: the worker's EngineDefaults already
+      # carry this engine's log path, and passing it tested our value rather than the
+      # image's.
+      #
+      # INSTANCE_TEST_REQUIRE_PASS stays, and is NOT a product difference. No customer
+      # template carries it — it is how the gate asserts, and the serverless cell has
+      # more tests that must have passed (base/85 and the pyworker score) because in
+      # this mode they are no longer inert. Keeping it here is the difference between
+      # QA scaffolding and the template's own configuration.
+      extra_env: |
+        SERVERLESS=true
+        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  merge-manifests:
+    # qa-serverless is in `needs` to ORDER it and absent from the `if` so it cannot
+    # BLOCK. `!cancelled()` is what stops a failed serverless cell skipping this job,
+    # and it also switches off the implicit "skip if any needed job failed" — so the
+    # two results that MUST still block are named explicitly.
+    needs: [preflight, build, qa, qa-serverless]
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
+      && needs.qa.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -348,11 +448,20 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, qa-serverless, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.merge-manifests.result }}
+      # Distinct failure labels from AGGREGATED .result (never matrix .outputs), so a
+      # reader can tell "the image did not build" from "the image built and does not
+      # serve" from "promotion failed". Empty on success -> notify-slack renders its
+      # default. The serverless clause sits AFTER promotion and leads with "promoted",
+      # because that cell does not gate: without it a red serverless cell would mark
+      # the run failed while merge-manifests had promoted, and Slack would read
+      # "Successful" beside a failed run. Delete that clause when the cell becomes
+      # blocking.
+      headline: ${{ (needs.build.result != 'success' && 'SGLang build failed') || (needs.qa.result == 'failure' && 'SGLang QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'SGLang promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'SGLang promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'SGLang promoted — live-GPU QA passed') || '' }}
       image-name: "SGLang"
       image-ref: ${{ needs.preflight.outputs.sglang-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

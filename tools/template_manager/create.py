@@ -196,6 +196,7 @@ def process_template_dir(
     image_override: Optional[str] = None,
     tag_override: Optional[str] = None,
     set_filters: Optional[List[str]] = None,
+    name_suffix: Optional[str] = None,
 ) -> List[dict]:
     """
     Process a single template directory (template.yml + optional README.md).
@@ -208,6 +209,20 @@ def process_template_dir(
         image_override / tag_override: replace the template's ``image``/``tag``
             before POST — used by CI to point a QA template at a freshly-built
             staging tag.
+        name_suffix: appended to the template's NAME before POST, and it is not
+            cosmetic. Creating a template is an UPSERT on the Vast side, keyed on the
+            name: two POSTs of the same name return the SAME template id. A QA gate
+            that runs several cells from one template file therefore has them all
+            sharing one throwaway template, and the first cell to finish deletes it
+            out from under the others.
+
+            Measured on the SGLang gate: four cells produced two ids (607556, 607557),
+            the serverless cu129 cell deleted 607557 at 14:12:51, and the standard
+            cu129 cell — still working through offers on that same template — got
+            `invalid template hash or id or template not accessible by user` on every
+            attempt after that instant. It read as a config_error and blocked the gate.
+
+            A per-cell suffix makes the throwaway template genuinely per-cell.
 
     Returns list of result dicts for logging.
     """
@@ -216,6 +231,8 @@ def process_template_dir(
 
     templates = load_template_from_yaml(yaml_path)
     for t in templates:
+        if name_suffix:
+            t.name = f"{t.name} [{name_suffix}]"
         if image_override is not None:
             t.image = image_override
         if tag_override is not None:
@@ -266,8 +283,17 @@ def process_single_file(
     readme_override: Optional[Path] = None,
     image_override: Optional[str] = None,
     tag_override: Optional[str] = None,
+    set_filters: Optional[List[str]] = None,
+    name_suffix: Optional[str] = None,
 ) -> List[dict]:
     """Process a standalone YAML file (backward-compatible mode).
+
+    set_filters and name_suffix are accepted and forwarded because ``run`` splats the
+    SAME override dict into both this and ``process_template_dir``. set_filters was
+    already in that dict and not in this signature, so every single-file invocation
+    raised TypeError before reaching the API — a whole entry point broken by a keyword
+    nobody passed positionally. Found while adding name_suffix, which would have
+    widened the same hole.
 
     Delegates to process_template_dir using the file's parent directory.
     When no readme_override is provided, passes a non-existent sentinel
@@ -281,6 +307,7 @@ def process_single_file(
         yaml_path.parent, manager, dry_run,
         readme_override=effective_readme, yaml_filename=yaml_path.name,
         image_override=image_override, tag_override=tag_override,
+        set_filters=set_filters, name_suffix=name_suffix,
     )
 
     # Strip the "dir" key that process_template_dir adds
@@ -334,10 +361,10 @@ def _print_hash_line(r: Dict):
 
 def run(path: Path, api_key: str, dry_run: bool, readme: Optional[Path] = None,
         image_override: Optional[str] = None, tag_override: Optional[str] = None,
-        set_filters: Optional[List[str]] = None):
+        set_filters: Optional[List[str]] = None, name_suffix: Optional[str] = None):
     """Main entry point."""
     over = {"image_override": image_override, "tag_override": tag_override,
-            "set_filters": set_filters}
+            "set_filters": set_filters, "name_suffix": name_suffix}
     with TemplateManager(api_key=api_key) as manager:
         all_results = []
 
@@ -439,6 +466,13 @@ Examples:
         help="Delete a template by numeric id and exit (teardown of a throwaway QA template)",
     )
     parser.add_argument(
+        "--name-suffix",
+        help="Append to the template name before POST. Template creation UPSERTS on "
+             "the name, so several CI cells sharing one template file otherwise share "
+             "one throwaway template — and the first to finish deletes it out from "
+             "under the rest. Pass something unique per cell.",
+    )
+    parser.add_argument(
         "--emit-result",
         type=Path,
         metavar="PATH",
@@ -480,7 +514,7 @@ Examples:
     try:
         results = run(args.path, api_key or "", args.dry_run, readme=args.readme,
                       image_override=args.image, tag_override=args.tag,
-                      set_filters=args.set_filter)
+                      set_filters=args.set_filter, name_suffix=args.name_suffix)
     except urllib.error.HTTPError as e:
         # The API-layer handler already printed the status + body; exit cleanly
         # (no traceback) so CI logs show the actionable message, not a stack.

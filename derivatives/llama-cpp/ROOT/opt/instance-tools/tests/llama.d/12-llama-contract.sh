@@ -1,13 +1,13 @@
 #!/bin/bash
 # Test: the OpenAI surface this image serves, asserted deterministically (ADR 0031).
 #
-# 10-vllm-serving.sh answers "did the engine come up and emit a token". This answers
+# 10-llama-serving.sh answers "did the engine come up and emit a token". This answers
 # "is what it serves the thing the template asked for, shaped the way a client
 # integrates against". The two are separate files on purpose: 10 is REQUIRED by the
 # gate today, and mixing a ramping assertion set into a required test would promote
 # every new check to blocking on the day it was written.
 #
-# ENFORCING BY DEFAULT, with `VLLM_CONTRACT_ENFORCE=false` as the escape hatch —
+# ENFORCING BY DEFAULT, with `LLAMA_CONTRACT_ENFORCE=false` as the escape hatch —
 # the inverse of how this file first shipped. It landed advisory under ADR 0006
 # condition 2's ramp, ran clean on real hardware (10 ok, 0 errors), and the one
 # violation it raised was a bug in the checker rather than the image. The ramp did
@@ -21,7 +21,8 @@
 #
 # The assertions live in contract_check.py beside this file — structured logic is
 # Python here (CLAUDE.md), and that file is unit-tested off-box in
-# tools/imagegen/tests/test_vllm_contract_check.py rather than only on a rented GPU.
+# tools/imagegen/tests/test_vllm_contract_check.py — the checker is one file with a
+# single engine-specific block, so those tests cover this copy's logic too.
 # It is NOT discovered as a test: runner.sh finds `-name '*.sh' -executable`.
 # TEST_TIMEOUT=1800
 source "$(dirname "$0")/../lib.sh"
@@ -29,31 +30,31 @@ source "$(dirname "$0")/../lib.sh"
 CHECKER="$(dirname "$0")/contract_check.py"
 
 # Inert, not skip-as-pass: with no model configured there is no served surface to make
-# claims about. 10-vllm-serving is the file the gate REQUIRES, so an image that lost
-# VLLM_MODEL is already red there (L057/L072) rather than quietly green here.
-[[ -n "${VLLM_MODEL:-}" ]] || test_skip "VLLM_MODEL not set — no served surface to assert"
+# claims about. 10-llama-serving is the file the gate REQUIRES, so an image that lost
+# LLAMA_MODEL is already red there (L057/L072) rather than quietly green here.
+[[ -n "${LLAMA_MODEL:-}" ]] || test_skip "LLAMA_MODEL not set — no served surface to assert"
 [[ -f "$CHECKER" ]] || test_fail "contract_check.py missing beside this test — the assertions cannot run"
 
-VLLM_INTERNAL_PORT="${VLLM_INTERNAL_PORT:-18000}"
+LLAMA_INTERNAL_PORT="${LLAMA_INTERNAL_PORT:-18000}"
 # Read the port the template actually launched with, so a template that moves the
 # engine does not silently probe an empty socket and report "not healthy".
-_declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${VLLM_ARGS:-}" | head -1)
-[[ -n "$_declared_port" ]] && VLLM_INTERNAL_PORT="$_declared_port"
+_declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${LLAMA_ARGS:-}" | head -1)
+[[ -n "$_declared_port" ]] && LLAMA_INTERNAL_PORT="$_declared_port"
 
-VLLM_API="http://127.0.0.1:${VLLM_INTERNAL_PORT}"
+LLAMA_API="http://127.0.0.1:${LLAMA_INTERNAL_PORT}"
 # Sized for a cold start, not for the common case: this file normally runs after
-# 10-vllm-serving has already waited out model load, but it must also hold when run
+# 10-llama-serving has already waited out model load, but it must also hold when run
 # alone from an SSH session on a box that has just booted.
-CONTRACT_READY_TIMEOUT="${VLLM_CONTRACT_READY_TIMEOUT:-1200}"
+CONTRACT_READY_TIMEOUT="${LLAMA_CONTRACT_READY_TIMEOUT:-1200}"
 
 echo ""
 echo "  -- readiness --"
-wait_for_url "${VLLM_API}/health" "$CONTRACT_READY_TIMEOUT" \
-    || test_fail "vLLM /health not reachable on :${VLLM_INTERNAL_PORT} after ${CONTRACT_READY_TIMEOUT}s"
-echo "  vLLM healthy on :${VLLM_INTERNAL_PORT}"
+wait_for_url "${LLAMA_API}/health" "$CONTRACT_READY_TIMEOUT" \
+    || test_fail "llama.cpp /health not reachable on :${LLAMA_INTERNAL_PORT} after ${CONTRACT_READY_TIMEOUT}s"
+echo "  llama.cpp healthy on :${LLAMA_INTERNAL_PORT}"
 
 # The checker's chat-template round trip needs the interpreter that has transformers,
-# which is vLLM's own venv — /venv/main is what vllm.sh activates before `vllm serve`.
+# which is llama.cpp's own venv — /venv/main is what llama.sh activates before `llama-server`.
 # Falling back to python3 is not a failure: the round trip reports n/a with its reason
 # and every other assertion is stdlib-only.
 PY=python3
@@ -76,24 +77,23 @@ echo "  -- contract --"
 # sets it is the QA client. A customer instance never starts the runner at all.
 #
 # `false` therefore exists for a QA TEMPLATE that legitimately diverges, not for a
-# customer. The assertion most likely to want it is bind-loopback: `vllm serve`
-# binds ALL interfaces when --host is absent (api_server.py:
-# `sock_addr = (args.host or "", args.port)`) and vllm.sh injects no host, so a
-# template whose VLLM_ARGS omits --host fails here — correctly, since that cell
-# would be serving the engine past the Caddy auth gate.
-enforce="${VLLM_CONTRACT_ENFORCE:-true}"
+# customer. The assertion most likely to want it is bind-loopback: the template states
+# `--host 127.0.0.1` explicitly rather than relying on llama-server's default, and a
+# template that sets 0.0.0.0 fails here — correctly, since that cell would be serving
+# the engine past the Caddy auth gate.
+enforce="${LLAMA_CONTRACT_ENFORCE:-true}"
 report=$(mktemp)
 # `--opt=value`, not `--opt value`, for the two operator-supplied strings. argparse
 # treats a value beginning with `-` as an option UNLESS it contains a space, so a
-# single-token VLLM_ARGS — `--enforce-eager`, which is a legitimate value — is read
+# single-token LLAMA_ARGS — `--enforce-eager`, which is a legitimate value — is read
 # as an unknown FLAG and the checker exits 2 on a usage error before asserting
 # anything. The `=` form has no such ambiguity. Found by a unit test, not on a box.
 "$PY" "$CHECKER" \
-    --base-url="$VLLM_API" \
-    --port="$VLLM_INTERNAL_PORT" \
-    --model="$VLLM_MODEL" \
-    --engine-args="${VLLM_ARGS:-}" \
-    --expect-caps="${VLLM_EXPECT_CAPS:-}" \
+    --base-url="$LLAMA_API" \
+    --port="$LLAMA_INTERNAL_PORT" \
+    --model="$LLAMA_MODEL" \
+    --engine-args="${LLAMA_ARGS:-}" \
+    --expect-caps="${LLAMA_EXPECT_CAPS:-}" \
     > "$report" 2>&1
 rc=$?
 
@@ -120,7 +120,7 @@ if (( violations > 0 )); then
     else
         echo ""
         echo "  ADVISORY: ${violations} contract violation(s) above are REPORTED, not gating"
-        echo "  (VLLM_CONTRACT_ENFORCE=false — ADR 0031 decision 7: two consecutive green"
+        echo "  (LLAMA_CONTRACT_ENFORCE=false — ADR 0031 decision 7: two consecutive green"
         echo "   promotes with this block clean, then set it true in the QA template)"
     fi
 fi
@@ -145,6 +145,6 @@ rm -f "$report"
 
 report_failures
 if [[ "${enforce,,}" == "true" ]]; then
-    test_pass "vLLM API contract verified — enforcing, ${violations} violation(s)"
+    test_pass "llama.cpp API contract verified — enforcing, ${violations} violation(s)"
 fi
-test_pass "vLLM API contract checks complete — ${violations} violation(s), advisory (VLLM_CONTRACT_ENFORCE=false)"
+test_pass "llama.cpp API contract checks complete — ${violations} violation(s), advisory (LLAMA_CONTRACT_ENFORCE=false)"

@@ -1,0 +1,99 @@
+# SGLang QA template (ADR 0005 live-GPU QA gate; gate wiring per ADR 0031).
+#
+# Modelled on external/vllm/templates/vllm-qa, which this deliberately mirrors: the two
+# images serve the same OpenAI surface through the same internal port behind the same
+# Caddy front, so a reader comparing them should find the differences to be real ones.
+# The real ones are: SGLang needs no Ray (so no dashboard entry and none of vLLM's Ray
+# exposure), and its flag names differ.
+#
+# QA-only deltas from a production launch (ADR 0005: the smoke model is not the
+# production model):
+#  - SGLANG_MODEL is a deliberately TINY chat model. sglang.d/10-sglang-serving hits
+#    /v1/models and the contract test drives /v1/chat/completions and /v1/completions,
+#    so it must be chat-capable. Same model as the vLLM gate on purpose — one fewer
+#    variable when comparing a failure across the two images.
+#  - Single-GPU smoke: AUTO_PARALLEL off, so no --tensor-parallel-size is appended.
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag.
+name: "SGLang QA — tiny-model smoke"
+image: vastai/sglang
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8000:8000"                   # SGLang API (Caddy front; sglang binds 18000)
+  # Mandatory for the serverless cell, not decorative. The platform injects
+  # VAST_TCP_PORT_<n> only for MAPPED ports, and the pyworker SDK looks that variable
+  # up unguarded in metrics.get_url(); with 3000 unmapped the worker dies with
+  # KeyError before it binds or benchmarks. Measured on vLLM's first serverless cell.
+  # Gated by L073. Harmless on the standard cells: nothing binds it there, and base/28
+  # scans LISTENERS rather than mappings.
+  - "3000:3000"                   # serverless worker (pyworker)
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # sglang.sh sources exit_portal.sh "sglang", so it self-skips unless a matching
+  # entry is present — the SGLang API entry is load-bearing for the launch path, not
+  # decoration. Only entries whose port actually binds are listed: the harness fails
+  # a portal entry pointing at a dead port.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:SGLang API|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  AUTO_PARALLEL: "false"          # single-GPU smoke — no tensor parallelism
+  # Required-pass gate (ADR 0019/0031). Without it every assertion below is optional:
+  # the GPU trio self-skips when nvidia-smi or libcuda never came up, and
+  # sglang.d/10-sglang-serving opens with
+  #   [[ -n "${SGLANG_MODEL:-}" ]] || test_skip "SGLANG_MODEL not set"
+  # so losing ONE line of this env block would delete the entire SGLang assertion set
+  # and the image would still promote green — the exact hole ADR 0005 named on vLLM
+  # and that went unclosed there for fourteen months. Enforced twice: by the runner
+  # in-instance and by qa_verdict.py in CI via the matching require_tests in
+  # build-sglang.yml. Gated by L057 (declaration present, trio covered) and L072 (an
+  # OWN-suite test is named, not just the inherited trio).
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries sglang.d/10-sglang-serving sglang.d/12-sglang-contract"
+  SGLANG_MODEL: "Qwen/Qwen2.5-0.5B-Instruct"   # tiny chat model (~1 GB), fast load
+  # --port because sglang's own default is 30000 and the whole image — Caddy's front,
+  # PORTAL_CONFIG, sglang.d's health probe, the pyworker's MODEL_SERVER_PORT — is wired
+  # to 18000. --host is set explicitly even though sglang already defaults to
+  # 127.0.0.1: the repo's rule is that the bind interface is visible at the launch
+  # rather than inherited from an upstream default that can change under us.
+  SGLANG_ARGS: "--host 127.0.0.1 --port 18000 --context-length 4096 --download-dir /workspace/models"
+# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
+extra_filters:
+  compute_cap:
+    gte: 800                      # sm_80 — SGLang's kernels, matching the vLLM floor
+  cuda_max_good:
+    gte: 12.9                     # host driver must satisfy the built matrix
+  # Headroom floor, not model size (ADR 0005: "floors carry headroom, not the model's
+  # resting size"). SGLang preallocates a KV pool from a static memory fraction and then
+  # allocates further during warmup, so the post-budget margin — not the weights — is
+  # what OOMs a small card. Floor the PER-GPU VRAM, not the sum: this is a single-GPU
+  # smoke, so the model loads on ONE card, and a multi-GPU box of small cards would
+  # clear a total floor and then OOM.
+  gpu_ram:
+    gte: 16384                    # 16 GB PER GPU (single-GPU smoke — not the sum)
+  reliability2:
+    gte: 0.95                     # excludes the flaky tail; see base-qa for the rationale
+  # Bandwidth floor. The cell pulls a multi-GB image before any test runs, inside the
+  # launch window poll_timeout bounds, so a slow link burns the attempt and forces a
+  # redraw against a host with nothing wrong with the image.
+  inet_down:
+    gte: 500                      # Mbps
+  # Host-networking floor, matching base-qa and pytorch-qa. See the longer note in
+  # templates/base-qa/template.yml for the measurement behind the value.
+  # DIRECTION: a LOWER bound. An `lte` here would select FOR the hosts it excludes.
+  direct_port_count:
+    gte: 64
+  # L058: recommended_disk_space is only the REQUEST for overlay space; without a
+  # matching search floor the client rents a box that cannot satisfy it and only finds
+  # out after launch, burning a bounded launch attempt.
+  disk_space:
+    gte: 32
+recommended_disk_space: 32.0      # SGLang image + small model + workspace

@@ -59,17 +59,17 @@ import urllib.request
 # DRIFT NOTE: nothing detects divergence between the copies. If you change anything
 # outside this block, change it in every copy.
 ENGINE = {
-    "name": "vllm",
-    "model_env": "VLLM_MODEL",
-    "args_env": "VLLM_ARGS",
-    "caps_env": "VLLM_EXPECT_CAPS",
+    "name": "sglang",
+    "model_env": "SGLANG_MODEL",
+    "args_env": "SGLANG_ARGS",
+    "caps_env": "SGLANG_EXPECT_CAPS",
     "default_port": 18000,
-    # The flag that declares the context window, used to force a 4xx overflow.
-    "context_flag": "--max-model-len",
-    # Presence of this flag is how "the deployment offers tool calling" is DISCOVERED.
-    "tools_flag": "--enable-auto-tool-choice",
-    # The flag that renames what /v1/models advertises. Identity is checked
-    # against this when present, and against the model env var otherwise.
+    # SGLang calls the context window --context-length, not --max-model-len. Both are
+    # dataclass fields on ServerArgs, so the flag names are generated from them.
+    "context_flag": "--context-length",
+    # SGLang gates tool calling on a parser choice rather than an enable switch, so
+    # presence of --tool-call-parser is what DISCOVERS the capability here.
+    "tools_flag": "--tool-call-parser",
     "served_name_flag": "--served-model-name",
     # Checks this engine is KNOWN to fail, name -> why. A declared deviation is
     # REPORTED and does not block.
@@ -83,7 +83,16 @@ ENGINE = {
     # A deviation is only admissible when the defect is UPSTREAM (we cannot fix it)
     # and BOUNDED by another assertion in this file (so the hazard is still covered).
     # Both halves must be stated in the reason.
-    "deviations": {},
+    "deviations": {
+        "error-unknown-model":
+            "SGLang does not police the request's `model` field — it answers HTTP 200 "
+            "and serves whatever it loaded, where vLLM returns 404. Measured on the "
+            "first SGLang QA cell. UPSTREAM: nothing this image can configure changes "
+            "it. BOUNDED: `identity` asserts /v1/models advertises EXACTLY the model "
+            "the template asked for, so a client that reads the model list can always "
+            "tell what it is talking to; what is missing is only the engine refusing a "
+            "request naming something else.",
+    },
 }
 
 PROBE = [{"role": "user", "content": "contract probe"}]

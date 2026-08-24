@@ -160,15 +160,39 @@ on was therefore decided by matrix ordering, and a reordering upstream would hav
 moved it with nothing announcing the change. Running the whole matrix makes that
 question moot rather than merely documented.
 
+**The only PRODUCT difference between the two cells is `SERVERLESS=true`.** That is
+the claim the serverless-enablement work makes — one template, one variable — so a
+gate needing extra env to make the serverless cell work would not be testing it. The
+first version of this gate passed `MODEL_NAME` and `MODEL_LOG` as well, which meant
+the cell proved our values rather than the image's. Both are removed, and their
+absence is now part of the test: pyworker's `core.py` resolves the benchmark model
+from `MODEL_NAME`/`VLLM_MODEL`/`SGLANG_MODEL`/`LLAMA_MODEL` precisely so a template
+setting only the engine var works unchanged in serverless, and the worker's
+`EngineDefaults` already carry the engine's log path.
+
+`INSTANCE_TEST_REQUIRE_PASS` is the one remaining difference and it is NOT a product
+difference: no customer template carries it. It is how the gate asserts, and the
+serverless cell has more tests that must have passed — `base/85` and the pyworker
+score — because in that mode they stop being inert.
+
 **One template, two cells — not two templates.** A second template file is the
 obvious way to express a second cell and it is the wrong one: the two drift, and
 the only difference that matters stops being visible in the diff. The serverless
-cell overrides `SERVERLESS=true` and the worker env at launch. This required one
-fix in the client: `test_template.py` detected serverless from the TEMPLATE's env
+cell overrides `SERVERLESS=true` at launch. This required one fix in the client: `test_template.py` detected serverless from the TEMPLATE's env
 and onstart only, so a cell whose flag arrives as an override launched with
 `is_serverless` false. That happened to be harmless solely because the vLLM QA
 template already carries `OPEN_BUTTON_TOKEN=1` — it worked by coincidence, not by
 rule. An override *is* the instance's environment and is now read as such.
+
+**One template file must still produce one throwaway template PER CELL.** Template
+creation UPSERTS on the name, so the first version of this had all cells from one
+file sharing a single throwaway template — and the first cell to finish deleted it
+out from under the others. Measured on the SGLang gate: four cells produced two
+template ids, one was deleted at 14:12:51, and the cell still working through offers
+on it failed every subsequent attempt with `template not accessible by user`. The
+gate correctly called that a config_error and blocked. `create.py --name-suffix`
+carries label+tag, which is the granularity that was missing: the label repeats
+across CUDA variants and the tag repeats across the standard/serverless pair.
 
 **The gated path is the SUPERVISOR path.** There are two ways a worker gets onto
 a box, and the distinction was invisible until this cell was built:
@@ -268,6 +292,34 @@ model artifacts on disk. An optional `VLLM_EXPECT_CAPS` does not SELECT tiers:
 The asymmetry is the point: **discovery can never manufacture a red.** Drift in
 the discovery layer can lose advisory coverage, loudly, but can never block a
 healthy image nor silently drop something a human declared.
+
+### 6a. A known upstream deviation is DECLARED, and expires by itself
+
+Added 2026-08-24, from the first SGLang cell. The engines do not implement the same
+contract: SGLang answers HTTP 200 for a `model` that does not exist and serves
+whatever it loaded, where vLLM returns 404. Nothing this image configures changes
+that, so the choice was between blocking an image on upstream behaviour and turning
+the assertion off — and turning it off is the exemption cycle this ADR rejected
+option B for.
+
+Neither. `ENGINE["deviations"]` names the check and the reason; a declared deviation
+is REPORTED on every run and does not block. **A deviation that stops reproducing is
+a VIOLATION**, so if the engine starts behaving, the gate says so and the declaration
+gets deleted. That is decision 6's declared-but-not-discovered rule pointed the other
+way, and it is what makes this different from an exemption: it expires by itself
+instead of accumulating.
+
+Two conditions, both stated in the reason text or it is not admissible:
+
+- **UPSTREAM** — the defect is not something this image can configure away.
+- **BOUNDED** — another assertion in the same file still covers the hazard. For the
+  SGLang case that is `identity`, which asserts `/v1/models` advertises EXACTLY the
+  model the template asked for, so a client that reads the model list can always tell
+  what it is talking to. What is missing is only the engine refusing a request that
+  names something else.
+
+A deviation is per-engine and lives in the one ENGINE block the copies differ in, so
+it is visible in the same diff as any other engine difference.
 
 ### 7. Advisory before required — one clean run, not two
 
