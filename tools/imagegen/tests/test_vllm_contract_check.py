@@ -143,7 +143,7 @@ def run(client, *, expect_caps="", model=MODEL, args=ARGS):
         # `--opt=value`, matching the wrapper: argparse reads a value starting with
         # `-` as an option unless it contains a space, so `--vllm-args --enforce-eager`
         # dies on a usage error. The tests send what the shell sends.
-        code = cc.main([f"--model={model}", f"--vllm-args={args}",
+        code = cc.main([f"--model={model}", f"--engine-args={args}",
                         f"--expect-caps={expect_caps}"], out=out)
     finally:
         cc.Client = monkey
@@ -440,9 +440,9 @@ def test_unknown_declared_capability_is_an_error():
 # ---------------------------------------------------------------- exit codes
 
 
-def test_unparseable_vllm_args_stops_before_asserting_anything():
+def test_unparseable_engine_args_stops_before_asserting_anything():
     code, text = run(FakeClient(), args='--host "unterminated')
-    assert any("vllm-args" in f for f in findings(text, "ERROR")), text
+    assert any("engine-args" in f for f in findings(text, "ERROR")), text
     assert code == 2
 
 

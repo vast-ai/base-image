@@ -59,15 +59,17 @@ import urllib.request
 # DRIFT NOTE: nothing detects divergence between the copies. If you change anything
 # outside this block, change it in every copy.
 ENGINE = {
-    "name": "vllm",
-    "model_env": "VLLM_MODEL",
-    "args_env": "VLLM_ARGS",
-    "caps_env": "VLLM_EXPECT_CAPS",
+    "name": "sglang",
+    "model_env": "SGLANG_MODEL",
+    "args_env": "SGLANG_ARGS",
+    "caps_env": "SGLANG_EXPECT_CAPS",
     "default_port": 18000,
-    # The flag that declares the context window, used to force a 4xx overflow.
-    "context_flag": "--max-model-len",
-    # Presence of this flag is how "the deployment offers tool calling" is DISCOVERED.
-    "tools_flag": "--enable-auto-tool-choice",
+    # SGLang calls the context window --context-length, not --max-model-len. Both are
+    # dataclass fields on ServerArgs, so the flag names are generated from them.
+    "context_flag": "--context-length",
+    # SGLang gates tool calling on a parser choice rather than an enable switch, so
+    # presence of --tool-call-parser is what DISCOVERS the capability here.
+    "tools_flag": "--tool-call-parser",
 }
 
 PROBE = [{"role": "user", "content": "contract probe"}]
