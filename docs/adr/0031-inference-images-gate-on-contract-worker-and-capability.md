@@ -160,15 +160,39 @@ on was therefore decided by matrix ordering, and a reordering upstream would hav
 moved it with nothing announcing the change. Running the whole matrix makes that
 question moot rather than merely documented.
 
+**The only PRODUCT difference between the two cells is `SERVERLESS=true`.** That is
+the claim the serverless-enablement work makes — one template, one variable — so a
+gate needing extra env to make the serverless cell work would not be testing it. The
+first version of this gate passed `MODEL_NAME` and `MODEL_LOG` as well, which meant
+the cell proved our values rather than the image's. Both are removed, and their
+absence is now part of the test: pyworker's `core.py` resolves the benchmark model
+from `MODEL_NAME`/`VLLM_MODEL`/`SGLANG_MODEL`/`LLAMA_MODEL` precisely so a template
+setting only the engine var works unchanged in serverless, and the worker's
+`EngineDefaults` already carry the engine's log path.
+
+`INSTANCE_TEST_REQUIRE_PASS` is the one remaining difference and it is NOT a product
+difference: no customer template carries it. It is how the gate asserts, and the
+serverless cell has more tests that must have passed — `base/85` and the pyworker
+score — because in that mode they stop being inert.
+
 **One template, two cells — not two templates.** A second template file is the
 obvious way to express a second cell and it is the wrong one: the two drift, and
 the only difference that matters stops being visible in the diff. The serverless
-cell overrides `SERVERLESS=true` and the worker env at launch. This required one
-fix in the client: `test_template.py` detected serverless from the TEMPLATE's env
+cell overrides `SERVERLESS=true` at launch. This required one fix in the client: `test_template.py` detected serverless from the TEMPLATE's env
 and onstart only, so a cell whose flag arrives as an override launched with
 `is_serverless` false. That happened to be harmless solely because the vLLM QA
 template already carries `OPEN_BUTTON_TOKEN=1` — it worked by coincidence, not by
 rule. An override *is* the instance's environment and is now read as such.
+
+**One template file must still produce one throwaway template PER CELL.** Template
+creation UPSERTS on the name, so the first version of this had all cells from one
+file sharing a single throwaway template — and the first cell to finish deleted it
+out from under the others. Measured on the SGLang gate: four cells produced two
+template ids, one was deleted at 14:12:51, and the cell still working through offers
+on it failed every subsequent attempt with `template not accessible by user`. The
+gate correctly called that a config_error and blocked. `create.py --name-suffix`
+carries label+tag, which is the granularity that was missing: the label repeats
+across CUDA variants and the tag repeats across the standard/serverless pair.
 
 **The gated path is the SUPERVISOR path.** There are two ways a worker gets onto
 a box, and the distinction was invisible until this cell was built:
