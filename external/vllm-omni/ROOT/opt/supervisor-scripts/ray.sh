@@ -49,6 +49,27 @@ cd ${WORKSPACE}
 # the ports become predictable and declarable, or an exposure-allowlist that can key
 # on a PROCESS rather than a port number — the current format is port-keyed and
 # Ray's are ephemeral, so today it cannot express them.
-ray start ${RAY_ARGS:---head --port 6379 --dashboard-host 127.0.0.1 --dashboard-port 28265} 2>&1
+# Every port Ray opens is PINNED into 6379-6499. Ray binds these public and cannot
+# be told not to (see above), so the only remaining control is making them
+# predictable: an ephemeral port cannot be declared, reviewed, or diffed, and
+# base/28's allowlist is port-keyed. Pinned, the whole cluster surface is one
+# reviewable range entry instead of a different set of random ports every boot.
+#
+# The block is contiguous and adjacent to the GCS port so it reads as one thing.
+# 6390-6499 for workers is deliberately generous: the range must hold one port per
+# worker process, and running out is a startup failure under tensor parallelism
+# rather than a graceful degradation.
+ray start ${RAY_ARGS:---head \
+    --port 6379 \
+    --node-manager-port 6380 \
+    --object-manager-port 6381 \
+    --dashboard-agent-listen-port 6382 \
+    --dashboard-agent-grpc-port 6383 \
+    --metrics-export-port 6384 \
+    --runtime-env-agent-port 6385 \
+    --min-worker-port 6390 \
+    --max-worker-port 6499 \
+    --dashboard-host 127.0.0.1 \
+    --dashboard-port 28265} 2>&1
 
 sleep infinity
