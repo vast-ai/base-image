@@ -237,7 +237,17 @@ def resolve_spec(spec: str, env: dict) -> tuple[set[int], bool, str]:
     return set(), False, f"unparseable port spec {spec!r}"
 
 
-VALID_CLASSES = {"raw", "self-auth-http", "harness", "platform", "transient"}
+# `internal` is the one class that makes a NEGATIVE claim, and it exists because an
+# allowlist entry otherwise says nothing about reachability. The other classes mean
+# "this may bind a public interface"; sshd and syncthing are also PUBLISHED, and that
+# is correct — they authenticate. `internal` means "may bind wide inside the
+# container, and must never appear in the published port map", which is the only
+# honest way to declare a service that has no auth of its own and cannot be moved to
+# loopback. Without it, declaring Ray's 121-port range would have silently permitted
+# a template to publish an unauthenticated GCS to the internet, and the scan would
+# have printed `ok`.
+INTERNAL_CLASS = "internal"
+VALID_CLASSES = {"raw", "self-auth-http", "harness", "platform", "transient", INTERNAL_CLASS}
 
 
 def load_allowlist(allow_dir: str, env: dict) -> tuple[list[AllowEntry], list[str]]:
@@ -362,6 +372,17 @@ def classify(rows, entries, env, owners, caddy_ports, challenge=challenges):
         seen.add((proto, port))
         who = describe_owner(row, owners)
         hit = next((e for e in entries if e.matches(port, proto)), None)
+        if hit and hit.cls == INTERNAL_CLASS and port in pub:
+            # The declaration is conditional and the condition just failed. An
+            # `internal` service has no auth of its own — that is why it was allowed
+            # to bind wide at all — so publishing it puts an unauthenticated service
+            # on the internet. This must outrank the allowlist rather than defer to
+            # it: the entry permits the BIND, never the publication.
+            findings.append(("VIOLATION", proto, port,
+                             f"declared `internal` in {hit.source} but the template PUBLISHES "
+                             f"it (VAST_{proto.upper()}_PORT map) — an internal service has no "
+                             f"auth of its own; unmap the port or put it behind Caddy — {who}"))
+            continue
         if hit:
             findings.append(("ok", proto, port, f"allowlisted ({hit.cls}; {hit.source}) — {who}"))
             continue

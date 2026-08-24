@@ -2446,3 +2446,57 @@ def test_L073_accepts_a_bare_port(tmp_path):
     _tpl_with_ports(img, ["3000"])
     _wire_serverless_gate(tmp_path, "img/templates/qa")
     assert "L073" not in errs(img, tmp_path)
+
+
+# ---- L074: a template must not publish an `internal` port (ADR 0028) ----
+
+
+def _allowlist(img, body):
+    d = img.dir / "ROOT/opt/instance-tools/tests/exposure-allowlist"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "50-x.conf").write_text(body)
+
+
+def test_L074_publishing_an_internal_port_fires(tmp_path):
+    """THE hole, and it was live for one commit. Declaring Ray's pinned range made
+    every port in it pass the exposure scan unconditionally — including one a
+    template maps. Ray's GCS has no auth of its own, which is the only reason it was
+    allowed to bind wide, so publishing 6379 puts an unauthenticated cluster control
+    plane on the internet and the scan prints `ok`."""
+    img = make(tmp_path)
+    _allowlist(img, "range:6379-6499/tcp internal Ray\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "6379:6379"\n' + _FLOORS)
+    assert has(img, tmp_path, "L074", "declares `internal`")
+
+
+def test_L074_a_port_outside_the_range_is_clean(tmp_path):
+    img = make(tmp_path)
+    _allowlist(img, "range:6379-6499/tcp internal Ray\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "8000:8000"\n' + _FLOORS)
+    assert "L074" not in errs(img, tmp_path)
+
+
+def test_L074_reads_the_internal_side_of_the_mapping(tmp_path):
+    """Vast writes external:internal. The INTERNAL side is what the service binds and
+    therefore what publication exposes — matching on the external side would miss the
+    mapping that actually opens the port."""
+    img = make(tmp_path)
+    _allowlist(img, "range:6379-6499/tcp internal Ray\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "40001:6390"\n' + _FLOORS)
+    assert has(img, tmp_path, "L074", "maps port 6390")
+
+
+def test_L074_only_the_internal_class_constrains(tmp_path):
+    """sshd and syncthing are allowlisted AND published, correctly — they
+    authenticate. Only `internal` makes the negative claim."""
+    img = make(tmp_path)
+    _allowlist(img, "22/tcp raw sshd\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "22:22"\n' + _FLOORS)
+    assert "L074" not in errs(img, tmp_path)
+
+
+def test_L074_literal_internal_entries_count_too(tmp_path):
+    img = make(tmp_path)
+    _allowlist(img, "9001/tcp internal something\n")
+    _write_template(img, 'name: QA\nimage: vastai/x\nports:\n  - "9001:9001"\n' + _FLOORS)
+    assert has(img, tmp_path, "L074", "maps port 9001")

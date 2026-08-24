@@ -78,6 +78,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L057", ERROR, "A gating QA template declares env.INSTANCE_TEST_REQUIRE_PASS naming the tests that must have PASSED — without it a self-skipping test (the GPU trio skips when nvidia-smi/libcuda is absent) reports the suite green and the gate certifies an image it never exercised (ADR 0019)"),
     ("L072", ERROR, "A gating QA template's env.INSTANCE_TEST_REQUIRE_PASS names at least one test from the image's OWN suite (ROOT/opt/instance-tools/tests/<name>.d/), not only the GPU trio it inherits from base. L057 gets the declaration written; this closes the level above it. The trio is the same three names on every image, so a template that stops there has a gate certifying that the RENTED BOX has a working GPU while asserting nothing about the app the image exists to ship. Measured on vLLM, which prompted ADR 0031: `vllm.d/10-vllm-serving.sh` opens `[[ -n \"${VLLM_MODEL:-}\" ]] || test_skip`, so dropping one env var from the template deletes every vLLM assertion at once and the image promotes green — and build-vllm.yml passed no `require_tests`, so neither of the two enforcement layers would have caught it. ADR 0005 named that exact file as the canonical skip-as-pass hole in June 2026; base and pytorch closed it and vLLM did not, for fourteen months. Scoped to images that actually ship an own suite — an image whose only tests are base's inherits base's coverage and owes nothing extra (ADR 0031)"),
     ("L073", ERROR, "A QA template booted by a gate that sets SERVERLESS=true MAPS the serverless worker port (WORKER_PORT, default 3000). The platform injects VAST_TCP_PORT_<n> ONLY for ports a template maps, and the pyworker SDK looks that variable up without a guard — `worker_port = os.environ[f\"VAST_TCP_PORT_{os.environ['WORKER_PORT']}\"]` in vastai/serverless/server/lib/metrics.py — so an unmapped port is a KeyError inside Metrics() during Backend construction. Measured live on the first serverless cell ever run: `KeyError: 'VAST_TCP_PORT_3000'` and `PyWorker exited with status 1`, before the worker bound the port or ran a benchmark. This is L068's defect from the other side of the boundary: L068 gates OUR scripts against interpolating an unset VAST_TCP_PORT_*, and by construction cannot see an upstream SDK doing the same lookup on an artifact this repo does not build — so the obligation moves to the template, which is the one side we control. Scoped to gates that actually enable serverless, read from the caller's extra_env, so a template is never asked to map a port for a mode it is not run in (ADR 0031)"),
+    ("L074", ERROR, "No template maps a port an exposure-allowlist fragment declares `internal`. The `internal` class means a service may bind a public interface INSIDE the container but must never appear in the published port map — the declaration permits the bind, never the publication. It exists for a service with no auth of its own that cannot be moved to loopback, and Ray is the case that produced it: `ray start` refuses to bind loopback (services.resolve_ip_for_localhost converts 127.0.0.1 to a routable address on purpose, measured live as `Local node IP: 172.17.0.2`), so its GCS, raylet, dashboard agent and workers are declared as a pinned range instead. An allowlist entry passes a port REGARDLESS of what is listening on it, so declaring that range without this rule silently permits a template to publish an unauthenticated cluster control plane to the internet — and the scan would print `ok`. base/28 catches it at runtime; this catches it before the image ships, which is the difference between a red cell and a red diff (ADR 0028)"),
     ("L058", ERROR, "A QA template that declares recommended_disk_space also declares a disk_space floor in extra_filters at least that large — recommended_disk_space is only the REQUEST for overlayfs space (the image is stored separately and not charged to the instance), so without a matching search floor the client rents a box that cannot satisfy the request and only learns after launch, burning a bounded launch attempt (ADR 0019)"),
     ("L059", ERROR, "Every test named in a gating QA template's INSTANCE_TEST_REQUIRE_PASS contains at least one real test_fail/fail_later CALL (a mention in a comment does not count) — L057 makes the template name the tests that must pass, and this closes the next hole down: a named test with no failure path reports `passed` on every box, so requiring it asserts nothing beyond the script reaching its test_pass, and the gate reads as coverage while certifying nothing (ADR 0019)"),
     ("L065", ERROR, "Every shipped instance test (ROOT/opt/instance-tools/tests/**/*.sh, and the same path under derivatives/external overlays) is executable — runner.sh discovers tests with `find … -executable`, so a 0644 test is not skipped, not reported missing, and emits no line at all: it silently does not exist. base/11-instance-metadata.sh and base/12-provisioning.sh shipped 0644 from their first commit and had therefore never run once, which also meant lib.sh's instance_field() always returned empty and nothing ever waited for provisioning to finish. Same failure and same fix as L051 for supervisor scripts"),
@@ -717,6 +718,74 @@ def _serverless_gate_callers(repo: Path) -> dict[str, int]:
                 port = 3000
             out[tdir] = port
     return out
+
+
+def _internal_ports(img: Image) -> dict[int, str]:
+    """Ports this image declares `internal` -> the fragment line that declares them.
+
+    Literals and `range:` only. An `env:` spec cannot be resolved without an
+    instance, so it is skipped rather than guessed at — this rule reports what it can
+    prove and leaves the runtime scan to cover the rest.
+    """
+    out: dict[int, str] = {}
+    d = img.root / "opt/instance-tools/tests/exposure-allowlist"
+    if not d.is_dir():
+        return out
+    for conf in sorted(d.glob("*.conf")):
+        for lineno, raw in enumerate(conf.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = line.split(None, 2)
+            if len(parts) < 2 or parts[1] != "internal" or "/" not in parts[0]:
+                continue
+            spec, _, proto = parts[0].rpartition("/")
+            src = f"{conf.name}:{lineno}"
+            if spec.isdigit():
+                out[int(spec)] = src
+            elif spec.startswith("range:"):
+                m = re.fullmatch(r"(\d+)-(\d+)", spec[6:])
+                if m and int(m.group(1)) <= int(m.group(2)):
+                    for port in range(int(m.group(1)), int(m.group(2)) + 1):
+                        out[port] = src
+    return out
+
+
+def check_no_template_publishes_an_internal_port(img: Image, repo: Path) -> Iterable[Finding]:
+    """L074 — a template must not publish a port declared `internal` (ADR 0028)."""
+    internal = _internal_ports(img)
+    if not internal:
+        return
+    tdir = img.dir / "templates"
+    if not tdir.is_dir():
+        return
+    import yaml  # lazy
+    for tpl in sorted(tdir.rglob("template.yml")):
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            for spec in (entry.get("ports") or []):
+                text = str(spec).strip().strip('"').strip("'")
+                # "external:internal", or a bare port. The INTERNAL side is what the
+                # service actually binds, and therefore what publication exposes.
+                inner = text.split(":")[-1] if ":" in text else text
+                if not inner.isdigit():
+                    continue
+                port = int(inner)
+                if port in internal:
+                    yield Finding("L074", ERROR, img.name, rel,
+                                  f"maps port {port}, which {internal[port]} declares `internal` — "
+                                  "that class permits the BIND and never the publication; an "
+                                  "internal service has no auth of its own, so publishing it puts "
+                                  "it on the internet unauthenticated")
 
 
 def check_serverless_template_maps_worker_port(img: Image, repo: Path) -> Iterable[Finding]:
@@ -2459,6 +2528,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_require_pass(img, repo))
     out.extend(check_own_suite_is_required(img, repo))
     out.extend(check_serverless_template_maps_worker_port(img, repo))
+    out.extend(check_no_template_publishes_an_internal_port(img, repo))
     out.extend(check_instance_tests_executable(img, repo))
     out.extend(check_required_tests_can_fail(img, repo))
     out.extend(check_fail_later_is_reported(img, repo))

@@ -249,3 +249,54 @@ def test_no_caddy_running_is_not_a_failure():
     class R:
         stdout = ""
     assert es.caddy_socket_check([], {}, runner=lambda *a, **k: R()) == ""
+
+
+# ---------------------------------------------------------------- `internal`
+
+
+def test_an_internal_port_that_the_template_publishes_is_a_violation():
+    """THE hole this class exists to close, and it was live for one commit.
+
+    Declaring Ray's 121-port range made every one of those ports pass the scan
+    unconditionally — including if a template mapped one. Ray's GCS has no auth of
+    its own (that is why it was allowed to bind wide at all), so publishing 6379
+    would put an unauthenticated cluster control plane on the internet and the scan
+    would have printed `ok allowlisted (raw; 50-vllm.conf:22)`."""
+    r = rows(("tcp", 6379, {"inode": "5"}))
+    e = entry("range:6379-6499", cls="internal")
+    f = es.classify(r, [e], {"VAST_TCP_PORT_6379": "40001"}, {}, set(),
+                    challenge=lambda p: False)
+    assert verdicts(f)[("tcp", 6379)] == "VIOLATION"
+    assert "PUBLISHES" in f[0][3]
+
+
+def test_an_internal_port_that_is_not_published_passes():
+    r = rows(("tcp", 6379, {"inode": "5"}))
+    e = entry("range:6379-6499", cls="internal")
+    f = es.classify(r, [e], {}, {}, set(), challenge=lambda p: False)
+    assert verdicts(f)[("tcp", 6379)] == "ok"
+
+
+def test_the_publication_check_reads_both_halves_of_the_port_map():
+    """Vast names the variable after the INTERNAL port and stores the external one,
+    so either half proves publication. Reading only one would miss it."""
+    e = entry("range:6379-6499", cls="internal")
+    by_key = es.classify(rows(("tcp", 6390, {})), [e], {"VAST_TCP_PORT_6390": "1"}, {}, set(),
+                         challenge=lambda p: False)
+    by_val = es.classify(rows(("tcp", 6391, {})), [e], {"VAST_TCP_PORT_9": "6391"}, {}, set(),
+                         challenge=lambda p: False)
+    assert verdicts(by_key)[("tcp", 6390)] == "VIOLATION"
+    assert verdicts(by_val)[("tcp", 6391)] == "VIOLATION"
+
+
+def test_a_published_raw_port_is_still_fine():
+    """sshd and syncthing are allowlisted AND published, and that is correct — they
+    authenticate. `internal` is opt-in precisely so this stays true."""
+    r = rows(("tcp", 22, {}))
+    f = es.classify(r, [entry("22", cls="raw")], {"VAST_TCP_PORT_22": "40022"}, {}, set(),
+                    challenge=lambda p: False)
+    assert verdicts(f)[("tcp", 22)] == "ok"
+
+
+def test_internal_is_a_recognised_class():
+    assert es.INTERNAL_CLASS in es.VALID_CLASSES
