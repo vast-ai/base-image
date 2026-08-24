@@ -352,9 +352,16 @@ jobs:
       # INSTANCE_TEST_REQUIRE_PASS is overridden rather than widened in the template,
       # because 20-serverless-pyworker is inert (is_serverless) on the standard cells
       # and requiring it there would demand a pass from a test with nothing to assert.
+      # BACKEND is deliberately ABSENT. The image bakes it (ENV BACKEND=vllm), and that
+      # bake is the entire claim of the serverless-enablement work — an image that
+      # self-configures rather than needing every template to know the engine's wiring.
+      # Setting it here would override the bake with docker -e and test the template
+      # instead, leaving the thing under test unexercised. It also fails loudly if the
+      # bake is missing: start_server.sh resolves workers/$BACKEND/worker.py, an empty
+      # BACKEND matches nothing, no worker starts, and vllm.d/20-serverless-pyworker
+      # reds on "nothing is listening on :3000".
       extra_env: |
         SERVERLESS=true
-        BACKEND=openai
         MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
         MODEL_LOG=/var/log/portal/vllm.log
         INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
