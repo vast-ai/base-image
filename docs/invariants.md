@@ -228,6 +228,42 @@ themselves as running after provisioning were racing it. **L065**
 `ROOT/opt/instance-tools/tests/**` and the derivative/external overlays;
 `lib.sh` is exempt because it is sourced, not executed.
 
+### Ray's public listeners are an OPEN defect, not a declared exception
+
+Recorded here because the tempting resolutions are both worse than the finding, and
+because an undocumented open defect gets rediscovered as a surprise.
+
+`base/28` reports six to seven public listeners on the vLLM and vLLM-omni images —
+raylet (2), the dashboard agent (2), and two agent processes — on ephemeral ports
+that change every boot. Two attempts to remove them failed, both measured on live
+cells rather than reasoned about:
+
+- **Bind loopback.** Refused upstream. `--node-ip-address 127.0.0.1` is routed
+  through `services.resolve_ip_for_localhost()`, documented as "Convert to a
+  remotely reachable IP if the address is localhost or 127.0.0.1". The cell logged
+  `Local node IP: 172.17.0.2` with the flag passed.
+- **Pin the ports.** `--node-manager-port`, `--object-manager-port`,
+  `--dashboard-agent-*`, `--metrics-export-port`, `--runtime-env-agent-port` and
+  `--min/--max-worker-port` are all accepted — Ray rejects unknown options, and
+  `--dashboard-port` in the same string took effect — and the observed ports were
+  still ephemeral. Those services open more listeners than any flag governs.
+
+**Only `6379` (GCS) is declared**, as class `internal`, because it is the only one
+provably pinned. The rest stay VIOLATIONS and stay visible.
+
+**Two fixes that must not be adopted**, both of which make the report go away
+without changing what a customer runs:
+
+1. **Do not stop starting Ray on single-GPU deployments.** It would clean the QA
+   cells while leaving the exposure intact for anyone running tensor parallelism —
+   hiding the defect from ourselves, which is worse than the defect.
+2. **Do not widen the allowlist to cover the ephemeral range.** That declares 120
+   ports nothing binds and states a pin that was measured not to hold.
+
+The consequence is accepted: `EXPOSURE_ENFORCE` cannot go true on these images until
+this is resolved upstream or a real control is found. A gate that cannot be enforced
+yet is an honest state; a gate enforced over a declaration nobody established is not.
+
 ### A gating template requires the image's own suite — **GATED (L057, L072)**
 
 **L057** was base-only from ADR 0019 until 2026-08-21, on the stated grounds that

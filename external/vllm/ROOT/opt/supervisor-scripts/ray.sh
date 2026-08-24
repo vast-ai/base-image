@@ -49,15 +49,21 @@ cd ${WORKSPACE}
 # the ports become predictable and declarable, or an exposure-allowlist that can key
 # on a PROCESS rather than a port number — the current format is port-keyed and
 # Ray's are ephemeral, so today it cannot express them.
-# Every port Ray opens is PINNED into 6379-6499. Ray binds these public and cannot
-# be told not to (see above), so the only remaining control is making them
-# predictable: an ephemeral port cannot be declared, reviewed, or diffed, and
-# base/28's allowlist is port-keyed. Pinned, the whole cluster surface is one
-# reviewable range entry instead of a different set of random ports every boot.
+# The port flags below ASK Ray to pin its surface into 6379-6499. Measured on a live
+# cell, that mostly does not happen: raylet still held two ephemeral ports (33365,
+# 39753), the dashboard agent two more (42437, 46163), and two agent processes
+# another two. Ray accepted the flags — it rejects unknown options, and
+# --dashboard-port/--dashboard-host in the same string demonstrably took effect — so
+# those services open more listeners than any flag governs.
 #
-# The block is contiguous and adjacent to the GCS port so it reads as one thing.
+# They are kept because they are free and they do constrain what they name
+# (--port 6379 holds, and the worker range may matter under tensor parallelism where
+# workers actually spawn). The comment is here so nobody reads the flag list as a
+# guarantee: only 6379 is declared in the exposure allowlist, because only 6379 was
+# observed to hold.
+#
 # 6390-6499 for workers is deliberately generous: the range must hold one port per
-# worker process, and running out is a startup failure under tensor parallelism
+# worker process, and exhausting it is a startup failure under tensor parallelism
 # rather than a graceful degradation.
 ray start ${RAY_ARGS:---head \
     --port 6379 \
