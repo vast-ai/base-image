@@ -168,9 +168,20 @@ the `/etc/environment` snapshot with a decision nobody made.
    the later `/etc/environment` value. A user who edits the file gets their services back
    but still skips a portal update that boot. Cosmetic.
 
-   The pre-existing latching defect is orthogonal and worth its own fix: today anyone who
-   changes `SERVERLESS` after first boot gets the split-brain above, detector or no
-   detector.
+   *Why this is the right rule and not merely a convenient one.* `/etc/environment`
+   behaving this way is DELIBERATE, and it encodes an ownership boundary: the platform
+   seeds the environment at first boot, and from then on **the user owns the container**
+   — an edit to that file prevails, by design (`10-prep-env.sh:47`: "We can now edit
+   environment variables in a running instance"). Export-only is therefore the detector
+   correctly participating in first-boot seeding and then getting out of the way, rather
+   than a happy accident of stage ordering.
+
+   The same model explains `docs/invariants.md:127` — "a variable removed from the managed
+   set must be `unset`, not merely stopped being written". That is not a leak workaround;
+   it is the OBLIGATION the ownership boundary creates. An image that stops managing a
+   variable must actively retract it, precisely because it may not rewrite the user's file
+   wholesale. `migrate-unset-xet` (ADR 0025) is the shape of that retraction, and any
+   future retraction of `SERVERLESS` by this mechanism would owe the same.
 
 3. **A provenance marker, written on both outcomes.** `verdict=declared|detected|none`,
    which key was present, and the resolved value — never the token's value. Echo one line
