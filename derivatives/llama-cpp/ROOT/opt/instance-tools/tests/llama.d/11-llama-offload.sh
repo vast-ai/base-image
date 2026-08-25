@@ -142,13 +142,34 @@ echo "  device VRAM in use: ${dev_used:-<unknown>} MiB"
 # is the model: if the weights are on the device, resident VRAM is at least a good
 # fraction of the GGUF on disk. Derived, not guessed — and when the file cannot be
 # found the check says so rather than silently falling back to a number.
-gguf=$(find "${WORKSPACE:-/workspace}/llama.cpp" "${HOME}/.cache/llama.cpp" -name '*.gguf' -type f -printf '%s\n' 2>/dev/null | sort -n | tail -1)
+# -L, because 05-llama-env.sh makes ${HOME}/.cache/llama.cpp a SYMLINK into the
+# workspace and find does not descend a symlinked dir without it. The search is wide
+# and the paths are PRINTED, because the first version searched two paths, found
+# nothing, and said so — then passed anyway.
+_gguf_dirs=()
+for d in "${LLAMA_CACHE:-}" "${WORKSPACE:-/workspace}/llama.cpp" "${HOME}/.cache/llama.cpp" \
+         /root/.cache/llama.cpp "${WORKSPACE:-/workspace}"; do
+    [[ -n "$d" && -e "$d" ]] && _gguf_dirs+=("$d")
+done
+gguf=""
+if (( ${#_gguf_dirs[@]} )); then
+    gguf=$(find -L "${_gguf_dirs[@]}" -name '*.gguf' -type f -printf '%s\n' 2>/dev/null | sort -n | tail -1)
+fi
+echo "  searched for the model in: ${_gguf_dirs[*]:-<no candidate dirs exist>}"
+
 if [[ -n "$gguf" && "$gguf" -gt 0 ]]; then
     vram_floor=$(( gguf / 1048576 / 2 ))     # half the model, in MiB
     echo "  model on disk: $(( gguf / 1048576 )) MiB — requiring >= ${vram_floor} MiB resident"
 else
-    vram_floor=0
-    echo "  model file not found on disk — cannot derive a VRAM floor, so any non-zero residency counts"
+    # A CHECK THAT COULD NOT DECIDE MUST NOT PASS. The previous revision set the floor
+    # to 0 here and carried on, which silently restored the `> 0` test it was written
+    # to replace — proven by a negative control: with -ngl 0 the server held 208 MiB of
+    # bare context, the floor was never derived, and the cell went GREEN on an image
+    # serving entirely from CPU. Failing here is the same rule 12-llama-contract
+    # applies to a checker that crashed, and the same rule the required-pass gate
+    # applies to a skip.
+    vram_floor=-1
+    fail_later "offload-no-floor" "cannot locate the GGUF on disk, so there is no floor to hold the resident-VRAM check to — without it a bare CUDA context (a few hundred MiB, no weights) is indistinguishable from a loaded model, which is the exact state this test exists to catch (searched: ${_gguf_dirs[*]:-none})"
 fi
 
 if [[ -z "$apps" ]]; then
@@ -170,8 +191,10 @@ elif [[ -n "$srv_pid" ]] && grep -qE "^[[:space:]]*${srv_pid}[[:space:]]*," <<< 
         # number is not the same claim as "0 MiB", and reporting it as zeroed weights
         # sends the reader to the wrong place.
         echo "  WARN: the driver did not report a memory figure for pid ${srv_pid} (row: ${row})"
-    elif (( mib > vram_floor )) && (( mib > 0 )); then
+    elif (( vram_floor >= 0 )) && (( mib > vram_floor )) && (( mib > 0 )); then
         echo "  offload: llama-server (pid ${srv_pid}) holds ${mib} MiB of VRAM"
+    elif (( vram_floor < 0 )); then
+        echo "  (resident VRAM ${mib} MiB — no floor available to judge it against; see offload-no-floor above)"
     else
         fail_later "offload-below-floor" "llama-server (pid ${srv_pid}) holds only ${mib} MiB of VRAM against a floor of ${vram_floor} MiB — the CUDA backend loaded but the WEIGHTS are not on the GPU, so a context exists and inference still runs on CPU (-ngl/--n-gpu-layers, or a VRAM budget too small for the model)"
     fi
