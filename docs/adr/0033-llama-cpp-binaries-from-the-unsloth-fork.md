@@ -191,6 +191,24 @@ to the `-mix-` line. No change to the action is required — the input already e
    `RELEASE_AGE_THRESHOLD: 604800` exactly tiles the weekly cron, which is safe only
    against a daily publisher. A skip currently produces **no Slack message at all**.
 
+   **This is not only an unsloth concern, and it is arriving on the current path
+   first.** On 2026-08-21 `ggml-org/llama.cpp` cut `v0.2.0` as its first stable semver
+   release, and from 08-22 marks every `bNNNN` tag `prerelease=true` — rolling builds
+   are now prereleases and `v0.x.y` is stable. ai-dock mirrors upstream's tagging, so
+   `v0.2.0-cuda-12.9` is a CORRECT build rather than a defect, and
+   `check-github-release` already filters `prerelease != true`. The consequence is
+   cadence: once ai-dock adopts the flag the resolver returns only `v0.x.y`, taking the
+   effective release rate from daily to occasional — and the 7-day window only ever
+   worked because the publisher was daily. A restrictive `^b[0-9]+$` tag-pattern would
+   be actively harmful here: it would pin us to a scheme upstream has demoted, and per
+   condition 13 we would stop building silently and permanently.
+
+   The same reclassification puts a caveat on this condition's own metric. The `-mix-`
+   tag embeds an upstream `bNNNN`, which is now a prerelease counter rather than a
+   release number. Lag remains computable today (`upstream_tag: b10472` in the
+   manifest), but the anchor is upstream's rolling counter, so if unsloth follows the
+   reclassification the calculation needs revisiting rather than silently drifting.
+
 7. ~~Every promoted line gets its own live-GPU QA cell, with a driver floor matching
    that line.~~ **RESOLVED 2026-08-25 and BUILT, ahead of this ADR and still on
    ai-dock**, as a behaviour-preserving refactor with ONE line declared, so adding the
