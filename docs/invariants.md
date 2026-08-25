@@ -1204,3 +1204,24 @@ oobabooga). The `new-image` skill + generator encode them.
   `test -f …/libggml-cuda.so` assertion so the CPU-only regression fails the build instead of
   shipping. **L056** gates the assertion. Both `unsloth-studio` and `aio-studio` are fixed (ADR 0016).
 
+- **A llama.cpp image proves its CUDA backend is IN USE, not merely present (GATED, L076).**
+  llama.cpp is built `ggml_backend_dl: ON`, so the CUDA backend is a dlopen'd plugin. When that
+  dlopen fails, `llama-server` does not crash and does not exit non-zero — it falls back to the CPU
+  backend and serves correct answers, slowly, indefinitely. Nothing else in the suite can see it:
+  `10-llama-serving` asserts the service, `/health`, a non-empty `/v1/models` and a non-zero token
+  count; `12-llama-contract` asserts token arithmetic, a grammar, a named tool, a status class and
+  a bind address; the serverless cell asserts a benchmark score was written. **A 0.5B q8_0 GGUF on
+  CPU satisfies every one of those in seconds, so before `llama.d/11-llama-offload` existed a fully
+  CPU-only image passed the entire gate on every cell** — the gate certified a GPU image that was
+  not using the GPU. The dlopen fails for causes no other check sees: a libcublas minor the bundle
+  was not built against, a driver too old for the bundle's CUDA major, or a host compute capability
+  with neither a cubin nor JITable PTX in the binary. L056 does **not** reach this: it triggers on
+  `unsloth studio setup`, so any image installing a PREBUILT bundle is exempt from it by
+  construction. **L076** gates both halves — the assertion must exist with a real failure path, and
+  a gating template must name it in `INSTANCE_TEST_REQUIRE_PASS`, because an offload test that is
+  not required can `test_skip` and the gate stays green. `test -f …libggml-cuda.so` does not
+  satisfy it: the file is present in exactly the failure being caught. Per-process `nvidia-smi`
+  attribution is deliberately NOT the instrument — compute-app visibility depends on the PID
+  namespace and returns empty on a genuinely busy GPU inside a container, so it is printed for
+  diagnosis and never gated on (ADR 0016).
+

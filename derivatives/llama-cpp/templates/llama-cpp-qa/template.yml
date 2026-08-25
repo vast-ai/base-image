@@ -34,7 +34,7 @@ env:
   #   [[ -n "${LLAMA_MODEL:-}" ]] || test_skip
   # so without this, losing one line of this env block deletes the whole llama
   # assertion set and the image still promotes green. Gated by L057 and L072.
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries llama.d/10-llama-serving llama.d/12-llama-contract"
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries llama.d/10-llama-serving llama.d/11-llama-offload llama.d/12-llama-contract"
   # The SAME model as the vLLM and SGLang gates, in the format this engine eats — the
   # official Qwen GGUF repo rather than a third-party requant, so one fewer variable
   # when comparing a failure across the three images. q8_0 is the least-lossy
