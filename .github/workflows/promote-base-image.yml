@@ -371,7 +371,15 @@ jobs:
       poll_timeout: "900"
       max_price: "1.00"
       timeout: "2400"
+      # SERVERLESS_DETECT_EXPECT=none asserts detection DECLINED here (ADR 0034). The
+      # qa-detect matrix proves the inference fires when it should; this proves it does
+      # not fire when it should not, which is the direction that darkens a customer's
+      # instance. Without it a false positive is invisible on this cell: base/20-portal
+      # and the caddy tests self-skip under serverless and are NOT in require_tests, so
+      # they would go quiet rather than red, and base/15's round trip would agree with
+      # itself because the marker and is_serverless() would both say true.
       extra_env: |
+        SERVERLESS_DETECT_EXPECT=none
         PROV_TIMEOUT=900
         INSTANCE_TEST_DEFAULT_TIMEOUT=900
         VLLM_HEALTH_TIMEOUT=900

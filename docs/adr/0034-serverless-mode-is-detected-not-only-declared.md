@@ -224,6 +224,16 @@ the `/etc/environment` snapshot with a decision nobody made.
    `base/15-boot-markers` asserts the recorded verdict matches. Ordinary cells set nothing
    and the assertion is inert for them.
 
+   **Both directions are asserted, and the second one was nearly missed.** The detection
+   matrix proves the inference FIRES; the ordinary `qa` matrix sets
+   `SERVERLESS_DETECT_EXPECT=none` to prove it DECLINES. Without that, a false positive is
+   invisible on the ordinary cell: `base/20-portal` and the caddy tests self-skip under
+   serverless and are not in `require_tests`, so they would go quiet rather than red, and
+   `base/15`'s round trip would agree with itself because the marker and `is_serverless()`
+   would both say true. The gate would have proved detection works and proved nothing
+   about it staying out of the way — which is the direction that darkens a customer's
+   instance permanently.
+
    That assertion doubles as the **retirement signal**. When the backend starts injecting
    `SERVERLESS` server-side, the verdict becomes `declared` and this cell fails on a
    perfectly healthy instance — which is the bridge announcing it is no longer
