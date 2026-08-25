@@ -1,12 +1,12 @@
 # Llama.cpp Image
 
-A Llama.cpp image derived from the Vast.ai [base image](../../README.md). This image includes pre-built [llama.cpp-cuda](https://github.com/ai-dock/llama.cpp-cuda) binaries with all features from the Vast.ai base image.
+A Llama.cpp image derived from the Vast.ai [base image](../../README.md). This image includes pre-built [llama.cpp-cuda](https://github.com/unslothai/llama.cpp) binaries with all features from the Vast.ai base image.
 
 For detailed documentation on Instance Portal, Supervisor, environment variables, and other features, see the [base image README](../../README.md).
 
 ## How This Image Works
 
-This image extends `vastai/base-image` with pre-built llama.cpp binaries compiled for CUDA. The binaries are sourced from the [ai-dock/llama.cpp-cuda](https://github.com/ai-dock/llama.cpp-cuda) project and installed at build time, so no runtime download is required.
+This image extends `vastai/base-image` with pre-built llama.cpp binaries compiled for CUDA. The binaries are sourced from the [unslothai/llama.cpp](https://github.com/unslothai/llama.cpp) project and installed at build time, so no runtime download is required.
 
 - Pre-built `llama-server` and other llama.cpp tools ready to use
 - Automatic model loading via the `LLAMA_MODEL` environment variable
@@ -22,11 +22,11 @@ Set the `LLAMA_MODEL` environment variable to a HuggingFace model identifier (e.
 
 Pre-built images are available on [DockerHub](https://hub.docker.com/repository/docker/vastai/llama-cpp/tags).
 
-Tags follow the format `<release-tag>-cuda-<version>` (e.g. `b5460-cuda-12.9`). The release tag corresponds to the [ai-dock/llama.cpp-cuda](https://github.com/ai-dock/llama.cpp-cuda/releases) release used to build the image.
+Tags follow the format `<release-tag>-cuda-<version>` (e.g. `<release>-cuda-12.9`). The release tag corresponds to the [unslothai/llama.cpp](https://github.com/unslothai/llama.cpp/releases) release used to build the image.
 
 ## CUDA Compatibility
 
-Images are tagged with the CUDA version of the base image they were built against (e.g. `b5460-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
+Images are tagged with the CUDA version of the base image they were built against (e.g. `<release>-cuda-12.9`). This does not mean you need that exact CUDA version on the host.
 
 ### Minor Version Compatibility
 
@@ -119,7 +119,7 @@ docker buildx build \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `BASE_IMAGE` | `vastai/base-image:cuda-12.9-mini-py312` | Vast base image |
-| `LLAMA_CPP_VERSION` | (required) | Release tag from [ai-dock/llama.cpp-cuda](https://github.com/ai-dock/llama.cpp-cuda/releases) |
+| `LLAMA_CPP_VERSION` | (required) | Release tag from [unslothai/llama.cpp](https://github.com/unslothai/llama.cpp/releases) |
 | `CUDA_VERSION` | `12.8` | CUDA version for the pre-built binary package |
 
 ## Building with GitHub Actions
@@ -155,12 +155,12 @@ Go to **Actions > Build Llama.cpp Image > Run workflow** and fill in the inputs:
 The workflow pushes images tagged as `<namespace>/<repo>:<release-tag>-cuda-<version>`:
 
 ```
-yourusername/llama-cpp:b5460-cuda-12.9
+yourusername/llama-cpp:`<release>-cuda-12.9`
 ```
 
 ### Automatic Builds
 
-The workflow includes a weekly schedule (Monday) that automatically builds when new releases are detected on GitHub ([ai-dock/llama.cpp-cuda](https://github.com/ai-dock/llama.cpp-cuda/releases)). GitHub disables scheduled workflows on forks by default -- to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows. To disable scheduled builds, edit the `cron` line in `.github/workflows/build-llama-cpp.yml` or remove the `schedule` trigger.
+The workflow includes a weekly schedule (Monday) that automatically builds when new releases are detected on GitHub ([unslothai/llama.cpp](https://github.com/unslothai/llama.cpp/releases)). GitHub disables scheduled workflows on forks by default -- to enable them, go to the **Actions** tab in your fork and confirm that you want to enable workflows. To disable scheduled builds, edit the `cron` line in `.github/workflows/build-llama-cpp.yml` or remove the `schedule` trigger.
 
 ### Customizing the Image
 
@@ -182,6 +182,6 @@ See `/LICENSES.md` in the image for license details and file locations.
 
 - [llama.cpp Documentation](https://github.com/ggml-org/llama.cpp)
 - [llama.cpp Server Documentation](https://github.com/ggml-org/llama.cpp/tree/master/tools/server)
-- [ai-dock/llama.cpp-cuda Releases](https://github.com/ai-dock/llama.cpp-cuda/releases)
+- [unslothai/llama.cpp Releases](https://github.com/unslothai/llama.cpp/releases)
 - [Base Image Documentation](../../README.md)
 - [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/llama-cpp)
