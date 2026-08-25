@@ -203,7 +203,13 @@ jobs:
           fi
           # A typo'd arch would otherwise fall through jq's else-branch to
           # ubuntu-latest and build linux/<typo> on an amd64 runner.
-          if ! jq -e 'all(.arches[]; . == "amd64" or . == "arm64")' /tmp/lines.json > /dev/null; then
+          # `.[].arches[]`, not `.arches[]`: the two-arg all(gen; cond) evaluates the
+          # generator against the whole INPUT (the array of lines), so the one-level
+          # form raised "Cannot index array with string" and the guard failed the job
+          # it was meant to protect. Caught by a dispatch, not by review — the
+          # one-arg all() on the line above happens to be correct, which is why the
+          # two read as a matching pair.
+          if ! jq -e 'all(.[].arches[]; . == "amd64" or . == "arm64")' /tmp/lines.json > /dev/null; then
             echo "::error::declared arches must be amd64 or arm64 — no runner mapping exists for anything else"
             exit 1
           fi
