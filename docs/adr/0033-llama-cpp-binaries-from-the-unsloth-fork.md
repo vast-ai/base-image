@@ -344,7 +344,16 @@ Conditions 2 and 7-9 must resolve before this moves from Proposed to Accepted.
   so it starts on a host with no driver instead of dying at the loader.
 
 **Accepted negatives.**
-- **arm64 loses pre-Hopper GPUs.** ai-dock's arm64 covers SM 75-120a; unsloth's starts at
+- **arm64 loses pre-Hopper GPUs — measured 2026-08-25 as affecting ZERO current supply.**
+  The gap is real in the binary and empty in the market: a query of rentable verified
+  offers returned 64 amd64 and **5 arm64, every one of them a GB10** (Vast reports
+  compute capability 10.0; NVIDIA documents GB10 as 12.1 — the bundle covers `sm_90`,
+  `100`, `120a` and `121a`, so it is inside the set under either reading). There is no
+  rentable aarch64 supply below `sm_90` to lose. What remains is a forward risk rather
+  than a present one: if aarch64 supply later includes a discrete pre-Hopper card — an
+  Ampere Altra paired with an A100, say — that host is served today and would not be.
+  Re-measure before treating this as closed rather than assuming the market is static.
+  The ORIGINAL statement of the negative, which remains the binary-level truth: ai-dock's arm64 covers SM 75-120a; unsloth's starts at
   SM 90. Any aarch64 host with an A100, A10/A30, L4/L40S or T4 is served today and would
   not be after the swap — and the miss mode is silent CPU, not an error. The claim that
   coverage is "a superset on both lines" was false and is withdrawn. **arm64 has never
