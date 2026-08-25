@@ -153,7 +153,16 @@ jobs:
           ]
           LINES_EOF
 
-          MERGE=$(jq -c 'map({cuda, driver_floor})' /tmp/lines.json)
+          # `arches` MUST survive into merge-matrix. Without it merge-manifests calls
+          # merge-arch-manifests with no `arches:` input, which defaults to
+          # "amd64,arm64" and runs `crane index append --manifest <base>-arm64`. ADR
+          # 0033's CUDA 12 line is amd64-ONLY, so declaring it would build one amd64
+          # cell, pass QA, take a human approval, and then fail at crane on a staging
+          # tag that was never pushed — and with fail-fast:false the OTHER line
+          # promotes, producing exactly the half-promoted pair the all-or-nothing
+          # coupling exists to prevent, through a door that coupling does not cover.
+          # Six other workflows pass `arches: amd64` statically for this reason.
+          MERGE=$(jq -c 'map({cuda, driver_floor, arches})' /tmp/lines.json)
           BUILD=$(jq -c '[ .[] as $l | $l.arches[] | {
               cuda: $l.cuda,
               base_tag: $l.base_tag,
@@ -183,10 +192,53 @@ jobs:
             exit 1
           fi
 
+          # Every QA cell tests the `-amd64` staging tag, so a line without amd64
+          # would launch QA against a tag that was never built. That surfaces as a
+          # pull failure -> EXIT_BAD_INSTANCE -> `inconclusive`, which on a SCHEDULE
+          # soft-passes and promotes UNGATED — and this workflow's primary trigger is
+          # the weekly cron. Fail here, where the message can say why.
+          if ! jq -e 'all(.arches | index("amd64"))' /tmp/lines.json > /dev/null; then
+            echo "::error::every declared line must include amd64 — the QA cells test the -amd64 staging tag"
+            exit 1
+          fi
+          # A typo'd arch would otherwise fall through jq's else-branch to
+          # ubuntu-latest and build linux/<typo> on an amd64 runner.
+          if ! jq -e 'all(.arches[]; . == "amd64" or . == "arm64")' /tmp/lines.json > /dev/null; then
+            echo "::error::declared arches must be amd64 or arm64 — no runner mapping exists for anything else"
+            exit 1
+          fi
+
           echo "Build matrix: $BUILD"
           echo "Merge matrix: $MERGE"
           echo "build-matrix=$BUILD" >> $GITHUB_OUTPUT
           echo "merge-matrix=$MERGE" >> $GITHUB_OUTPUT
+
+      # READ BACK, do not re-check the local variable. The failure this catches is not
+      # a bad declaration — it is the output being DROPPED between steps, which is what
+      # happened on run 32835134491 when the matrix carried the DOCKERHUB_NAMESPACE
+      # secret's value: GitHub emitted "Skip output 'build-matrix' since it may contain
+      # secret" as a WARNING, both matrices expanded to zero cells, every job skipped,
+      # and `collect-tags` reported "No tags found" while the run's own conclusion was
+      # decided elsewhere. A `jq length` on the shell variable inside the expand step
+      # would have passed. Only reading the OUTPUT back sees the drop.
+      - name: Verify the matrices survived as job outputs
+        if: steps.decision.outputs.should-run == 'true'
+        env:
+          BUILD_MATRIX: ${{ steps.expand.outputs.build-matrix }}
+          MERGE_MATRIX: ${{ steps.expand.outputs.merge-matrix }}
+        run: |
+          for name in BUILD_MATRIX MERGE_MATRIX; do
+            val="${!name}"
+            if [[ -z "$val" ]]; then
+              echo "::error::${name} is empty after the output round-trip — if the job log shows \"Skip output ... since it may contain secret\", a field's value matches a repository secret and must not be carried through a job output"
+              exit 1
+            fi
+            if ! count=$(jq -e 'length' <<< "$val" 2>/dev/null) || [[ "$count" -eq 0 ]]; then
+              echo "::error::${name} expanded to zero cells — nothing would build, and every downstream job would SKIP rather than fail"
+              exit 1
+            fi
+            echo "${name}: ${count} cell(s)"
+          done
 
   build:
     needs: preflight
@@ -400,6 +452,8 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # This line's OWN arches, not the action's "amd64,arm64" default.
+          arches: ${{ join(matrix.arches, ',') }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -453,7 +507,23 @@ jobs:
       # AFTER promotion and leads with "promoted", because that cell does not gate —
       # without it a red serverless cell marks the run failed while merge-manifests
       # promoted, and Slack would read "Successful" beside a failed run.
-      headline: ${{ (needs.build.result != 'success' && 'llama.cpp build failed') || (needs.qa.result == 'failure' && 'llama.cpp QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'llama.cpp promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'llama.cpp promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'llama.cpp promoted — live-GPU QA passed') || '' }}
+      # "PROMOTED" IS AN ALLOWLIST ON merge-manifests SUCCEEDING, not a fall-through.
+      # This expression used to enumerate failure states and fall through to the
+      # success text, keyed on `qa.outputs.gated` — "did a live test run" — which says
+      # nothing about whether anything shipped. `merge-manifests` ending `skipped` or
+      # `cancelled` is not `'failure'`, so it fell through and Slack announced a
+      # promotion that did not happen. Reached on the branch dispatch that was
+      # cancelled at the production approval gate: qa green, gated true, merge
+      # cancelled -> "promoted — live-GPU QA passed" beside a red run card.
+      #
+      # This repo already litigated this class and fixed it for the base workflows
+      # (`test_promote_notification_truth.py`: "Enumerating the ways a thing can go
+      # wrong misses the one nobody listed; requiring the single way it goes right
+      # cannot be missed"). That guard is scoped to promote-base-image/build-base-image
+      # and does not reach the build-* callers, so the same defect still sits in
+      # build-vllm.yml, build-sglang.yml and build-comfyui.yml, which share this
+      # expression verbatim. Fixed here; the shared guard is the real fix.
+      headline: ${{ (needs.build.result != 'success' && 'llama.cpp build failed') || (needs.qa.result == 'failure' && 'llama.cpp QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'llama.cpp promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'llama.cpp NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'llama.cpp promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'llama.cpp promoted — live-GPU QA passed') || '' }}
       image-name: "Llama.cpp"
       image-ref: ${{ needs.preflight.outputs.llama-cpp-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

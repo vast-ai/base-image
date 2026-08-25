@@ -2366,7 +2366,17 @@ def check_llama_offload_is_asserted(img: Image, repo: Path) -> Iterable[Finding]
         if not f.is_file() or not re.match(r"\d+-.*\.sh$", f.name):
             continue
         body = f.read_text(encoding="utf-8", errors="replace")
-        if _OFFLOAD_EVIDENCE.search(body) and _has_failure_path(body):
+        # COMMENT-STRIPPED, and this is the whole rule. Searching the raw body made
+        # L076 satisfiable by a COMMENT: delete 11-llama-offload.sh entirely, put the
+        # word "offloading" in a comment in 10-llama-serving.sh — which already has a
+        # real test_fail and is already named in INSTANCE_TEST_REQUIRE_PASS — and the
+        # baseline reported CLEAN with the assertion gone. That is precisely the trap
+        # _has_failure_path's own docstring documents (`62-gpu-libraries.sh` carried a
+        # comment naming the machinery it never called), reintroduced one level up in
+        # the function that cites it. _has_failure_path still reads the RAW body: it
+        # strips comments itself, and passing it pre-stripped text would double-strip.
+        code = "\n".join(_strip_comment(line) for line in body.splitlines())
+        if _OFFLOAD_EVIDENCE.search(code) and _has_failure_path(body):
             found.append(f"llama.d/{f.stem}")
 
     if not found:

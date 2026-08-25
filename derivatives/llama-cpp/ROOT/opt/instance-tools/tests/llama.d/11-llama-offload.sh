@@ -42,7 +42,11 @@ _declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${LLAMA_ARGS:-
 LLAMA_LOG=/var/log/llama.log
 [[ -f "$LLAMA_LOG" ]] || LLAMA_LOG=/var/log/portal/llama.log
 
-READY_TIMEOUT="${LLAMA_OFFLOAD_READY_TIMEOUT:-1200}"
+READY_TIMEOUT="${LLAMA_OFFLOAD_READY_TIMEOUT:-3600}"   # matches 10-llama-serving's cold-start budget
+# Baked numbers can only be corrected by rebuilding and re-promoting (L070). Cold CUDA
+# context init on a many-GPU host with persistence mode off can exceed a minute.
+LIST_DEVICES_TIMEOUT="${LLAMA_LIST_DEVICES_TIMEOUT:-120}"
+NVIDIA_SMI_TIMEOUT="${LLAMA_NVIDIA_SMI_TIMEOUT:-60}"
 
 # Inert, not skip-as-pass: with no model there is no load to offload. 10-llama-serving
 # is the file the gate REQUIRES alongside this one, so an image that lost LLAMA_MODEL is
@@ -77,15 +81,35 @@ echo "  llama healthy on :${LLAMA_INTERNAL_PORT}"
 # the enumerated device is.
 echo ""
 echo "  -- backend --"
-devices=$(timeout 60 llama-server --list-devices 2>&1)
+devices=$(timeout "$LIST_DEVICES_TIMEOUT" llama-server --list-devices 2>&1)
 rc=$?
 echo "$devices" | sed 's/^/    /'
+
+# ANCHORED to the listing format, and case-SENSITIVE. The obvious pattern
+# (`grep -qiE '(CUDA|ROCm|Vulkan)[0-9]'`) matches the wrong thing in the one state
+# this arm exists to catch: stderr is folded in via 2>&1, ggml's loader prints the
+# .so PATH on failure, and ADR 0033's bundles are named `x64-cuda12-portable`. A
+# case-insensitive unanchored match would find "cuda12" inside
+# "failed to load backend from /opt/llama.cpp/x64-cuda12-portable/libggml-cuda.so"
+# and report a GPU as enumerated on the exact failure it is looking for.
+# No trailing colon: `CUDA:0 NVIDIA H100` is a plausible rename and would false-red.
+# The LINE ANCHOR is what does the safety work, not the punctuation — an error message
+# begins with "failed to load backend from ..." or a "/opt/..." path, never with a
+# device label — and the match is case-SENSITIVE so a lowercase `cuda12-portable` path
+# segment cannot match even if one ever did start a line.
+_dev_re='^[[:space:]]*(CUDA|ROCm|Vulkan|SYCL)[: ]?[0-9]+'
 if (( rc != 0 )); then
     fail_later "offload-list-devices" "llama-server --list-devices exited ${rc} — the binary cannot enumerate its backends (output above)"
-elif ! grep -qiE '(CUDA|ROCm|Vulkan)[0-9]' <<< "$devices"; then
+elif grep -qE "$_dev_re" <<< "$devices"; then
+    echo "  backend: a GPU device is enumerated"
+elif grep -qiE '^[[:space:]]*\(none\)|no devices found|no devices available' <<< "$devices"; then
     fail_later "offload-no-gpu-device" "llama-server --list-devices lists no GPU device — libggml-cuda.so is absent or failed to dlopen, so this image serves on CPU (check: ldd -r on \$LLAMA_CPP_DIR/libggml-cuda.so, and the driver's CUDA major against the bundle's)"
 else
-    echo "  backend: a GPU device is enumerated"
+    # Neither a device line nor an explicit empty listing. That is an unrecognised
+    # output format, not a verdict — and hard-failing on it would repeat the mistake
+    # this file already made once, gating on a string upstream is free to change.
+    # Arm B is independent and still gating, so degrade rather than red.
+    echo "  WARN: could not interpret --list-devices output — arm B is carrying this check"
 fi
 
 # ── B: did the RUNNING server put the model there? ───────────────────
@@ -101,29 +125,60 @@ fi
 # instance. The general caution cost the only assertion that worked.
 echo ""
 echo "  -- offload --"
-apps=$(nvidia-smi --query-compute-apps=pid,used_gpu_memory --format=csv,noheader 2>/dev/null)
-srv_pid=$(pgrep -x llama-server 2>/dev/null | head -1)
-[[ -z "$srv_pid" ]] && srv_pid=$(pgrep -f '[l]lama-server' 2>/dev/null | head -1)
+
+# Device-total VRAM, read FIRST because it is the discriminator for everything below.
+# It is namespace-PROOF: it asks the device, not the process table, so it answers even
+# where compute-app enumeration cannot.
+dev_used=$(timeout "$NVIDIA_SMI_TIMEOUT" nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
+apps=$(timeout "$NVIDIA_SMI_TIMEOUT" nvidia-smi --query-compute-apps=pid,used_gpu_memory --format=csv,noheader 2>/dev/null)
+srv_pid=$(pgrep -o -x llama-server 2>/dev/null)
 echo "  llama-server pid: ${srv_pid:-<not found>}"
 echo "  compute apps: ${apps:-<none>}"
+echo "  device VRAM in use: ${dev_used:-<unknown>} MiB"
+
+# A FLOOR, not "> 0". A bare CUDA context plus cuBLAS workspace is a few hundred MiB on
+# its own, so `mib > 0` passes on a server whose weights never left system RAM — which
+# is the whole `-ngl 0` / partial-offload family, and the larger one. The honest floor
+# is the model: if the weights are on the device, resident VRAM is at least a good
+# fraction of the GGUF on disk. Derived, not guessed — and when the file cannot be
+# found the check says so rather than silently falling back to a number.
+gguf=$(find "${WORKSPACE:-/workspace}/llama.cpp" "${HOME}/.cache/llama.cpp" -name '*.gguf' -type f -printf '%s\n' 2>/dev/null | sort -n | tail -1)
+if [[ -n "$gguf" && "$gguf" -gt 0 ]]; then
+    vram_floor=$(( gguf / 1048576 / 2 ))     # half the model, in MiB
+    echo "  model on disk: $(( gguf / 1048576 )) MiB — requiring >= ${vram_floor} MiB resident"
+else
+    vram_floor=0
+    echo "  model file not found on disk — cannot derive a VRAM floor, so any non-zero residency counts"
+fi
 
 if [[ -z "$apps" ]]; then
-    # The CPU-fallback signature. Not a namespace artefact: this platform demonstrably
-    # populates the list, so an empty one beside a model that is supposedly resident is
-    # the thing this file exists to catch.
-    fail_later "offload-no-gpu-process" "no process holds GPU memory while llama-server is serving — the model is in system RAM and inference is running on CPU (the ggml_backend_dl silent-fallback path; /health, /v1/models and completions all still pass in this state)"
+    # Empty list has TWO causes and they need opposite verdicts. NVML process
+    # enumeration is genuinely unavailable in some container configurations — that is
+    # the documented PID-namespace effect, and an EMPTY list is how it usually presents,
+    # not an unmatched one. Distinguishing them is exactly what dev_used is for.
+    if [[ -n "$dev_used" ]] && (( dev_used > 64 )); then
+        echo "  WARN: no compute-app rows, but the device holds ${dev_used} MiB — process"
+        echo "        enumeration is unavailable here (PID namespace), not a CPU fallback"
+    else
+        fail_later "offload-no-gpu-process" "no process holds GPU memory and the device reports ${dev_used:-0} MiB in use while llama-server is serving — the model is in system RAM and inference is running on CPU (the ggml_backend_dl silent-fallback path; /health, /v1/models and completions all still pass in this state)"
+    fi
 elif [[ -n "$srv_pid" ]] && grep -qE "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps"; then
-    mib=$(grep -E "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps" | sed -n 's/.*,[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)
-    if [[ -n "$mib" ]] && (( mib > 0 )); then
+    row=$(grep -E "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps" | head -1)
+    mib=$(sed -n 's/.*,[[:space:]]*\([0-9]\+\).*/\1/p' <<< "$row")
+    if [[ -z "$mib" ]]; then
+        # "934, [N/A]" — MIG and some vGPU hosts. The driver declining to report a
+        # number is not the same claim as "0 MiB", and reporting it as zeroed weights
+        # sends the reader to the wrong place.
+        echo "  WARN: the driver did not report a memory figure for pid ${srv_pid} (row: ${row})"
+    elif (( mib > vram_floor )) && (( mib > 0 )); then
         echo "  offload: llama-server (pid ${srv_pid}) holds ${mib} MiB of VRAM"
     else
-        fail_later "offload-zero-vram" "llama-server (pid ${srv_pid}) is listed as a compute app but holds ${mib:-0} MiB — the context is on the GPU and the weights are not (VRAM budget, or -ngl/--n-gpu-layers set to 0)"
+        fail_later "offload-below-floor" "llama-server (pid ${srv_pid}) holds only ${mib} MiB of VRAM against a floor of ${vram_floor} MiB — the CUDA backend loaded but the WEIGHTS are not on the GPU, so a context exists and inference still runs on CPU (-ngl/--n-gpu-layers, or a VRAM budget too small for the model)"
     fi
 else
-    # Something holds VRAM but we cannot prove it is ours. THIS is where PID-namespace
-    # skew would land, and it is deliberately not a failure: arm A has already proved
-    # the backend loads, and failing here would red a healthy box over an attribution
-    # detail. Loud enough to investigate, not loud enough to block.
+    # Something holds VRAM but we cannot prove it is ours. Deliberately not a failure:
+    # arm A has already proved the backend loads, and failing here would red a healthy
+    # box over an attribution detail on a shared GPU.
     echo "  WARN: GPU memory is held, but not attributable to pid ${srv_pid:-<unknown>}"
     echo "        (PID-namespace skew, or another process on a shared GPU)"
 fi

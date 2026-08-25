@@ -1224,9 +1224,20 @@ oobabooga). The `new-image` skill + generator encode them.
   **Two instruments, and the choice between them was made the wrong way round first.**
   Gating: (a) `llama-server --list-devices` enumerates a GPU — portable, depends only on the
   binary and the driver, and catches the dominant failures; note it exits 0 printing `(none)`
-  when it finds nothing, so the enumerated device is the check, not the exit code. (b) The
-  DRIVER's own view, `nvidia-smi --query-compute-apps`, attributes non-zero VRAM to the
-  llama-server pid. NOT gating: the server's LOG. The first version inverted this — it gated on
+  when it finds nothing, so the enumerated device is the check, not the exit code. The match is
+  LINE-ANCHORED and case-sensitive, because stderr is folded in and ggml's loader prints the
+  `.so` path on failure: an unanchored `grep -i '(CUDA|...)[0-9]'` finds `cuda12` inside
+  `/opt/llama.cpp/x64-cuda12-portable/libggml-cuda.so` and reports a GPU on the exact failure it
+  is looking for (ADR 0033 names the bundles). An output matching NEITHER a device line nor an
+  explicit empty listing is a WARN, not a verdict — hard-failing on an unrecognised format would
+  repeat the log mistake below. (b) The DRIVER's own view, `nvidia-smi --query-compute-apps`,
+  attributes VRAM to the llama-server pid **above a floor derived from the model on disk**, not
+  merely above zero: a bare CUDA context plus cuBLAS workspace is a few hundred MiB, so `> 0`
+  passes a server whose weights never left system RAM — the `-ngl 0` / partial-offload family,
+  which is the larger one. An EMPTY compute-app list is disambiguated by device-total
+  `memory.used`, which is namespace-proof: empty beside a loaded device is the documented NVML
+  PID-namespace effect and WARNs; empty beside an idle device is the CPU fallback and fails. A
+  non-numeric figure (`[N/A]` on MIG/vGPU) is the driver declining to answer, not zero. NOT gating: the server's LOG. The first version inverted this — it gated on
   `ggml_cuda_init` / `load_tensors: offloaded N/N layers to GPU`, the wording llama.cpp printed
   for years, and demoted compute-app attribution on a general concern about PID-namespace
   isolation. Both halves were wrong, measured on run 32835411583: llama.cpp v0.2.0 rewrote its

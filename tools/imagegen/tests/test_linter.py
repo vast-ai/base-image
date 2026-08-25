@@ -2637,3 +2637,37 @@ def test_L076_does_not_fire_on_an_image_without_a_llama_suite(tmp_path):
     _own_suite(img)
     _gated(img, f"{_TRIO} app.d/10-serving")
     assert "L076" not in errs(img, tmp_path)
+
+
+def test_L076_a_comment_mentioning_offload_does_not_satisfy_it(tmp_path):
+    """THE evasion the first version shipped with, found by review and reproduced on
+    the real repo: delete the offload test entirely, then put the word "offloading" in
+    a COMMENT in a sibling that already has an unrelated test_fail and is already named
+    in INSTANCE_TEST_REQUIRE_PASS. The evidence regex read the raw body, so the
+    baseline reported CLEAN with the assertion gone — the rule certified its own
+    absence. Same trap `_has_failure_path`'s docstring documents, one level up."""
+    img = make(tmp_path)
+    d = img.dir / "ROOT/opt/instance-tools/tests/llama.d"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "10-llama-serving.sh"
+    f.write_text('#!/bin/bash\n'
+                 '# NOTE: offloading of layers to GPU is handled elsewhere\n'
+                 '# see also: llama-server --list-devices\n'
+                 'test_fail "not serving"\n')
+    f.chmod(0o755)
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")
+
+
+def test_L076_a_neutered_assertion_keeping_its_comments_does_not_satisfy_it(tmp_path):
+    """The edit a maintainer reaches for the first time the cell reds a release: keep
+    the file and its explanatory header, demote both arms to echo, and leave the one
+    unrelated test_fail on the readiness probe. Evidence words survive only in prose."""
+    img = make(tmp_path)
+    _llama_suite(img, '#!/bin/bash\n'
+                      '# gates on llama-server --list-devices and --query-compute-apps\n'
+                      'wait_for_url http://127.0.0.1:18000/health 60 || test_fail "not up"\n'
+                      'echo "backend check disabled"\n'
+                      'report_failures\n')
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving llama.d/11-llama-offload")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")
