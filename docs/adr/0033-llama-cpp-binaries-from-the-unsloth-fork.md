@@ -263,7 +263,28 @@ to the `-mix-` line. No change to the action is required — the input already e
      Condition 7's per-line gate is what makes that discoverable before promotion rather
      than after.
 
-9. **The cuBLAS minor must match the bundle, not the base.** The cuda13 bundles declare
+9. ~~The cuBLAS minor must match the bundle, not the base.~~ **RESOLVED 2026-08-25 by
+   measurement: no action needed.** The concern was symbol availability, not the SONAME —
+   `libcublas.so.13` loads either way, but a symbol ADDED in 13.3 would not exist in 13.2
+   and would surface as an unresolved symbol at `dlopen`, which `ggml_backend_dl` swallows
+   into a CPU fallback. Checked directly instead of argued: `libggml-cuda.so` from
+   `x64-cuda13-portable` requires **12 cuBLAS symbols and 49 cudart symbols**, and every one
+   of them is exported by the `libcublas-13-2` (13.4.1.3) and `cuda-cudart-13-2` (13.2.51)
+   packages. llama.cpp uses a small, long-stable slice — `cublasCreate_v2`, `cublasGemmEx`,
+   `cublasGemmStridedBatchedEx`, `cublasSetMathMode` and similar — none of it new in 13.3.
+   So the base-derived package is sufficient and the `cuda-13.2-mini` base needs no change.
+   This matters beyond itself: there is no `cuda-13.3` base published (only 12.9 and 13.2),
+   so had the answer gone the other way the fix would have meant installing a non-base CUDA
+   minor and keeping it on the loader path against `05-configure-cuda.sh`, which strips every
+   line containing `cuda` from every conf file on every boot. **A corollary:
+   `06-llama-cuda.sh` can now be deleted rather than repurposed** — its only job was putting
+   `/opt/llama.cpp/cuda-${CUDA_VERSION}` on the loader path, a directory the flat bundle
+   layout does not have, and `RUNPATH=$ORIGIN` resolves the bundle's own libraries without
+   it. The remaining risk is covered: if any of this is wrong the result is a CPU fallback,
+   which `llama.d/11-llama-offload` now fails on (condition 3).
+
+   *Original text, kept because the reasoning is still the right check to run on any future
+   bundle/base pairing:* **The cuBLAS minor must match the bundle, not the base.** The cuda13 bundles declare
    `toolkit_version: 13.3`; the chosen base is `cuda-13.2-mini` and the Dockerfile derives
    the apt package from the *base* tag, installing `libcublas-13-2`. Building against a
    newer minor and running against an older library is the direction CUDA minor-version
