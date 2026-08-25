@@ -208,6 +208,28 @@ the `/etc/environment` snapshot with a decision nobody made.
    inference works". The cost is running every base QA config a second time, accepted
    deliberately.
 
+   **What the cell asserts, in layers.** `base/85-serverless-services` opens with
+   `is_serverless || test_skip`, and `runner.sh` turns a skipped REQUIRED test into
+   `REQUIRED-FAIL` — so requiring it IS the assertion that the inference worked, and it
+   then makes its own assertions about what the mode means (six services stopped through
+   the supervisord RPC socket, no `caddy` process, ports 11111/11112/18080 closed,
+   supervisord still serving). `base/15-boot-markers` adds the round trip: the marker
+   exists and its recorded value agrees with `is_serverless()`.
+
+   Neither of those, however, distinguishes an INFERENCE from a DECLARATION. If
+   `SERVERLESS` ever reached the instance from anywhere else — a leak into `base-qa`'s
+   template, or the platform beginning to inject it — the cell would go green having
+   tested serverless behaviour while testing nothing about detection, and would keep
+   passing forever. So the cell sets `SERVERLESS_DETECT_EXPECT=detected` and
+   `base/15-boot-markers` asserts the recorded verdict matches. Ordinary cells set nothing
+   and the assertion is inert for them.
+
+   That assertion doubles as the **retirement signal**. When the backend starts injecting
+   `SERVERLESS` server-side, the verdict becomes `declared` and this cell fails on a
+   perfectly healthy instance — which is the bridge announcing it is no longer
+   load-bearing, on evidence rather than on the calendar. That is ADR 0031 decision 6a's
+   property, obtained here without 6a's machinery.
+
    **Sequenced after `qa`, not beside it.** Both matrices are `max-parallel: 4`, and
    running them concurrently would put eight cells into the offer market the `qa` job's
    own comment warns about — "two cells racing for one box surfaces as bad_instance

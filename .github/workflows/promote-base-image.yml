@@ -447,6 +447,7 @@ jobs:
       timeout: "2400"
       extra_env: |
         MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        SERVERLESS_DETECT_EXPECT=detected
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/85-serverless-services
         PROV_TIMEOUT=900
         INSTANCE_TEST_DEFAULT_TIMEOUT=900
