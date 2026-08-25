@@ -140,17 +140,37 @@ the `/etc/environment` snapshot with a decision nobody made.
    `VAST_CPU_THREAD_CEILING` and `EXPOSURE_ENFORCE` are the existing precedents. It also
    lets the platform disable the bridge from their side the day backend injection ships.
 
-2. **The decision must be re-decided every boot, and must not latch.**
-   `10-prep-env.sh:36` rewrites `/etc/environment` only when the container-id marker is
-   absent — i.e. once per instance — and line 48 re-sources it with `set -a`. So a
-   first-boot `SERVERLESS=true` is re-exported on every later boot **after**
-   `boot_default.sh:72` has read the fresh env: a customer who sets `SERVERLESS=false`
-   and restarts gets split-brain, with the boot flags on one value and every service on
-   the other, and no way to clear it short of hand-editing the file. Use the managed-block
-   pattern from `12-cpu-thread-limits.sh:81-175`: a delimited block recomputed each boot,
-   an explicit-assignment check that always wins, and an `unset` when the inference stops
-   firing. This defect pre-exists for anyone editing `SERVERLESS` after first boot; the
-   inference would make it routine.
+2. **The detector EXPORTS only. It must never write `/etc/environment` itself.**
+   That single rule is what makes `/etc/environment` the per-instance escape hatch, and
+   it works because of stage ordering: the detector runs at stage 01, `10-prep-env.sh:48`
+   sources `/etc/environment` at stage 10, so **a user's edit to that file overrides the
+   detector** for every destructive consumer — `exit_serverless.sh`, `pyworker.sh`, and
+   the manifest-authored units. `10-prep-env.sh:36` already persists the first-boot value
+   via its existing snapshot; the detector needs to do nothing further.
+
+   *A rejected alternative, recorded because it is the intuitive one and it is wrong.*
+   Review proposed a managed block recomputed every boot (the
+   `12-cpu-thread-limits.sh:81-175` pattern) on the grounds that `/etc/environment` is
+   written once per instance and therefore latches. The latching is real — demonstrated:
+   with a stale `SERVERLESS="true"` in the file, `boot_default.sh:72` reads `false` from
+   the fresh container env while every service reads `true` after line 48 re-sources it,
+   two values inside one boot. But re-deciding every boot **cannot help**, because
+   `endpt_id` is written only at instance-create and nothing attaches an existing
+   instance to an endpoint afterwards: **an instance's serverless-ness is immutable for
+   its lifetime**, so a second decision can only ever repeat the first. What it would do
+   instead is overwrite a user's `/etc/environment` fix on every boot — removing the
+   escape hatch in the name of protecting it. The carve-out review proposed for this
+   ("an explicit assignment outside the block always wins") is subtle, easy to get wrong,
+   and unnecessary once the mode is recognised as immutable.
+
+   One residual to accept rather than engineer away: the update-flag block moved from
+   `boot_default.sh:71-75` runs at stage 01 and therefore uses the DETECTED value, not
+   the later `/etc/environment` value. A user who edits the file gets their services back
+   but still skips a portal update that boot. Cosmetic.
+
+   The pre-existing latching defect is orthogonal and worth its own fix: today anyone who
+   changes `SERVERLESS` after first boot gets the split-brain above, detector or no
+   detector.
 
 3. **A provenance marker, written on both outcomes.** `verdict=declared|detected|none`,
    which key was present, and the resolved value — never the token's value. Echo one line
