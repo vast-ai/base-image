@@ -238,30 +238,32 @@ to the `-mix-` line. No change to the action is required — the input already e
    `qa-gate.yml` uploads no artifact at all on an ungated scheduled run, the common
    path on this weekly workflow.
 
-8. ~~The recommended template stays on the CUDA 12 tag.~~ **SUPERSEDED 2026-08-25 by the
-   decision owner: the recommended template moves to the CUDA 13 line**, matching vLLM and
-   SGLang, which are already there. Recorded as a reversal rather than edited away, because
-   it inverts this condition's whole point — Option H was rejected on the grounds that the
-   x64 CUDA 13 artifact is dominated (less SM coverage, worse driver reach) and condition 8
-   was the mitigation that kept the fleet off it. Under the new decision the CUDA 13 line is
-   the PRIMARY customer path, not an opt-in.
+8. **The recommended template stays on the CUDA 12 tag.** The CUDA 13 tag is opt-in.
+   This condition was SUPERSEDED on 2026-08-25 (recommended to move to CUDA 13, matching
+   vLLM and SGLang) and is now REINSTATED the same day on measurement. Both turns are
+   left in the record because the reversal was decided on an analogy and undone by data.
 
-   What that changes, stated plainly rather than assumed away:
-   - **It resolves the arm64 problem** and it is the reason the amd64-only CUDA 12 line is
-     acceptable. aarch64 customers land on the multi-arch 13.2 tag, so no tag-shape break
-     reaches them.
-   - **It accepts the driver-reach cost that Option C was rejected for.** CUDA 13 needs a
-     newer minimum driver, and forward-compat libs are datacenter-only, so a consumer GPU on
-     a CUDA-12-era driver cannot run it. The counter-evidence is empirical and it is the
-     reason this is defensible: vLLM and SGLang already promote and run on CUDA 13 across
-     this fleet, so the unrentable slice is measured behaviour rather than a projection.
-   - **SM 70 (V100) is not on the primary path.** The CUDA 12 line keeps it and remains
-     available; nothing steers to it.
-   - **The CUDA 13 line becomes the line that MUST work, and it has never been built once.**
-     Its base pin is unexercised for this image, its QA cell has never run, and its
-     `libcublas` minor question (condition 9) moves from a tidy-up to a release blocker.
-     Condition 7's per-line gate is what makes that discoverable before promotion rather
-     than after.
+   **What the analogy missed: driver reach is not uniform across images.** Sampling
+   rentable verified offers (n=64 amd64, a default page rather than a census, so treat
+   the percentages as direction and not gospel):
+
+   | | CUDA 12 line | CUDA 13, >=13.0 driver | at the 13.2 QA floor |
+   |---|---|---|---|
+   | all amd64 | **64/64 (100%)** | 47/64 (73%) | 19/64 (30%) |
+   | Ada (`sm_89`) only, n=14 | 14/14 (100%) | 5/14 (**36%**) | 2/14 (14%) |
+
+   Pointing the recommended template at CUDA 13 would strand **64% of Ada supply** —
+   most of the 4090 / 4080 / RTX 6000 Ada population, which sits on 12.7-13.0 drivers.
+   Note this is a DRIVER limit, not a kernel one: `x64-cuda13-portable` carries `sm_89`
+   SASS and PTX, so Ada is covered on coverage and excluded on driver. The CUDA 12 line
+   reaches everything. That vLLM and SGLang already run on CUDA 13 is not evidence about
+   this image — it is evidence about the hosts THEIR customers rent, which for a
+   llama.cpp image skew differently.
+
+   **arm64 is unaffected by reinstating this.** All 6 rentable arm64 offers (all GB10)
+   report `cuda_max_good` >= 13.0, so a 13.x image runs on every one. Recommended stays
+   on 12.9 for amd64; aarch64 users take the 13.2 tag. That is the split this condition
+   described in the first place, and the amd64-only CUDA 12 line is what makes it work.
 
 9. ~~The cuBLAS minor must match the bundle, not the base.~~ **RESOLVED 2026-08-25 by
    measurement: no action needed.** The concern was symbol availability, not the SONAME —
