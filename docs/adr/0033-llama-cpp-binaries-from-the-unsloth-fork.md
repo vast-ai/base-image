@@ -238,9 +238,30 @@ to the `-mix-` line. No change to the action is required — the input already e
    `qa-gate.yml` uploads no artifact at all on an ungated scheduled run, the common
    path on this weekly workflow.
 
-8. **The recommended template stays on the CUDA 12 tag.** The CUDA 13 tag is opt-in until
-   something on the box selects by driver. This is the mitigation for Option H's rejection:
-   the dominated artifact exists, so nothing may steer the fleet onto it by default.
+8. ~~The recommended template stays on the CUDA 12 tag.~~ **SUPERSEDED 2026-08-25 by the
+   decision owner: the recommended template moves to the CUDA 13 line**, matching vLLM and
+   SGLang, which are already there. Recorded as a reversal rather than edited away, because
+   it inverts this condition's whole point — Option H was rejected on the grounds that the
+   x64 CUDA 13 artifact is dominated (less SM coverage, worse driver reach) and condition 8
+   was the mitigation that kept the fleet off it. Under the new decision the CUDA 13 line is
+   the PRIMARY customer path, not an opt-in.
+
+   What that changes, stated plainly rather than assumed away:
+   - **It resolves the arm64 problem** and it is the reason the amd64-only CUDA 12 line is
+     acceptable. aarch64 customers land on the multi-arch 13.2 tag, so no tag-shape break
+     reaches them.
+   - **It accepts the driver-reach cost that Option C was rejected for.** CUDA 13 needs a
+     newer minimum driver, and forward-compat libs are datacenter-only, so a consumer GPU on
+     a CUDA-12-era driver cannot run it. The counter-evidence is empirical and it is the
+     reason this is defensible: vLLM and SGLang already promote and run on CUDA 13 across
+     this fleet, so the unrentable slice is measured behaviour rather than a projection.
+   - **SM 70 (V100) is not on the primary path.** The CUDA 12 line keeps it and remains
+     available; nothing steers to it.
+   - **The CUDA 13 line becomes the line that MUST work, and it has never been built once.**
+     Its base pin is unexercised for this image, its QA cell has never run, and its
+     `libcublas` minor question (condition 9) moves from a tidy-up to a release blocker.
+     Condition 7's per-line gate is what makes that discoverable before promotion rather
+     than after.
 
 9. **The cuBLAS minor must match the bundle, not the base.** The cuda13 bundles declare
    `toolkit_version: 13.3`; the chosen base is `cuda-13.2-mini` and the Dockerfile derives
