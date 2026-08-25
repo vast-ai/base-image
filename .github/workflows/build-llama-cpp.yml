@@ -117,7 +117,15 @@ jobs:
       #
       # Fields, and why each is per-line rather than global:
       #   cuda          the promoted tag's CUDA suffix, and the QA cell's tag
-      #   base          the base image this line builds FROM
+      #   base_tag      the TAG of the base image this line builds FROM — deliberately
+      #                 the tag alone, with no `vastai/base-image:` prefix. A job output
+      #                 containing a secret's VALUE is dropped: the namespace equals the
+      #                 DOCKERHUB_NAMESPACE secret, so an output carrying the full
+      #                 reference is redacted to empty, every downstream matrix expands
+      #                 to nothing, and every job SKIPS. Measured on run 32835134491,
+      #                 which emitted "Skip output 'build-matrix' since it may contain
+      #                 secret" as a WARNING and built nothing. The full reference is
+      #                 composed at the point of use, where masking is only cosmetic.
       #   bundle_cuda   the CUDA version of the llama.cpp BINARY package, which is not
       #                 the base's: ai-dock publishes 12.8 tarballs that we run on a
       #                 12.9 base, relying on 12.x ABI compatibility
@@ -137,7 +145,7 @@ jobs:
           [
             {
               "cuda": "12.9",
-              "base": "vastai/base-image:cuda-12.9-mini-py312-2026-08-21",
+              "base_tag": "cuda-12.9-mini-py312-2026-08-21",
               "bundle_cuda": "12.8",
               "driver_floor": "12.9",
               "arches": ["amd64", "arm64"]
@@ -145,10 +153,10 @@ jobs:
           ]
           LINES_EOF
 
-          MERGE=$(jq -c 'map({cuda, base, bundle_cuda, driver_floor})' /tmp/lines.json)
+          MERGE=$(jq -c 'map({cuda, driver_floor})' /tmp/lines.json)
           BUILD=$(jq -c '[ .[] as $l | $l.arches[] | {
               cuda: $l.cuda,
-              base: $l.base,
+              base_tag: $l.base_tag,
               bundle_cuda: $l.bundle_cuda,
               arch: .,
               platform: ("linux/" + .),
@@ -208,6 +216,10 @@ jobs:
           CUDA_VERSION="${{ matrix.cuda }}"
           LLAMA_CPP_VERSION="${{ needs.preflight.outputs.llama-cpp-version }}"
           CUDA_BIN_VERSION="${{ inputs.CUDA_VERSION || matrix.bundle_cuda }}"
+          # Composed here, not carried through the matrix — see the base_tag note in
+          # preflight. Masking in THIS log line is cosmetic; masking in a job output
+          # deletes the value.
+          BASE_IMAGE="vastai/base-image:${{ matrix.base_tag }}"
 
           IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [[ -z "$IMAGE_TAG" ]]; then
@@ -219,8 +231,9 @@ jobs:
 
           echo "CUDA_BIN_VERSION=$CUDA_BIN_VERSION" >> $GITHUB_ENV
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 
-          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch }})"
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch }}, base=$BASE_IMAGE)"
 
       - name: Build and push arch image to staging
         uses: ./.github/actions/build-arch-image
@@ -229,7 +242,7 @@ jobs:
           arch: ${{ matrix.platform }}
           tag-base: ${{ env.STAGING_TAG_BASE }}
           build-args: |
-            BASE_IMAGE=${{ matrix.base }}
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
             LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }}
             CUDA_VERSION=${{ env.CUDA_BIN_VERSION }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
