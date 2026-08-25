@@ -197,10 +197,23 @@ the `/etc/environment` snapshot with a decision nobody made.
    base is the only place it can be proved once for all of them. It is also a prelude to
    the platform injecting `SERVERLESS` from the instance dispatcher, which will apply to
    every image including third-party ones — a global mechanism gated globally, not on one
-   derivative. One cell against the first config in the QA set: the stage reads two
-   environment variables and does not vary by CUDA line, so a per-config matrix would
-   re-test the same file twelve times on a single-key account that already runs this gate
-   at `max-parallel: 4`.
+   derivative. **Every config, not one** — and the reason is broader than the detector.
+   Testing the inference alone would justify a single cell, since the stage reads two
+   environment variables and does not vary by CUDA line. But this is the first time base
+   has EVER run in serverless mode: L067 records that "base-qa could never set
+   SERVERLESS=true, so 85 and 86 had never executed once", so
+   `base/85-serverless-services` — services stopped, ports closed — has no coverage on any
+   config, and the configs differ in what they ship. Linking base to serverless behaviour
+   means proving that behaviour everywhere it ships, which is a wider claim than "the
+   inference works". The cost is running every base QA config a second time, accepted
+   deliberately.
+
+   **Sequenced after `qa`, not beside it.** Both matrices are `max-parallel: 4`, and
+   running them concurrently would put eight cells into the offer market the `qa` job's
+   own comment warns about — "two cells racing for one box surfaces as bad_instance
+   (exit 3), which is deliberately never retried. On a thin day more parallelism converts
+   passes into holds." Sequencing doubles wall-clock and leaves contention where it was
+   measured.
 
    Its evidence artifact must stay **outside** the `qa-evidence-*` namespace — `qa-summary`
    globs that pattern and reads the suffix as a config key, so a detection artifact would

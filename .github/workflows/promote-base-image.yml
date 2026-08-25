@@ -389,12 +389,17 @@ jobs:
   # to every image including third-party ones — so the mechanism is global and is gated
   # globally rather than on one derivative.
   #
-  # ONE cell, against the first config in the QA set. The stage's behaviour does not vary
-  # by CUDA line — it reads two environment variables — so a per-config matrix would
-  # re-test the same file 12 times on a single-key QA account that already runs this gate
-  # at max-parallel 4. Positional `[0]` is deliberate and safe here for the same reason:
-  # any config exercises the same code. It inherits that config's driver floor so the
-  # cell is rentable on the same market as the gate it runs beside.
+  # EVERY CONFIG, not one — and the reason is broader than the detector. Testing the
+  # DETECTOR alone would justify a single cell: it reads two environment variables and
+  # does not vary by CUDA line. But this cell is the first time base has EVER run in
+  # serverless mode. L067 records why: "base-qa could never set SERVERLESS=true, so 85
+  # and 86 had never executed once." So `base/85-serverless-services` — services stopped,
+  # ports closed — has no coverage on any config, and the configs genuinely differ in
+  # what they ship. Linking base to serverless behaviour means proving that behaviour
+  # everywhere it ships, which is a wider claim than "the inference works".
+  #
+  # It runs every base QA config a second time. That is the cost of the claim, accepted
+  # deliberately.
   #
   # ADVISORY, NOT BLOCKING, on purpose. This is a new enforcement on the highest-stakes
   # gate in the repo, and the house pattern (ADR 0006 condition 2, ADR 0031 decision 7)
@@ -414,17 +419,28 @@ jobs:
   # `is_serverless || test_skip`, and runner.sh turns a skipped REQUIRED test into
   # REQUIRED-FAIL — so a broken inference is a red cell, not a quiet green.
   qa-detect:
-    needs: [generate-configs, resolve-digests]
+    # SEQUENCED AFTER `qa`, not beside it. Both matrices are max-parallel 4, and running
+    # them concurrently would put 8 cells into the offer market that the `qa` job's own
+    # comment warns about: "two cells racing for one box surfaces as bad_instance
+    # (exit 3), which is deliberately never retried. On a thin day more parallelism
+    # converts passes into holds." Sequencing doubles wall-clock and leaves contention
+    # exactly where it was measured. A red `qa` skips this — an advisory cell has nothing
+    # to add to a promotion that is already held.
+    needs: [generate-configs, resolve-digests, qa]
     if: ${{ !inputs.DRY_RUN && needs.resolve-digests.outputs.qa-matrix != '{"include":[]}' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.resolve-digests.outputs.qa-matrix) }}
     uses: ./.github/workflows/qa-gate.yml
     with:
       repo: base-image
-      tag: qa-${{ github.run_id }}-${{ fromJson(needs.resolve-digests.outputs.qa-matrix).include[0].key }}
+      tag: qa-${{ github.run_id }}-${{ matrix.key }}
       template_dir: templates/base-qa
       label: base-image-qa-serverless-detect
       require_key: true
       require_tests: "base/15-boot-markers base/85-serverless-services"
-      set_filters: "cuda_max_good.gte=${{ fromJson(needs.resolve-digests.outputs.qa-matrix).include[0].floor }}"
+      set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       poll_timeout: "900"
       max_price: "1.00"
@@ -437,7 +453,7 @@ jobs:
       # Deliberately OUTSIDE the `qa-evidence-*` namespace: qa-summary globs that pattern
       # and reads the suffix as a CONFIG KEY, so an evidence artifact named for this cell
       # would be misread as a thirteenth config and resolved to a tag that does not exist.
-      evidence_name: serverless-detect-evidence
+      evidence_name: serverless-detect-${{ matrix.key }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
