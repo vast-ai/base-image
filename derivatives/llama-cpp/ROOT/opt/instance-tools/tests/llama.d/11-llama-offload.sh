@@ -2,25 +2,34 @@
 # Test: the CUDA backend is ACTUALLY SERVING — not merely present (L076, ADR 0016).
 #
 # llama.cpp is built `ggml_backend_dl: ON`, which means the CUDA backend is a
-# dlopen'd plugin rather than a link-time dependency. When that dlopen fails,
-# llama-server does not crash and does not exit non-zero. It falls back to the CPU
-# backend and serves correct answers, slowly, forever.
+# dlopen'd plugin. When that dlopen fails, llama-server does not crash and does not
+# exit non-zero. It falls back to the CPU backend and serves correct answers, slowly,
+# forever.
 #
 # Nothing else in this suite can see that. 10-llama-serving asserts the service is up,
 # /health returns 200, /v1/models is non-empty and a prompt returns tokens.
 # 12-llama-contract asserts token arithmetic, a grammar, a named tool, a status class
 # and a bind address. 20-serverless-pyworker asserts a benchmark score was written.
 # A 0.5B q8_0 GGUF answers every one of those from CPU in seconds, so before this file
-# existed a fully CPU-only image passed the entire gate on every cell — the gate
-# certified a GPU image that was not using the GPU.
+# existed a fully CPU-only image passed the entire gate on every cell.
 #
-# The dlopen fails for reasons no other check sees: a libcublas minor the bundle was
+# The dlopen fails for causes no other check sees: a libcublas minor the bundle was
 # not built against, a driver too old for the bundle's CUDA major, or a host compute
 # capability with neither a cubin nor JITable PTX in the binary. All three are silent.
 #
 # L056 is the build-time half of this invariant and does NOT reach here: it triggers
 # on `unsloth studio setup`, so any image installing a PREBUILT bundle is exempt from
 # it by construction. This is the runtime half.
+#
+# WHAT IS **NOT** ASSERTED HERE, AND WHY — read before "fixing" it:
+# The server's LOG is not an instrument for this. The first version of this file gated
+# on `ggml_cuda_init: found N CUDA devices` / `load_tensors: offloaded N/N layers to
+# GPU`, which is the wording llama.cpp printed for years. Upstream's v0.2.0 rewrote the
+# logging: at verbosity 3 it goes straight from `srv load_model: loading model '...'`
+# to `srv llama_server: model loaded`, and prints NO device or offload line at all.
+# Measured on run 32835411583 — the check failed on a box where nvidia-smi showed the
+# model resident in 836 MiB of VRAM. A gating assertion whose evidence upstream is free
+# to stop printing is a false-red generator, so the log is now diagnostic only.
 # TEST_TIMEOUT=1800
 source "$(dirname "$0")/../lib.sh"
 
@@ -30,9 +39,6 @@ LLAMA_INTERNAL_PORT="${LLAMA_INTERNAL_PORT:-18000}"
 _declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${LLAMA_ARGS:-}" | head -1)
 [[ -n "$_declared_port" ]] && LLAMA_INTERNAL_PORT="$_declared_port"
 
-# The clean log, with the portal log as fallback: logging.sh writes the portal copy and
-# log-tee derives /var/log/<name>.log from it, so on a healthy box both exist and the
-# clean one is the one worth grepping.
 LLAMA_LOG=/var/log/llama.log
 [[ -f "$LLAMA_LOG" ]] || LLAMA_LOG=/var/log/portal/llama.log
 
@@ -62,7 +68,13 @@ echo "  llama healthy on :${LLAMA_INTERNAL_PORT}"
 # ── A: can the backend load at all? ──────────────────────────────────
 #
 # Asks the BINARY, independently of the running server, so a failure here separates
-# "the image is broken" from "this particular launch did not use the GPU".
+# "the image is broken" from "this particular launch did not use the GPU". This is the
+# portable half: it depends on nothing but the binary and the driver, and it is what
+# catches the dominant failures (missing libcublas, wrong CUDA major, no kernel image).
+#
+# Note --list-devices exits 0 when it finds NOTHING, printing "Available devices:" and
+# "(none)" — verified against the shipped binary. So the exit code is not the check;
+# the enumerated device is.
 echo ""
 echo "  -- backend --"
 devices=$(timeout 60 llama-server --list-devices 2>&1)
@@ -76,56 +88,61 @@ else
     echo "  backend: a GPU device is enumerated"
 fi
 
-# ── B: did the RUNNING server use it? ────────────────────────────────
+# ── B: did the RUNNING server put the model there? ───────────────────
 #
 # A binary that CAN load CUDA and a server that DID are different claims, and only the
-# second one is what the customer is paying for. Both log forms are accepted because
-# llama.cpp has printed each across versions; requiring one exact string would turn an
-# upstream wording change into a red gate. Requiring at least one of them is the point —
-# silence must never read as success.
+# second is what the customer pays for. This asks the DRIVER, which is the one source
+# neither an upstream log-format change nor a llama.cpp release can invalidate.
+#
+# An earlier revision demoted this to non-gating on the theory that compute-app
+# attribution is unreliable inside a container because of PID-namespace isolation. That
+# is a real effect in general and it is NOT what happens here: measured on run
+# 32835411583, `--query-compute-apps` returned our own pid and 836 MiB from inside the
+# instance. The general caution cost the only assertion that worked.
 echo ""
 echo "  -- offload --"
-if [[ ! -f "$LLAMA_LOG" ]]; then
-    fail_later "offload-no-log" "neither /var/log/llama.log nor /var/log/portal/llama.log exists — cannot confirm what the running server loaded"
+apps=$(nvidia-smi --query-compute-apps=pid,used_gpu_memory --format=csv,noheader 2>/dev/null)
+srv_pid=$(pgrep -x llama-server 2>/dev/null | head -1)
+[[ -z "$srv_pid" ]] && srv_pid=$(pgrep -f '[l]lama-server' 2>/dev/null | head -1)
+echo "  llama-server pid: ${srv_pid:-<not found>}"
+echo "  compute apps: ${apps:-<none>}"
+
+if [[ -z "$apps" ]]; then
+    # The CPU-fallback signature. Not a namespace artefact: this platform demonstrably
+    # populates the list, so an empty one beside a model that is supposedly resident is
+    # the thing this file exists to catch.
+    fail_later "offload-no-gpu-process" "no process holds GPU memory while llama-server is serving — the model is in system RAM and inference is running on CPU (the ggml_backend_dl silent-fallback path; /health, /v1/models and completions all still pass in this state)"
+elif [[ -n "$srv_pid" ]] && grep -qE "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps"; then
+    mib=$(grep -E "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps" | sed -n 's/.*,[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)
+    if [[ -n "$mib" ]] && (( mib > 0 )); then
+        echo "  offload: llama-server (pid ${srv_pid}) holds ${mib} MiB of VRAM"
+    else
+        fail_later "offload-zero-vram" "llama-server (pid ${srv_pid}) is listed as a compute app but holds ${mib:-0} MiB — the context is on the GPU and the weights are not (VRAM budget, or -ngl/--n-gpu-layers set to 0)"
+    fi
 else
-    cuda_init=$(grep -ciE 'ggml_cuda_init|found [0-9]+ (CUDA|ROCm) devices?|using (CUDA|ROCm)[0-9]' "$LLAMA_LOG" || true)
-    offload_line=$(grep -iE 'offloa(ded|ding) .*(layers?|repeating).* to GPU' "$LLAMA_LOG" | tail -3)
-
-    [[ -n "$offload_line" ]] && sed 's/^/    /' <<< "$offload_line"
-    echo "  CUDA init lines in log: ${cuda_init}"
-
-    if (( cuda_init == 0 )) && [[ -z "$offload_line" ]]; then
-        fail_later "offload-cpu-fallback" "the running llama-server logged no CUDA initialisation and no layer offload — it is serving from CPU (this is the ggml_backend_dl silent-fallback path; /health, /v1/models and completions all still pass in this state)"
-    fi
-
-    # Only asserted when the line is present. A version that stops printing it is
-    # caught above; a version that prints "offloaded 0/29" is caught here, and that
-    # is the shape a too-small VRAM budget or a bad -ngl produces.
-    if [[ -n "$offload_line" ]]; then
-        n=$(sed -n 's/.*offloaded \([0-9]\+\)\/\([0-9]\+\) layers.*/\1/p' <<< "$offload_line" | tail -1)
-        if [[ -n "$n" ]] && (( n == 0 )); then
-            fail_later "offload-zero-layers" "llama-server offloaded 0 layers to GPU — the backend loaded but the model did not (VRAM budget, or -ngl/--n-gpu-layers set to 0)"
-        fi
-    fi
+    # Something holds VRAM but we cannot prove it is ours. THIS is where PID-namespace
+    # skew would land, and it is deliberately not a failure: arm A has already proved
+    # the backend loads, and failing here would red a healthy box over an attribution
+    # detail. Loud enough to investigate, not loud enough to block.
+    echo "  WARN: GPU memory is held, but not attributable to pid ${srv_pid:-<unknown>}"
+    echo "        (PID-namespace skew, or another process on a shared GPU)"
 fi
 
-# ── Corroboration, deliberately NOT gating ───────────────────────────
+# ── Diagnostics, deliberately NOT gating ─────────────────────────────
 #
-# nvidia-smi's per-process view is unreliable inside a container: compute-app
-# attribution depends on the PID namespace, and an empty list is routinely returned on
-# a GPU that is genuinely busy. Gating on it would produce a flaky red, and a flaky
-# gate teaches people to re-run rather than to look. Printed because when the
-# assertions above DO fail, this is the first thing the person reading the log wants.
+# Both log wordings, because a box may be running either: the pre-v0.2.0 format that
+# printed device init and layer offload, or the v0.2.0+ format that prints neither.
+# Present for the person reading a failure, never as evidence for a verdict.
 echo ""
-echo "  -- corroboration (not gating) --"
-if command -v nvidia-smi &>/dev/null; then
-    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -2 | tr '\n' ' ')
-    echo "  GPU memory used: ${used:-<unavailable>}"
-    apps=$(nvidia-smi --query-compute-apps=pid,used_gpu_memory --format=csv,noheader 2>/dev/null | head -5)
-    echo "  compute apps: ${apps:-<none visible in this PID namespace>}"
+echo "  -- diagnostics (not gating) --"
+if [[ -f "$LLAMA_LOG" ]]; then
+    hits=$(grep -iE 'ggml_cuda_init|found [0-9]+ (CUDA|ROCm) devices?|offloa(ded|ding) .*to GPU|load_model|model loaded' "$LLAMA_LOG" | tail -5)
+    [[ -n "$hits" ]] && sed 's/^/    /' <<< "$hits" || echo "    (no matching load lines — expected on llama.cpp v0.2.0+)"
 else
-    echo "  nvidia-smi not present"
+    echo "    no llama log at /var/log/llama.log or /var/log/portal/llama.log"
 fi
+used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -2 | tr '\n' ' ')
+echo "  GPU memory used (device total): ${used:-<unavailable>}"
 
 report_failures
 test_pass "llama.cpp CUDA backend verified in use — the served model is on the GPU"

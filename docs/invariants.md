@@ -1220,8 +1220,19 @@ oobabooga). The `new-image` skill + generator encode them.
   construction. **L076** gates both halves — the assertion must exist with a real failure path, and
   a gating template must name it in `INSTANCE_TEST_REQUIRE_PASS`, because an offload test that is
   not required can `test_skip` and the gate stays green. `test -f …libggml-cuda.so` does not
-  satisfy it: the file is present in exactly the failure being caught. Per-process `nvidia-smi`
-  attribution is deliberately NOT the instrument — compute-app visibility depends on the PID
-  namespace and returns empty on a genuinely busy GPU inside a container, so it is printed for
-  diagnosis and never gated on (ADR 0016).
+  satisfy it: the file is present in exactly the failure being caught.
+  **Two instruments, and the choice between them was made the wrong way round first.**
+  Gating: (a) `llama-server --list-devices` enumerates a GPU — portable, depends only on the
+  binary and the driver, and catches the dominant failures; note it exits 0 printing `(none)`
+  when it finds nothing, so the enumerated device is the check, not the exit code. (b) The
+  DRIVER's own view, `nvidia-smi --query-compute-apps`, attributes non-zero VRAM to the
+  llama-server pid. NOT gating: the server's LOG. The first version inverted this — it gated on
+  `ggml_cuda_init` / `load_tensors: offloaded N/N layers to GPU`, the wording llama.cpp printed
+  for years, and demoted compute-app attribution on a general concern about PID-namespace
+  isolation. Both halves were wrong, measured on run 32835411583: llama.cpp v0.2.0 rewrote its
+  logging and prints NO device or offload line at verbosity 3, so the gating check failed on a
+  box where `--query-compute-apps` reported the model resident in 836 MiB from inside the
+  instance. A gating assertion whose evidence upstream is free to stop printing is a false-red
+  generator. Where PID-namespace skew genuinely lands — VRAM held but not attributable to our
+  pid — is a WARN, not a failure, because arm (a) has already proved the backend loads (ADR 0016).
 
