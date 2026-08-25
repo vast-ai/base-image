@@ -199,11 +199,32 @@ elif [[ -n "$srv_pid" ]] && grep -qE "^[[:space:]]*${srv_pid}[[:space:]]*," <<< 
         fail_later "offload-below-floor" "llama-server (pid ${srv_pid}) holds only ${mib} MiB of VRAM against a floor of ${vram_floor} MiB — the CUDA backend loaded but the WEIGHTS are not on the GPU, so a context exists and inference still runs on CPU (-ngl/--n-gpu-layers, or a VRAM budget too small for the model)"
     fi
 else
-    # Something holds VRAM but we cannot prove it is ours. Deliberately not a failure:
-    # arm A has already proved the backend loads, and failing here would red a healthy
-    # box over an attribution detail on a shared GPU.
-    echo "  WARN: GPU memory is held, but not attributable to pid ${srv_pid:-<unknown>}"
-    echo "        (PID-namespace skew, or another process on a shared GPU)"
+    # PID-NAMESPACE SKEW: FALL BACK TO THE TOTAL, DO NOT GIVE UP.
+    # Measured on run 32846852617 — nvidia-smi reported HOST pid 1041871 while the
+    # container saw 1010, on a two-GPU box where the same process held 530 and 634 MiB.
+    # An earlier revision treated that as unprovable and warned, which passed the cell
+    # on arm A alone while still printing "the served model is on the GPU". The rows are
+    # evidence even when the pid is not: what is being asked is whether ANY process
+    # holds enough VRAM for the weights, and that question is namespace-proof.
+    #
+    # It also stays honest in the other direction — the -ngl 0 control held one row of
+    # 208 MiB against a 322 MiB floor, so summing still rejects a context-only server.
+    # awk, not `paste -sd+ | bc`: bc is not in the base image and its absence would
+    # make this fall to the unparseable branch on every skewed host — a hard fail from
+    # a missing utility rather than from the thing being measured.
+    total_mib=$(sed -n 's/.*,[[:space:]]*\([0-9]\+\).*/\1/p' <<< "$apps" | awk '{s+=$1} END{if (NR) print s}')
+    echo "  WARN: VRAM is held but not attributable to pid ${srv_pid:-<unknown>}"
+    echo "        (PID-namespace skew — nvidia-smi reports host pids here — or a shared GPU)"
+    if [[ -z "$total_mib" ]]; then
+        fail_later "offload-unparseable" "compute apps are listed but no memory figure could be parsed from them, so residency cannot be judged (rows: ${apps})"
+    elif (( vram_floor < 0 )); then
+        echo "  (total resident ${total_mib} MiB — no floor available to judge it against)"
+    elif (( total_mib > vram_floor )); then
+        echo "  offload: ${total_mib} MiB resident across all compute apps, above the ${vram_floor} MiB floor"
+        echo "           attributed by TOTAL rather than by pid — weaker, but namespace-proof"
+    else
+        fail_later "offload-below-floor" "no process holds enough VRAM for the weights: ${total_mib} MiB total across every compute app against a ${vram_floor} MiB floor. Even unattributed that is a context-only server — the CUDA backend loaded and the model did not (-ngl/--n-gpu-layers, or a VRAM budget too small)"
+    fi
 fi
 
 # ── Diagnostics, deliberately NOT gating ─────────────────────────────
@@ -223,4 +244,4 @@ used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | he
 echo "  GPU memory used (device total): ${used:-<unavailable>}"
 
 report_failures
-test_pass "llama.cpp CUDA backend verified in use — the served model is on the GPU"
+test_pass "llama.cpp CUDA backend verified in use — VRAM resident above the model-derived floor"
