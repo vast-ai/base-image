@@ -238,30 +238,33 @@ to the `-mix-` line. No change to the action is required — the input already e
    `qa-gate.yml` uploads no artifact at all on an ungated scheduled run, the common
    path on this weekly workflow.
 
-8. ~~The recommended template stays on the CUDA 12 tag.~~ **SUPERSEDED 2026-08-25 by the
-   decision owner: the recommended template moves to the CUDA 13 line**, matching vLLM and
-   SGLang, which are already there. Recorded as a reversal rather than edited away, because
-   it inverts this condition's whole point — Option H was rejected on the grounds that the
-   x64 CUDA 13 artifact is dominated (less SM coverage, worse driver reach) and condition 8
-   was the mitigation that kept the fleet off it. Under the new decision the CUDA 13 line is
-   the PRIMARY customer path, not an opt-in.
+8. **The recommended template is the CUDA 13 line.** Decided by the decision owner,
+   final, and not to be re-opened on the arguments below — they were raised, answered,
+   and are recorded so the answer is discoverable rather than re-derived.
 
-   What that changes, stated plainly rather than assumed away:
-   - **It resolves the arm64 problem** and it is the reason the amd64-only CUDA 12 line is
-     acceptable. aarch64 customers land on the multi-arch 13.2 tag, so no tag-shape break
-     reaches them.
-   - **It accepts the driver-reach cost that Option C was rejected for.** CUDA 13 needs a
-     newer minimum driver, and forward-compat libs are datacenter-only, so a consumer GPU on
-     a CUDA-12-era driver cannot run it. The counter-evidence is empirical and it is the
-     reason this is defensible: vLLM and SGLang already promote and run on CUDA 13 across
-     this fleet, so the unrentable slice is measured behaviour rather than a projection.
-   - **SM 70 (V100) is not on the primary path.** The CUDA 12 line keeps it and remains
-     available; nothing steers to it.
-   - **The CUDA 13 line becomes the line that MUST work, and it has never been built once.**
-     Its base pin is unexercised for this image, its QA cell has never run, and its
-     `libcublas` minor question (condition 9) moves from a tidy-up to a release blocker.
-     Condition 7's per-line gate is what makes that discoverable before promotion rather
-     than after.
+   *Why the objection did not hold.* The concern was Ada (`sm_89`): sampling rentable
+   verified offers, 6 of 14 Ada hosts sit on pre-13 drivers, and forward-compat
+   libraries are datacenter-only so consumer Ada cannot bridge a major-version gap.
+   **The recommended template carries `cuda_max_good >= 13` in its own filters**, so
+   those hosts are never offered for it. That makes this a supply-pool question, not a
+   broken-image one — a customer launching the recommended template rents from the
+   13-capable pool and the image runs natively there. Nothing is stranded; the pool is
+   narrower.
+
+   *Two facts worth keeping, because both were measured and both get asked.* On
+   ARCHITECTURE the CUDA 13 line is not a compromise: `x64-cuda13-portable` carries
+   native SASS **and** PTX for all of `sm_75, 80, 86, 89, 90, 100, 120a` — 146 kernels
+   each — so Ada gets a native cubin and never touches the JIT path. The only
+   architecture the 13 line lacks against the 12 line is `sm_70` (V100). And the two
+   questions are independent: kernels present does not imply a driver that will load
+   them, which is why the coverage table alone could not settle this.
+
+   *Consequences of the decision.* The CUDA 12 line remains published and is the wider
+   -reach artifact (100% of sampled amd64 supply against 73% at a 13.0 driver floor);
+   it is the fallback for anyone who wants V100 or an older driver. arm64 is unaffected
+   and in fact better served: all 6 rentable arm64 offers (GB10) report `cuda_max_good`
+   >= 13.0, so aarch64 lands on the same recommended line as amd64 rather than needing a
+   separate tag — which removes the split this condition previously required.
 
 9. ~~The cuBLAS minor must match the bundle, not the base.~~ **RESOLVED 2026-08-25 by
    measurement: no action needed.** The concern was symbol availability, not the SONAME —
@@ -344,7 +347,16 @@ Conditions 2 and 7-9 must resolve before this moves from Proposed to Accepted.
   so it starts on a host with no driver instead of dying at the loader.
 
 **Accepted negatives.**
-- **arm64 loses pre-Hopper GPUs.** ai-dock's arm64 covers SM 75-120a; unsloth's starts at
+- **arm64 loses pre-Hopper GPUs — measured 2026-08-25 as affecting ZERO current supply.**
+  The gap is real in the binary and empty in the market: a query of rentable verified
+  offers returned 64 amd64 and **5 arm64, every one of them a GB10** (Vast reports
+  compute capability 10.0; NVIDIA documents GB10 as 12.1 — the bundle covers `sm_90`,
+  `100`, `120a` and `121a`, so it is inside the set under either reading). There is no
+  rentable aarch64 supply below `sm_90` to lose. What remains is a forward risk rather
+  than a present one: if aarch64 supply later includes a discrete pre-Hopper card — an
+  Ampere Altra paired with an A100, say — that host is served today and would not be.
+  Re-measure before treating this as closed rather than assuming the market is static.
+  The ORIGINAL statement of the negative, which remains the binary-level truth: ai-dock's arm64 covers SM 75-120a; unsloth's starts at
   SM 90. Any aarch64 host with an A100, A10/A30, L4/L40S or T4 is served today and would
   not be after the swap — and the miss mode is silent CPU, not an error. The claim that
   coverage is "a superset on both lines" was false and is withdrawn. **arm64 has never
