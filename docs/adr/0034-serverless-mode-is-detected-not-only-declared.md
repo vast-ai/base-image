@@ -1,6 +1,6 @@
 # ADR 0034 — serverless mode is detected from the platform, not only declared by the template
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-25
 - **Decision owner:** Rob Ballantyne
 

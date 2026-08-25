@@ -1247,3 +1247,25 @@ oobabooga). The `new-image` skill + generator encode them.
   generator. Where PID-namespace skew genuinely lands — VRAM held but not attributable to our
   pid — is a WARN, not a failure, because arm (a) has already proved the backend loads (ADR 0016).
 
+- **Serverless mode is decided once, at boot stage 01, and the user can always overrule it
+  (GATED, L077 for the expiry; asserted by `base/15-boot-markers`).** `SERVERLESS=true`
+  switches the whole runtime: `boot_default.sh`'s update flags, every service sourcing
+  `utils/exit_serverless.sh` (caddy, portal, jupyter, syncthing, tensorboard, tunnel
+  manager, the engine images' model-ui), `pyworker.sh`, and supervisor units authored from
+  a provisioning manifest, which default to `skip_on_serverless: True`. The autoscaler
+  injects `MASTER_TOKEN` into every worker but not `SERVERLESS`, so
+  `01-detect-serverless.sh` infers it — **only when `SERVERLESS` is unset or empty**. An
+  inference from a proxy must never overrule an explicit declaration: it is the
+  lower-confidence signal and its false positive costs every interactive service on the
+  box, permanently (`exit_serverless.sh` exits 0 and those units are
+  `autorestart=unexpected` + `exitcodes=0`, so supervisord never restarts them). That rule
+  is also what makes the mechanism inert the day the backend injects `SERVERLESS` itself.
+  **The stage EXPORTS and never writes `/etc/environment`** — stage 10 sources that file
+  afterwards, so a user's edit prevails, which is the ownership boundary the platform seeds
+  at first boot and the user owns thereafter. Re-deciding every boot would be wrong twice:
+  `endpt_id` is written only at instance-create, so the answer cannot change, and rewriting
+  the file would reclaim territory the user owns. `VAST_SERVERLESS_DETECT=false|off`
+  disables it without a rebuild. Deleting the stage on expiry owes an explicit `unset`
+  retraction — a first-boot snapshot outlives the mechanism, the same trap ADR 0025 hit
+  (ADR 0034).
+

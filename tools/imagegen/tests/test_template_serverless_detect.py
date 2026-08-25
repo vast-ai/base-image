@@ -54,3 +54,30 @@ def test_missing_fields_do_not_raise():
 def test_serverless_false_is_not_serverless():
     """Substring matching must not turn the OFF switch into the ON switch."""
     assert not tt.detect_serverless({"env": "-e SERVERLESS=false"}, [])
+
+
+# ---- ADR 0034: the image can infer the mode, so the client must recognise that too ----
+
+
+def test_master_token_override_is_detected_as_serverless():
+    """A cell exercising the DETECTION path carries no SERVERLESS=true anywhere. Reading
+    only the literal returns False, which skips the OPEN_BUTTON_TOKEN override and
+    repeats the coincidence this module was written to eliminate."""
+    assert tt.detect_serverless({}, ("MASTER_TOKEN=fake-sentinel",)) is True
+
+
+def test_explicit_false_beats_the_inference():
+    """The image gives an explicit SERVERLESS=false precedence over MASTER_TOKEN
+    (01-detect-serverless.sh). The client must agree, or it launches believing one mode
+    while the instance runs the other."""
+    assert tt.detect_serverless({}, ("SERVERLESS=false", "MASTER_TOKEN=fake-sentinel")) is False
+
+
+def test_master_token_in_template_env_is_detected():
+    """Not only as an --env override: a template could carry it directly."""
+    assert tt.detect_serverless({"env": "-e MASTER_TOKEN=fake-sentinel"}, ()) is True
+
+
+def test_an_ordinary_template_is_still_not_serverless():
+    """The inference must not widen to on-demand templates."""
+    assert tt.detect_serverless({"env": "-e JUPYTER_TOKEN=abc"}, ()) is False

@@ -399,6 +399,52 @@ jobs:
       # start_server.sh aborts when BACKEND is set and HF_TOKEN is not.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
+  # ADR 0034 — the DETECTION path, which no other cell exercises.
+  #
+  # ADDED, not swapped. Swapping the serverless cell's SERVERLESS=true for MASTER_TOKEN
+  # would silently disable two enforcement mechanisms: L073 (linter.py) reads the
+  # caller's extra_env for the literal `SERVERLESS` to require the QA template map the
+  # worker port, and test_template.py's detect_serverless() reads it to decide whether to
+  # send OPEN_BUTTON_TOKEN=1 — whose own docstring records that hole being found once
+  # already. It would also delete all coverage of the explicit path, which is what 9 of
+  # 10 published autoscaler templates use.
+  #
+  # ONE cell, not a matrix over the CUDA lines: the code under test is
+  # 01-detect-serverless.sh in the BASE overlay, byte-identical on both lines, so a
+  # second cell would re-test the same file at the cost of another live GPU.
+  #
+  # The token is a self-evidently fake SENTINEL and is safe in plaintext here: the stage
+  # tests PRESENCE only and never reads the value. A real token would put a throwaway QA
+  # rental into conversation with the production autoscaler, which is not what this
+  # asserts. It travels through extra_env rather than the secrets block for exactly that
+  # reason — it is not a secret.
+  #
+  # What makes it gating: with no SERVERLESS anywhere, every named test below can only
+  # pass if the image inferred the mode itself. If detection fails they self-skip on
+  # `is_serverless`, and runner.sh turns a skipped required test into REQUIRED-FAIL.
+  qa-detect:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'llama-cpp' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-12.9', needs.preflight.outputs.llama-cpp-version) }}-amd64
+      template_dir: derivatives/llama-cpp/templates/llama-cpp-qa
+      label: base-image-qa-llama-cpp-detect
+      log_paths: "/var/log/portal/llama.log /var/log/portal/pyworker.log"
+      extra_env: |
+        MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/85-serverless-services llama.d/10-llama-serving llama.d/11-llama-offload llama.d/20-serverless-pyworker
+      require_tests: "base/15-boot-markers base/85-serverless-services llama.d/10-llama-serving llama.d/11-llama-offload llama.d/20-serverless-pyworker"
+      set_filters: "cuda_max_good.gte=12.9"
+      evidence_name: qa-evidence-llama-cpp-detect
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
   merge-manifests:
     # qa-serverless is in `needs` to ORDER it ahead of the approval prompt and absent
     # from the `if` so it cannot BLOCK. `!cancelled()` is what stops a failed
@@ -426,7 +472,7 @@ jobs:
     # an ungated scheduled run, which is the common path on this weekly workflow.
     # "Read the artifact, treat absent as pass" is exactly the shape of the last two
     # defects fixed on this repo.
-    needs: [preflight, build, qa, qa-serverless]
+    needs: [preflight, build, qa, qa-serverless, qa-detect]
     if: >-
       !cancelled()
       && needs.preflight.outputs.should-run == 'true'
@@ -514,7 +560,7 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, qa, qa-serverless, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, qa-serverless, qa-detect, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
