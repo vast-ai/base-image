@@ -238,32 +238,33 @@ to the `-mix-` line. No change to the action is required — the input already e
    `qa-gate.yml` uploads no artifact at all on an ungated scheduled run, the common
    path on this weekly workflow.
 
-8. **The recommended template stays on the CUDA 12 tag.** The CUDA 13 tag is opt-in.
-   This condition was SUPERSEDED on 2026-08-25 (recommended to move to CUDA 13, matching
-   vLLM and SGLang) and is now REINSTATED the same day on measurement. Both turns are
-   left in the record because the reversal was decided on an analogy and undone by data.
+8. **The recommended template is the CUDA 13 line.** Decided by the decision owner,
+   final, and not to be re-opened on the arguments below — they were raised, answered,
+   and are recorded so the answer is discoverable rather than re-derived.
 
-   **What the analogy missed: driver reach is not uniform across images.** Sampling
-   rentable verified offers (n=64 amd64, a default page rather than a census, so treat
-   the percentages as direction and not gospel):
+   *Why the objection did not hold.* The concern was Ada (`sm_89`): sampling rentable
+   verified offers, 6 of 14 Ada hosts sit on pre-13 drivers, and forward-compat
+   libraries are datacenter-only so consumer Ada cannot bridge a major-version gap.
+   **The recommended template carries `cuda_max_good >= 13` in its own filters**, so
+   those hosts are never offered for it. That makes this a supply-pool question, not a
+   broken-image one — a customer launching the recommended template rents from the
+   13-capable pool and the image runs natively there. Nothing is stranded; the pool is
+   narrower.
 
-   | | CUDA 12 line | CUDA 13, >=13.0 driver | at the 13.2 QA floor |
-   |---|---|---|---|
-   | all amd64 | **64/64 (100%)** | 47/64 (73%) | 19/64 (30%) |
-   | Ada (`sm_89`) only, n=14 | 14/14 (100%) | 5/14 (**36%**) | 2/14 (14%) |
+   *Two facts worth keeping, because both were measured and both get asked.* On
+   ARCHITECTURE the CUDA 13 line is not a compromise: `x64-cuda13-portable` carries
+   native SASS **and** PTX for all of `sm_75, 80, 86, 89, 90, 100, 120a` — 146 kernels
+   each — so Ada gets a native cubin and never touches the JIT path. The only
+   architecture the 13 line lacks against the 12 line is `sm_70` (V100). And the two
+   questions are independent: kernels present does not imply a driver that will load
+   them, which is why the coverage table alone could not settle this.
 
-   Pointing the recommended template at CUDA 13 would strand **64% of Ada supply** —
-   most of the 4090 / 4080 / RTX 6000 Ada population, which sits on 12.7-13.0 drivers.
-   Note this is a DRIVER limit, not a kernel one: `x64-cuda13-portable` carries `sm_89`
-   SASS and PTX, so Ada is covered on coverage and excluded on driver. The CUDA 12 line
-   reaches everything. That vLLM and SGLang already run on CUDA 13 is not evidence about
-   this image — it is evidence about the hosts THEIR customers rent, which for a
-   llama.cpp image skew differently.
-
-   **arm64 is unaffected by reinstating this.** All 6 rentable arm64 offers (all GB10)
-   report `cuda_max_good` >= 13.0, so a 13.x image runs on every one. Recommended stays
-   on 12.9 for amd64; aarch64 users take the 13.2 tag. That is the split this condition
-   described in the first place, and the amd64-only CUDA 12 line is what makes it work.
+   *Consequences of the decision.* The CUDA 12 line remains published and is the wider
+   -reach artifact (100% of sampled amd64 supply against 73% at a 13.0 driver floor);
+   it is the fallback for anyone who wants V100 or an older driver. arm64 is unaffected
+   and in fact better served: all 6 rentable arm64 offers (GB10) report `cuda_max_good`
+   >= 13.0, so aarch64 lands on the same recommended line as amd64 rather than needing a
+   separate tag — which removes the split this condition previously required.
 
 9. ~~The cuBLAS minor must match the bundle, not the base.~~ **RESOLVED 2026-08-25 by
    measurement: no action needed.** The concern was symbol availability, not the SONAME —
