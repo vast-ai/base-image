@@ -32,9 +32,8 @@ on:
         description: "Release tag (e.g. b5460) - leave empty for latest"
         required: false
       CUDA_VERSION:
-        description: "CUDA version for binary package"
+        description: "Override the llama.cpp binary package's CUDA version (single-line builds only)"
         required: false
-        default: "12.8"
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
         required: true
@@ -45,7 +44,6 @@ on:
 
 env:
   DEFAULT_DOCKERHUB_REPO: "llama-cpp"
-  DEFAULT_CUDA_VERSION: "12.8"
   # 7 days
   RELEASE_AGE_THRESHOLD: 604800
 
@@ -55,6 +53,8 @@ jobs:
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
       llama-cpp-version: ${{ steps.release-check.outputs.resolved-ref }}
+      build-matrix: ${{ steps.expand.outputs.build-matrix }}
+      merge-matrix: ${{ steps.expand.outputs.merge-matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,10 +107,149 @@ jobs:
             fi
           fi
 
+      # ONE declaration per promoted CUDA line, expanded into the two matrix shapes
+      # every downstream job keys on. Previously the base image was hardcoded in THREE
+      # places (build, merge-manifests) and the QA tag in two more as the literal
+      # `format('{0}-cuda-12.9', ...)`, so a second line would have built and PROMOTED
+      # without ever being QA'd — the gate would have tested the 12.9 artifact and
+      # reported "live-GPU QA passed" over both. Declaring lines once is what makes
+      # adding one a data change instead of a rewiring.
+      #
+      # Fields, and why each is per-line rather than global:
+      #   cuda          the promoted tag's CUDA suffix, and the QA cell's tag
+      #   base_tag      the TAG of the base image this line builds FROM — deliberately
+      #                 the tag alone, with no `vastai/base-image:` prefix. A job output
+      #                 containing a secret's VALUE is dropped: the namespace equals the
+      #                 DOCKERHUB_NAMESPACE secret, so an output carrying the full
+      #                 reference is redacted to empty, every downstream matrix expands
+      #                 to nothing, and every job SKIPS. Measured on run 32835134491,
+      #                 which emitted "Skip output 'build-matrix' since it may contain
+      #                 secret" as a WARNING and built nothing. The full reference is
+      #                 composed at the point of use, where masking is only cosmetic.
+      #   bundle_cuda   the CUDA version of the llama.cpp BINARY package, which is not
+      #                 the base's: ai-dock publishes 12.8 tarballs that we run on a
+      #                 12.9 base, relying on 12.x ABI compatibility
+      #   driver_floor  the QA host's cuda_max_good floor. Renting a driver older than
+      #                 the line under test validates nothing, and on a consumer GPU
+      #                 (no forward-compat libs) it produces a CUDA backend that cannot
+      #                 load — which llama.cpp serves from CPU silently (L076)
+      #   arches        NOT a global cross-product. A line has the arches its binary
+      #                 package actually ships; there is no reason to assume they match
+      #                 across lines, and building a cell whose asset does not exist
+      #                 fails late, in a download step, rather than here
+      - name: Expand build/merge matrices
+        id: expand
+        if: steps.decision.outputs.should-run == 'true'
+        run: |
+          cat << 'LINES_EOF' > /tmp/lines.json
+          [
+            {
+              "cuda": "12.9",
+              "base_tag": "cuda-12.9-mini-py312-2026-08-21",
+              "bundle_cuda": "12.8",
+              "driver_floor": "12.9",
+              "arches": ["amd64", "arm64"]
+            }
+          ]
+          LINES_EOF
+
+          # `arches` MUST survive into merge-matrix. Without it merge-manifests calls
+          # merge-arch-manifests with no `arches:` input, which defaults to
+          # "amd64,arm64" and runs `crane index append --manifest <base>-arm64`. ADR
+          # 0033's CUDA 12 line is amd64-ONLY, so declaring it would build one amd64
+          # cell, pass QA, take a human approval, and then fail at crane on a staging
+          # tag that was never pushed — and with fail-fast:false the OTHER line
+          # promotes, producing exactly the half-promoted pair the all-or-nothing
+          # coupling exists to prevent, through a door that coupling does not cover.
+          # Six other workflows pass `arches: amd64` statically for this reason.
+          MERGE=$(jq -c 'map({cuda, driver_floor, arches})' /tmp/lines.json)
+          BUILD=$(jq -c '[ .[] as $l | $l.arches[] | {
+              cuda: $l.cuda,
+              base_tag: $l.base_tag,
+              bundle_cuda: $l.bundle_cuda,
+              arch: .,
+              platform: ("linux/" + .),
+              runs_on: (if . == "arm64" then "ubuntu-24.04-arm" else "ubuntu-latest" end)
+            } ]' /tmp/lines.json)
+
+          # A custom tag names ONE image. With two lines it would resolve to the same
+          # string for both, so the second build would overwrite the first in staging
+          # and QA would test whichever landed last while both promoted. Fail here,
+          # where the message can say why, rather than in a registry race.
+          LINE_COUNT=$(jq 'length' /tmp/lines.json)
+          if [[ -n "${{ inputs.CUSTOM_IMAGE_TAG }}" && "$LINE_COUNT" -gt 1 ]]; then
+            echo "::error::CUSTOM_IMAGE_TAG is set but ${LINE_COUNT} CUDA lines are declared — the tag would collide across lines"
+            exit 1
+          fi
+          # Same shape, worse consequence: CUDA_VERSION selects the BINARY package, so a
+          # global override would install one line's bundle on every line's base. Putting
+          # a CUDA 12 bundle on a CUDA 13 base leaves libggml-cuda.so unable to resolve
+          # libcublas.so.12 — and ggml_backend_dl turns that into a silent CPU fallback,
+          # not a build failure, so nothing downstream would report it (L076 catches it
+          # at QA, which is late and only on the cells that run).
+          if [[ -n "${{ inputs.CUDA_VERSION }}" && "$LINE_COUNT" -gt 1 ]]; then
+            echo "::error::CUDA_VERSION is set but ${LINE_COUNT} CUDA lines are declared — it would force one bundle onto every line"
+            exit 1
+          fi
+
+          # Every QA cell tests the `-amd64` staging tag, so a line without amd64
+          # would launch QA against a tag that was never built. That surfaces as a
+          # pull failure -> EXIT_BAD_INSTANCE -> `inconclusive`, which on a SCHEDULE
+          # soft-passes and promotes UNGATED — and this workflow's primary trigger is
+          # the weekly cron. Fail here, where the message can say why.
+          if ! jq -e 'all(.arches | index("amd64"))' /tmp/lines.json > /dev/null; then
+            echo "::error::every declared line must include amd64 — the QA cells test the -amd64 staging tag"
+            exit 1
+          fi
+          # A typo'd arch would otherwise fall through jq's else-branch to
+          # ubuntu-latest and build linux/<typo> on an amd64 runner.
+          # `.[].arches[]`, not `.arches[]`: the two-arg all(gen; cond) evaluates the
+          # generator against the whole INPUT (the array of lines), so the one-level
+          # form raised "Cannot index array with string" and the guard failed the job
+          # it was meant to protect. Caught by a dispatch, not by review — the
+          # one-arg all() on the line above happens to be correct, which is why the
+          # two read as a matching pair.
+          if ! jq -e 'all(.[].arches[]; . == "amd64" or . == "arm64")' /tmp/lines.json > /dev/null; then
+            echo "::error::declared arches must be amd64 or arm64 — no runner mapping exists for anything else"
+            exit 1
+          fi
+
+          echo "Build matrix: $BUILD"
+          echo "Merge matrix: $MERGE"
+          echo "build-matrix=$BUILD" >> $GITHUB_OUTPUT
+          echo "merge-matrix=$MERGE" >> $GITHUB_OUTPUT
+
+      # READ BACK, do not re-check the local variable. The failure this catches is not
+      # a bad declaration — it is the output being DROPPED between steps, which is what
+      # happened on run 32835134491 when the matrix carried the DOCKERHUB_NAMESPACE
+      # secret's value: GitHub emitted "Skip output 'build-matrix' since it may contain
+      # secret" as a WARNING, both matrices expanded to zero cells, every job skipped,
+      # and `collect-tags` reported "No tags found" while the run's own conclusion was
+      # decided elsewhere. A `jq length` on the shell variable inside the expand step
+      # would have passed. Only reading the OUTPUT back sees the drop.
+      - name: Verify the matrices survived as job outputs
+        if: steps.decision.outputs.should-run == 'true'
+        env:
+          BUILD_MATRIX: ${{ steps.expand.outputs.build-matrix }}
+          MERGE_MATRIX: ${{ steps.expand.outputs.merge-matrix }}
+        run: |
+          for name in BUILD_MATRIX MERGE_MATRIX; do
+            val="${!name}"
+            if [[ -z "$val" ]]; then
+              echo "::error::${name} is empty after the output round-trip — if the job log shows \"Skip output ... since it may contain secret\", a field's value matches a repository secret and must not be carried through a job output"
+              exit 1
+            fi
+            if ! count=$(jq -e 'length' <<< "$val" 2>/dev/null) || [[ "$count" -eq 0 ]]; then
+              echo "::error::${name} expanded to zero cells — nothing would build, and every downstream job would SKIP rather than fail"
+              exit 1
+            fi
+            echo "${name}: ${count} cell(s)"
+          done
+
   build:
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ${{ matrix.arch.runs_on }}
+    runs-on: ${{ matrix.runs_on }}
 
     permissions:
       contents: read
@@ -118,11 +257,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        base_image:
-          - vastai/base-image:cuda-12.9-mini-py312-2026-08-21
-        arch:
-          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
-          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
+        include: ${{ fromJson(needs.preflight.outputs.build-matrix) }}
 
     steps:
       - name: Checkout
@@ -133,18 +268,16 @@ jobs:
 
       - name: Derive staging tag
         run: |
-          BASE_IMAGE="${{ matrix.base_image }}"
-          TAG="${BASE_IMAGE##*:}"
-
-          # Extract CUDA runtime version from cuda-X.Y
-          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
-          if [[ -z "$CUDA_VERSION" ]]; then
-            echo "::error::Failed to parse base image: $BASE_IMAGE"
-            exit 1
-          fi
-
+          # The CUDA suffix now comes from the matrix rather than being re-parsed out
+          # of the base image tag in each job. Same string, one source: three jobs
+          # parsing the same tag independently is how they drift apart.
+          CUDA_VERSION="${{ matrix.cuda }}"
           LLAMA_CPP_VERSION="${{ needs.preflight.outputs.llama-cpp-version }}"
-          CUDA_BIN_VERSION="${{ inputs.CUDA_VERSION || env.DEFAULT_CUDA_VERSION }}"
+          CUDA_BIN_VERSION="${{ inputs.CUDA_VERSION || matrix.bundle_cuda }}"
+          # Composed here, not carried through the matrix — see the base_tag note in
+          # preflight. Masking in THIS log line is cosmetic; masking in a job output
+          # deletes the value.
+          BASE_IMAGE="vastai/base-image:${{ matrix.base_tag }}"
 
           IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [[ -z "$IMAGE_TAG" ]]; then
@@ -156,17 +289,18 @@ jobs:
 
           echo "CUDA_BIN_VERSION=$CUDA_BIN_VERSION" >> $GITHUB_ENV
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 
-          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch }}, base=$BASE_IMAGE)"
 
       - name: Build and push arch image to staging
         uses: ./.github/actions/build-arch-image
         with:
           context: derivatives/llama-cpp
-          arch: ${{ matrix.arch.platform }}
+          arch: ${{ matrix.platform }}
           tag-base: ${{ env.STAGING_TAG_BASE }}
           build-args: |
-            BASE_IMAGE=${{ matrix.base_image }}
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
             LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }}
             CUDA_VERSION=${{ env.CUDA_BIN_VERSION }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -175,20 +309,39 @@ jobs:
   # Live-GPU QA gate (ADR 0005). This image had NO gate: merge-manifests depended only
   # on build, so an image that COMPILED was promoted whether or not it served.
   #
-  # ONE cell, not a matrix: unlike vLLM and SGLang this workflow's matrix is over BASE
-  # IMAGES and there is currently exactly one, so the tag is derived the same way the
-  # build job derives it rather than from a merge-matrix that does not exist here.
+  # ONE CELL PER PROMOTED LINE. This was a single cell with the tag hardcoded as
+  # `format('{0}-cuda-12.9', ...)`, carrying a comment that said one cell was correct
+  # "because there is currently exactly one base image" — true when written, and a
+  # trap: the next line added to the build matrix would have been promoted on the
+  # strength of a QA run against a DIFFERENT artifact, with Slack reporting
+  # "live-GPU QA passed" over both. The matrix now comes from the same declaration
+  # the build job expands, so a line cannot exist without a cell that tests it.
   qa:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
     uses: ./.github/workflows/qa-gate.yml
     with:
       repo: ${{ inputs.DOCKERHUB_REPO || 'llama-cpp' }}
-      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-12.9', needs.preflight.outputs.llama-cpp-version) }}-amd64
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-{1}', needs.preflight.outputs.llama-cpp-version, matrix.cuda) }}-amd64
       template_dir: derivatives/llama-cpp/templates/llama-cpp-qa
       label: base-image-qa-llama-cpp
       log_paths: "/var/log/portal/llama.log"
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries llama.d/10-llama-serving llama.d/12-llama-contract"
+      # The linted template floor describes the line it was written for; this raises it
+      # to the line under test. create.py refuses an override that WIDENS selection, so
+      # this can only ever narrow. Without it a CUDA 13 image would be validated on a
+      # CUDA 12 driver: on a datacenter GPU forward compat hides it, on a consumer GPU
+      # the backend cannot load — and llama.cpp serves that from CPU without an error,
+      # so the cell would fail on one host class, redraw (ADR 0029), pass on another,
+      # and promote.
+      set_filters: "cuda_max_good.gte=${{ matrix.driver_floor }}"
+      # Unique per cell — upload-artifact@v4 rejects duplicate names within a run, so a
+      # second line without this would kill the evidence upload for both.
+      evidence_name: qa-evidence-llama-cpp-cuda-${{ matrix.cuda }}
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries llama.d/10-llama-serving llama.d/11-llama-offload llama.d/12-llama-contract"
       retries: 2
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
@@ -210,17 +363,23 @@ jobs:
   qa-serverless:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
     uses: ./.github/workflows/qa-gate.yml
     with:
       repo: ${{ inputs.DOCKERHUB_REPO || 'llama-cpp' }}
-      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-12.9', needs.preflight.outputs.llama-cpp-version) }}-amd64
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-{1}', needs.preflight.outputs.llama-cpp-version, matrix.cuda) }}-amd64
       template_dir: derivatives/llama-cpp/templates/llama-cpp-qa
       label: base-image-qa-llama-cpp-serverless
+      set_filters: "cuda_max_good.gte=${{ matrix.driver_floor }}"
+      evidence_name: qa-evidence-llama-cpp-serverless-cuda-${{ matrix.cuda }}
       log_paths: "/var/log/portal/llama.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
       extra_env: |
         SERVERLESS=true
-        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/12-llama-contract llama.d/20-serverless-pyworker
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/12-llama-contract llama.d/20-serverless-pyworker"
+        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/11-llama-offload llama.d/12-llama-contract llama.d/20-serverless-pyworker
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/11-llama-offload llama.d/12-llama-contract llama.d/20-serverless-pyworker"
       retries: 2
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
@@ -234,6 +393,28 @@ jobs:
     # from the `if` so it cannot BLOCK. `!cancelled()` is what stops a failed
     # serverless cell skipping this job, and it also switches off the implicit
     # "skip if any needed job failed" — so the results that MUST still block are named.
+    #
+    # PROMOTION COUPLING IS ALL-OR-NOTHING, DECIDED, NOT A PLACEHOLDER.
+    # `needs.qa.result` is the AGGREGATE over every cell, so one red line holds every
+    # line — including the lines that passed. That is the intended behaviour and it is
+    # not a stepping stone to per-line independence.
+    #
+    # The case for per-line was considered and rejected. It runs: unlike base's 12
+    # configs — which share the ROOT/ overlay and differ only in the CUDA base, so a
+    # defect on one is evidence about all (ADR 0019) — these lines carry DIFFERENT
+    # binaries from different toolkits, so a CUDA 13 defect is not evidence about the
+    # CUDA 12 artifact and arguably should not hold it. What that argument leaves out
+    # is that the lines are not independent products: they are the same image offered
+    # on two driver lines, they share the ROOT/ overlay, the QA template and the test
+    # suite, and a red cell far more often means the OVERLAY or the gate is wrong than
+    # that one binary is. Promoting the other line in that state ships a half-verified
+    # pair under one version string.
+    #
+    # It also fails CLOSED, where per-line has to get the missing-evidence-artifact
+    # case right or it fails OPEN — and note qa-gate.yml uploads no artifact at all on
+    # an ungated scheduled run, which is the common path on this weekly workflow.
+    # "Read the artifact, treat absent as pass" is exactly the shape of the last two
+    # defects fixed on this repo.
     needs: [preflight, build, qa, qa-serverless]
     if: >-
       !cancelled()
@@ -245,8 +426,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        base_image:
-          - vastai/base-image:cuda-12.9-mini-py312-2026-08-21
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
 
     steps:
       - name: Checkout
@@ -254,10 +434,7 @@ jobs:
 
       - name: Derive image tags
         run: |
-          BASE_IMAGE="${{ matrix.base_image }}"
-          TAG="${BASE_IMAGE##*:}"
-          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
-
+          CUDA_VERSION="${{ matrix.cuda }}"
           LLAMA_CPP_VERSION="${{ needs.preflight.outputs.llama-cpp-version }}"
           IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [[ -z "$IMAGE_TAG" ]]; then
@@ -271,14 +448,18 @@ jobs:
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
           echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
 
-          MATRIX_ID=$(echo "$BASE_IMAGE" | md5sum | cut -c1-8)
-          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+          # Keyed on the LINE, not on an md5 of the base image: the artifact name is
+          # the only thing distinguishing one line's promoted tag from another's in
+          # collect-tags, and a hash makes a collision unreadable when it happens.
+          echo "MATRIX_ID=cuda-${CUDA_VERSION}" >> $GITHUB_ENV
 
       - name: Assemble multi-arch index in production
         uses: ./.github/actions/merge-arch-manifests
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # This line's OWN arches, not the action's "amd64,arm64" default.
+          arches: ${{ join(matrix.arches, ',') }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -332,7 +513,23 @@ jobs:
       # AFTER promotion and leads with "promoted", because that cell does not gate —
       # without it a red serverless cell marks the run failed while merge-manifests
       # promoted, and Slack would read "Successful" beside a failed run.
-      headline: ${{ (needs.build.result != 'success' && 'llama.cpp build failed') || (needs.qa.result == 'failure' && 'llama.cpp QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'llama.cpp promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'llama.cpp promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'llama.cpp promoted — live-GPU QA passed') || '' }}
+      # "PROMOTED" IS AN ALLOWLIST ON merge-manifests SUCCEEDING, not a fall-through.
+      # This expression used to enumerate failure states and fall through to the
+      # success text, keyed on `qa.outputs.gated` — "did a live test run" — which says
+      # nothing about whether anything shipped. `merge-manifests` ending `skipped` or
+      # `cancelled` is not `'failure'`, so it fell through and Slack announced a
+      # promotion that did not happen. Reached on the branch dispatch that was
+      # cancelled at the production approval gate: qa green, gated true, merge
+      # cancelled -> "promoted — live-GPU QA passed" beside a red run card.
+      #
+      # This repo already litigated this class and fixed it for the base workflows
+      # (`test_promote_notification_truth.py`: "Enumerating the ways a thing can go
+      # wrong misses the one nobody listed; requiring the single way it goes right
+      # cannot be missed"). That guard is scoped to promote-base-image/build-base-image
+      # and does not reach the build-* callers, so the same defect still sits in
+      # build-vllm.yml, build-sglang.yml and build-comfyui.yml, which share this
+      # expression verbatim. Fixed here; the shared guard is the real fix.
+      headline: ${{ (needs.build.result != 'success' && 'llama.cpp build failed') || (needs.qa.result == 'failure' && 'llama.cpp QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'llama.cpp promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'llama.cpp NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'llama.cpp promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'llama.cpp promoted — live-GPU QA passed') || '' }}
       image-name: "Llama.cpp"
       image-ref: ${{ needs.preflight.outputs.llama-cpp-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

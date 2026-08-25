@@ -1204,3 +1204,46 @@ oobabooga). The `new-image` skill + generator encode them.
   `test -f …/libggml-cuda.so` assertion so the CPU-only regression fails the build instead of
   shipping. **L056** gates the assertion. Both `unsloth-studio` and `aio-studio` are fixed (ADR 0016).
 
+- **A llama.cpp image proves its CUDA backend is IN USE, not merely present (GATED, L076).**
+  llama.cpp is built `ggml_backend_dl: ON`, so the CUDA backend is a dlopen'd plugin. When that
+  dlopen fails, `llama-server` does not crash and does not exit non-zero — it falls back to the CPU
+  backend and serves correct answers, slowly, indefinitely. Nothing else in the suite can see it:
+  `10-llama-serving` asserts the service, `/health`, a non-empty `/v1/models` and a non-zero token
+  count; `12-llama-contract` asserts token arithmetic, a grammar, a named tool, a status class and
+  a bind address; the serverless cell asserts a benchmark score was written. **A 0.5B q8_0 GGUF on
+  CPU satisfies every one of those in seconds, so before `llama.d/11-llama-offload` existed a fully
+  CPU-only image passed the entire gate on every cell** — the gate certified a GPU image that was
+  not using the GPU. The dlopen fails for causes no other check sees: a libcublas minor the bundle
+  was not built against, a driver too old for the bundle's CUDA major, or a host compute capability
+  with neither a cubin nor JITable PTX in the binary. L056 does **not** reach this: it triggers on
+  `unsloth studio setup`, so any image installing a PREBUILT bundle is exempt from it by
+  construction. **L076** gates both halves — the assertion must exist with a real failure path, and
+  a gating template must name it in `INSTANCE_TEST_REQUIRE_PASS`, because an offload test that is
+  not required can `test_skip` and the gate stays green. `test -f …libggml-cuda.so` does not
+  satisfy it: the file is present in exactly the failure being caught.
+  **Two instruments, and the choice between them was made the wrong way round first.**
+  Gating: (a) `llama-server --list-devices` enumerates a GPU — portable, depends only on the
+  binary and the driver, and catches the dominant failures; note it exits 0 printing `(none)`
+  when it finds nothing, so the enumerated device is the check, not the exit code. The match is
+  LINE-ANCHORED and case-sensitive, because stderr is folded in and ggml's loader prints the
+  `.so` path on failure: an unanchored `grep -i '(CUDA|...)[0-9]'` finds `cuda12` inside
+  `/opt/llama.cpp/x64-cuda12-portable/libggml-cuda.so` and reports a GPU on the exact failure it
+  is looking for (ADR 0033 names the bundles). An output matching NEITHER a device line nor an
+  explicit empty listing is a WARN, not a verdict — hard-failing on an unrecognised format would
+  repeat the log mistake below. (b) The DRIVER's own view, `nvidia-smi --query-compute-apps`,
+  attributes VRAM to the llama-server pid **above a floor derived from the model on disk**, not
+  merely above zero: a bare CUDA context plus cuBLAS workspace is a few hundred MiB, so `> 0`
+  passes a server whose weights never left system RAM — the `-ngl 0` / partial-offload family,
+  which is the larger one. An EMPTY compute-app list is disambiguated by device-total
+  `memory.used`, which is namespace-proof: empty beside a loaded device is the documented NVML
+  PID-namespace effect and WARNs; empty beside an idle device is the CPU fallback and fails. A
+  non-numeric figure (`[N/A]` on MIG/vGPU) is the driver declining to answer, not zero. NOT gating: the server's LOG. The first version inverted this — it gated on
+  `ggml_cuda_init` / `load_tensors: offloaded N/N layers to GPU`, the wording llama.cpp printed
+  for years, and demoted compute-app attribution on a general concern about PID-namespace
+  isolation. Both halves were wrong, measured on run 32835411583: llama.cpp v0.2.0 rewrote its
+  logging and prints NO device or offload line at verbosity 3, so the gating check failed on a
+  box where `--query-compute-apps` reported the model resident in 836 MiB from inside the
+  instance. A gating assertion whose evidence upstream is free to stop printing is a false-red
+  generator. Where PID-namespace skew genuinely lands — VRAM held but not attributable to our
+  pid — is a WARN, not a failure, because arm (a) has already proved the backend loads (ADR 0016).
+

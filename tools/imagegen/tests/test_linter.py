@@ -2559,3 +2559,115 @@ def test_L075_is_scoped_to_base(tmp_path):
     img = make(tmp_path, cls="pytorch-nested")
     _selftest(img, "_PATH=/usr/bin:/bin")
     assert "L075" not in errs(img, tmp_path)
+
+
+# ---- L076: a llama.cpp image must assert its CUDA backend actually serves (ADR 0016) ----
+
+
+def _llama_suite(img, body):
+    """Ship a llama.d suite, the way derivatives/llama-cpp does."""
+    d = img.dir / "ROOT/opt/instance-tools/tests/llama.d"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "10-llama-serving.sh"
+    f.write_text('#!/bin/bash\ntest_fail "not serving"\n')
+    f.chmod(0o755)
+    if body is not None:
+        g = d / "11-llama-offload.sh"
+        g.write_text(body)
+        g.chmod(0o755)
+
+
+_OFFLOAD_OK = ('#!/bin/bash\n'
+               'devices=$(llama-server --list-devices)\n'
+               'grep -q CUDA0 <<< "$devices" || fail_later "x" "no gpu"\n'
+               'report_failures\n')
+
+
+def test_L076_a_llama_image_with_no_offload_assertion_fires(tmp_path):
+    """THE mutation, and the state the shipped image was actually in: a llama.d suite
+    that asserts serving, health, models and tokens — every one of which a CPU-only
+    llama.cpp satisfies, because ggml_backend_dl turns a failed dlopen of
+    libggml-cuda.so into a silent CPU fallback rather than a crash."""
+    img = make(tmp_path)
+    _llama_suite(img, None)
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")
+
+
+def test_L076_an_offload_test_that_cannot_fail_does_not_satisfy_it(tmp_path):
+    """A file that greps for the device and never calls test_fail/fail_later reports
+    `passed` on a CPU-only box. Same hole L059 exists for, one layer up: the rule
+    requires a real failure path, not a filename."""
+    img = make(tmp_path)
+    _llama_suite(img, '#!/bin/bash\nllama-server --list-devices\ntest_pass "looks fine"\n')
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")
+
+
+def test_L076_a_file_existence_check_does_not_satisfy_it(tmp_path):
+    """`test -f …libggml-cuda.so` is L056's build-time assertion and is NOT evidence
+    the backend loads: the file is present in exactly the failure this rule exists
+    to catch — a bundle whose libcublas minor or host SM the driver cannot serve."""
+    img = make(tmp_path)
+    _llama_suite(img, '#!/bin/bash\ntest -f /opt/llama.cpp/libggml-cuda.so || test_fail "missing"\n')
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")
+
+
+def test_L076_an_offload_test_not_named_in_the_template_fires(tmp_path):
+    """The second hole: the assertion exists but nothing requires it, so it can
+    test_skip — no GPU, no model, an unset var — and the gate stays green."""
+    img = make(tmp_path)
+    _llama_suite(img, _OFFLOAD_OK)
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving")
+    assert has(img, tmp_path, "L076", "does not require the GPU-offload test")
+
+
+def test_L076_asserted_and_required_is_clean(tmp_path):
+    img = make(tmp_path)
+    _llama_suite(img, _OFFLOAD_OK)
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving llama.d/11-llama-offload")
+    assert "L076" not in errs(img, tmp_path)
+
+
+def test_L076_does_not_fire_on_an_image_without_a_llama_suite(tmp_path):
+    """Scoped to the engine whose backend is dlopen'd. An image with no llama.d owes
+    nothing here — the rule must not invent an obligation it cannot satisfy."""
+    img = make(tmp_path)
+    _own_suite(img)
+    _gated(img, f"{_TRIO} app.d/10-serving")
+    assert "L076" not in errs(img, tmp_path)
+
+
+def test_L076_a_comment_mentioning_offload_does_not_satisfy_it(tmp_path):
+    """THE evasion the first version shipped with, found by review and reproduced on
+    the real repo: delete the offload test entirely, then put the word "offloading" in
+    a COMMENT in a sibling that already has an unrelated test_fail and is already named
+    in INSTANCE_TEST_REQUIRE_PASS. The evidence regex read the raw body, so the
+    baseline reported CLEAN with the assertion gone — the rule certified its own
+    absence. Same trap `_has_failure_path`'s docstring documents, one level up."""
+    img = make(tmp_path)
+    d = img.dir / "ROOT/opt/instance-tools/tests/llama.d"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "10-llama-serving.sh"
+    f.write_text('#!/bin/bash\n'
+                 '# NOTE: offloading of layers to GPU is handled elsewhere\n'
+                 '# see also: llama-server --list-devices\n'
+                 'test_fail "not serving"\n')
+    f.chmod(0o755)
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")
+
+
+def test_L076_a_neutered_assertion_keeping_its_comments_does_not_satisfy_it(tmp_path):
+    """The edit a maintainer reaches for the first time the cell reds a release: keep
+    the file and its explanatory header, demote both arms to echo, and leave the one
+    unrelated test_fail on the readiness probe. Evidence words survive only in prose."""
+    img = make(tmp_path)
+    _llama_suite(img, '#!/bin/bash\n'
+                      '# gates on llama-server --list-devices and --query-compute-apps\n'
+                      'wait_for_url http://127.0.0.1:18000/health 60 || test_fail "not up"\n'
+                      'echo "backend check disabled"\n'
+                      'report_failures\n')
+    _gated(img, f"{_TRIO} llama.d/10-llama-serving llama.d/11-llama-offload")
+    assert has(img, tmp_path, "L076", "no GPU-offload assertion")

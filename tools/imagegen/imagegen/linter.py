@@ -93,6 +93,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L070", ERROR, "The readiness budgets in ROOT/opt/instance-tools/tests/lib.sh are env-overridable AND their defaults do not fall below the cost that was actually measured. docs/invariants.md called these \"fixed but NOT gated\" on the grounds that a linter cannot decide whether a number is large enough — true, and a dodge: it cannot decide SUFFICIENCY, but it can decide whether someone has quietly put a budget back below the measured floor. Proven: reverting `HTTP_CHECK_MAX_TIME` to 5 and the portal budget to 30 — the two exact values that failed cells on 2026-08-18 — passed every test in this repo. Floors, each from a measurement recorded in docs/invariants.md: HTTP_CHECK_MAX_TIME 20 (a cost-14 bcrypt verification of one wrong credential measures 4666ms at --cpus=0.12, and Caddy caches only successes), PORTAL_READY_TIMEOUT 120 (the portal cannot bind until caddy_config_manager.py has hashed once per proxied app; observed not serving at 30s and serving 53s later), CADDY_READY_TIMEOUT 120 (a caddy restart measured 43s on a contended host, against a 30s ceiling that only WARNed), SUPERVISOR_READY_TIMEOUT 60 (socket usable at 383ms idle, seconds under contention). Also gated: `http_check` must READ the variable rather than re-hardcode a literal, since a lever nothing uses is not a lever. The budgets stay overridable because the suite ships INSIDE the image — baked, a wrong number can only be corrected by rebuilding and re-promoting every image; behind a variable it is a template edit (ADR 0029)"),
     ("L069", ERROR, "No shipped instance test asserts that a supervisord-managed process is UP by process presence (`pgrep`/`pidof`) unless the supervisord RPC socket has already been reached earlier in the same file. Presence is satisfied the instant supervisord forks; the socket is what every downstream service assertion actually needs, and the gap between the two is real and load-dependent. Measured in the shipped image on an idle 16-core host: `pgrep -f supervisord` succeeded at 1.7ms, `supervisorctl status` only became usable at 383ms. base/10-supervisor.sh sat in exactly that window — `pgrep` gate on one line, socket call on the next — and on a contended QA host it failed `supervisorctl cannot communicate with supervisord (exit 4)` 0.09s into the suite, taking 20-portal and 26-caddy-auth down as collateral and blocking the whole promote batch; the same suite proved the image healthy 53s later. Presence may still be used for IDENTITY (which pid is caddy, so its listeners can be attributed) — it must not be the readiness gate. Exempt: negated assertions (`! pidof caddy` in serverless mode), because absence cannot be waited for and presence is the right instrument for it; and `if pgrep`/`if pidof` branch predicates, which are not assertions. Reach readiness through `wait_for_supervisor`, `assert_service_running` or `service_running`, which go through the socket with a bounded wait (ADR 0029)"),
     ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
+    ("L076", ERROR, "An image that ships a `llama.d/` instance-test suite MUST carry a test asserting the CUDA backend is ACTUALLY SERVING — and its gating QA template must name that test in INSTANCE_TEST_REQUIRE_PASS. llama.cpp is built `ggml_backend_dl: ON`, so a `libggml-cuda.so` that fails to dlopen does not crash: llama-server starts, /health returns 200, /v1/models is populated, and every completion is served from CPU. The dlopen can fail for reasons no other check sees — a libcublas minor the bundle was not built against, a driver too old for the bundle\'s CUDA major, or no cubin AND no JITable PTX for the host\'s compute capability. Measured against the shipped suite: 10-llama-serving asserts the service runs, /health, a non-empty /v1/models, and that at least one of three prompts returns completion_tokens > 0; 12-llama-contract asserts token arithmetic, a grammar, a named tool, a status class and a bind address; the serverless cell asserts a benchmark score was written. A 0.5B q8_0 GGUF on CPU satisfies EVERY one of those in seconds, so a fully CPU-only image passes the whole gate on every cell — the gate certifies a GPU image that is not using the GPU. This is ADR 0016\'s defect at runtime instead of build time, and L056 does not reach it: L056 triggers only on `unsloth studio setup`, so the prebuilt-bundle path is exempt by construction. A `test -f …libggml-cuda.so` does not satisfy this rule either — the file existing is not the backend loading (ADR 0016, ADR 0031)"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
 
@@ -2335,6 +2336,92 @@ def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
                       "guard (a bare mention of the filename does not count) (ADR 0016)")
 
 
+# ADR 0016 at runtime. The evidence tokens are deliberately about the RUNNING server,
+# not about the image's contents: `test -f libggml-cuda.so` passes on an image whose
+# backend cannot load, which is the exact gap this rule exists to close.
+#   query-compute-apps  nvidia-smi attributes non-zero GPU memory to the server pid
+#   --list-devices      llama-server enumerates a CUDA device
+#   offloaded/offloading  llama.cpp's own load_tensors line, "offloaded N/N layers to GPU"
+_OFFLOAD_EVIDENCE = re.compile(
+    r"query-compute-apps|--list-devices|\boffload(ed|ing)\b", re.I)
+
+
+def check_llama_offload_is_asserted(img: Image, repo: Path) -> Iterable[Finding]:
+    """L076 — a llama.cpp image must assert its CUDA backend actually serves.
+
+    Two halves, because either alone is a hole. A test that exists but is not
+    REQUIRED can take a `test_skip` and the gate stays green (the shape L059/L072
+    exist for). A template that names a test which cannot fail asserts nothing.
+    So: the suite must contain an offload assertion with a real failure path, and a
+    gating template must require it by name.
+    """
+    if "llama.d" not in _own_test_prefixes(img):
+        return
+    tdir = img.root / "opt/instance-tools/tests/llama.d"
+    if not tdir.is_dir():
+        return
+
+    found: list[str] = []
+    for f in sorted(tdir.iterdir()):
+        if not f.is_file() or not re.match(r"\d+-.*\.sh$", f.name):
+            continue
+        body = f.read_text(encoding="utf-8", errors="replace")
+        # COMMENT-STRIPPED, and this is the whole rule. Searching the raw body made
+        # L076 satisfiable by a COMMENT: delete 11-llama-offload.sh entirely, put the
+        # word "offloading" in a comment in 10-llama-serving.sh — which already has a
+        # real test_fail and is already named in INSTANCE_TEST_REQUIRE_PASS — and the
+        # baseline reported CLEAN with the assertion gone. That is precisely the trap
+        # _has_failure_path's own docstring documents (`62-gpu-libraries.sh` carried a
+        # comment naming the machinery it never called), reintroduced one level up in
+        # the function that cites it. _has_failure_path still reads the RAW body: it
+        # strips comments itself, and passing it pre-stripped text would double-strip.
+        code = "\n".join(_strip_comment(line) for line in body.splitlines())
+        if _OFFLOAD_EVIDENCE.search(code) and _has_failure_path(body):
+            found.append(f"llama.d/{f.stem}")
+
+    if not found:
+        yield Finding("L076", ERROR, img.name, "ROOT/opt/instance-tools/tests/llama.d",
+                      "ships a llama.d suite with no GPU-offload assertion — with "
+                      "ggml_backend_dl:ON a failed dlopen of libggml-cuda.so degrades to CPU "
+                      "SILENTLY and every existing cell (serving, contract, serverless) passes "
+                      "on a small model, so the gate certifies a GPU image running on CPU "
+                      "(ADR 0016)")
+        return
+
+    gating = _gating_template_dirs(repo)
+    tpldir = img.dir / "templates"
+    if not gating or not tpldir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    for tpl in sorted(tpldir.rglob("template.yml")):
+        try:
+            reldir = str(tpl.parent.relative_to(repo))
+        except ValueError:
+            continue
+        if reldir not in gating:
+            continue
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            env = entry.get("env")
+            declared = env.get("INSTANCE_TEST_REQUIRE_PASS", "") if isinstance(env, dict) else ""
+            named = set(str(declared).replace(",", " ").split())
+            if not named & set(found):
+                yield Finding("L076", ERROR, img.name, rel,
+                              "gating QA template does not require the GPU-offload test "
+                              f"({' or '.join(found)}) in INSTANCE_TEST_REQUIRE_PASS — an "
+                              "offload assertion that is not required can test_skip and the "
+                              "gate stays green (ADR 0016, ADR 0031)")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
@@ -2556,6 +2643,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_vram(img, repo))
     out.extend(check_template_require_pass(img, repo))
     out.extend(check_own_suite_is_required(img, repo))
+    out.extend(check_llama_offload_is_asserted(img, repo))
     out.extend(check_serverless_template_maps_worker_port(img, repo))
     out.extend(check_no_template_publishes_an_internal_port(img, repo))
     out.extend(check_selftest_path_reaches_image_tools(img, repo))
