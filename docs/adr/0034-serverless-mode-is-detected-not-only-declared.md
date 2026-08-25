@@ -192,7 +192,30 @@ the `/etc/environment` snapshot with a decision nobody made.
    `CUDA_CONFIG_FAILED_MARKER` pattern in `05-configure-cuda.sh`, whose comment reads
    "Detection should be designed, not accidental".
 
-4. **Add a QA cell; do not swap the existing one.** Swapping the serverless cell's
+4. **The detection cell belongs to BASE's gate, and is ADVISORY at first.**
+   `01-detect-serverless.sh` ships in the `ROOT/` overlay, so every image inherits it and
+   base is the only place it can be proved once for all of them. It is also a prelude to
+   the platform injecting `SERVERLESS` from the instance dispatcher, which will apply to
+   every image including third-party ones — a global mechanism gated globally, not on one
+   derivative. One cell against the first config in the QA set: the stage reads two
+   environment variables and does not vary by CUDA line, so a per-config matrix would
+   re-test the same file twelve times on a single-key account that already runs this gate
+   at `max-parallel: 4`.
+
+   Its evidence artifact must stay **outside** the `qa-evidence-*` namespace — `qa-summary`
+   globs that pattern and reads the suffix as a config key, so a detection artifact would
+   be misread as a thirteenth config and resolved to a tag that does not exist.
+
+   It lands **advisory**, ordered ahead of the promote and absent from its verdict, per
+   ADR 0006 condition 2 and ADR 0031 decision 7: a new assertion on the highest-stakes
+   gate in the repo does not block the day it is written. **Flip condition: two
+   consecutive base promotions with this cell green**, then it moves into `qa-summary`'s
+   verdict. Do not let that drift — ADR 0006's own amendment is the cautionary tale, "an
+   advisory gate nobody promotes is a permanent green". A failed cell is surfaced in the
+   Slack headline so advisory does not mean invisible; note the honest limit, that a run
+   with auto-tag holds reports those instead, since the headline is a first-match chain.
+
+5. **Add a QA cell; do not swap the existing one.** Swapping the serverless cell's
    `SERVERLESS=true` for `MASTER_TOKEN` silently disables two enforcement mechanisms:
    `linter.py:715` (L073, which requires the QA template to map the worker port) keys on
    the literal `SERVERLESS` in the caller's `extra_env`, and
@@ -203,7 +226,7 @@ the `/etc/environment` snapshot with a decision nobody made.
    templates use. Keep that cell; add a detection cell beside it, and teach
    `detect_serverless()` about the new signal with a test alongside the existing six.
 
-5. **An expiry, and a linter rule that enforces it.** The mechanism is a bridge to
+6. **An expiry, and a linter rule that enforces it.** The mechanism is a bridge to
    backend injection. Carry an `EXPIRES:` date in the file and a new `RULES` code that
    WARNs while it exists and ERRORs once the date passes, forcing deletion or a reviewed
    extension. The property that makes a date defensible here: **expiry degrades to

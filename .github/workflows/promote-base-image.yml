@@ -381,6 +381,68 @@ jobs:
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
+  # ADR 0034 — the serverless DETECTION path, tested where the code actually ships.
+  #
+  # 01-detect-serverless.sh lives in the BASE overlay, so every image inherits it and
+  # base is the only place it can be proved once for all of them. It is also a prelude
+  # to the platform injecting SERVERLESS from the instance dispatcher, which will apply
+  # to every image including third-party ones — so the mechanism is global and is gated
+  # globally rather than on one derivative.
+  #
+  # ONE cell, against the first config in the QA set. The stage's behaviour does not vary
+  # by CUDA line — it reads two environment variables — so a per-config matrix would
+  # re-test the same file 12 times on a single-key QA account that already runs this gate
+  # at max-parallel 4. Positional `[0]` is deliberate and safe here for the same reason:
+  # any config exercises the same code. It inherits that config's driver floor so the
+  # cell is rentable on the same market as the gate it runs beside.
+  #
+  # ADVISORY, NOT BLOCKING, on purpose. This is a new enforcement on the highest-stakes
+  # gate in the repo, and the house pattern (ADR 0006 condition 2, ADR 0031 decision 7)
+  # is that new assertions land advisory and flip on evidence rather than blocking the
+  # day they are written. FLIP CONDITION: two consecutive base promotions where this cell
+  # is green, after which it moves into qa-summary's verdict. Do not let that drift —
+  # ADR 0006's own amendment is the cautionary tale ("an advisory gate nobody promotes is
+  # a permanent green").
+  #
+  # The token is a self-evidently fake SENTINEL, safe in plaintext: the stage tests
+  # PRESENCE only and never reads the value. A real token would put a throwaway QA rental
+  # into conversation with the production autoscaler, which is not what this asserts, so
+  # it travels through extra_env rather than the secrets block — it is not a secret.
+  #
+  # What makes it meaningful: with no SERVERLESS anywhere in the template or the
+  # overrides, base/85 can only pass if the image inferred the mode itself. It opens with
+  # `is_serverless || test_skip`, and runner.sh turns a skipped REQUIRED test into
+  # REQUIRED-FAIL — so a broken inference is a red cell, not a quiet green.
+  qa-detect:
+    needs: [generate-configs, resolve-digests]
+    if: ${{ !inputs.DRY_RUN && needs.resolve-digests.outputs.qa-matrix != '{"include":[]}' }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: base-image
+      tag: qa-${{ github.run_id }}-${{ fromJson(needs.resolve-digests.outputs.qa-matrix).include[0].key }}
+      template_dir: templates/base-qa
+      label: base-image-qa-serverless-detect
+      require_key: true
+      require_tests: "base/15-boot-markers base/85-serverless-services"
+      set_filters: "cuda_max_good.gte=${{ fromJson(needs.resolve-digests.outputs.qa-matrix).include[0].floor }}"
+      retries: 2
+      poll_timeout: "900"
+      max_price: "1.00"
+      timeout: "2400"
+      extra_env: |
+        MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/85-serverless-services
+        PROV_TIMEOUT=900
+        INSTANCE_TEST_DEFAULT_TIMEOUT=900
+      # Deliberately OUTSIDE the `qa-evidence-*` namespace: qa-summary globs that pattern
+      # and reads the suffix as a CONFIG KEY, so an evidence artifact named for this cell
+      # would be misread as a thirteenth config and resolved to a tag that does not exist.
+      evidence_name: serverless-detect-evidence
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
   qa-summary:
     needs: [resolve-digests, qa]
     # always(): a red cell must still produce the decision table — that is exactly
@@ -1127,7 +1189,7 @@ jobs:
           done
 
   notify:
-    needs: [generate-configs, qa-summary, promote, collect-tags]
+    needs: [generate-configs, qa-summary, qa-detect, promote, collect-tags]
     if: always() && !inputs.DRY_RUN
     uses: ./.github/workflows/notify-slack.yml
     with:
@@ -1157,6 +1219,8 @@ jobs:
                 && 'Base image promoted — QA SUMMARY FAILED, treat every auto tag as unverified')
             || (needs.qa-summary.outputs.holds != '0' && needs.qa-summary.outputs.holds != ''
                 && format('Base image promoted — {0} auto tag(s) HELD (QA did not clear them); dated tags landed as normal', needs.qa-summary.outputs.holds))
+            || (needs.qa-detect.result == 'failure'
+                && 'Base image promoted — but the ADVISORY serverless-detection cell FAILED (ADR 0034; not gating yet)')
             || '' }}
       image-name: "Base Image (Production)"
       image-ref: ${{ inputs.STAGING_DATE }}
