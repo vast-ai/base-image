@@ -37,6 +37,50 @@ if ! is_serverless; then
     assert_file_exists /etc/Caddyfile
 fi
 
+# ── The runtime-mode decision left a record ──────────────────────────
+# ADR 0034. `01-detect-serverless.sh` writes this on EVERY outcome, including the
+# negative one, because "detection ran and declined" and "this image predates
+# detection" are different facts and only a marker separates them.
+#
+# The round trip is the point: the marker's own `serverless=` field must agree with
+# what the rest of the suite sees through is_serverless(). A disagreement means the
+# stage ran and its export did not survive — the partial-application failure that
+# would otherwise present as an image half in serverless mode, with the boot flags on
+# one value and every service on the other.
+_sd_marker=/run/vast-serverless-detect
+if [[ ! -f "$_sd_marker" ]]; then
+    fail_later "serverless-marker" "$_sd_marker missing — the mode decision left no record, so nothing can say whether serverless was declared, detected, or declined (ADR 0034)"
+else
+    _sd_recorded=$(sed -n 's/^serverless=//p' "$_sd_marker" | head -1)
+    _sd_verdict=$(sed -n 's/^verdict=//p' "$_sd_marker" | head -1)
+    echo "  serverless mode: ${_sd_verdict:-<none>} (recorded SERVERLESS=${_sd_recorded:-<none>})"
+    # A cell that means to exercise the INFERENCE says so, and then this asserts the
+    # verdict actually was an inference. Without it the detection cell passes green while
+    # testing nothing about detection the moment SERVERLESS arrives from anywhere else —
+    # a leak into base-qa's template, or the platform starting to inject it — and it would
+    # keep passing forever. That is the shape ADR 0031 records as "it worked by
+    # coincidence; a coincidence is not a passing test".
+    #
+    # Also the retirement signal: when the backend injects SERVERLESS server-side this
+    # assertion starts failing on a healthy instance, because the verdict becomes
+    # `declared`. That is the bridge announcing it is no longer load-bearing (ADR 0034).
+    if [[ -n "${SERVERLESS_DETECT_EXPECT:-}" ]]; then
+        if [[ "${_sd_verdict}" == "${SERVERLESS_DETECT_EXPECT}" ]]; then
+            echo "  verdict is '${_sd_verdict}' as this cell expected"
+        else
+            fail_later "serverless-verdict" "this cell expects verdict='${SERVERLESS_DETECT_EXPECT}' but the boot marker recorded '${_sd_verdict:-<none>}' — if that is 'declared', SERVERLESS reached the instance from somewhere else and the detection path was never exercised"
+        fi
+    fi
+
+    if is_serverless; then
+        [[ "${_sd_recorded,,}" == "true" ]] || \
+            fail_later "serverless-marker" "the suite sees serverless mode but the boot marker recorded SERVERLESS=${_sd_recorded:-<none>} (verdict=${_sd_verdict:-<none>}) — the decision and the running environment disagree"
+    else
+        [[ "${_sd_recorded,,}" == "true" ]] && \
+            fail_later "serverless-marker" "the boot marker recorded SERVERLESS=true (verdict=${_sd_verdict:-<none>}) but the suite is not in serverless mode — the export did not survive to the test environment"
+    fi
+fi
+
 # ── A boot stage that deliberately gave up ───────────────────────────
 # boot_default.sh sources every stage and DISCARDS its exit status, so a stage
 # that decided it could not safely continue leaves no trace anywhere — which is

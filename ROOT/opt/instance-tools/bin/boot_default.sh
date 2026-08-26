@@ -68,11 +68,11 @@ main() {
         esac
     done
 
-    # Serverless optimizations
-    if [[ "${SERVERLESS,,}" = "true" ]]; then
-        update_portal=false
-        update_vast_cli=false
-    fi
+    # The serverless update-flag block moved to /etc/vast_boot.d/01-detect-serverless.sh
+    # (ADR 0034), so the mode decision and its first consequence live together. Stages are
+    # SOURCED below, so that stage sets these same locals through dynamic scope — the
+    # mechanism 46-user-propagate-ssh-keys.sh, 10-prep-env.sh and 37-sync-environment.sh
+    # already depend on. Changing `.` to execution below silently breaks all four.
 
     # Source boot scripts
     for script in /etc/vast_boot.d/*.sh; do

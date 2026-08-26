@@ -276,10 +276,16 @@ to the `-mix-` line. No change to the action is required — the input already e
    packages. llama.cpp uses a small, long-stable slice — `cublasCreate_v2`, `cublasGemmEx`,
    `cublasGemmStridedBatchedEx`, `cublasSetMathMode` and similar — none of it new in 13.3.
    So the base-derived package is sufficient and the `cuda-13.2-mini` base needs no change.
-   This matters beyond itself: there is no `cuda-13.3` base published (only 12.9 and 13.2),
-   so had the answer gone the other way the fix would have meant installing a non-base CUDA
-   minor and keeping it on the loader path against `05-configure-cuda.sh`, which strips every
-   line containing `cuda` from every conf file on every boot. **A corollary:
+   This matters beyond itself, and the reason needs stating precisely because an
+   earlier draft of this paragraph got it wrong. `configs/base-image.json` builds
+   **twelve full base configs, and `cuda-13.3-24` IS one of them**
+   (`nvidia/cuda:13.3.1-cudnn-devel-ubuntu24.04`). What does not exist is a 13.3 **mini** —
+   the `mini` set is exactly two entries, `cuda-12.9-mini` and `cuda-13.2-mini`, and mini is
+   what this derivative and every other engine image builds FROM. So there was no
+   matching-minor base to bump to, and had the symbol answer gone the other way the fix
+   would have meant installing a non-base CUDA minor and keeping it on the loader path
+   against `05-configure-cuda.sh`, which strips every line containing `cuda` from every conf
+   file on every boot. **A corollary:
    `06-llama-cuda.sh` can now be deleted rather than repurposed** — its only job was putting
    `/opt/llama.cpp/cuda-${CUDA_VERSION}` on the loader path, a directory the flat bundle
    layout does not have, and `RUNPATH=$ORIGIN` resolves the bundle's own libraries without

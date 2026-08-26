@@ -2671,3 +2671,60 @@ def test_L076_a_neutered_assertion_keeping_its_comments_does_not_satisfy_it(tmp_
                       'report_failures\n')
     _gated(img, f"{_TRIO} llama.d/10-llama-serving llama.d/11-llama-offload")
     assert has(img, tmp_path, "L076", "no GPU-offload assertion")
+
+
+# ---- L077: a declared expiry must still be in date, and must be a date (ADR 0034) ----
+
+
+def _expiring_stage(tmp_path, expires_line):
+    """A shipped boot stage declaring itself temporary, the way ADR 0034's does."""
+    d = tmp_path / "ROOT/etc/vast_boot.d"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "01-detect-serverless.sh"
+    f.write_text(f"#!/bin/bash\n# Stage 01 — a bridge.\n#\n{expires_line}\n#\nexport SERVERLESS=true\n")
+    f.chmod(0o755)
+    return tmp_path
+
+
+def test_L077_a_passed_expiry_fires(tmp_path):
+    """THE mutation. A bridge whose date has gone by must stop being invisible — the
+    whole failure mode is that nobody revisits it and it quietly becomes load-bearing."""
+    repo = _expiring_stage(tmp_path, "# EXPIRES: 2020-01-01")
+    hits = [f for f in L.lint_repo(repo) if f.code == "L077"]
+    assert hits and hits[0].severity == L.ERROR
+    assert "has passed" in hits[0].msg
+
+
+def test_L077_an_unparseable_expiry_fires_immediately(tmp_path):
+    """`EXPIRES: TBD` is how an expiry becomes decorative. Fail closed: an expiry nobody
+    can evaluate is worse than none, because it reads like a control and is not one."""
+    repo = _expiring_stage(tmp_path, "# EXPIRES: TBD")
+    hits = [f for f in L.lint_repo(repo) if f.code == "L077"]
+    assert hits and hits[0].severity == L.ERROR
+    assert "not a YYYY-MM-DD date" in hits[0].msg
+
+
+def test_L077_an_in_date_expiry_warns_but_does_not_gate(tmp_path):
+    """It must not block while the bridge is legitimately in use — an ERROR here would
+    make the declaration itself a cost, and people would stop declaring."""
+    repo = _expiring_stage(tmp_path, "# EXPIRES: 2099-01-01")
+    hits = [f for f in L.lint_repo(repo) if f.code == "L077"]
+    assert hits and hits[0].severity == L.WARN
+    assert not [f for f in hits if f.severity == L.ERROR]
+
+
+def test_L077_a_script_with_no_expiry_is_untouched(tmp_path):
+    """Scoped to files that OPT IN by declaring. The rule must not invent an obligation
+    for every shipped script."""
+    d = tmp_path / "ROOT/etc/vast_boot.d"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "10-prep-env.sh").write_text("#!/bin/bash\necho hello\n")
+    assert "L077" not in {f.code for f in L.lint_repo(tmp_path)}
+
+
+def test_L077_the_real_repo_is_in_date():
+    """The baseline assertion: whatever bridges exist right now are still declared and
+    still current. This is the test that goes red on the day someone must decide."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    expired = [f for f in L.lint_repo(repo) if f.code == "L077" and f.severity == L.ERROR]
+    assert not expired, f"a declared expiry has passed: {[(f.path, f.msg) for f in expired]}"
