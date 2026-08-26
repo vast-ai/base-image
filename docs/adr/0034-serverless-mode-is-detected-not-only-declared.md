@@ -108,7 +108,26 @@ A new base boot stage `01-detect-serverless.sh`:
 
 1. If `SERVERLESS` is already set to a non-empty value, **do nothing**. The inference
    never overrides a declaration.
-2. Otherwise, if `MASTER_TOKEN` is present and non-empty, `export SERVERLESS=true`.
+2. Otherwise, if **both** `MASTER_TOKEN` and `REPORT_ADDR` are present and non-empty,
+   `export SERVERLESS=true`. Either alone records a near-miss and does NOT activate.
+
+   **Why corroboration, when `MASTER_TOKEN` alone is the reliable marker.** The two error
+   directions are wildly asymmetric. A false positive darkens the instance permanently; a
+   false negative costs almost nothing, because detection is a SAFETY NET rather than the
+   primary path — 9 of 10 published autoscaler templates declare `SERVERLESS` themselves
+   and rule 1 makes that win. So requiring a second signal trades a cheap failure for an
+   expensive one, in the right direction, and bounds the blast radius if the platform ever
+   injects `MASTER_TOKEN` more widely than the autoscaler does today. `REPORT_ADDR` is set
+   CONDITIONALLY on the same path, so this WILL miss some genuine workers; that is the
+   accepted cost, and both near-miss branches report themselves on stdout and in the
+   marker so a miss is visible from the first occurrence rather than from a support ticket.
+
+   **`VAST_TCP_PORT_3000` was considered and rejected on evidence.** All four
+   serverless-capable images (`vllm`, `sglang`, `llama-cpp`, `comfyui`) carry `EXPOSE 3000`
+   UNCONDITIONALLY, so Vast maps it on every instance of those images regardless of mode —
+   their own Dockerfiles say "unbound and harmless on-demand". Base does not expose it at
+   all. The variable therefore means opposite things on different images, and a signal that
+   cannot discriminate on the four images that matter is worse than no signal.
 3. Write a provenance marker either way, and echo one line to stdout.
 4. Carry `boot_default.sh:71-75`'s update-flag block into the same stage, below the
    detection, so the mode and its first consequence sit in one reviewable place.

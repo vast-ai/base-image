@@ -33,7 +33,7 @@ def run(**env):
     """
     assigns = "".join(f"{k}={v!r}\n" for k, v in env.items() if v is not None)
     script = f"""
-        unset SERVERLESS MASTER_TOKEN VAST_SERVERLESS_DETECT
+        unset SERVERLESS MASTER_TOKEN REPORT_ADDR VAST_SERVERLESS_DETECT
         {assigns}
         update_portal=true; update_vast_cli=true
         . {STAGE} >/dev/null 2>&1
@@ -45,18 +45,36 @@ def run(**env):
     return dict(l.split("=", 1) for l in out.strip().splitlines() if "=" in l)
 
 
-def test_master_token_alone_infers_serverless():
-    """The bridge's whole purpose: the autoscaler injects MASTER_TOKEN, nothing injects
+def test_both_signals_infer_serverless():
+    """The bridge's whole purpose: the autoscaler injects these, nothing injects
     SERVERLESS yet, and the image works it out."""
-    r = run(MASTER_TOKEN="secret")
+    r = run(MASTER_TOKEN="secret", REPORT_ADDR="https://autoscaler.example")
     assert r["SERVERLESS"] == "true"
+
+
+def test_master_token_alone_does_NOT_activate():
+    """Corroboration is required. A false positive darkens the instance permanently
+    (exit_serverless.sh exits 0 under autorestart=unexpected, so supervisord never
+    restarts those services), while a false negative just falls back to the template's
+    own declaration — which 9 of 10 published autoscaler templates already carry. The
+    asymmetry is the whole argument for requiring both."""
+    r = run(MASTER_TOKEN="secret")
+    assert r["SERVERLESS"] == "unset"
+
+
+def test_report_addr_alone_does_NOT_activate():
+    """Corroboration can raise an alarm; it must never enable the mode by itself. This
+    shape is also the rename signature — autoscaler env on the box without the primary
+    key — and the stage says so on stdout rather than silently doing nothing."""
+    r = run(REPORT_ADDR="https://autoscaler.example")
+    assert r["SERVERLESS"] == "unset"
 
 
 def test_an_explicit_false_survives_the_inference():
     """THE case this design exists to protect. An inference from a proxy must not
     overrule a human who typed the value — and a false positive costs the operator every
     interactive service on the box, permanently, so the opt-out has to hold."""
-    r = run(SERVERLESS="false", MASTER_TOKEN="secret")
+    r = run(SERVERLESS="false", MASTER_TOKEN="secret", REPORT_ADDR="https://a")
     assert r["SERVERLESS"] == "false"
 
 
@@ -70,19 +88,19 @@ def test_an_explicit_true_is_left_alone():
 def test_empty_is_not_a_declaration():
     """`-e SERVERLESS=` states nothing. Treating it as a declaration would let an empty
     template field silently disable detection on a real worker."""
-    r = run(SERVERLESS="", MASTER_TOKEN="secret")
+    r = run(SERVERLESS="", MASTER_TOKEN="secret", REPORT_ADDR="https://a")
     assert r["SERVERLESS"] == "true"
 
 
 def test_the_off_switch_beats_the_signal():
     """The rollback lever. Without it, backing out a wrong inference is a rebuild and
     re-promote of base plus every derivative."""
-    r = run(MASTER_TOKEN="secret", VAST_SERVERLESS_DETECT="false")
+    r = run(MASTER_TOKEN="secret", REPORT_ADDR="https://a", VAST_SERVERLESS_DETECT="false")
     assert r["SERVERLESS"] == "unset"
 
 
 def test_the_off_switch_accepts_off_as_well_as_false():
-    r = run(MASTER_TOKEN="secret", VAST_SERVERLESS_DETECT="off")
+    r = run(MASTER_TOKEN="secret", REPORT_ADDR="https://a", VAST_SERVERLESS_DETECT="off")
     assert r["SERVERLESS"] == "unset"
 
 
@@ -93,9 +111,9 @@ def test_no_signal_means_no_inference():
 
 
 @pytest.mark.parametrize("env,flags", [
-    (dict(MASTER_TOKEN="secret"), "false"),
+    (dict(MASTER_TOKEN="secret", REPORT_ADDR="https://a"), "false"),
     (dict(SERVERLESS="true"), "false"),
-    (dict(SERVERLESS="false", MASTER_TOKEN="secret"), "true"),
+    (dict(SERVERLESS="false", MASTER_TOKEN="secret", REPORT_ADDR="https://a"), "true"),
     (dict(), "true"),
 ])
 def test_update_flags_follow_the_resolved_mode(env, flags):
@@ -115,6 +133,7 @@ def test_the_token_value_is_never_echoed():
     script = f"""
         unset SERVERLESS VAST_SERVERLESS_DETECT
         MASTER_TOKEN=SUPERSECRETVALUE
+        REPORT_ADDR=https://a
         update_portal=true; update_vast_cli=true
         . {STAGE} 2>&1
     """

@@ -43,13 +43,46 @@ if [[ "${VAST_SERVERLESS_DETECT,,}" == "false" || "${VAST_SERVERLESS_DETECT,,}" 
 elif [[ -n "${SERVERLESS:-}" ]]; then
     _sd_verdict=declared
     _sd_reason="SERVERLESS was already set"
-# Presence only. NEVER echo, log or record the value — it is a credential.
-elif [[ -n "${MASTER_TOKEN:-}" ]]; then
+# TWO SIGNALS, BOTH REQUIRED. Presence only — NEVER echo, log or record either value,
+# MASTER_TOKEN is a credential.
+#
+# Why AND rather than MASTER_TOKEN alone: the two error directions are wildly asymmetric.
+# A false POSITIVE darkens the instance permanently — exit_serverless.sh exits 0 and its
+# units are autorestart=unexpected + exitcodes=0, so supervisord never restarts caddy, the
+# portal, jupyter, the tunnel manager, syncthing, tensorboard, or any supervisor unit
+# authored from a provisioning manifest. A false NEGATIVE costs almost nothing, because
+# this is a SAFETY NET rather than the primary path: 9 of 10 published autoscaler
+# templates declare SERVERLESS themselves, and an explicit declaration always wins above.
+# So requiring corroboration trades a cheap failure for an expensive one, in the right
+# direction. It also bounds the blast radius if the platform ever starts injecting
+# MASTER_TOKEN more widely than the autoscaler does today.
+#
+# REPORT_ADDR is set on the same autoscaler path but CONDITIONALLY, so requiring it will
+# miss some genuine workers. That is the accepted cost above — and the near-miss branches
+# below make each miss visible instead of silent.
+#
+# NOT included, and this was checked rather than assumed: VAST_TCP_PORT_3000. All four
+# serverless-capable images (vllm, sglang, llama-cpp, comfyui) carry `EXPOSE 3000`
+# UNCONDITIONALLY, so Vast maps it on every instance of those images regardless of mode —
+# their Dockerfiles say so directly ("unbound and harmless on-demand"). Base does not
+# expose it at all, so the variable would mean opposite things on different images. A
+# signal that does not discriminate on the four images that matter is worse than none.
+elif [[ -n "${MASTER_TOKEN:-}" && -n "${REPORT_ADDR:-}" ]]; then
     export SERVERLESS=true
     _sd_verdict=detected
-    _sd_reason="MASTER_TOKEN present"
+    _sd_reason="MASTER_TOKEN and REPORT_ADDR both present"
+elif [[ -n "${MASTER_TOKEN:-}" ]]; then
+    # The expected shape of a false negative. Loud, because otherwise a worker that
+    # should have been detected looks identical to an ordinary on-demand rental, and we
+    # would learn the real frequency of a conditional REPORT_ADDR from a support ticket
+    # rather than from the first occurrence.
+    _sd_reason="MASTER_TOKEN present but REPORT_ADDR absent — NOT activating (corroboration required)"
+elif [[ -n "${REPORT_ADDR:-}" ]]; then
+    # The rename signature: autoscaler env on the box without the key we sniff. Corroboration
+    # can raise an alarm; it must never enable the mode on its own.
+    _sd_reason="REPORT_ADDR present but MASTER_TOKEN absent — NOT activating; if this is a real worker the primary signal may have been renamed"
 else
-    _sd_reason="no MASTER_TOKEN and no explicit SERVERLESS"
+    _sd_reason="no autoscaler signals and no explicit SERVERLESS"
 fi
 
 # Written on EVERY outcome, including the negative one. "Detection ran and declined" and

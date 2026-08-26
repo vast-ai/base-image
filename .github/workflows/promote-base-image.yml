@@ -417,8 +417,9 @@ jobs:
   # ADR 0006's own amendment is the cautionary tale ("an advisory gate nobody promotes is
   # a permanent green").
   #
-  # The token is a self-evidently fake SENTINEL, safe in plaintext: the stage tests
-  # PRESENCE only and never reads the value. A real token would put a throwaway QA rental
+  # BOTH autoscaler signals, because the stage requires corroboration (ADR 0034). Both are
+  # self-evidently fake SENTINELS and safe in plaintext: the stage tests PRESENCE only and
+  # never reads either value, and .invalid is a reserved TLD that cannot resolve. A real token would put a throwaway QA rental
   # into conversation with the production autoscaler, which is not what this asserts, so
   # it travels through extra_env rather than the secrets block — it is not a secret.
   #
@@ -455,6 +456,7 @@ jobs:
       timeout: "2400"
       extra_env: |
         MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        REPORT_ADDR=https://qa-detection-sentinel.invalid
         SERVERLESS_DETECT_EXPECT=detected
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/85-serverless-services
         PROV_TIMEOUT=900
