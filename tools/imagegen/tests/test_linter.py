@@ -2728,3 +2728,64 @@ def test_L077_the_real_repo_is_in_date():
     repo = find_repo_root(Path(__file__).resolve().parent)
     expired = [f for f in L.lint_repo(repo) if f.code == "L077" and f.severity == L.ERROR]
     assert not expired, f"a declared expiry has passed: {[(f.path, f.msg) for f in expired]}"
+
+
+def test_L073_covers_a_cell_that_infers_serverless(tmp_path):
+    """ADR 0034. A cell can now turn serverless on by supplying the autoscaler signals
+    instead of SERVERLESS=true. L073 keyed strictly on the literal, so such a cell would
+    have dropped out of the rule entirely and the worker-port requirement would go
+    unenforced — the defect L073 exists for (KeyError: 'VAST_TCP_PORT_3000', measured
+    live on the first serverless cell ever run) would come straight back."""
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\n" + _FLOORS)   # no port 3000 mapped
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      template_dir: img/templates/qa\n"
+        "      extra_env: |\n        MASTER_TOKEN=sentinel\n        REPORT_ADDR=https://a\n")
+    assert "L073" in errs(img, tmp_path)
+
+
+def test_L073_ignores_a_cell_with_only_one_signal(tmp_path):
+    """One signal does not activate the mode in the image, so it must not be treated as
+    a serverless cell here either — mirroring the activation rule rather than guessing."""
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\n" + _FLOORS)
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      template_dir: img/templates/qa\n"
+        "      extra_env: |\n        MASTER_TOKEN=sentinel\n")
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_explicit_false_beats_the_signals(tmp_path):
+    """SERVERLESS=false wins over the inference in the image; the rule must agree."""
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\n" + _FLOORS)
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      template_dir: img/templates/qa\n"
+        "      extra_env: |\n        SERVERLESS=false\n        MASTER_TOKEN=s\n        REPORT_ADDR=https://a\n")
+    assert "L073" not in errs(img, tmp_path)
+
+
+def test_L073_ignores_a_cell_that_skips_the_worker(tmp_path):
+    """The rule exists because the pyworker SDK looks up VAST_TCP_PORT_3000 unguarded.
+    A cell that sets SUPERVISOR_SKIP_PYWORKER=true starts no worker, so there is nothing
+    to look it up — demanding a port mapping there would be cargo-culting the rule past
+    its own rationale. Base's detection cell is exactly this: mode switch, no engine."""
+    img = make(tmp_path)
+    _write_template(img, "name: QA\nimage: vastai/x\n" + _FLOORS)
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        "jobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      template_dir: img/templates/qa\n"
+        "      extra_env: |\n        MASTER_TOKEN=s\n        REPORT_ADDR=https://a\n"
+        "        SUPERVISOR_SKIP_PYWORKER=true\n")
+    assert "L073" not in errs(img, tmp_path)

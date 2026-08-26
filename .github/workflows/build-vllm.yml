@@ -364,10 +364,27 @@ jobs:
       # more tests that must have passed (base/85 and the pyworker score) because in
       # this mode they are no longer inert. Keeping it here is the difference between
       # QA scaffolding and the template's own configuration.
+      # THE AUTOSCALER'S OWN SIGNALS, NOT SERVERLESS=true (ADR 0034). This cell is now the
+      # only end-to-end proof of the inference: base's detection cells switch the mode but
+      # base has no engine, so nothing there shows a REAL worker starting and reaching a
+      # benchmark score under a mode the image inferred rather than was told.
+      #
+      # Both sentinels are self-evidently fake and safe in plaintext — the stage tests
+      # PRESENCE only and never reads either value, and .invalid cannot resolve.
+      #
+      # Every test named below can only pass if the image inferred the mode: they open
+      # with `is_serverless || test_skip`, and runner.sh turns a skipped REQUIRED test
+      # into REQUIRED-FAIL. So a broken inference is a red cell, not a quiet green.
+      #
+      # The EXPLICIT SERVERLESS=true path keeps its coverage on sglang and llama-cpp,
+      # whose serverless cells are unchanged — 9 of 10 published autoscaler templates
+      # still declare it, so that path must stay tested somewhere.
       extra_env: |
-        SERVERLESS=true
-        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
+        MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        REPORT_ADDR=https://qa-detection-sentinel.invalid
+        SERVERLESS_DETECT_EXPECT=detected
+        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
+      require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
       retries: 2
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
