@@ -343,9 +343,11 @@ jobs:
       # likely to be the upstream bootstrap as the image, and ADR 0031 decision 5
       # requires that the two be distinguishable from the run output alone.
       log_paths: "/var/log/portal/vllm.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
-      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS SERVERLESS=true. That is
-      # the whole claim of the serverless-enablement work — one template, one env var
-      # — so a gate that quietly needed three more variables would not be testing it.
+      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS THE SERVERLESS SIGNALS.
+      # That is the whole claim of the serverless-enablement work — one template, no
+      # per-mode configuration — so a gate that quietly needed three more variables
+      # would not be testing it. (This cell supplies the autoscaler's signals rather
+      # than SERVERLESS=true; see the ADR 0034 note below.)
       #
       # MODEL_NAME is GONE and its absence is now part of the test. pyworker's
       # core.py resolves the benchmark model from MODEL_NAME, VLLM_MODEL,

@@ -358,12 +358,82 @@ jobs:
       # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
+  # Detection cell (ADR 0034). Identical to `qa-serverless` above in every respect but
+  # one: it supplies the AUTOSCALER'S OWN SIGNALS instead of SERVERLESS=true, so the
+  # image must INFER the mode rather than be told it. Both cells are kept, because they
+  # test different things and both are live: 9 of 10 published autoscaler templates
+  # still declare SERVERLESS=true, and the platform has not yet been changed to inject
+  # it — so the declared path is today's production path and the inferred path is the
+  # one being rolled out.
+  #
+  # Both sentinel values are self-evidently fake and safe in plaintext:
+  # 01-detect-serverless.sh tests PRESENCE only and never reads either value, and
+  # .invalid cannot resolve. MASTER_TOKEN here is not a credential and must never be
+  # replaced with one.
+  #
+  # SERVERLESS_DETECT_EXPECT=detected makes base/15-boot-markers assert the VERDICT the
+  # stage recorded, not merely that the instance came up. Every sglang.d test named below
+  # additionally opens with `is_serverless || test_skip`, and runner.sh turns a skipped
+  # REQUIRED test into REQUIRED-FAIL — so a broken inference is a red cell, never a
+  # quiet green.
+  #
+  # IT DOES NOT GATE YET, on the same ramp as qa-serverless: ORDERED ahead of the
+  # approval prompt via `needs`, absent from the `if`.
+  qa-serverless-detect:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'sglang' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.sglang-version }}-cuda-${{ matrix.cuda }}-amd64
+      template_dir: external/sglang/templates/sglang-qa
+      label: base-image-qa-sglang-serverless-detect
+      log_paths: "/var/log/portal/sglang.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
+      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS SERVERLESS=true. That is
+      # the whole claim of the serverless-enablement work — one template, one env var
+      # — so a gate that quietly needed three more variables would not be testing it.
+      #
+      # MODEL_NAME is GONE and its absence is now part of the test. pyworker's
+      # core.py resolves the benchmark model from MODEL_NAME, VLLM_MODEL,
+      # SGLANG_MODEL or LLAMA_MODEL, precisely so an on-demand template that sets only
+      # the engine var works unchanged in serverless. The template sets the engine var,
+      # so passing MODEL_NAME here would paper over that resolution instead of
+      # exercising it. If it fails, the benchmark raises and 20-serverless-pyworker
+      # reds on a missing score — loudly, which is what we want.
+      #
+      # MODEL_LOG is GONE for the same reason: the worker's EngineDefaults already
+      # carry this engine's log path, and passing it tested our value rather than the
+      # image's.
+      #
+      # INSTANCE_TEST_REQUIRE_PASS stays, and is NOT a product difference. No customer
+      # template carries it — it is how the gate asserts, and the serverless cell has
+      # more tests that must have passed (base/85 and the pyworker score) because in
+      # this mode they are no longer inert. Keeping it here is the difference between
+      # QA scaffolding and the template's own configuration.
+      extra_env: |
+        MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        REPORT_ADDR=https://qa-detection-sentinel.invalid
+        SERVERLESS_DETECT_EXPECT=detected
+        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker
+      require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
   merge-manifests:
     # qa-serverless is in `needs` to ORDER it and absent from the `if` so it cannot
     # BLOCK. `!cancelled()` is what stops a failed serverless cell skipping this job,
     # and it also switches off the implicit "skip if any needed job failed" — so the
     # two results that MUST still block are named explicitly.
-    needs: [preflight, build, qa, qa-serverless]
+    needs: [preflight, build, qa, qa-serverless, qa-serverless-detect]
     if: >-
       !cancelled()
       && needs.preflight.outputs.should-run == 'true'
