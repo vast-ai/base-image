@@ -905,6 +905,42 @@ test ran to the runner's timeout — reporting `timedout`, which names no failin
 check at all. Both wait helpers now bound the probe and use a wall-clock
 deadline.
 
+### A serverless QA cell cannot reach the production autoscaler — **GATED (L079)**
+
+The worker POSTs its status to `${REPORT_ADDR}/worker_status/`, and **both** layers default
+that variable to the live autoscaler:
+
+```
+start_server.sh:19   REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
+backend.py:94        os.environ.get("REPORT_ADDR", "https://run.vast.ai")
+```
+
+So a cell that sets nothing does not post nowhere — it posts to production. Until
+2026-08-27 the declared serverless cells on sglang and llama-cpp did exactly that on every
+run since they existed: disposable QA instances announcing themselves to the real
+autoscaler as workers, with an unset `MASTER_TOKEN` and a real `CONTAINER_ID`.
+
+**The cause was a good rule applied to the wrong variable.** Those cells deliberately pass
+nothing beyond `SERVERLESS=true`, so that `BACKEND`, `MODEL_NAME` and `MODEL_LOG` are read
+from the image's own bakes instead of being overridden by the gate — that minimalism is
+correct, and it is the whole claim of the serverless-enablement work. `REPORT_ADDR` is not
+product configuration; it is the address of a live external service, and there "inherit the
+default" means "inherit production". The detection cells added the same day set it and were
+never affected, which is why the contrast made the gap visible at all.
+
+**An allowlist on the value, not a blocklist of known hosts.** The address must be under the
+RFC 2606 reserved `.invalid` TLD or a loopback literal. Blocklisting `run.vast.ai` by name
+would pass every other live endpoint someone reaches for next — the same
+enumerate-the-failures shape that let a cancelled run announce a promotion earlier the same
+day. `.invalid` cannot resolve, so the POST dies in DNS and no live endpoint can be touched
+whatever the value is later renamed to.
+
+**What this costs, stated honestly:** `metrics.py` retries 3x at 2s intervals, logs at DEBUG
+and carries on, so the worker still starts, binds :3000, serves and benchmarks. No serverless
+QA cell has ever proved that worker status REACHES the autoscaler, and none can — that would
+require POSTing fabricated status to production with a fake token. The cells now decline to
+imply otherwise rather than quietly doing the real thing.
+
 ### A Slack headline may claim a promotion only where the promotion SUCCEEDED — **GATED (test_promote_notification_truth.py)**
 
 The rule is one sentence: **enumerate the way it goes RIGHT, never the ways it goes wrong.**

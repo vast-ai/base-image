@@ -3010,3 +3010,95 @@ def test_L078_the_real_engine_images_pin_the_worker_address():
         bad = [f.msg for f in lint_image(img, repo) if f.code == "L078"]
         assert not bad, f"{img.name}: {bad}"
     assert sorted(seen) == ["llama-cpp", "sglang", "vllm"], seen
+
+
+# ---- L079: a serverless QA cell must not be able to reach the production autoscaler ----
+#
+# The worker POSTs to `${REPORT_ADDR}/worker_status/`, and BOTH layers default that to
+# the live autoscaler — start_server.sh `${REPORT_ADDR:-https://run.vast.ai}` and the
+# SDK's `os.environ.get("REPORT_ADDR", "https://run.vast.ai")`. Setting nothing does not
+# send nothing; it sends to production.
+
+
+def _sl_gate(tmp_path, env: str, job="qa-serverless"):
+    """A workflow handing a serverless cell to qa-gate.yml, the way a build workflow does."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        f"jobs:\n  {job}:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        f"    with:\n      template_dir: img/templates/qa\n"
+        f"      extra_env: |\n{env}")
+    return tmp_path
+
+
+def _l079(repo):
+    return [f for f in L.lint_repo(repo) if f.code == "L079" and f.severity == L.ERROR]
+
+
+def test_L079_a_declared_serverless_cell_with_no_report_addr_fires(tmp_path):
+    """THE mutation, and the state build-sglang.yml and build-llama-cpp.yml were
+    actually in: the cell deliberately passes nothing beyond SERVERLESS=true — correct
+    for BACKEND/MODEL_NAME/MODEL_LOG, which must come from the image's own bakes, and
+    wrong for the address of a live external service."""
+    repo = _sl_gate(tmp_path, "        SERVERLESS=true\n")
+    assert any("sets no REPORT_ADDR" in f.msg for f in _l079(repo))
+
+
+def test_L079_a_sentinel_address_is_clean(tmp_path):
+    repo = _sl_gate(tmp_path, "        SERVERLESS=true\n"
+                              "        REPORT_ADDR=https://qa-detection-sentinel.invalid\n")
+    assert not _l079(repo)
+
+
+def test_L079_loopback_is_also_accepted(tmp_path):
+    """A loopback literal cannot leave the box either; the rule is about reachability,
+    not about one spelling."""
+    for addr in ("http://127.0.0.1:1", "http://localhost:9/x", "http://[::1]:1"):
+        repo = _sl_gate(tmp_path, f"        SERVERLESS=true\n        REPORT_ADDR={addr}\n")
+        assert not _l079(repo), addr
+
+
+def test_L079_a_real_endpoint_fires_even_if_it_is_not_the_known_one(tmp_path):
+    """ALLOWLIST, not blocklist. Blocking `run.vast.ai` by name would pass every other
+    live endpoint someone reaches for next — the enumerate-the-failures shape that let
+    a cancelled run announce a promotion earlier the same day."""
+    for addr in ("https://run.vast.ai", "https://console.vast.ai/api",
+                 "https://staging.example.com", "https://run.vast.ai.invalid.example.com"):
+        repo = _sl_gate(tmp_path, f"        SERVERLESS=true\n        REPORT_ADDR={addr}\n")
+        assert _l079(repo), addr
+
+
+def test_L079_a_hostname_merely_CONTAINING_invalid_does_not_pass(tmp_path):
+    """`.invalid` has to be the TLD. A substring test would accept
+    `invalid.example.com`, which resolves perfectly well."""
+    repo = _sl_gate(tmp_path, "        SERVERLESS=true\n"
+                              "        REPORT_ADDR=https://invalid.example.com\n")
+    assert _l079(repo)
+
+
+def test_L079_an_inferred_cell_is_in_scope_too(tmp_path):
+    """A detection cell turns the worker on without SERVERLESS=true, so keying on that
+    literal alone would exempt exactly the cells added for ADR 0034."""
+    repo = _sl_gate(tmp_path, "        MASTER_TOKEN=sentinel\n"
+                              "        REPORT_ADDR=https://run.vast.ai\n", job="qa-serverless-detect")
+    assert _l079(repo)
+
+
+def test_L079_a_non_serverless_cell_owes_nothing(tmp_path):
+    """pyworker.sh exits early unless serverless, so a standard cell posts nothing and
+    must not be asked to declare an address it has no use for."""
+    repo = _sl_gate(tmp_path, "        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda\n", job="qa")
+    assert not _l079(repo)
+
+
+def test_L079_serverless_false_is_not_serverless(tmp_path):
+    repo = _sl_gate(tmp_path, "        SERVERLESS=false\n")
+    assert not _l079(repo)
+
+
+def test_L079_the_real_repo_reaches_no_live_autoscaler():
+    """Round-trip over the real workflows — the assertion that failed on two cells
+    before the fix."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    bad = _l079(repo)
+    assert not bad, f"serverless cells that can reach a live endpoint: {[(f.path, f.msg) for f in bad]}"

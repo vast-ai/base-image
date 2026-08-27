@@ -348,6 +348,22 @@ jobs:
       # QA scaffolding and the template's own configuration.
       extra_env: |
         SERVERLESS=true
+        # REPORT_ADDR is NOT product configuration, and it is the one variable this
+        # cell must not leave to the image. The worker POSTs its status to
+        # ${REPORT_ADDR}/worker_status/, and BOTH layers default that to the live
+        # autoscaler — start_server.sh `${REPORT_ADDR:-https://run.vast.ai}` and the
+        # SDK's backend.py `os.environ.get("REPORT_ADDR", "https://run.vast.ai")`. So
+        # omitting it does not send nothing; it sends to PRODUCTION. Until 2026-08-27
+        # this cell did exactly that on every run: a disposable QA instance announcing
+        # itself to the real autoscaler as a worker, with an unset MASTER_TOKEN and a
+        # real CONTAINER_ID. Nobody chose it and nobody would have gone looking.
+        #
+        # `.invalid` is reserved by RFC 2606 and can never resolve, so the POST fails
+        # in DNS and the run cannot touch any live endpoint. The cost is honest and
+        # bounded: metrics.py retries 3x/2s at DEBUG and carries on, so the worker
+        # still starts, serves and benchmarks — this cell never proved that status
+        # REACHES the autoscaler, and now it does not pretend to. Gated by L079.
+        REPORT_ADDR=https://qa-no-autoscaler.invalid
         INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker
       require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker"
       retries: 2
