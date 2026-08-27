@@ -215,3 +215,107 @@ def test_the_create_step_exports_what_the_suffix_reads():
     assert "QA_LABEL" in env and "QA_TAG" in env, (
         f"the suffix reads QA_LABEL/QA_TAG; step env declares {sorted(env)}"
     )
+
+
+# ---- extra_env must survive its own documentation (2026-08-27) --------------
+#
+# `extra_env` is a multi-line block that callers use to describe WHY a cell is
+# configured the way it is — the serverless cells carry several lines of rationale.
+# qa-gate turned every non-empty line into `--env`, and test_template.py rejects any
+# `--env` without an `=`:
+#
+#     Invalid --env format (expected KEY=VAL): # REPORT_ADDR is not product config...
+#     {"state": "config_error", "exit_code": 4, "reason": "bad --env format"}
+#
+# Measured live on the first ComfyUI serverless cell ever run: config_error before a
+# GPU was rented, and config_error is deliberately never retried, so the cell simply
+# blocked. The same comment block had already been merged into build-sglang.yml and
+# build-llama-cpp.yml, where it had not yet bitten only because their runs had been
+# dispatched from an earlier commit.
+#
+# The deeper defect is that two parsers disagreed. The LINTER's reader of the same
+# field skips `#` lines (`_serverless_gate_callers`), so a comment there is not only
+# harmless but invisible — which is exactly why the author believed it was legal.
+# Making the harness match the linter closes the trap; asserting it here keeps them
+# matched.
+
+import os
+import subprocess
+
+
+def _extra_env_loop() -> str:
+    """The real shell from qa-gate.yml that expands extra_env into --env flags.
+
+    Extracted as a BLOCK, from the `while` to its `done <<< "${EXTRA_ENV}"`, because the
+    loop is not one line: reading a single line worked until the loop grew a body and
+    would then have silently tested nothing.
+    """
+    lines = QA_GATE.read_text().splitlines()
+    start = next((i for i, l in enumerate(lines)
+                  if l.strip().startswith("while IFS= read -r kv")), None)
+    assert start is not None, "qa-gate.yml no longer has the extra_env expansion loop"
+    end = next((j for j in range(start, len(lines))
+                if "EXTRA_ENV" in lines[j] and lines[j].strip().startswith("done")), None)
+    assert end is not None, "the extra_env loop no longer terminates on EXTRA_ENV"
+    return "\n".join(l.strip() for l in lines[start:end + 1])
+
+
+def _run_loop(extra_env: str) -> list[str]:
+    """Execute the SHIPPED loop, so this tests the harness rather than a copy of it.
+
+    EXTRA_ENV arrives through the ENVIRONMENT, not interpolated into the script — the
+    real values are prose containing backticks, quotes and $-expansions, and embedding
+    them would make the test fail on its own quoting instead of on the property.
+    """
+    script = f'ARGS=()\n{_extra_env_loop()}\nprintf "%s\\n" "${{ARGS[@]}}"\n'
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                         check=True, env={"EXTRA_ENV": extra_env, "PATH": os.environ["PATH"]}).stdout
+    return [l for l in out.splitlines() if l != "--env"]
+
+
+def test_a_comment_in_extra_env_never_reaches_the_client():
+    """THE regression. A commented block must yield only the real assignments."""
+    got = _run_loop(
+        "SERVERLESS=true\n"
+        "# REPORT_ADDR is not product configuration and must not be left to the image:\n"
+        "   # indented comments too — YAML block scalars keep the indentation\n"
+        "REPORT_ADDR=https://qa-no-autoscaler.invalid\n")
+    assert got == ["SERVERLESS=true", "REPORT_ADDR=https://qa-no-autoscaler.invalid"], got
+
+
+def test_every_value_the_loop_emits_is_a_KEY_VAL():
+    """The property the client actually enforces, asserted on the harness side."""
+    got = _run_loop("A=1\n# note\n\n   \nB=2\n")
+    assert all("=" in v for v in got), got
+    assert got == ["A=1", "B=2"], got
+
+
+def test_a_hash_inside_a_VALUE_is_not_treated_as_a_comment():
+    """Only a line that STARTS with # is a comment. A `#` inside a value is data —
+    dropping those lines would silently delete configuration instead of a remark."""
+    got = _run_loop("PROMPT=a#b\nURL=https://x/y#frag\n")
+    assert got == ["PROMPT=a#b", "URL=https://x/y#frag"], got
+
+
+def test_the_shipped_serverless_cells_would_launch():
+    """Round-trip over every real caller: run each one's actual extra_env through the
+    shipped loop and require the result to be launchable. This is the assertion that
+    was red on three workflows at once."""
+    bad = {}
+    for wf in sorted((REPO / ".github" / "workflows").glob("*.yml")):
+        try:
+            data = yaml.safe_load(wf.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for jn, j in (data.get("jobs") or {}).items():
+            if not isinstance(j, dict) or not str(j.get("uses", "")).endswith("qa-gate.yml"):
+                continue
+            env = str((j.get("with") or {}).get("extra_env", "") or "")
+            if not env.strip():
+                continue
+            offenders = [v for v in _run_loop(env) if "=" not in v]
+            if offenders:
+                bad[f"{wf.name}:{jn}"] = offenders[0][:80]
+    assert not bad, f"extra_env lines the client would reject as bad --env: {bad}"

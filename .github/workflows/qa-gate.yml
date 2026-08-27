@@ -264,7 +264,26 @@ jobs:
         run: |
           ARGS=()
           for p in ${LOG_PATHS}; do ARGS+=(--log "$p"); done
-          while IFS= read -r kv; do [ -n "$kv" ] && ARGS+=(--env "$kv"); done <<< "${EXTRA_ENV}"
+          # extra_env is a BLOCK callers document in place — the serverless cells carry
+          # several lines of rationale each. Skip blanks and comments rather than
+          # forwarding them: test_template.py rejects any --env without an '=' with
+          # "Invalid --env format", which surfaces as config_error (exit 4), and
+          # config_error is deliberately never retried, so the cell just blocks. Measured
+          # 2026-08-27 on the first ComfyUI serverless cell ever run, and latent at the
+          # same moment in build-sglang, build-llama-cpp and promote-base-image's
+          # detection cell — including the base PROMOTION gate.
+          #
+          # This also makes the harness agree with the LINTER, which already skips '#'
+          # lines when it reads this same field (_serverless_gate_callers). Two parsers
+          # disagreeing about the same text is what made a comment look legal.
+          #
+          # Only a line STARTING with '#' is a comment; a '#' inside a value is data.
+          while IFS= read -r kv; do
+            _t="${kv#"${kv%%[![:space:]]*}"}"          # lstrip
+            [ -z "$_t" ] && continue                    # blank / whitespace-only
+            [ "${_t:0:1}" = "#" ] && continue           # comment
+            ARGS+=(--env "$kv")
+          done <<< "${EXTRA_ENV}"
           # Appended here rather than folded into extra_env by the caller: a secret
           # reaching the instance must not travel through an input, which is plain
           # text in the caller's YAML and in the job's own `with` context.
