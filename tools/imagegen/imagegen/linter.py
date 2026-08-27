@@ -714,7 +714,22 @@ def _serverless_gate_callers(repo: Path) -> dict[str, int]:
             pairs = dict(
                 ln.split("=", 1) for ln in env.splitlines()
                 if "=" in ln and not ln.lstrip().startswith("#"))
-            if pairs.get("SERVERLESS", "").strip().lower() != "true":
+            # A cell turns serverless ON two ways now (ADR 0034), and this must mirror
+            # the IMAGE's activation rule or the rule silently stops covering cells that
+            # exercise the inferred path — which is exactly what would happen if a caller
+            # swapped SERVERLESS=true for the autoscaler signals.
+            _sl = pairs.get("SERVERLESS", "").strip().lower()
+            if _sl == "false":
+                continue                       # explicit off beats everything
+            _inferred = bool(pairs.get("MASTER_TOKEN", "").strip()
+                             and pairs.get("REPORT_ADDR", "").strip())
+            if _sl != "true" and not _inferred:
+                continue
+            # A cell that explicitly skips the worker does not need the port. The rule's
+            # whole rationale is that the pyworker SDK looks up VAST_TCP_PORT_3000
+            # unguarded; with no worker there is nothing to look it up. Base's detection
+            # cell is the case: it exercises the mode switch on an image with no engine.
+            if pairs.get("SUPERVISOR_SKIP_PYWORKER", "").strip().lower() == "true":
                 continue
             try:
                 port = int(pairs.get("WORKER_PORT", "3000").strip())

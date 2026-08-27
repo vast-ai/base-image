@@ -458,6 +458,12 @@ jobs:
         MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
         REPORT_ADDR=https://qa-detection-sentinel.invalid
         SERVERLESS_DETECT_EXPECT=detected
+        # Base has no inference engine, so a worker here is meaningless — but pyworker.sh
+        # starts on ANY serverless instance with no onstart bootstrap, which is precisely
+        # this cell. Without this it curl-pipes start_server.sh to root and then dies in
+        # the SDK looking up an unmapped VAST_TCP_PORT_3000, unnoticed, because L067
+        # deliberately removed base's pyworker assertion. This cell tests the MODE SWITCH.
+        SUPERVISOR_SKIP_PYWORKER=true
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/85-serverless-services
         PROV_TIMEOUT=900
         INSTANCE_TEST_DEFAULT_TIMEOUT=900
