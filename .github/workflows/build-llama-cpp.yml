@@ -387,91 +387,27 @@ jobs:
       set_filters: "cuda_max_good.gte=${{ matrix.driver_floor }}"
       evidence_name: qa-evidence-llama-cpp-serverless-cuda-${{ matrix.cuda }}
       log_paths: "/var/log/portal/llama.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
-      extra_env: |
-        SERVERLESS=true
-        # REPORT_ADDR is NOT product configuration, and it is the one variable this
-        # cell must not leave to the image. The worker POSTs its status to
-        # ${REPORT_ADDR}/worker_status/, and BOTH layers default that to the live
-        # autoscaler — start_server.sh `${REPORT_ADDR:-https://run.vast.ai}` and the
-        # SDK's backend.py `os.environ.get("REPORT_ADDR", "https://run.vast.ai")`. So
-        # omitting it does not send nothing; it sends to PRODUCTION. Until 2026-08-27
-        # this cell did exactly that on every run: a disposable QA instance announcing
-        # itself to the real autoscaler as a worker, with an unset MASTER_TOKEN and a
-        # real CONTAINER_ID. Nobody chose it and nobody would have gone looking.
-        #
-        # `.invalid` is reserved by RFC 2606 and can never resolve, so the POST fails
-        # in DNS and the run cannot touch any live endpoint. The cost is honest and
-        # bounded: metrics.py retries 3x/2s at DEBUG and carries on, so the worker
-        # still starts, serves and benchmarks — this cell never proved that status
-        # REACHES the autoscaler, and now it does not pretend to. Gated by L079.
-        REPORT_ADDR=https://qa-no-autoscaler.invalid
-        # UNSECURED skips the pubkey gate, and it undoes a QA-only side effect rather
-        # than weakening the test. REPORT_ADDR above is an unresolvable sentinel (L079),
-        # so `GET ${REPORT_ADDR}/pubkey/` CANNOT succeed — five attempts, then
-        # `backend_errored`, on every cell, always. The gate therefore proves nothing
-        # here: it is guaranteed to fail for a reason QA created, and skipping it masks
-        # nothing observable, because no configuration of ours could make it pass.
-        #
-        # What it costs without this: the worker benchmarks fine (`.has_benchmark` is
-        # written at backend.py:857, BEFORE the gate at :915 — which is why these cells
-        # were already green) and then dies at the last step, so every QA worker ends
-        # its life `errored` and each cell burns ~60s waiting for a key that cannot
-        # arrive. Measured on a live 2x5090 debug box: detection worked, sglang served,
-        # benchmark 995.55 written, then "Cannot mark model as loaded: pubkey fetch
-        # failed".
-        #
-        # SCOPE: QA scaffolding, and it must never reach a template — there it would
-        # disable request-signature verification on a live worker (__check_signature
-        # returns True immediately). It lives in extra_env precisely because a
-        # template.yml is what a production template gets copied from. Gated by L080.
-        UNSECURED=true
-        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/11-llama-offload llama.d/12-llama-contract llama.d/20-serverless-pyworker
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services llama.d/10-llama-serving llama.d/11-llama-offload llama.d/12-llama-contract llama.d/20-serverless-pyworker"
-      retries: 2
-    secrets:
-      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      # start_server.sh aborts when BACKEND is set and HF_TOKEN is not.
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-
-  # Detection cell (ADR 0034). Identical to `qa-serverless` above in every respect but
-  # one: it supplies the AUTOSCALER'S OWN SIGNALS instead of SERVERLESS=true, so the
-  # image must INFER the mode rather than be told it. Both cells are kept, because they
-  # test different things and both are live: 9 of 10 published autoscaler templates
-  # still declare SERVERLESS=true, and the platform has not yet been changed to inject
-  # it — so the declared path is today's production path and the inferred path is the
-  # one being rolled out.
-  #
-  # Both sentinel values are self-evidently fake and safe in plaintext:
-  # 01-detect-serverless.sh tests PRESENCE only and never reads either value, and
-  # .invalid cannot resolve. MASTER_TOKEN here is not a credential and must never be
-  # replaced with one.
-  #
-  # SERVERLESS_DETECT_EXPECT=detected makes base/15-boot-markers assert the VERDICT the
-  # stage recorded, not merely that the instance came up. Every llama.d test named below
-  # additionally opens with `is_serverless || test_skip`, and runner.sh turns a skipped
-  # REQUIRED test into REQUIRED-FAIL — so a broken inference is a red cell, never a
-  # quiet green.
-  #
-  # IT DOES NOT GATE YET, on the same ramp as qa-serverless: ORDERED ahead of the
-  # approval prompt via `needs`, absent from the `if`.
-  qa-serverless-detect:
-    needs: [preflight, build]
-    if: needs.preflight.outputs.should-run == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
-    uses: ./.github/workflows/qa-gate.yml
-    with:
-      repo: ${{ inputs.DOCKERHUB_REPO || 'llama-cpp' }}
-      tag: ${{ inputs.CUSTOM_IMAGE_TAG || format('{0}-cuda-{1}', needs.preflight.outputs.llama-cpp-version, matrix.cuda) }}-amd64
-      template_dir: derivatives/llama-cpp/templates/llama-cpp-qa
-      label: base-image-qa-llama-cpp-serverless-detect
-      set_filters: "cuda_max_good.gte=${{ matrix.driver_floor }}"
-      evidence_name: qa-evidence-llama-cpp-serverless-detect-cuda-${{ matrix.cuda }}
-      log_paths: "/var/log/portal/llama.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
+      # THE AUTOSCALER'S OWN SIGNALS, NOT SERVERLESS=true (ADR 0034). ONE serverless cell,
+      # exercising the INFERRED path, because that is the strictly harder one: it requires
+      # 01-detect-serverless.sh to run, decide and EXPORT SERVERLESS — and the export to
+      # reach the test runner, since `is_serverless` reads the variable, not the marker
+      # file. A declared SERVERLESS=true arrives via docker -e and is a SUBSET of that, so
+      # a cell passing here would pass there.
+      #
+      # It therefore doubles as the per-image canary for "did this image actually inherit
+      # the stage": a stale base pin yields an image with no 01-detect-serverless.sh,
+      # where a DECLARED cell still passes and this one cannot.
+      #
+      # The declared branch keeps its coverage where it is cheap and exact —
+      # tools/imagegen/tests/test_detect_serverless_sh.py drives the real script through
+      # every branch, including an explicit true and an explicit false, with no GPU.
+      #
+      # Both sentinels are self-evidently fake and safe in plaintext: the stage tests
+      # PRESENCE only and never reads either value, and .invalid cannot resolve. The
+      # MASTER_TOKEN here is not a credential and must never be replaced with one.
+      #
+      # Every test named below opens with `is_serverless || test_skip`, and runner.sh turns
+      # a skipped REQUIRED test into REQUIRED-FAIL — a broken inference is a red cell.
       extra_env: |
         MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
         REPORT_ADDR=https://qa-detection-sentinel.invalid
@@ -505,7 +441,6 @@ jobs:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       # start_server.sh aborts when BACKEND is set and HF_TOKEN is not.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-
   merge-manifests:
     # qa-serverless is in `needs` to ORDER it ahead of the approval prompt and absent
     # from the `if` so it cannot BLOCK. `!cancelled()` is what stops a failed
@@ -533,7 +468,7 @@ jobs:
     # an ungated scheduled run, which is the common path on this weekly workflow.
     # "Read the artifact, treat absent as pass" is exactly the shape of the last two
     # defects fixed on this repo.
-    needs: [preflight, build, qa, qa-serverless, qa-serverless-detect]
+    needs: [preflight, build, qa, qa-serverless]
     if: >-
       !cancelled()
       && needs.preflight.outputs.should-run == 'true'
