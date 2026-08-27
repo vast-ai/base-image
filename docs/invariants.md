@@ -905,6 +905,46 @@ test ran to the runner's timeout — reporting `timedout`, which names no failin
 check at all. Both wait helpers now bound the probe and use a wall-clock
 deadline.
 
+### A Slack headline may claim a promotion only where the promotion SUCCEEDED — **GATED (test_promote_notification_truth.py)**
+
+The rule is one sentence: **enumerate the way it goes RIGHT, never the ways it goes wrong.**
+Every headline that can render "promoted" must be keyed on `needs.<promoting job>.result !=
+'success'` taking the negative branch first. The promoting job is `promote` or
+`merge-manifests` — two names across the whole tree, and the convention is load-bearing.
+
+This repo has now been bitten by the same class four times, each time in a workflow the
+previous fix did not reach:
+
+1. **2026-08-14** — a QA cell drew a GPU-less host, the gate correctly blocked, `promote` was
+   skipped, and Slack said "Base image promoted — 1 auto tag(s) HELD". Both arms of the
+   expression opened with "Base image promoted" and never consulted `needs.promote.result`.
+2. **The first fix** enumerated `'skipped'` and `'failure'` and fell through to the success
+   text. A **cancelled** run is neither, so the same false line came back.
+3. **2026-08-17** — `build-result` read `needs.build.result` alone, so a run that lost a
+   manifest to a GitHub 429 reported "Base Image Build Successful".
+4. **2026-08-27** — three branch dispatches were cancelled at the production approval gate.
+   Every QA cell had passed, so `qa.outputs.gated` was `'true'` and `merge-manifests` ended
+   `'cancelled'`, which is not `'failure'`. Slack: `:x: vLLM promoted — live-GPU QA passed`
+   and the same for SGLang, next to red run cards, for images that were not promoted and
+   could not have been. `build-llama-cpp.yml` had already been fixed and its comment named
+   the other three files by name, adding "the shared guard is the real fix" — which was never
+   built, so the fix stayed a local patch and the defect stayed shipped.
+
+**The icon being right does not rescue a false sentence.** In (4) the ❌ was correct
+(`build-result` reads the promoting job) while the words said the opposite. That is the worst
+combination available: a reader who trusts the words is misinformed, and a reader who notices
+the contradiction learns to discount the words entirely — which disarms every future headline.
+
+**The guard is now over ALL callers of `notify-slack.yml`**, discovered by walking the
+workflow directory, not over an enumerated list — the enumeration is the same defect one
+level up. Two supporting properties, each of which was independently missing:
+
+- `test_the_walker_actually_finds_the_callers` pins a floor on how many notifiers are in
+  scope. A discovery-based guard that matches nothing reports green forever.
+- `imagegen-tests.yml` must trigger on `.github/workflows/**`, not on four named files. The
+  guard reads every workflow, so a PR touching only `build-vllm.yml`'s headline has to run
+  it — under the old list it did not, which is precisely how (4) shipped.
+
 ### The cloudflared binary is unpinned, and a CONTRACT is what guards it
 
 `Dockerfile` fetches `cloudflared-linux-${TARGETARCH}` from `releases/latest`, so

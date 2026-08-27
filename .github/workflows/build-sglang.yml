@@ -531,7 +531,15 @@ jobs:
       # the run failed while merge-manifests had promoted, and Slack would read
       # "Successful" beside a failed run. Delete that clause when the cell becomes
       # blocking.
-      headline: ${{ (needs.build.result != 'success' && 'SGLang build failed') || (needs.qa.result == 'failure' && 'SGLang QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'SGLang promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'SGLang promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'SGLang promoted — live-GPU QA passed') || '' }}
+      # "PROMOTED" IS AN ALLOWLIST ON merge-manifests SUCCEEDING, not a fall-through.
+      # This expression used to enumerate failure states and fall through to the
+      # success text keyed on `qa.outputs.gated` — "did a live test run" — which says
+      # nothing about whether anything shipped. `merge-manifests` ending 'skipped' or
+      # 'cancelled' is not 'failure', so it fell through and Slack announced a
+      # promotion that did not happen. Measured 2026-08-27: three branch dispatches
+      # cancelled at the production approval gate, every QA cell green, Slack saying
+      # "SGLang promoted — live-GPU QA passed" beside a red run card.
+      headline: ${{ (needs.build.result != 'success' && 'SGLang build failed') || (needs.qa.result == 'failure' && 'SGLang QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'SGLang promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'SGLang NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'SGLang promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'SGLang promoted — live-GPU QA passed') || '' }}
       image-name: "SGLang"
       image-ref: ${{ needs.preflight.outputs.sglang-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

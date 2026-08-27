@@ -543,3 +543,148 @@ def test_the_word_boundary_cut_does_not_eat_the_budget():
         "fixed-length cut is vacuously true and throws away the budget")
     assert "${#_cut} -gt 120" not in body, (
         "this is the vacuous form — _cut is always 147 where it is tested")
+
+
+# ---- the truth rule must reach EVERY caller, not only the two it was written for ----
+#
+# The rule above ("requiring the single way it goes right cannot be missed") was fixed
+# in promote-base-image.yml, and later in build-llama-cpp.yml, one file at a time. It
+# was never made a rule ABOUT ALL CALLERS, and build-llama-cpp.yml's own comment says so
+# in as many words: "the same defect still sits in build-vllm.yml, build-sglang.yml and
+# build-comfyui.yml, which share this expression verbatim... the shared guard is the
+# real fix."
+#
+# It bit on 2026-08-27. Three branch dispatches were cancelled at the production
+# approval gate — deliberately, because their images predated a fix. Every QA cell had
+# passed, so `qa.outputs.gated` was 'true' and `merge-manifests` ended 'cancelled',
+# which is not 'failure'. Slack announced:
+#
+#     :x: vLLM promoted — live-GPU QA passed
+#     :x: SGLang promoted — live-GPU QA passed
+#
+# next to a red run card, for two images that were not promoted and could not have been.
+# The icon was right (build-result reads merge-manifests.result) and the sentence was
+# false, which is the worst of both: a reader who trusts the words is misinformed and a
+# reader who trusts the icon learns to ignore the words.
+
+WF = REPO / ".github" / "workflows"
+
+# The job whose SUCCESS is what "promoted" means. Two names across the whole tree; the
+# convention is load-bearing, so a workflow that promotes under a third name must either
+# adopt one of these or extend this tuple deliberately.
+_PROMOTING_JOBS = ("promote", "merge-manifests")
+
+
+def _promotion_claiming_notifies():
+    """Every notify job whose headline can RENDER a claim that something shipped."""
+    out = []
+    for f in sorted(WF.glob("*.yml")):
+        try:
+            data = yaml.safe_load(f.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for jn, j in (data.get("jobs") or {}).items():
+            if not isinstance(j, dict) or not str(j.get("uses", "")).endswith("notify-slack.yml"):
+                continue
+            headline = " ".join(str((j.get("with") or {}).get("headline", "")).split())
+            # A fixed string that consults no job result is not derived from outcomes —
+            # its own `if:` is the allowlist. qa-gate's soft-pass warning is that shape.
+            if "needs." not in headline:
+                continue
+            # "NOT promoted" is the honest branch, not a claim.
+            if not re.search(r"(?<!NOT )promoted", headline):
+                continue
+            needs = j.get("needs") or []
+            if isinstance(needs, str):
+                needs = [needs]
+            promoter = next((p for p in _PROMOTING_JOBS if p in needs), None)
+            out.append((f.name, jn, headline, promoter))
+    return out
+
+
+def test_the_walker_actually_finds_the_callers():
+    """A guard that silently matches nothing is worse than none: it reports green
+    forever. Pin the floor so a refactor that renames `notify` or the reusable
+    workflow fails HERE rather than quietly switching the rule off."""
+    found = _promotion_claiming_notifies()
+    names = sorted({n for n, _, _, _ in found})
+    assert len(names) >= 4, f"expected several promotion-claiming notifiers, found {names}"
+    for expected in ("build-llama-cpp.yml", "promote-base-image.yml"):
+        assert expected in names, f"{expected} should be in scope but was not matched: {names}"
+
+
+def _promotion_problems(name, jn, headline, promoter) -> list[str]:
+    """The rule itself, taking a headline rather than reading one — so a mutation test
+    can feed it a corrupted version of the REAL expression."""
+    if promoter is None:
+        return [f"{name}:{jn} claims a promotion but needs no job named {_PROMOTING_JOBS}"]
+    if f"needs.{promoter}.result != 'success'" not in headline:
+        return [f"{name}:{jn} can render 'promoted' without requiring `{promoter}` to "
+                f"SUCCEED — a cancelled or skipped {promoter} falls through to the claim"]
+    return []
+
+
+def test_every_promotion_claim_is_an_ALLOWLIST_on_the_promoting_job():
+    """THE rule. A headline may say "promoted" only where the promoting job is
+    required to have SUCCEEDED — never as the fall-through of a list of failure
+    states, because the state nobody enumerated ('cancelled', 'skipped', and
+    whatever GitHub adds next) lands on the success side."""
+    bad = [p for args in _promotion_claiming_notifies() for p in _promotion_problems(*args)]
+    assert not bad, "promotion claims that are not allowlisted:\n  " + "\n  ".join(bad)
+
+
+def test_mut_removing_the_allowlist_from_a_real_headline_is_caught():
+    """Mutation against the REAL expression rather than a synthetic one.
+
+    Take build-vllm.yml's headline as it now ships, delete the clause added on
+    2026-08-27, and the rule must fire again. Without this the rule could be softened
+    to something vacuously true and every assertion above would stay green — which is
+    how the original enumeration survived two fixes.
+    """
+    found = {n: (jn, h, pr) for n, jn, h, pr in _promotion_claiming_notifies()}
+    assert "build-vllm.yml" in found, f"build-vllm.yml no longer in scope: {sorted(found)}"
+    jn, headline, promoter = found["build-vllm.yml"]
+    assert _promotion_problems("build-vllm.yml", jn, headline, promoter) == [], (
+        "the shipped headline should already satisfy the rule")
+
+    mutated = headline.replace(
+        "|| (needs.merge-manifests.result != 'success' "
+        "&& 'vLLM NOT promoted — promotion did not run')", "")
+    assert mutated != headline, (
+        "the mutation matched nothing — the allowlist clause has been reworded, so "
+        "this test is no longer mutating anything")
+    assert _promotion_problems("build-vllm.yml", jn, mutated, promoter), (
+        "removing the allowlist clause did not trip the rule")
+
+
+def test_the_not_promoted_branch_names_the_state_and_does_not_open_with_a_claim():
+    """The negative branch has to READ as negative. "X promoted — but ..." at the
+    start of a Slack line is what people see; burying the negation mid-sentence is
+    how the 2026-08-14 "promoted — N tag(s) HELD" line misled everyone who saw it."""
+    bad = []
+    for name, jn, headline, promoter in _promotion_claiming_notifies():
+        if promoter is None:
+            continue
+        m = re.search(rf"needs\.{re.escape(promoter)}\.result != 'success' && (?:format\()?'([^']+)'", headline)
+        if not m:
+            continue                      # allowlist absence is the previous test's report
+        msg = m.group(1)
+        if "NOT promoted" not in msg and "BLOCKED" not in msg:
+            bad.append(f"{name}:{jn} not-promoted branch does not say so: {msg!r}")
+    assert not bad, "\n  ".join(bad)
+
+
+def test_the_guard_runs_when_a_BUILD_workflow_changes():
+    """This file reads .github/workflows/**, but imagegen-tests.yml only triggers on
+    tools/**. So the guard could not see the very edit that breaks it: a PR touching
+    only build-vllm.yml's headline would never run this test."""
+    ci = yaml.safe_load((WF / "imagegen-tests.yml").read_text())
+    triggers = ci.get(True) or ci.get("on")
+    for event in ("push", "pull_request"):
+        paths = ((triggers or {}).get(event) or {}).get("paths") or []
+        assert any(p.startswith(".github/workflows/") and p.rstrip("*").rstrip("/") == ".github/workflows"
+                   for p in paths), (
+            f"imagegen-tests.yml does not run on {event} to .github/workflows/**, so the "
+            f"notification-truth guard cannot see a headline edit; paths={paths}")

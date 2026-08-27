@@ -511,7 +511,15 @@ jobs:
       # Slack line would read "promoted — QA passed" beside a failed run. Saying both
       # is the honest report; hiding either is not. Delete this clause when the cell
       # joins merge-manifests' `needs` and becomes blocking.
-      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'vLLM promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
+      # "PROMOTED" IS AN ALLOWLIST ON merge-manifests SUCCEEDING, not a fall-through.
+      # This expression used to enumerate failure states and fall through to the
+      # success text keyed on `qa.outputs.gated` — "did a live test run" — which says
+      # nothing about whether anything shipped. `merge-manifests` ending 'skipped' or
+      # 'cancelled' is not 'failure', so it fell through and Slack announced a
+      # promotion that did not happen. Measured 2026-08-27: three branch dispatches
+      # cancelled at the production approval gate, every QA cell green, Slack saying
+      # "vLLM promoted — live-GPU QA passed" beside a red run card.
+      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'vLLM promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM"
       image-ref: ${{ needs.preflight.outputs.vllm-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
