@@ -96,6 +96,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L067", ERROR, "No test in `tests/base/` asserts a serverless BACKEND — a running `pyworker` or a listener on :3000. The base image ships `pyworker.sh`, but it only bootstraps a worker; what binds :3000 is the inference engine, which base does not have. So `base/86-serverless-pyworker` could not hold on a bare base image and its failure was structural, not a defect — proven live on a 610 host: `pyworker: RUNNING` then `port 3000 not listening after 60s`. It also meant `base-qa` could never set SERVERLESS=true, so 85 and 86 had never executed once. 85 stays in base (services stopped, ports closed IS a base property); 86 belongs in the engine images' `.d/` suites, where the backend exists. Their `is_serverless` guard keeps it dormant until a template turns serverless on"),
     ("L076", ERROR, "An image that ships a `llama.d/` instance-test suite MUST carry a test asserting the CUDA backend is ACTUALLY SERVING — and its gating QA template must name that test in INSTANCE_TEST_REQUIRE_PASS. llama.cpp is built `ggml_backend_dl: ON`, so a `libggml-cuda.so` that fails to dlopen does not crash: llama-server starts, /health returns 200, /v1/models is populated, and every completion is served from CPU. The dlopen can fail for reasons no other check sees — a libcublas minor the bundle was not built against, a driver too old for the bundle\'s CUDA major, or no cubin AND no JITable PTX for the host\'s compute capability. Measured against the shipped suite: 10-llama-serving asserts the service runs, /health, a non-empty /v1/models, and that at least one of three prompts returns completion_tokens > 0; 12-llama-contract asserts token arithmetic, a grammar, a named tool, a status class and a bind address; the serverless cell asserts a benchmark score was written. A 0.5B q8_0 GGUF on CPU satisfies EVERY one of those in seconds, so a fully CPU-only image passes the whole gate on every cell — the gate certifies a GPU image that is not using the GPU. This is ADR 0016\'s defect at runtime instead of build time, and L056 does not reach it: L056 triggers only on `unsloth studio setup`, so the prebuilt-bundle path is exempt by construction. A `test -f …libggml-cuda.so` does not satisfy this rule either — the file existing is not the backend loading (ADR 0016, ADR 0031)"),
     ("L077", ERROR, "A shipped script that declares itself temporary with an `EXPIRES: YYYY-MM-DD` line must still be in date. WARN while it holds, ERROR once the date passes — so a bridge cannot quietly become load-bearing. `EXPIRES:` followed by anything that is not a parseable date is an ERROR immediately, because `EXPIRES: TBD` is how an expiry becomes decorative. The date is only defensible when expiry degrades to the PREVIOUS behaviour rather than to a broken one, which is the property the declaring file must state: ADR 0034's serverless detection expires to templates setting SERVERLESS by hand, which 9 of 10 published autoscaler templates already do. Note what this rule does NOT do — it cannot tell whether the mechanism is still needed, only that nobody has looked. That is the point: it converts silence into a decision (ADR 0034)"),
+    ("L078", ERROR, "An image that bakes a serverless `BACKEND` served by pyworker's OpenAI-compatible core (vllm/sglang/llama/openai) must pin its engine to 127.0.0.1:18000, and must pin it somewhere a template cannot silently erase. That address is not negotiable and cannot be overridden: `MODEL_SERVER_URL = \"http://127.0.0.1\"` and `MODEL_SERVER_PORT = 18000` are module CONSTANTS in vastai/pyworker `workers/openai/core.py` — unlike every other value the same file reads (MODEL_LOG, MODEL_HEALTH_ENDPOINT, MODEL_LOAD_LOG_MSG, and the model name across four spellings), all of which ARE `os.environ` reads. Two arms, because the two sides get it wrong differently. (a) The image must not hide the pin inside a `${VAR:-...}` default. `llama.sh` shipped `pty llama-server -hf \"$LLAMA_MODEL\" ${LLAMA_ARGS:---port 18000}`, and that default applies only when LLAMA_ARGS is entirely UNSET — a template setting it for any unrelated reason (`-ngl 99`, `--ctx-size 8192`) erased the port and llama-server fell back to its own default of 8080 (llama.cpp `common.h`: `int32_t port = 8080`), breaking both the worker proxy and the portal API entry PORTAL_CONFIG fronts at 18000. Nothing could catch it: `10-llama-serving.sh` carried a COMMENT describing the quirk and no assertion, and the QA template happens to pass the port, so every cell stayed green — a defect documented into permanence instead of gated. (b) vLLM and SGLang supply no image-side default at all; `vllm.sh`/`sglang.sh` interpolate `${VLLM_ARGS:-}`/`${SGLANG_ARGS:-}` bare, so for them the address exists ONLY in the template, and a template that omits it leaves vLLM on its own default of `0.0.0.0:8000` — not merely unreachable by the worker but PUBLICLY bound, the shape the loopback-behind-Caddy rule exists to prevent. So a gating QA template for such an image must pin both `--host 127.0.0.1` and `--port 18000` in an engine-args variable. Scope honestly: this reaches the templates in THIS repo, which is what a production template is copied from — it cannot see published templates that live outside it, and it checks that the pin is PRESENT, not that the engine honoured it (llama.d/10 and the serverless cell do that live). Out of scope by construction: backends whose worker hardcodes a different address (comfyui-json/ace/wan at 18288, tgi at 5001). comfyui carries the same erasable SHAPE in `${COMFYUI_ARGS:-...}` without the same contract — its worker port 18288 is pinned unconditionally in `api-wrapper.sh`, and every template plus the README states the port as part of a whole-string replacement"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
 
@@ -118,9 +119,27 @@ def rules_markdown() -> str:
 
 # ---- Dockerfile checks ------------------------------------------------------
 
+# quote-aware: key="quoted value with = inside" | key='same, single' | key=bareword
+_KV_PAIR = re.compile(r"""([\w.]+)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)""")
+
+
+def _kv_pairs(value: str) -> list[tuple[str, str]]:
+    """`key=value` pairs from an instruction value, with surrounding quotes removed.
+
+    BOTH quote styles. Docker accepts `ENV K='v'` and it means `v`; a parser that
+    strips only `"` returns `'v'`, which then matches no known value — that is how
+    ONE quote character silently switched L078 off for a whole image.
+    """
+    out: list[tuple[str, str]] = []
+    for k, v in _KV_PAIR.findall(value):
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        out.append((k, v))
+    return out
+
+
 def _label_keys(value: str) -> list[str]:
-    # quote-aware: key="quoted value with = inside" | key=bareword
-    return [k for k, _ in re.findall(r'([\w.]+)=("(?:[^"\\]|\\.)*"|\S+)', value)]
+    return [k for k, _ in _kv_pairs(value)]
 
 
 def check_labels(img: Image) -> Iterable[Finding]:
@@ -2439,6 +2458,143 @@ def check_llama_offload_is_asserted(img: Image, repo: Path) -> Iterable[Finding]
                               "gate stays green (ADR 0016, ADR 0031)")
 
 
+# pyworker's OpenAI-compatible core proxies to a HARDCODED http://127.0.0.1:18000
+# (workers/openai/core.py — module constants, not os.environ reads). Every other worker
+# hardcodes its OWN address: comfyui-json/ace/wan at 18288, tgi at 0.0.0.0:5001. Only
+# this family is gated, because only for this family is 18000 the contract (L078).
+_OPENAI_CORE_BACKENDS = frozenset({"vllm", "sglang", "llama", "openai"})
+_WORKER_BIND_HOST = "127.0.0.1"
+_WORKER_BIND_PORT = 18000
+
+# A `${VAR:-...}` whose DEFAULT carries a listen-address flag. The pin holds only while
+# VAR is unset, so a template setting VAR for any unrelated reason erases the bind.
+# `:-` `-` `:=` `=` alike: every one of them supplies the default only while the
+# variable is unset (or unset/empty), so every one of them is erasable by a template.
+_ERASABLE_BIND_DEFAULT = re.compile(
+    r"\$\{([A-Za-z_]\w*):?[-=]([^}]*?(?:--host|--port|--listen)[^}]*)\}")
+
+# `--flag value` and `--flag=value` both. argparse (vLLM, SGLang) accepts the `=`
+# spelling, so rejecting it would be a FALSE error on a correctly pinned template.
+# The trailing (?!\S) is what stops `--port 18000` matching inside `--port 180000`.
+_PINNED_HOST = re.compile(r"--host[=\s]+127\.0\.0\.1(?!\S)")
+_PINNED_PORT = re.compile(r"--port[=\s]+18000(?!\S)")
+
+# BACKEND -> the variable carrying THIS engine's launch flags. Checking "any key
+# ending in _ARGS" instead let a decoy (`DUMMY_ARGS`) or a split across two unrelated
+# variables satisfy the rule while the engine's own args were empty — the same
+# satisfied-by-cosmetics trap L076 documents, reintroduced one level up. `openai` is
+# the worker's alias for vllm (core.py prints it as such), so it reads the same var.
+_ENGINE_ARGS_VAR = {
+    "vllm": "VLLM_ARGS", "openai": "VLLM_ARGS",
+    "sglang": "SGLANG_ARGS", "llama": "LLAMA_ARGS",
+}
+
+
+def _baked_env(img: Image, key: str) -> str:
+    """Value of `ENV key=value` as the SHIPPED stage carries it ('' if absent).
+
+    Final stage wins and, within it, the last write wins — which is what docker does.
+    Reading the first match across every stage gets both halves wrong: an `ENV` in a
+    BUILDER stage never reaches the image (it would invent an obligation the shipped
+    image does not carry), and a later `ENV` in the same stage is the value that
+    actually ships (reading the earlier one hides the real setting).
+    """
+    val = ""
+    for ins in parse(img.text):
+        if ins.cmd == "FROM":
+            val = ""            # a new stage inherits none of the previous stage's ENV
+        elif ins.cmd == "ENV":
+            for k, v in _kv_pairs(ins.value):
+                if k == key:
+                    val = v
+    return val
+
+
+def check_worker_model_server_address_is_pinned(img: Image, repo: Path) -> Iterable[Finding]:
+    """L078 — the engine must listen where the OpenAI-core worker proxies (ADR 0031).
+
+    Two arms because the failure arrives from two sides: the image can hide the pin in
+    a default a template erases (llama.cpp), or supply no default at all and leave the
+    address entirely to the template (vLLM, SGLang). Neither is visible to the QA gate,
+    which passes the port itself and so cannot notice that nothing else guarantees it.
+
+    Note what arm (a) does NOT do: it never requires an image-side pin to EXIST. It
+    cannot, because vllm.sh and sglang.sh legitimately have none — for those the
+    template is the only place the address can live. Arm (b) is what guarantees a pin
+    exists at all; arm (a) guarantees that an image which HAS one cannot lose it.
+    """
+    backend = _baked_env(img, "BACKEND").lower()
+    if backend not in _OPENAI_CORE_BACKENDS:
+        return
+
+    # (a) Image side: the pin must not sit inside an erasable default.
+    sdir = (img.root / "opt/supervisor-scripts") if img.root else None
+    if sdir and sdir.is_dir():
+        for sh in sorted(sdir.glob("*.sh")):
+            body = sh.read_text(encoding="utf-8", errors="replace")
+            for lineno, raw in enumerate(body.splitlines(), 1):
+                # Comment-stripped: llama.d/10-llama-serving.sh quotes the defective
+                # line verbatim to explain it, and a raw-body match would fire on the
+                # file that DOCUMENTS the bug.
+                for m in _ERASABLE_BIND_DEFAULT.finditer(_strip_comment(raw)):
+                    var = m.group(1)
+                    yield Finding("L078", ERROR, img.name,
+                        f"ROOT/opt/supervisor-scripts/{sh.name}:{lineno}",
+                        f"listen-address pin hidden in `${{{var}:-...}}` — that default holds "
+                        f"only while {var} is UNSET, so a template setting it for any other "
+                        f"reason silently drops the bind and the service falls back to its "
+                        f"upstream default, away from the {_WORKER_BIND_HOST}:{_WORKER_BIND_PORT} "
+                        f"the {backend} pyworker proxies to and away from the port "
+                        f"PORTAL_CONFIG fronts. Pin each flag unconditionally, adding it only "
+                        f"when {var} does not already carry it (ADR 0031)")
+
+    # (b) Template side: a gating QA template must pin host AND port in THIS engine's
+    # args variable. Not "any *_ARGS": see _ENGINE_ARGS_VAR for why that was a hole.
+    argsvar = _ENGINE_ARGS_VAR.get(backend)
+    gating = _gating_template_dirs(repo)
+    tpldir = img.dir / "templates"
+    if not argsvar or not gating or not tpldir.is_dir():
+        return
+    import yaml  # lazy — only template-bearing images
+    for tpl in sorted(tpldir.rglob("template.yml")):
+        try:
+            reldir = str(tpl.parent.relative_to(repo))
+        except ValueError:
+            continue
+        if reldir not in gating:
+            continue
+        try:
+            rel = str(tpl.relative_to(img.dir))
+        except ValueError:
+            rel = tpl.name
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue                       # invalid YAML is L050's report, not ours
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            env = entry.get("env")
+            if not isinstance(env, dict):
+                continue                   # a template with no env block is L057's report, not ours
+            args = str(env.get(argsvar, "") or "")
+            missing = []
+            if not _PINNED_HOST.search(args):
+                missing.append(f"--host {_WORKER_BIND_HOST}")
+            if not _PINNED_PORT.search(args):
+                missing.append(f"--port {_WORKER_BIND_PORT}")
+            if missing:
+                yield Finding("L078", ERROR, img.name, rel,
+                    f"gating QA template pins no {' and no '.join(missing)} in {argsvar} — the "
+                    f"{backend} pyworker proxies to a HARDCODED "
+                    f"{_WORKER_BIND_HOST}:{_WORKER_BIND_PORT} that no env var can move, so an "
+                    f"unpinned engine listens on its own upstream default instead (vLLM's is "
+                    f"0.0.0.0:8000, which is also a public bind). It must be in {argsvar} itself: "
+                    f"the flags only reach the engine through the variable its launcher "
+                    f"interpolates. This template is what a production template gets copied "
+                    f"from (ADR 0031)")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
@@ -2712,6 +2868,7 @@ def lint_image(img: Image, repo: Path, *, apply_exceptions: bool = True) -> list
     out.extend(check_template_require_pass(img, repo))
     out.extend(check_own_suite_is_required(img, repo))
     out.extend(check_llama_offload_is_asserted(img, repo))
+    out.extend(check_worker_model_server_address_is_pinned(img, repo))
     out.extend(check_serverless_template_maps_worker_port(img, repo))
     out.extend(check_no_template_publishes_an_internal_port(img, repo))
     out.extend(check_selftest_path_reaches_image_tools(img, repo))

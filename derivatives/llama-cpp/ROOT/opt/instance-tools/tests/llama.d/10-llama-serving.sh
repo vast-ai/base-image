@@ -15,12 +15,16 @@ MAX_RESTARTS=2                                  # fail after this many superviso
 echo "  LLAMA_MODEL=${LLAMA_MODEL}"
 echo "  LLAMA_ARGS=${LLAMA_ARGS:-<empty>}"
 
-# Flag the llama.sh wrapper quirk: ${LLAMA_ARGS:---port 18000} means that
-# if LLAMA_ARGS is set at all, the default --port 18000 is *not* added.
-# Operators who set LLAMA_ARGS without --port end up on port 8080 and
-# this test's /health probe on 18000 will time out.
-if [[ -n "${LLAMA_ARGS:-}" && ! "$LLAMA_ARGS" =~ --port ]]; then
-    echo "  hint: LLAMA_ARGS is set without --port; llama-server will bind to its default (8080), not ${LLAMA_INTERNAL_PORT}"
+# llama.sh pins --host 127.0.0.1 and --port ${LLAMA_INTERNAL_PORT} unless LLAMA_ARGS
+# already carries them (L078), so an LLAMA_ARGS set for an unrelated reason still serves
+# here — this used to be a comment warning that it did NOT, and warning is not asserting.
+# What is still worth surfacing is a template pinning a DIFFERENT port: that is legal and
+# llama.sh honours it, but it moves the server away from both the portal mapping and the
+# serverless worker, so the probes below time out and this line is the reason why. Firing
+# on a port that MATCHES would print on every green run and say nothing.
+_pinned_port=$(grep -oE -- '--port[=[:space:]]+[0-9]+' <<<"${LLAMA_ARGS:-}" | grep -oE '[0-9]+' | tail -1) || true
+if [[ -n "${_pinned_port:-}" && "${_pinned_port}" != "${LLAMA_INTERNAL_PORT}" ]]; then
+    echo "  hint: LLAMA_ARGS pins --port ${_pinned_port}, but the portal mapping and the serverless worker expect ${LLAMA_INTERNAL_PORT}"
 fi
 
 # ── Helper: check if PORTAL_CONFIG has an entry whose label matches ──

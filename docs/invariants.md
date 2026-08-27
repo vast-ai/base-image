@@ -1247,6 +1247,44 @@ oobabooga). The `new-image` skill + generator encode them.
   generator. Where PID-namespace skew genuinely lands — VRAM held but not attributable to our
   pid — is a WARN, not a failure, because arm (a) has already proved the backend loads (ADR 0016).
 
+- **The engine listens where the OpenAI-core worker proxies, and the pin cannot be erased
+  (GATED, L078).** pyworker's `workers/openai/core.py` proxies to `MODEL_SERVER_URL =
+  "http://127.0.0.1"` and `MODEL_SERVER_PORT = 18000`. Those two are module CONSTANTS — the only
+  values in that file that are not `os.environ` reads, while `MODEL_LOG`,
+  `MODEL_HEALTH_ENDPOINT`, `MODEL_LOAD_LOG_MSG` and the model name (across four spellings) all
+  are. So `127.0.0.1:18000` is an obligation on the image and its template; no variable can move
+  the worker to meet an engine that listened elsewhere. Every worker hardcodes its own address —
+  `comfyui-json`, `ace` and `wan` at 18288, `tgi` at `0.0.0.0:5001` — so the rule is scoped by
+  BACKEND, not applied to the shape. **Two arms, because the three engines got it wrong from
+  opposite sides.** (a) `llama.sh` shipped `${LLAMA_ARGS:---port 18000}`, and a `:-` default
+  applies only while the variable is entirely UNSET: a template setting `LLAMA_ARGS` for any
+  unrelated reason (`-ngl 99`, `--ctx-size 8192`) erased the port, and llama-server fell back to
+  its own default of 8080 (llama.cpp `common.h`: `int32_t port = 8080`), breaking the portal's
+  API entry and the serverless worker at once. It was **known**: `llama.d/10-llama-serving.sh`
+  carried a comment quoting the defective line, and three more docs told operators to work around
+  it — a defect documented into permanence, which is what an invariant plus a rule is for. The
+  QA gate could not see it because the QA template passes the port itself. (b) `vllm.sh` and
+  `sglang.sh` interpolate `${VLLM_ARGS:-}` / `${SGLANG_ARGS:-}` BARE, with no image-side default
+  at all, so for those two the address exists only in the template — and vLLM's own default is
+  `0.0.0.0:8000`, a PUBLIC bind, so an unpinned template fails the loopback-behind-Caddy rule as
+  well as the worker. L078 therefore requires both: no listen-address pin inside a `${VAR:-…}`
+  default in the image's supervisor scripts, and `--host 127.0.0.1` plus `--port 18000` pinned in
+  **this engine's own args variable** (`LLAMA_ARGS`/`VLLM_ARGS`/`SGLANG_ARGS`) in the gating QA
+  template — the template a production template is copied from. It must be that variable and not
+  merely "some key ending in `_ARGS`": a first draft joined every such key and searched the
+  concatenation, which a decoy `DUMMY_ARGS`, or the two flags split across two unrelated
+  variables, satisfied while the engine's own args stayed empty — L076's satisfied-by-cosmetics
+  trap reintroduced inside the rule written to avoid it. Both spellings count (`--host=…` as well
+  as `--host …`), because argparse accepts both and rejecting one would be a false red.
+  **Scope honestly:** it reaches this repo's templates only; it checks that the pin is PRESENT,
+  not that the engine honoured it (`llama.d/10` and the serverless cell do that live); and arm (a)
+  never requires an image-side pin to EXIST — it cannot, because `vllm.sh` and `sglang.sh`
+  legitimately have none. Arm (b) is what guarantees a pin exists at all; arm (a) guarantees an
+  image that HAS one cannot lose it. The fix shape is to add each flag only when the variable does
+  not already carry it, so a template that deliberately pins its own address still wins — and to
+  log only what the script ADDED, never the operator's args, which may carry `--api-key` and are
+  tee'd to a log the portal serves and the gate collects.
+
 - **Serverless mode is decided once, at boot stage 01, and the user can always overrule it
   (GATED, L077 for the expiry; asserted by `base/15-boot-markers`).** `SERVERLESS=true`
   switches the whole runtime: `boot_default.sh`'s update flags, every service sourcing
