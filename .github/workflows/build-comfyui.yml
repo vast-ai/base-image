@@ -193,8 +193,121 @@ jobs:
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
+  # Serverless cell — the FIRST one ComfyUI has ever had. The image has baked
+  # BACKEND=comfyui-json and EXPOSE 3000 for some time and `comfyui.d/20-serverless-pyworker`
+  # has been in the suite the whole while, dormant behind its `is_serverless` guard: the
+  # assertion existed and had never once executed, on any cell, anywhere. That is L067's
+  # shape — a test whose mode is never switched on is not coverage.
+  #
+  # PROVISIONING_COMFYUI_WORKFLOWS is carried over from the standard cell and is NOT
+  # scaffolding here: unlike the LLM engines, whose benchmark payload the worker
+  # synthesises from a model name, comfyui-json benchmarks a real WORKFLOW that
+  # convert-workflows.sh derives from this file. Without it the worker has nothing to
+  # drive and never reaches a score, which is the one thing this cell asserts.
+  #
+  # The worker's contract with this image is hardcoded upstream and matched here:
+  # 127.0.0.1:18288 (api-wrapper's uvicorn), /var/log/portal/api-wrapper.log (derived
+  # from `[program:api-wrapper]`) and /health. None of it is passed as env, because all
+  # of it is the image's own — passing it would test our values instead of the image's.
+  #
+  # IT DOES NOT GATE YET, on the same ramp every other engine's serverless cell uses:
+  # named in merge-manifests' `needs` so it is ORDERED ahead of the production approval
+  # prompt, absent from its `if` so it cannot BLOCK.
+  qa-serverless:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      # cuda/py are constants per variant (matching the build matrix), so the
+      # staging tag is built inline below — no per-cell shell derivation.
+      matrix:
+        include:
+          - { cuda: "12.9", py: "py312" }
+          - { cuda: "13.2", py: "py312" }
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'comfy' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.comfyui-ref }}-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64
+      template_dir: derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa
+      label: base-image-qa-comfyui-serverless
+      log_paths: "/var/log/portal/comfyui.log /var/log/portal/api-wrapper.log"
+      # SHA-pinned so the QA box provisions the workflow on the ref under test.
+      extra_env: |
+        SERVERLESS=true
+        # REPORT_ADDR is not product configuration and must not be left to the image:
+        # start_server.sh and the SDK both default it to https://run.vast.ai, so omitting
+        # it posts worker status to the PRODUCTION autoscaler from a disposable QA box.
+        # `.invalid` is RFC 2606 reserved and can never resolve. Gated by L079.
+        REPORT_ADDR=https://qa-no-autoscaler.invalid
+        PROVISIONING_COMFYUI_WORKFLOWS=https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json
+        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services comfyui.d/10-comfyui-serving comfyui.d/20-serverless-pyworker
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services comfyui.d/10-comfyui-serving comfyui.d/20-serverless-pyworker"
+      # ADR 0029 condition 5: the redraw rule is not forked per image. This gate ran
+      # retries: 0 while base and pytorch ran 2, so a bad host red here blocked a
+      # promote that the same image would have survived on any other image's gate.
+      # A real defect still blocks — it fails every draw — and each failed attempt
+      # records its machine and excludes it from the next.
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  # Detection cell (ADR 0034) — identical to qa-serverless above but supplying the
+  # AUTOSCALER'S OWN SIGNALS instead of SERVERLESS=true, so the image must INFER the mode.
+  # Both are kept: 9 of 10 published autoscaler templates still declare SERVERLESS=true
+  # and the platform does not yet inject it, so the declared path is today's production
+  # path while the inferred one is being rolled out.
+  #
+  # Both sentinels are self-evidently fake and safe in plaintext — 01-detect-serverless.sh
+  # tests PRESENCE only and never reads either value, and .invalid cannot resolve. The
+  # MASTER_TOKEN here is not a credential and must never be replaced with one.
+  #
+  # SERVERLESS_DETECT_EXPECT=detected makes base/15-boot-markers assert the VERDICT the
+  # stage recorded rather than merely that the instance came up.
+  qa-serverless-detect:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      # cuda/py are constants per variant (matching the build matrix), so the
+      # staging tag is built inline below — no per-cell shell derivation.
+      matrix:
+        include:
+          - { cuda: "12.9", py: "py312" }
+          - { cuda: "13.2", py: "py312" }
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'comfy' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.comfyui-ref }}-cuda-${{ matrix.cuda }}-${{ matrix.py }}-amd64
+      template_dir: derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa
+      label: base-image-qa-comfyui-serverless-detect
+      log_paths: "/var/log/portal/comfyui.log /var/log/portal/api-wrapper.log"
+      # SHA-pinned so the QA box provisions the workflow on the ref under test.
+      extra_env: |
+        MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
+        REPORT_ADDR=https://qa-detection-sentinel.invalid
+        SERVERLESS_DETECT_EXPECT=detected
+        PROVISIONING_COMFYUI_WORKFLOWS=https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa/sd15-txt2img.json
+        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services comfyui.d/10-comfyui-serving comfyui.d/20-serverless-pyworker
+      require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services comfyui.d/10-comfyui-serving comfyui.d/20-serverless-pyworker"
+      # ADR 0029 condition 5: the redraw rule is not forked per image. This gate ran
+      # retries: 0 while base and pytorch ran 2, so a bad host red here blocked a
+      # promote that the same image would have survived on any other image's gate.
+      # A real defect still blocks — it fails every draw — and each failed attempt
+      # records its machine and excludes it from the next.
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
   merge-manifests:
-    needs: [preflight, build, qa]
+    needs: [preflight, build, qa, qa-serverless, qa-serverless-detect]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}

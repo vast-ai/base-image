@@ -27,6 +27,16 @@ ports:
   - "8188:8188"                   # ComfyUI
   - "8288:8288"                   # API Wrapper
   - "8384:8384"                   # Syncthing
+  # The serverless worker's port, MANDATORY for the serverless cells rather than
+  # decorative. The platform injects VAST_TCP_PORT_<n> only for ports a template MAPS,
+  # and the pyworker SDK looks up exactly that with no guard —
+  #     worker_port = os.environ[f"VAST_TCP_PORT_{os.environ['WORKER_PORT']}"]
+  # (vastai/serverless/server/lib/metrics.py) — so an unmapped 3000 is a KeyError inside
+  # Metrics() during Backend construction, before the worker binds anything or runs a
+  # benchmark. Measured live on the first serverless cell ever run, on vLLM. Gated by
+  # L073. Harmless on the standard cell: nothing binds 3000 there, and base/28 scans
+  # LISTENERS rather than mappings, so an unused mapping is not an exposure.
+  - "3000:3000"                   # serverless worker (pyworker)
 env:
   COMFYUI_ARGS: "--disable-auto-launch --disable-xformers --port 18188 --enable-cors-header"
   # api-wrapper /health probes the backend's /system_stats + WebSocket; point it at
