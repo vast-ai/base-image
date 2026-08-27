@@ -343,9 +343,11 @@ jobs:
       # likely to be the upstream bootstrap as the image, and ADR 0031 decision 5
       # requires that the two be distinguishable from the run output alone.
       log_paths: "/var/log/portal/vllm.log /var/log/portal/pyworker.log /workspace/pyworker.log /workspace/debug.log"
-      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS SERVERLESS=true. That is
-      # the whole claim of the serverless-enablement work — one template, one env var
-      # — so a gate that quietly needed three more variables would not be testing it.
+      # THE ONLY PRODUCT DIFFERENCE FROM THE STANDARD CELL IS THE SERVERLESS SIGNALS.
+      # That is the whole claim of the serverless-enablement work — one template, no
+      # per-mode configuration — so a gate that quietly needed three more variables
+      # would not be testing it. (This cell supplies the autoscaler's signals rather
+      # than SERVERLESS=true; see the ADR 0034 note below.)
       #
       # MODEL_NAME is GONE and its absence is now part of the test. pyworker's
       # core.py resolves the benchmark model from MODEL_NAME, VLLM_MODEL,
@@ -509,7 +511,15 @@ jobs:
       # Slack line would read "promoted — QA passed" beside a failed run. Saying both
       # is the honest report; hiding either is not. Delete this clause when the cell
       # joins merge-manifests' `needs` and becomes blocking.
-      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.qa-serverless.result == 'failure' && 'vLLM promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
+      # "PROMOTED" IS AN ALLOWLIST ON merge-manifests SUCCEEDING, not a fall-through.
+      # This expression used to enumerate failure states and fall through to the
+      # success text keyed on `qa.outputs.gated` — "did a live test run" — which says
+      # nothing about whether anything shipped. `merge-manifests` ending 'skipped' or
+      # 'cancelled' is not 'failure', so it fell through and Slack announced a
+      # promotion that did not happen. Measured 2026-08-27: three branch dispatches
+      # cancelled at the production approval gate, every QA cell green, Slack saying
+      # "vLLM promoted — live-GPU QA passed" beside a red run card.
+      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'vLLM promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM"
       image-ref: ${{ needs.preflight.outputs.vllm-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

@@ -41,10 +41,12 @@ Extra `llama-server` flags go in **`LLAMA_ARGS`** (e.g. `--ctx-size`, `--n-gpu-l
 `--parallel`, `--flash-attn`, or `-m /path/to/local.gguf` to serve a local file instead
 of `-hf`).
 
-> **Gotcha:** `LLAMA_ARGS` *replaces* the default `--port 18000`. If you set it, you
-> **must** re-include `--port 18000`, or the server binds elsewhere and the
-> "Llama.cpp UI" portal mapping breaks. Example:
-> `LLAMA_ARGS="--port 18000 --ctx-size 8192 --n-gpu-layers 999"`.
+`LLAMA_ARGS` no longer has to re-state the listen address: `llama.sh` adds
+`--host 127.0.0.1` and `--port 18000` itself whenever `LLAMA_ARGS` does not already
+carry them, so `LLAMA_ARGS="--ctx-size 8192 --n-gpu-layers 999"` serves on 18000 as
+expected. Pass `--host`/`--port` yourself only to move the server deliberately — your
+value wins — and note that both the "Llama.cpp UI" portal mapping and the serverless
+worker expect 18000, so moving it breaks them.
 
 ### The binaries and CUDA
 

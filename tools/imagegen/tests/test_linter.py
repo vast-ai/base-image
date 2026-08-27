@@ -2789,3 +2789,316 @@ def test_L073_ignores_a_cell_that_skips_the_worker(tmp_path):
         "      extra_env: |\n        MASTER_TOKEN=s\n        REPORT_ADDR=https://a\n"
         "        SUPERVISOR_SKIP_PYWORKER=true\n")
     assert "L073" not in errs(img, tmp_path)
+# ---- L078: the engine must listen where the OpenAI-core worker proxies (ADR 0031) ----
+#
+# pyworker's workers/openai/core.py proxies to a HARDCODED http://127.0.0.1:18000 —
+# MODEL_SERVER_URL/MODEL_SERVER_PORT are module constants, the only values in that file
+# that are NOT os.environ reads. So the address is an obligation on the image and its
+# template, and nothing in the tree gated it.
+
+_BACKEND_DF = VALID_DF + "ENV BACKEND=llama\n"
+
+
+def _engine(img, launch):
+    """Ship the engine's supervisor script, the way derivatives/llama-cpp does."""
+    sp = img.dir / "ROOT/opt/supervisor-scripts/llama.sh"
+    sp.write_text('#!/bin/bash\n. "${utils}/logging.sh"\n' + launch + "\n")
+    sp.chmod(0o755)
+
+
+def _pinned_template(img, args):
+    _write_template(img, f"name: QA\nimage: vastai/x\nenv:\n  LLAMA_ARGS: \"{args}\"\n{_FLOORS}")
+    _wire_gate(img.dir.parent, "img/templates/qa")
+
+
+_GOOD_ARGS = "--host 127.0.0.1 --port 18000 --ctx-size 4096"
+
+
+def test_L078_a_bind_hidden_in_an_erasable_default_fires(tmp_path):
+    """THE mutation, and the exact state derivatives/llama-cpp shipped in: the pin
+    lives in `${LLAMA_ARGS:---port 18000}`, so it holds only while LLAMA_ARGS is
+    UNSET. A template setting it for any unrelated reason (-ngl 99, --ctx-size 8192)
+    erases the port and llama-server falls back to its own default of 8080
+    (llama.cpp common.h), away from the 18000 the worker proxies to."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _engine(img, 'pty llama-server -hf "$LLAMA_MODEL" ${LLAMA_ARGS:---port 18000} 2>&1')
+    _pinned_template(img, _GOOD_ARGS)
+    assert has(img, tmp_path, "L078", "hidden in `${LLAMA_ARGS:-...}`")
+
+
+def test_L078_a_hidden_host_also_fires(tmp_path):
+    """The host half is the worse one: an erased --host leaves the engine on the
+    upstream default, and vLLM's is 0.0.0.0 — a public bind, not merely a missed proxy."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _engine(img, 'pty llama-server ${LLAMA_ARGS:---host 127.0.0.1} 2>&1')
+    _pinned_template(img, _GOOD_ARGS)
+    assert has(img, tmp_path, "L078", "hidden in `${LLAMA_ARGS:-...}`")
+
+
+def test_L078_pinning_each_flag_unconditionally_is_clean(tmp_path):
+    """The fix shape: pin outside the default, adding each flag only when the
+    template has not already supplied it, so an explicit template choice still wins."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _engine(img, 'llama_args="${LLAMA_ARGS:-}"\n'
+                 'if [[ ! "${llama_args}" =~ (^|[[:space:]])--host([=[:space:]]|$) ]]; then\n'
+                 '    llama_args="--host 127.0.0.1 ${llama_args}"\n'
+                 'fi\n'
+                 'if [[ ! "${llama_args}" =~ (^|[[:space:]])--port([=[:space:]]|$) ]]; then\n'
+                 '    llama_args="--port 18000 ${llama_args}"\n'
+                 'fi\n'
+                 'pty llama-server -hf "$LLAMA_MODEL" ${llama_args} 2>&1')
+    _pinned_template(img, _GOOD_ARGS)
+    assert "L078" not in errs(img, tmp_path)
+
+
+def test_L078_a_comment_carrying_the_old_shape_does_not_fire(tmp_path):
+    """Comment-stripped, and this is load-bearing rather than theoretical: the real
+    llama.d/10-llama-serving.sh documents the quirk by quoting the defective line
+    verbatim. A raw-body match would fire on the file that DESCRIBES the bug, which
+    is the mirror image of L076's trap (a comment SATISFYING a rule) and just as wrong."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _engine(img, '# it used to be ${LLAMA_ARGS:---port 18000}, which a template erased\n'
+                 'pty llama-server --host 127.0.0.1 --port 18000 ${LLAMA_ARGS:-} 2>&1')
+    _pinned_template(img, _GOOD_ARGS)
+    assert "L078" not in errs(img, tmp_path)
+
+
+def test_L078_does_not_fire_on_a_backend_with_a_different_worker_address(tmp_path):
+    """Scoped to the workers that proxy to 18000. comfyui-json/ace/wan hardcode 18288
+    and tgi 5001, so an image baking one of those owes nothing HERE — and comfyui
+    carries the same erasable SHAPE (`${COMFYUI_ARGS:---disable-auto-launch --port
+    18188 ...}`) without the same contract. The rule must not invent an obligation
+    from a shape alone."""
+    img = make(tmp_path, df=VALID_DF + "ENV BACKEND=comfyui-json\n")
+    _engine(img, 'pty comfyui ${COMFYUI_ARGS:---port 18188} 2>&1')
+    assert "L078" not in errs(img, tmp_path)
+
+
+def test_L078_does_not_fire_on_an_image_with_no_backend(tmp_path):
+    """Most images ship no serverless worker at all and have no 18000 obligation."""
+    img = make(tmp_path)
+    _engine(img, 'pty app ${APP_ARGS:---port 17860} 2>&1')
+    assert "L078" not in errs(img, tmp_path)
+
+
+def test_L078_a_gating_template_with_no_port_pin_fires(tmp_path):
+    """The other arm, and the one that covers vLLM and SGLang: vllm.sh/sglang.sh
+    interpolate ${VLLM_ARGS:-}/${SGLANG_ARGS:-} BARE, so the address exists only in
+    the template. Drop the pin and nothing else supplies it."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _pinned_template(img, "--host 127.0.0.1 --ctx-size 4096")
+    assert has(img, tmp_path, "L078", "no --port 18000")
+    # ...and ONLY the port half: with both absent the message names both, so without
+    # this the test would pass even if _PINNED_HOST never matched anything.
+    assert not has(img, tmp_path, "L078", "no --host")
+
+
+def test_L078_a_gating_template_with_no_host_pin_fires(tmp_path):
+    img = make(tmp_path, df=_BACKEND_DF)
+    _pinned_template(img, "--port 18000 --ctx-size 4096")
+    assert has(img, tmp_path, "L078", "no --host 127.0.0.1")
+    assert not has(img, tmp_path, "L078", "no --port")
+
+
+def test_L078_a_near_miss_port_does_not_satisfy_it(tmp_path):
+    """8000 is vLLM's own default and 180000 is a typo; neither is the contract.
+    Matching on the substring `--port 18000` alone would accept 180000."""
+    for bad in ("--host 127.0.0.1 --port 8000", "--host 127.0.0.1 --port 180000"):
+        img = make(tmp_path, df=_BACKEND_DF)
+        _pinned_template(img, bad)
+        assert has(img, tmp_path, "L078", "no --port 18000"), bad
+
+
+def test_L078_a_decoy_args_variable_does_not_satisfy_it(tmp_path):
+    """THE hole a first draft of this rule had, and the reason it is worth a test of
+    its own. Joining every key ending in `_ARGS` and searching the concatenation meant
+    a variable NO engine reads satisfied the requirement while LLAMA_ARGS stayed empty
+    — measured: `L078 fires: False`. Same satisfied-by-cosmetics trap L076 documents,
+    reintroduced one level up in the rule written to avoid it."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _write_template(img, "name: QA\nimage: vastai/x\nenv:\n"
+                         "  DUMMY_ARGS: \"--host 127.0.0.1 --port 18000\"\n"
+                         f"  LLAMA_ARGS: \"--ctx-size 4096\"\n{_FLOORS}")
+    _wire_gate(img.dir.parent, "img/templates/qa")
+    assert has(img, tmp_path, "L078", "in LLAMA_ARGS")
+
+
+def test_L078_the_two_flags_split_across_variables_does_not_satisfy_it(tmp_path):
+    """The same hole from the other direction: each flag present, neither reaching the
+    engine. Both must be in the ONE variable the launcher interpolates."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _write_template(img, "name: QA\nimage: vastai/x\nenv:\n"
+                         "  A_ARGS: \"--host 127.0.0.1\"\n  B_ARGS: \"--port 18000\"\n"
+                         f"  LLAMA_ARGS: \"--ctx-size 4096\"\n{_FLOORS}")
+    _wire_gate(img.dir.parent, "img/templates/qa")
+    assert has(img, tmp_path, "L078", "in LLAMA_ARGS")
+
+
+def test_L078_a_pin_outside_an_args_variable_does_not_satisfy_it(tmp_path):
+    """A template that only MENTIONS the address configures nothing."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _write_template(img, "name: QA\nimage: vastai/x\nenv:\n"
+                         "  NOTE: \"serves on --host 127.0.0.1 --port 18000\"\n"
+                         f"  LLAMA_ARGS: \"--ctx-size 4096\"\n{_FLOORS}")
+    _wire_gate(img.dir.parent, "img/templates/qa")
+    assert has(img, tmp_path, "L078", "in LLAMA_ARGS")
+
+
+def test_L078_the_equals_spelling_is_accepted(tmp_path):
+    """`--host=127.0.0.1` is valid argparse, which is what vLLM and SGLang use. A rule
+    that demanded the space spelling would be a FALSE error on a correct template."""
+    img = make(tmp_path, df=_BACKEND_DF)
+    _pinned_template(img, "--host=127.0.0.1 --port=18000 --ctx-size 4096")
+    assert "L078" not in errs(img, tmp_path)
+
+
+def test_L078_a_single_quoted_backend_does_not_exempt_the_image(tmp_path):
+    """`ENV BACKEND='llama'` is valid docker and means `llama`. Stripping only `"`
+    left `'llama'`, which matched no known backend, so ONE quote character turned an
+    ERROR gate off for the whole image with no diagnostic — measured."""
+    img = make(tmp_path, df=VALID_DF + "ENV BACKEND='llama'\n")
+    _engine(img, 'pty llama-server ${LLAMA_ARGS:---port 18000} 2>&1')
+    _pinned_template(img, _GOOD_ARGS)
+    assert has(img, tmp_path, "L078", "hidden in `${LLAMA_ARGS:-...}`")
+
+
+def test_L078_an_erasable_default_in_any_spelling_fires(tmp_path):
+    """`:-` is not the only erasable form. `${VAR-...}` and `${VAR:=...}` supply the
+    default on the same condition and are erased by a template the same way."""
+    for launch in ('pty llama-server ${LLAMA_ARGS---port 18000} 2>&1',
+                   'pty llama-server ${LLAMA_ARGS:=--port 18000} 2>&1'):
+        img = make(tmp_path, df=_BACKEND_DF)
+        _engine(img, launch)
+        _pinned_template(img, _GOOD_ARGS)
+        assert has(img, tmp_path, "L078", "hidden in"), launch
+
+
+def test_baked_env_reads_what_the_image_actually_ships(tmp_path):
+    """_baked_env's contract, table-driven — it had none, which is why the
+    single-quote exemption above was invisible. Docker semantics: the FINAL stage
+    wins, and within it the LAST write wins."""
+    cases = [
+        ("ENV BACKEND=llama\n", "llama"),
+        ("ENV BACKEND='llama'\n", "llama"),
+        ('ENV BACKEND="llama"\n', "llama"),
+        ("ENV A=1 BACKEND=llama B=2\n", "llama"),                 # multi-pair line
+        ("ENV BACKEND=sglang\nENV BACKEND=llama\n", "llama"),      # last write wins
+        ("ENV BACKEND=llama\nFROM scratch\n", ""),                # builder-stage only
+        ("ENV OTHER=llama\n", ""),
+    ]
+    for tail, want in cases:
+        img = make(tmp_path, df=VALID_DF + tail)
+        assert L._baked_env(img, "BACKEND") == want, (tail, L._baked_env(img, "BACKEND"))
+
+
+def test_L078_a_fully_pinned_image_and_template_is_clean(tmp_path):
+    img = make(tmp_path, df=_BACKEND_DF)
+    _engine(img, 'pty llama-server --host 127.0.0.1 --port 18000 ${LLAMA_ARGS:-} 2>&1')
+    _pinned_template(img, _GOOD_ARGS)
+    assert "L078" not in errs(img, tmp_path)
+
+
+def test_L078_the_real_engine_images_pin_the_worker_address():
+    """Round-trip on the REAL images: all three OpenAI-core engines must be clean,
+    which is the assertion that would have failed before the llama.sh fix."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    seen = []
+    for img in discover(repo):
+        if L._baked_env(img, "BACKEND").lower() not in L._OPENAI_CORE_BACKENDS:
+            continue
+        seen.append(img.name)
+        bad = [f.msg for f in lint_image(img, repo) if f.code == "L078"]
+        assert not bad, f"{img.name}: {bad}"
+    assert sorted(seen) == ["llama-cpp", "sglang", "vllm"], seen
+
+
+# ---- L079: a serverless QA cell must not be able to reach the production autoscaler ----
+#
+# The worker POSTs to `${REPORT_ADDR}/worker_status/`, and BOTH layers default that to
+# the live autoscaler — start_server.sh `${REPORT_ADDR:-https://run.vast.ai}` and the
+# SDK's `os.environ.get("REPORT_ADDR", "https://run.vast.ai")`. Setting nothing does not
+# send nothing; it sends to production.
+
+
+def _sl_gate(tmp_path, env: str, job="qa-serverless"):
+    """A workflow handing a serverless cell to qa-gate.yml, the way a build workflow does."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "build-img.yml").write_text(
+        f"jobs:\n  {job}:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        f"    with:\n      template_dir: img/templates/qa\n"
+        f"      extra_env: |\n{env}")
+    return tmp_path
+
+
+def _l079(repo):
+    return [f for f in L.lint_repo(repo) if f.code == "L079" and f.severity == L.ERROR]
+
+
+def test_L079_a_declared_serverless_cell_with_no_report_addr_fires(tmp_path):
+    """THE mutation, and the state build-sglang.yml and build-llama-cpp.yml were
+    actually in: the cell deliberately passes nothing beyond SERVERLESS=true — correct
+    for BACKEND/MODEL_NAME/MODEL_LOG, which must come from the image's own bakes, and
+    wrong for the address of a live external service."""
+    repo = _sl_gate(tmp_path, "        SERVERLESS=true\n")
+    assert any("sets no REPORT_ADDR" in f.msg for f in _l079(repo))
+
+
+def test_L079_a_sentinel_address_is_clean(tmp_path):
+    repo = _sl_gate(tmp_path, "        SERVERLESS=true\n"
+                              "        REPORT_ADDR=https://qa-detection-sentinel.invalid\n")
+    assert not _l079(repo)
+
+
+def test_L079_loopback_is_also_accepted(tmp_path):
+    """A loopback literal cannot leave the box either; the rule is about reachability,
+    not about one spelling."""
+    for addr in ("http://127.0.0.1:1", "http://localhost:9/x", "http://[::1]:1"):
+        repo = _sl_gate(tmp_path, f"        SERVERLESS=true\n        REPORT_ADDR={addr}\n")
+        assert not _l079(repo), addr
+
+
+def test_L079_a_real_endpoint_fires_even_if_it_is_not_the_known_one(tmp_path):
+    """ALLOWLIST, not blocklist. Blocking `run.vast.ai` by name would pass every other
+    live endpoint someone reaches for next — the enumerate-the-failures shape that let
+    a cancelled run announce a promotion earlier the same day."""
+    for addr in ("https://run.vast.ai", "https://console.vast.ai/api",
+                 "https://staging.example.com", "https://run.vast.ai.invalid.example.com"):
+        repo = _sl_gate(tmp_path, f"        SERVERLESS=true\n        REPORT_ADDR={addr}\n")
+        assert _l079(repo), addr
+
+
+def test_L079_a_hostname_merely_CONTAINING_invalid_does_not_pass(tmp_path):
+    """`.invalid` has to be the TLD. A substring test would accept
+    `invalid.example.com`, which resolves perfectly well."""
+    repo = _sl_gate(tmp_path, "        SERVERLESS=true\n"
+                              "        REPORT_ADDR=https://invalid.example.com\n")
+    assert _l079(repo)
+
+
+def test_L079_an_inferred_cell_is_in_scope_too(tmp_path):
+    """A detection cell turns the worker on without SERVERLESS=true, so keying on that
+    literal alone would exempt exactly the cells added for ADR 0034."""
+    repo = _sl_gate(tmp_path, "        MASTER_TOKEN=sentinel\n"
+                              "        REPORT_ADDR=https://run.vast.ai\n", job="qa-serverless-detect")
+    assert _l079(repo)
+
+
+def test_L079_a_non_serverless_cell_owes_nothing(tmp_path):
+    """pyworker.sh exits early unless serverless, so a standard cell posts nothing and
+    must not be asked to declare an address it has no use for."""
+    repo = _sl_gate(tmp_path, "        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda\n", job="qa")
+    assert not _l079(repo)
+
+
+def test_L079_serverless_false_is_not_serverless(tmp_path):
+    repo = _sl_gate(tmp_path, "        SERVERLESS=false\n")
+    assert not _l079(repo)
+
+
+def test_L079_the_real_repo_reaches_no_live_autoscaler():
+    """Round-trip over the real workflows — the assertion that failed on two cells
+    before the fix."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    bad = _l079(repo)
+    assert not bad, f"serverless cells that can reach a live endpoint: {[(f.path, f.msg) for f in bad]}"

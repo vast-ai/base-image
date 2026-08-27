@@ -42,10 +42,12 @@ env:
   LLAMA_MODEL: "Qwen/Qwen2.5-0.5B-Instruct-GGUF:q8_0"
   # EVERY ONE OF THESE IS LOAD-BEARING, and llama.cpp is unforgiving here:
   #
-  #  --port      llama.sh is `${LLAMA_ARGS:---port 18000}`, so setting LLAMA_ARGS AT
-  #              ALL drops that default. Without it llama-server binds its own 8080
-  #              and every probe on 18000 times out. 10-llama-serving carries an
-  #              explicit hint for exactly this trap.
+  #  --port      llama.sh now pins 18000 itself unless LLAMA_ARGS already carries a
+  #              --port (L078), so this is no longer load-bearing against the old
+  #              `${LLAMA_ARGS:---port 18000}` trap. It stays stated rather than
+  #              inherited: L078 requires the gating template to pin the address the
+  #              serverless worker proxies to, because this file is what a production
+  #              template gets copied from.
   #  --host      stated rather than inherited, per the repo's explicit-bind rule.
   #  --alias     llama-server advertises the GGUF PATH in /v1/models by default, so
   #              the contract test's exact-identity check would fail against

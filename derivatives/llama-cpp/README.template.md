@@ -43,7 +43,7 @@ Set the `LLAMA_MODEL` environment variable with your desired HuggingFace model:
 - **Any GGUF model:** Use the HuggingFace repository path (e.g., `bartowski/Meta-Llama-3.1-8B-Instruct-GGUF`)
 
 **Optional configuration:**
-- `LLAMA_ARGS`: Additional arguments to pass to `llama-server` (default: `--port 18000`)
+- `LLAMA_ARGS`: Additional arguments to pass to `llama-server` (the server is pinned to `127.0.0.1:18000` unless you pass your own `--host`/`--port`)
 
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
@@ -158,7 +158,7 @@ For simpler setups, use these environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLAMA_MODEL` | (none) | HuggingFace model to load at startup (e.g., `bartowski/Meta-Llama-3.1-8B-Instruct-GGUF`) |
-| `LLAMA_ARGS` | `--port 18000` | Extra arguments for `llama-server` |
+| `LLAMA_ARGS` | *(empty)* | Extra arguments for `llama-server`. `--host 127.0.0.1` and `--port 18000` are added automatically unless you supply your own |
 | `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |

@@ -51,7 +51,7 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLAMA_MODEL` | (none) | HuggingFace model to load at startup (e.g. `bartowski/Meta-Llama-3.1-8B-Instruct-GGUF`) |
-| `LLAMA_ARGS` | `--port 18000` | Extra arguments for `llama-server` |
+| `LLAMA_ARGS` | *(empty)* | Extra arguments for `llama-server`. `--host 127.0.0.1` and `--port 18000` are added automatically unless you supply your own |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
 

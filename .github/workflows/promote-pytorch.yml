@@ -1426,6 +1426,9 @@ jobs:
         ${{ needs.qa-summary.result != 'success'
             && format('PyTorch promotion BLOCKED by QA — {0} blocked, {1} inconclusive of {2} cells. NOTHING was promoted (ADR 0021: any red stops the whole run).',
                       needs.qa-summary.outputs.blocked, needs.qa-summary.outputs.inconclusive, needs.qa-summary.outputs.tested)
+            || needs.promote.result != 'success'
+            && format('PyTorch NOT promoted — the promote job ended {0}; QA was green but nothing shipped.',
+                      needs.promote.result)
             || format('PyTorch promoted — {0}/{1} artifacts QA''d on live GPUs (amd64, single GPU; mini exhaustively, auto+multi at default python). Tested: {2}',
                       needs.qa-summary.outputs.passed, needs.qa-summary.outputs.tested, needs.qa-summary.outputs.image-list) }}
       image-name: "PyTorch (Production)"

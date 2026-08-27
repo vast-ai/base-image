@@ -13,10 +13,14 @@ on:
       # The guard tests are worthless if they do not run on the PR that edits what
       # they guard: a change to the promote workflow or the in-instance harness is
       # exactly the edit that could disarm the gate.
-      - ".github/workflows/promote-base-image.yml"
-      - ".github/workflows/qa-gate.yml"
-      - ".github/workflows/build-base-image.yml"
-      - ".github/workflows/extend-base-image.yml"
+      #
+      # ALL of them, not an enumeration. test_promote_notification_truth.py reads
+      # every caller of notify-slack.yml, so a PR touching only build-vllm.yml's
+      # headline has to run it — and under the four-file list it did not, which is
+      # how a cancelled run came to announce "vLLM promoted — live-GPU QA passed"
+      # (2026-08-27). The list was this repo's own recurring defect one level up:
+      # the case nobody enumerated goes unguarded.
+      - ".github/workflows/**"
       - "ROOT/opt/instance-tools/tests/**"
       # L069 scans the derivative and external suites too, so a PR that adds a
       # test there must run the rule that governs it.
@@ -49,10 +53,14 @@ on:
       # The guard tests are worthless if they do not run on the PR that edits what
       # they guard: a change to the promote workflow or the in-instance harness is
       # exactly the edit that could disarm the gate.
-      - ".github/workflows/promote-base-image.yml"
-      - ".github/workflows/qa-gate.yml"
-      - ".github/workflows/build-base-image.yml"
-      - ".github/workflows/extend-base-image.yml"
+      #
+      # ALL of them, not an enumeration. test_promote_notification_truth.py reads
+      # every caller of notify-slack.yml, so a PR touching only build-vllm.yml's
+      # headline has to run it — and under the four-file list it did not, which is
+      # how a cancelled run came to announce "vLLM promoted — live-GPU QA passed"
+      # (2026-08-27). The list was this repo's own recurring defect one level up:
+      # the case nobody enumerated goes unguarded.
+      - ".github/workflows/**"
       - "ROOT/opt/instance-tools/tests/**"
       # L069 scans the derivative and external suites too, so a PR that adds a
       # test there must run the rule that governs it.

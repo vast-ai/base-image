@@ -905,6 +905,82 @@ test ran to the runner's timeout — reporting `timedout`, which names no failin
 check at all. Both wait helpers now bound the probe and use a wall-clock
 deadline.
 
+### A serverless QA cell cannot reach the production autoscaler — **GATED (L079)**
+
+The worker POSTs its status to `${REPORT_ADDR}/worker_status/`, and **both** layers default
+that variable to the live autoscaler:
+
+```
+start_server.sh:19   REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
+backend.py:94        os.environ.get("REPORT_ADDR", "https://run.vast.ai")
+```
+
+So a cell that sets nothing does not post nowhere — it posts to production. Until
+2026-08-27 the declared serverless cells on sglang and llama-cpp did exactly that on every
+run since they existed: disposable QA instances announcing themselves to the real
+autoscaler as workers, with an unset `MASTER_TOKEN` and a real `CONTAINER_ID`.
+
+**The cause was a good rule applied to the wrong variable.** Those cells deliberately pass
+nothing beyond `SERVERLESS=true`, so that `BACKEND`, `MODEL_NAME` and `MODEL_LOG` are read
+from the image's own bakes instead of being overridden by the gate — that minimalism is
+correct, and it is the whole claim of the serverless-enablement work. `REPORT_ADDR` is not
+product configuration; it is the address of a live external service, and there "inherit the
+default" means "inherit production". The detection cells added the same day set it and were
+never affected, which is why the contrast made the gap visible at all.
+
+**An allowlist on the value, not a blocklist of known hosts.** The address must be under the
+RFC 2606 reserved `.invalid` TLD or a loopback literal. Blocklisting `run.vast.ai` by name
+would pass every other live endpoint someone reaches for next — the same
+enumerate-the-failures shape that let a cancelled run announce a promotion earlier the same
+day. `.invalid` cannot resolve, so the POST dies in DNS and no live endpoint can be touched
+whatever the value is later renamed to.
+
+**What this costs, stated honestly:** `metrics.py` retries 3x at 2s intervals, logs at DEBUG
+and carries on, so the worker still starts, binds :3000, serves and benchmarks. No serverless
+QA cell has ever proved that worker status REACHES the autoscaler, and none can — that would
+require POSTing fabricated status to production with a fake token. The cells now decline to
+imply otherwise rather than quietly doing the real thing.
+
+### A Slack headline may claim a promotion only where the promotion SUCCEEDED — **GATED (test_promote_notification_truth.py)**
+
+The rule is one sentence: **enumerate the way it goes RIGHT, never the ways it goes wrong.**
+Every headline that can render "promoted" must be keyed on `needs.<promoting job>.result !=
+'success'` taking the negative branch first. The promoting job is `promote` or
+`merge-manifests` — two names across the whole tree, and the convention is load-bearing.
+
+This repo has now been bitten by the same class four times, each time in a workflow the
+previous fix did not reach:
+
+1. **2026-08-14** — a QA cell drew a GPU-less host, the gate correctly blocked, `promote` was
+   skipped, and Slack said "Base image promoted — 1 auto tag(s) HELD". Both arms of the
+   expression opened with "Base image promoted" and never consulted `needs.promote.result`.
+2. **The first fix** enumerated `'skipped'` and `'failure'` and fell through to the success
+   text. A **cancelled** run is neither, so the same false line came back.
+3. **2026-08-17** — `build-result` read `needs.build.result` alone, so a run that lost a
+   manifest to a GitHub 429 reported "Base Image Build Successful".
+4. **2026-08-27** — three branch dispatches were cancelled at the production approval gate.
+   Every QA cell had passed, so `qa.outputs.gated` was `'true'` and `merge-manifests` ended
+   `'cancelled'`, which is not `'failure'`. Slack: `:x: vLLM promoted — live-GPU QA passed`
+   and the same for SGLang, next to red run cards, for images that were not promoted and
+   could not have been. `build-llama-cpp.yml` had already been fixed and its comment named
+   the other three files by name, adding "the shared guard is the real fix" — which was never
+   built, so the fix stayed a local patch and the defect stayed shipped.
+
+**The icon being right does not rescue a false sentence.** In (4) the ❌ was correct
+(`build-result` reads the promoting job) while the words said the opposite. That is the worst
+combination available: a reader who trusts the words is misinformed, and a reader who notices
+the contradiction learns to discount the words entirely — which disarms every future headline.
+
+**The guard is now over ALL callers of `notify-slack.yml`**, discovered by walking the
+workflow directory, not over an enumerated list — the enumeration is the same defect one
+level up. Two supporting properties, each of which was independently missing:
+
+- `test_the_walker_actually_finds_the_callers` pins a floor on how many notifiers are in
+  scope. A discovery-based guard that matches nothing reports green forever.
+- `imagegen-tests.yml` must trigger on `.github/workflows/**`, not on four named files. The
+  guard reads every workflow, so a PR touching only `build-vllm.yml`'s headline has to run
+  it — under the old list it did not, which is precisely how (4) shipped.
+
 ### The cloudflared binary is unpinned, and a CONTRACT is what guards it
 
 `Dockerfile` fetches `cloudflared-linux-${TARGETARCH}` from `releases/latest`, so
@@ -1246,6 +1322,44 @@ oobabooga). The `new-image` skill + generator encode them.
   instance. A gating assertion whose evidence upstream is free to stop printing is a false-red
   generator. Where PID-namespace skew genuinely lands — VRAM held but not attributable to our
   pid — is a WARN, not a failure, because arm (a) has already proved the backend loads (ADR 0016).
+
+- **The engine listens where the OpenAI-core worker proxies, and the pin cannot be erased
+  (GATED, L078).** pyworker's `workers/openai/core.py` proxies to `MODEL_SERVER_URL =
+  "http://127.0.0.1"` and `MODEL_SERVER_PORT = 18000`. Those two are module CONSTANTS — the only
+  values in that file that are not `os.environ` reads, while `MODEL_LOG`,
+  `MODEL_HEALTH_ENDPOINT`, `MODEL_LOAD_LOG_MSG` and the model name (across four spellings) all
+  are. So `127.0.0.1:18000` is an obligation on the image and its template; no variable can move
+  the worker to meet an engine that listened elsewhere. Every worker hardcodes its own address —
+  `comfyui-json`, `ace` and `wan` at 18288, `tgi` at `0.0.0.0:5001` — so the rule is scoped by
+  BACKEND, not applied to the shape. **Two arms, because the three engines got it wrong from
+  opposite sides.** (a) `llama.sh` shipped `${LLAMA_ARGS:---port 18000}`, and a `:-` default
+  applies only while the variable is entirely UNSET: a template setting `LLAMA_ARGS` for any
+  unrelated reason (`-ngl 99`, `--ctx-size 8192`) erased the port, and llama-server fell back to
+  its own default of 8080 (llama.cpp `common.h`: `int32_t port = 8080`), breaking the portal's
+  API entry and the serverless worker at once. It was **known**: `llama.d/10-llama-serving.sh`
+  carried a comment quoting the defective line, and three more docs told operators to work around
+  it — a defect documented into permanence, which is what an invariant plus a rule is for. The
+  QA gate could not see it because the QA template passes the port itself. (b) `vllm.sh` and
+  `sglang.sh` interpolate `${VLLM_ARGS:-}` / `${SGLANG_ARGS:-}` BARE, with no image-side default
+  at all, so for those two the address exists only in the template — and vLLM's own default is
+  `0.0.0.0:8000`, a PUBLIC bind, so an unpinned template fails the loopback-behind-Caddy rule as
+  well as the worker. L078 therefore requires both: no listen-address pin inside a `${VAR:-…}`
+  default in the image's supervisor scripts, and `--host 127.0.0.1` plus `--port 18000` pinned in
+  **this engine's own args variable** (`LLAMA_ARGS`/`VLLM_ARGS`/`SGLANG_ARGS`) in the gating QA
+  template — the template a production template is copied from. It must be that variable and not
+  merely "some key ending in `_ARGS`": a first draft joined every such key and searched the
+  concatenation, which a decoy `DUMMY_ARGS`, or the two flags split across two unrelated
+  variables, satisfied while the engine's own args stayed empty — L076's satisfied-by-cosmetics
+  trap reintroduced inside the rule written to avoid it. Both spellings count (`--host=…` as well
+  as `--host …`), because argparse accepts both and rejecting one would be a false red.
+  **Scope honestly:** it reaches this repo's templates only; it checks that the pin is PRESENT,
+  not that the engine honoured it (`llama.d/10` and the serverless cell do that live); and arm (a)
+  never requires an image-side pin to EXIST — it cannot, because `vllm.sh` and `sglang.sh`
+  legitimately have none. Arm (b) is what guarantees a pin exists at all; arm (a) guarantees an
+  image that HAS one cannot lose it. The fix shape is to add each flag only when the variable does
+  not already carry it, so a template that deliberately pins its own address still wins — and to
+  log only what the script ADDED, never the operator's args, which may carry `--api-key` and are
+  tee'd to a log the portal serves and the gate collects.
 
 - **Serverless mode is decided once, at boot stage 01, and the user can always overrule it
   (GATED, L077 for the expiry; asserted by `base/15-boot-markers`).** `SERVERLESS=true`
