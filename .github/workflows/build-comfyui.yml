@@ -307,8 +307,23 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   merge-manifests:
+    # qa-serverless and qa-serverless-detect are in `needs` to ORDER them ahead of the
+    # production approval prompt, and absent from the `if` so they cannot BLOCK — the
+    # advisory ramp every other engine's serverless cell uses.
+    #
+    # `!cancelled()` is what makes that true, and it is not decoration. A job named in
+    # `needs` blocks BY DEFAULT: GitHub implicitly skips a job when anything it needs
+    # fails, so "absent from the if" is not enough on its own. Measured 2026-08-27 —
+    # adding the two cells to `needs` alone silently made them gating, and a config_error
+    # in one skipped merge-manifests for a run whose four other cells were green.
+    # `!cancelled()` switches that implicit skip off, which is why the results that MUST
+    # still block are then named explicitly.
     needs: [preflight, build, qa, qa-serverless, qa-serverless-detect]
-    if: needs.preflight.outputs.should-run == 'true'
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
+      && needs.qa.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
