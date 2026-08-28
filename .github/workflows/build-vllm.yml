@@ -384,6 +384,26 @@ jobs:
       extra_env: |
         MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
         REPORT_ADDR=https://qa-detection-sentinel.invalid
+        # UNSECURED skips the pubkey gate, and it undoes a QA-only side effect rather
+        # than weakening the test. REPORT_ADDR above is an unresolvable sentinel (L079),
+        # so `GET ${REPORT_ADDR}/pubkey/` CANNOT succeed — five attempts, then
+        # `backend_errored`, on every cell, always. The gate therefore proves nothing
+        # here: it is guaranteed to fail for a reason QA created, and skipping it masks
+        # nothing observable, because no configuration of ours could make it pass.
+        #
+        # What it costs without this: the worker benchmarks fine (`.has_benchmark` is
+        # written at backend.py:857, BEFORE the gate at :915 — which is why these cells
+        # were already green) and then dies at the last step, so every QA worker ends
+        # its life `errored` and each cell burns ~60s waiting for a key that cannot
+        # arrive. Measured on a live 2x5090 debug box: detection worked, sglang served,
+        # benchmark 995.55 written, then "Cannot mark model as loaded: pubkey fetch
+        # failed".
+        #
+        # SCOPE: QA scaffolding, and it must never reach a template — there it would
+        # disable request-signature verification on a live worker (__check_signature
+        # returns True immediately). It lives in extra_env precisely because a
+        # template.yml is what a production template gets copied from. Gated by L080.
+        UNSECURED=true
         SERVERLESS_DETECT_EXPECT=detected
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
       require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"

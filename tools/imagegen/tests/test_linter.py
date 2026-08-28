@@ -3102,3 +3102,63 @@ def test_L079_the_real_repo_reaches_no_live_autoscaler():
     repo = find_repo_root(Path(__file__).resolve().parent)
     bad = _l079(repo)
     assert not bad, f"serverless cells that can reach a live endpoint: {[(f.path, f.msg) for f in bad]}"
+
+
+# ---- L080: UNSECURED is QA scaffolding and must not live in a template ----------
+#
+# It disables the pubkey gate AND __check_signature, which then returns True for every
+# inbound request without verifying it. The QA cells set it deliberately, and only
+# because they also set an unresolvable sentinel REPORT_ADDR (L079) that makes the
+# pubkey gate impossible to pass — masking a gate that cannot succeed hides nothing.
+# A template has no sentinel and is what a production template gets copied from.
+
+
+def _tpl(tmp_path, body):
+    d = tmp_path / "img" / "templates" / "qa"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "template.yml").write_text(body)
+    return tmp_path
+
+
+def _l080(repo):
+    return [f for f in L.lint_repo(repo) if f.code == "L080" and f.severity == L.ERROR]
+
+
+def test_L080_a_template_declaring_unsecured_fires(tmp_path):
+    """THE mutation: the flag escapes from a gate into a launchable artefact."""
+    repo = _tpl(tmp_path, "name: QA\nimage: vastai/x\nenv:\n  UNSECURED: \"true\"\n")
+    assert _l080(repo)
+
+
+def test_L080_fires_however_it_is_spelled(tmp_path):
+    """Quoted, unquoted, list-item, extra indentation — the danger is the declaration,
+    not its YAML styling."""
+    for body in ('env:\n  UNSECURED: "true"\n',
+                 "env:\n  UNSECURED: true\n",
+                 'env:\n  "UNSECURED": "true"\n',
+                 "env:\n    UNSECURED: 1\n",
+                 "env:\n  - UNSECURED=true\n"):
+        repo = _tpl(tmp_path, "name: QA\nimage: vastai/x\n" + body)
+        assert _l080(repo), body
+
+
+def test_L080_a_commented_mention_does_not_fire(tmp_path):
+    """A template may legitimately EXPLAIN why it does not set the flag. Firing on the
+    prose that documents the rule is the trap L076 and L078 both had to close."""
+    repo = _tpl(tmp_path, "name: QA\nimage: vastai/x\nenv:\n"
+                          "  # UNSECURED is deliberately NOT set here — it is QA-only (L080)\n"
+                          "  JUPYTER_DIR: \"/\"\n")
+    assert not _l080(repo)
+
+
+def test_L080_a_similarly_named_key_does_not_fire(tmp_path):
+    """Anchored to the whole key. `UNSECURED_PORTS` is a different variable."""
+    repo = _tpl(tmp_path, "name: QA\nimage: vastai/x\nenv:\n  UNSECURED_PORTS: \"1\"\n")
+    assert not _l080(repo)
+
+
+def test_L080_the_real_repo_ships_no_template_with_it():
+    """Round-trip: the flag is in the gates' extra_env and nowhere a customer can reach."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    bad = _l080(repo)
+    assert not bad, f"templates declaring UNSECURED: {[f.path for f in bad]}"
