@@ -3162,3 +3162,220 @@ def test_L080_the_real_repo_ships_no_template_with_it():
     repo = find_repo_root(Path(__file__).resolve().parent)
     bad = _l080(repo)
     assert not bad, f"templates declaring UNSECURED: {[f.path for f in bad]}"
+
+
+# ---- L082: a bind verdict must read ss's LOCAL column, not the whole line ----
+#
+# `ss -tln` prints State Recv-Q Send-Q Local:Port Peer:Port, and for a LISTENING socket
+# the peer column is always 0.0.0.0:* — so a whole-line match for a wildcard address is
+# true for every listener ever printed. Measured live: `LISTEN 0 2048 127.0.0.1:18888
+# 0.0.0.0:*`, a correct loopback bind, reported as PUBLIC, failed the cell, and burned
+# two host redraws reproducing a test bug on fresh hardware.
+
+
+def _shipped_test(tmp_path, body, name="app.d/50-bind.sh"):
+    f = tmp_path / "ROOT/opt/instance-tools/tests" / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("#!/bin/bash\n" + body)
+    f.chmod(0o755)
+    return tmp_path
+
+
+def _l082(repo):
+    return [f for f in L.lint_repo(repo) if f.code == "L082" and f.severity == L.ERROR]
+
+
+def test_L082_whole_line_wildcard_match_fires(tmp_path):
+    """THE mutation, and the exact line that shipped."""
+    repo = _shipped_test(tmp_path, 'ss -tln | grep ":8080 " | grep -q "0.0.0.0:" && echo public\n')
+    assert _l082(repo)
+
+
+def test_L082_the_ss_filter_form_fires_too(tmp_path):
+    """`ss -tlnH "sport = :8080"` narrows the ROWS but not the COLUMNS — the peer field
+    is still on every line, so the whole-line match is just as wrong."""
+    repo = _shipped_test(tmp_path, 'ss -tlnH "sport = :8080" | grep -qE \'0\\.0\\.0\\.0:|\\[::\\]:\'\n')
+    assert _l082(repo)
+
+
+def test_L082_a_hand_rolled_field_4_read_is_no_longer_accepted(tmp_path):
+    """This USED to be the blessed form, and that was the hole: a bare `$4` counted as
+    proof of correctness, so 67-service-functionality's awk — whose program had been
+    destroyed by shell quoting into a constant-true pattern — passed lint while
+    reporting the first listener on the box. Only the shared helpers count now."""
+    repo = _shipped_test(tmp_path, 'a=$(ss -tlnH | awk \'{print $4}\'); [[ "$a" =~ ^0\\.0\\.0\\.0: ]]\n')
+    assert _l082(repo)
+
+
+def test_L082_the_shared_helper_is_clean(tmp_path):
+    """The blessed form: lib.sh's listener_is_public already reads field 4."""
+    repo = _shipped_test(tmp_path, 'listener_is_public 8080 && fail_later x "public"\n')
+    assert not _l082(repo)
+
+
+def test_L082_matching_a_PORT_is_unaffected(tmp_path):
+    """Scoped to ADDRESS matching. Finding a port or a pid in an ss line is unambiguous
+    across columns and must not be caught — over-firing here would push authors toward
+    awk for cases that never needed it."""
+    for body in ('ss -tln | grep -q ":8080 " && echo up\n',
+                 'ss -tlnpH | grep -oP "pid=\\\\K[0-9]+" | head -1\n'):
+        repo = _shipped_test(tmp_path, body)
+        assert not _l082(repo), body
+
+
+def test_L082_a_comment_quoting_the_broken_form_does_not_fire(tmp_path):
+    """The files that DOCUMENT this trap quote the broken line verbatim — base/65 and
+    lib.sh both do. Firing on the explanation is the trap one level up, and this repo
+    has hit it before (L076, L078)."""
+    repo = _shipped_test(tmp_path,
+                         '# WRONG: ss -tln | grep -q "0.0.0.0:" matches the peer column\n'
+                         'listener_is_public 8080\n')
+    assert not _l082(repo)
+
+
+def test_L082_the_real_repo_reads_the_local_field_everywhere():
+    """Round-trip: the assertion that was red on two shipped files before the fix — one
+    that always failed, one whose WARN could never fire."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    bad = _l082(repo)
+    assert not bad, f"bind checks matching the whole ss line: {[f.path for f in bad]}"
+
+
+# ---- L083-L086 + tightened L082: codified from the 2026-08-28 instance-test audit ----
+
+
+def _t(tmp_path, body, name="app.d/50-x.sh"):
+    f = tmp_path / "ROOT/opt/instance-tools/tests" / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("#!/bin/bash\n" + body)
+    f.chmod(0o755)
+    return tmp_path
+
+
+def _codes(repo, code):
+    return [f for f in L.lint_repo(repo) if f.code == code and f.severity == L.ERROR]
+
+
+def test_L083_a_third_argument_fires(tmp_path):
+    """lib.sh takes LABEL and MSG. The third is dropped and the prose fragment becomes
+    the FAILURES label, so report_failures emits a sentence where a label belongs."""
+    repo = _t(tmp_path, 'fail_later "a" "b" "c"\n')
+    assert _codes(repo, "L083")
+
+
+def test_L083_counts_across_line_continuations(tmp_path):
+    """The real instances split prose across continuations — that is HOW the third
+    argument gets written."""
+    repo = _t(tmp_path, 'fail_later "label" \\\n    "part one" \\\n    "part two"\n')
+    assert _codes(repo, "L083")
+
+
+def test_L083_a_command_substitution_is_not_an_argument(tmp_path):
+    """THE false positive this rule shipped with for one lint run: quotes inside
+    `$(echo "$x" | tail -3)` are nested shell, not argument boundaries. A linter that
+    reds a correct call is worse than no linter."""
+    repo = _t(tmp_path, 'fail_later "lbl" "failed: $(echo "$out" | tail -3)"\n')
+    assert not _codes(repo, "L083")
+
+
+def test_L084_curl_status_fallback_fires(tmp_path):
+    """curl writes the -w template THEN exits non-zero, so `|| echo 000` appends and the
+    capture becomes 000000 — matching no arm the author wrote."""
+    repo = _t(tmp_path, "code=$(curl -s -o /dev/null -w '%{http_code}' http://x/ || echo 000)\n")
+    assert _codes(repo, "L084")
+
+
+def test_L084_the_plain_capture_is_clean(tmp_path):
+    repo = _t(tmp_path, "code=$(curl -s -o /dev/null -w '%{http_code}' http://x/ 2>/dev/null)\n")
+    assert not _codes(repo, "L084")
+
+
+def test_L085_a_wait_longer_than_the_files_own_budget_fires(tmp_path):
+    """runner.sh execs under `timeout $TEST_TIMEOUT`, so the wait can never complete —
+    it is killed and reported as a bare timeout naming no check."""
+    repo = _t(tmp_path, '# TEST_TIMEOUT=1800\nREADY_TIMEOUT="${LLAMA_OFFLOAD_READY_TIMEOUT:-3600}"\n')
+    assert _codes(repo, "L085")
+
+
+def test_L085_a_wait_inside_the_budget_is_clean(tmp_path):
+    repo = _t(tmp_path, '# TEST_TIMEOUT=1800\nREADY_TIMEOUT="${LLAMA_OFFLOAD_READY_TIMEOUT:-900}"\n')
+    assert not _codes(repo, "L085")
+
+
+def test_L086_running_plus_port_as_a_guard_fires(tmp_path):
+    """The false-green that made a hung jupyter report ALL TESTS PASSED."""
+    repo = _t(tmp_path, 'if service_running jupyter && wait_for_port 18080 5; then\n  :\nfi\n')
+    assert _codes(repo, "L086")
+
+
+def test_L086_assert_service_serving_is_clean(tmp_path):
+    repo = _t(tmp_path, 'assert_service_serving jupyter 18080\n')
+    assert not _codes(repo, "L086")
+
+
+def test_L082_no_longer_accepts_a_bare_field_reference(tmp_path):
+    """The tightening the audit asked for. A bare `$4` was accepted as proof, which is
+    exactly how 67-service-functionality's destroyed awk passed lint while reporting the
+    first listener on the box."""
+    repo = _t(tmp_path, '''owner=$(ss -tlnpH | awk -v p=":8080$" '"'"'$4 ~ p'"'"' | head -1)
+ss -tln | grep -q "0.0.0.0:" && echo public
+''')
+    assert _codes(repo, "L082")
+
+
+def test_L082_the_shared_helpers_are_still_accepted(tmp_path):
+    repo = _t(tmp_path, 'listener_is_public 8080 && echo pub\nlistener_owner 8080\n')
+    assert not _codes(repo, "L082")
+
+
+def test_the_real_repo_satisfies_the_audit_rules():
+    """Round-trip: every rule codified from the audit holds across the shipped tests."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    bad = [f for f in L.lint_repo(repo)
+           if f.code in ("L082", "L083", "L084", "L085", "L086") and f.severity == L.ERROR]
+    assert not bad, f"audit rules failing: {[(f.code, f.path) for f in bad]}"
+
+
+# ---- the corrections the pre-build review forced (2026-08-28) ----
+
+
+def test_L084_fires_on_the_two_line_form_it_was_written_from(tmp_path):
+    """The rule shipped INERT against its own motivating defect: the capture and the
+    `|| echo` sit either side of a line continuation, and a per-line scan could not see
+    it. Worse than absent — it looked like coverage."""
+    repo = _t(tmp_path, '''_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \\
+        "http://127.0.0.1:${PORT}/" || echo 000)
+''')
+    assert _codes(repo, "L084")
+
+
+def test_L084_does_not_fire_when_the_fallback_belongs_to_a_later_statement(tmp_path):
+    """The same rule ALSO fired on correct code: a `|| echo WARN` after a separate
+    statement is not a status fallback. Both directions wrong at once."""
+    for body in ('code=$(curl -s -w \'%{http_code}\' http://x/); [[ -n "$code" ]] || echo WARN\n',
+                 'c=$(curl -s -o /dev/null -w \'%{http_code}\' http://x/) ; [[ "$c" == 200 ]] || echo "  WARN: bad"\n'):
+        repo = _t(tmp_path, body)
+        assert not _codes(repo, "L084"), body
+
+
+def test_L083_stops_counting_at_a_statement_boundary(tmp_path):
+    """`fail_later "a" "b"; echo "c"` is a correct two-argument call followed by an echo.
+    Counting past the `;` reported it as three — a false ERROR on correct code."""
+    for body in ('fail_later "a" "b"; echo "c"\n', 'fail_later "a" "b" && echo "c"\n'):
+        repo = _t(tmp_path, body)
+        assert not _codes(repo, "L083"), body
+
+
+def test_L083_counts_single_quoted_arguments(tmp_path):
+    """An earlier counter saw only double quotes and returned 0 for a single-quoted
+    call — silently exempting a whole spelling."""
+    repo = _t(tmp_path, "fail_later 'a' 'b' 'c'\n")
+    assert _codes(repo, "L083")
+
+
+def test_L083_a_substitution_inside_a_quoted_argument_is_not_an_argument(tmp_path):
+    """`$( )` is still a substitution INSIDE double quotes — that is the point of
+    `"msg: $(echo "$x")"`. Treating its inner quotes as boundaries made a correct call
+    read as three arguments."""
+    repo = _t(tmp_path, 'fail_later "lbl" "failed: $(echo "$out" | tail -3)"\n')
+    assert not _codes(repo, "L083")

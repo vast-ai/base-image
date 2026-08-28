@@ -22,7 +22,12 @@ GEN_TIMEOUT="${OOBABOOGA_GEN_TIMEOUT:-180}"
 UI="http://127.0.0.1:${UI_PORT}"
 API="http://127.0.0.1:${API_PORT}"
 
-service_running oobabooga || test_skip "oobabooga service not running"
+# NOT `service_running || test_skip`: that turned every failure into a skip. `ERROR (no
+# such process)` — supervisord has never heard of the program — and a terminal `EXITED`
+# after exit_portal.sh both read as "not running", so an image where the app never ran
+# reported green. Every sibling suite (llama.d/10, vllm.d/10, unsloth.d/10) uses
+# assert_service_running, which distinguishes FATAL and ERROR from "still starting".
+assert_service_running oobabooga
 
 # ── WebUI on its loopback port (hard prerequisite) ───────────────────
 echo "  -- waiting for the WebUI on ${UI} --"
@@ -45,14 +50,28 @@ echo "  API model list served at ${API}/v1/models"
 # /v1/internal/model/info reports the CURRENTLY-LOADED model. Skip — don't
 # pass — when none is loaded: there is no functionality to verify (vLLM skips
 # the same way when VLLM_MODEL is unset). A normal launch loads a default.
-loaded=$(curl -s --max-time 15 "${API}/v1/internal/model/info" 2>/dev/null | python3 -c "
+# A PROBE FAILURE AND "NO MODEL" ARE DIFFERENT ANSWERS. The previous version printed ''
+# for both — a non-200, a timeout, malformed JSON and a genuinely empty model_name all
+# collapsed to the same empty string, which then skipped the generation block below: the
+# only proof that inference works. A broken endpoint reported green.
+#
+# Now the transport is checked first and separately, so only a well-formed reply with no
+# model reaches the skip.
+_info_code=$(curl -s -o /tmp/ooba-model-info.json -w '%{http_code}' --max-time 15 \
+             "${API}/v1/internal/model/info" 2>/dev/null)
+[[ "${_info_code:-000}" == "200" ]] \
+    || test_fail "API ${API}/v1/internal/model/info returned HTTP ${_info_code:-000} — cannot tell whether a model is loaded, so the generation assertion below would skip on a BROKEN endpoint"
+
+loaded=$(python3 -c "
 import json, sys
 try:
-    d = json.load(sys.stdin)
+    d = json.load(open('/tmp/ooba-model-info.json'))
 except Exception:
-    print(''); raise SystemExit
+    raise SystemExit(3)
 n = d.get('model_name') or ''
-print('' if n in ('', 'None') else n)" 2>/dev/null)
+print('' if n in ('', 'None') else n)") || \
+    test_fail "API ${API}/v1/internal/model/info returned HTTP 200 but not parseable JSON — a malformed reply must not read as 'no model loaded'"
+rm -f /tmp/ooba-model-info.json
 
 [[ -n "$loaded" ]] \
     || test_skip "no model loaded — set a model (e.g. OOBABOOGA_ARGS=\"--model <name>\") to exercise generation"

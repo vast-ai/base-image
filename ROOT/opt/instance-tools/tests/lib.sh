@@ -164,6 +164,28 @@ service_running() {
     [[ "$status" == "RUNNING" ]]
 }
 
+# A supervisor program is SERVING when it is RUNNING *and* something is listening on the
+# port it exists to serve. RUNNING alone is a state, not a verdict.
+#
+# This exists because `if service_running x; then ... else skip; fi` collapsed three
+# different worlds into one silent pass: "not configured", "RUNNING but never bound its
+# port", and "supervisord has never heard of it". A jupyter that hangs without exiting —
+# a blocked server extension, `cd $WORKSPACE` on a stuck mount — is RUNNING, binds
+# nothing, and the suite reported ALL TESTS PASSED. autorestart=unexpected catches
+# CRASHES, so the hang is precisely the case nothing else covers.
+#
+# "Not configured" is a legitimate outcome, but it must be decided POSITIVELY by the
+# caller (is there a conf file? is there a portal entry?) and never inferred from the
+# status word, because every failure also produces a non-RUNNING word.
+assert_service_serving() {
+    local name="$1" port="$2"
+    local timeout="${3:-${SERVICE_SERVING_TIMEOUT:-60}}"
+    assert_service_running "$name"
+    wait_for_port "$port" "$timeout" \
+        || test_fail "service ${name} is RUNNING but nothing is listening on ${port} after ${timeout}s — the process is up and not serving"
+    echo "  ${name}: RUNNING and serving on ${port}"
+}
+
 # Compare dotted version strings as integers (e.g. "12.10" > "12.9").
 # Returns 0 (true) if $1 > $2, 1 (false) otherwise.
 # Non-numeric or empty input returns FALSE rather than crashing. Bash arithmetic
@@ -335,6 +357,59 @@ wait_for_caddy_ports() {
         fi
         sleep 1
     done
+}
+
+# Echo the LOCAL listen address(es) for a TCP port, one per line ("" if nothing listens).
+#
+# `ss -tln` prints: State Recv-Q Send-Q Local:Port Peer:Port. For a LISTENING socket the
+# peer column is ALWAYS a wildcard (`0.0.0.0:*`, `[::]:*` or `*:*`) whatever the socket
+# bound to, so a
+# whole-line match for a wildcard address is true for EVERY listener. Measured live: a
+# correct `127.0.0.1:18888` bind was reported as public and failed a cell, then burned
+# two host redraws reproducing a test bug on fresh hardware. Field 4 is the address under
+# test; this helper exists so no caller has to remember that (L082).
+listener_local_addr() {
+    local port="$1"
+    ss -tlnH 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {print $4}'
+}
+
+# True when a TCP port is bound to a WILDCARD interface rather than a specific address.
+#
+# The form list is the whole correctness of this helper, and an earlier version had it
+# short. `ss` prints a dual-stack IPv6 wildcard (a `::` bind with IPV6_V6ONLY=0) as
+# `*:PORT` — measured on iproute2-6.1.0: `LISTEN 0 5 *:45671 *:*` — which is the most
+# common public-bind form of all, and it was read as LOOPBACK. exposure_scan.py already
+# enumerated the right set (`0.0.0.0`, `*`, `[::]`, `::`); the bash side was the outlier,
+# and L082 steers every hand-written bind check in the repo through here, so the gap was
+# load-bearing.
+#
+# Anchored at the start of the extracted field: unanchored, "0.0.0.0" would also match
+# inside a port number or a longer address form. Returns false when nothing is listening
+# — "not public" and "not present" are different questions, and the caller that cares
+# about presence should ask wait_for_port.
+listener_is_public() {
+    local addr
+    while IFS= read -r addr; do
+        [[ -z "$addr" ]] && continue
+        [[ "$addr" =~ ^(0\.0\.0\.0|\*|\[::\]|::): ]] && return 0
+    done < <(listener_local_addr "$1")
+    return 1
+}
+
+# The process holding a TCP port: "pid/name", or "" if nothing holds it.
+#
+# Exists because every hand-rolled version of this has been wrong. The one in
+# 67-service-functionality.sh lost its awk program to shell quoting, matched a
+# constant-true pattern, and reported the FIRST listener on the box — reproduced as
+# "listener on 18080: ... 0.0.0.0:22 ... sshd". The pid match is anchored with a trailing
+# comma because `pid=1234` is a prefix of `pid=12345`.
+listener_owner() {
+    local port="$1" row pid
+    row=$(ss -tlnpH 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {print; exit}')
+    [[ -n "$row" ]] || return 1
+    pid=$(grep -oE 'pid=[0-9]+' <<< "$row" | head -1 | cut -d= -f2)
+    [[ -n "$pid" ]] || return 1
+    printf '%s/%s\n' "$pid" "$(ps -o comm= -p "$pid" 2>/dev/null || echo unknown)"
 }
 
 # Populate REPLY array with active external Caddy ports from Caddyfile.

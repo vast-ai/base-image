@@ -44,6 +44,18 @@ expect "at-threshold is ample"          "$(_vast_thread_cap $((384*16)) 384 46)"
 VAST_CPU_THREAD_CEILING=8 expect "ceiling override honoured" \
     "$(VAST_CPU_THREAD_CEILING=8 _vast_thread_cap 1024 384 46)" "8"
 
+# PIN $WORKSPACE FOR THE WHOLE FILE, not per-subshell.
+#
+# `_vast_user_set` (12-cpu-thread-limits.sh) consults ${WORKSPACE:-/workspace}/.env in
+# addition to the file under test, so on an instance whose real workspace happens to
+# carry a thread variable, every unpinned write below takes the "left at user value"
+# path — and the test then reports a WIRING failure on a completely healthy image. Only
+# some of the sections pinned it, so the failure depended on which host the cell drew.
+# An empty temp workspace is the only state in which these assertions mean what they say.
+_tmpws_file=$(mktemp -d)
+export WORKSPACE="$_tmpws_file"
+trap 'rm -rf "$_tmpws_file"' EXIT
+
 # ── 2. Write path: managed block, idempotency, override-preservation ──
 # Exercise _vast_write_caps against a temp file (no touch to real /etc/environment).
 _tmpenv=$(mktemp)

@@ -4,7 +4,15 @@
 source "$(dirname "$0")/../lib.sh"
 
 # ── Constants ────────────────────────────────────────────────────────
-SGLANG_INTERNAL_PORT=18000        # SGLang listens here (localhost); Caddy proxies 8000 with auth
+# The port the ENGINE was actually launched with, not a literal. The unconditional
+# assignment discarded an exported override AND never read SGLANG_ARGS — and the launcher
+# bakes no port (sglang.sh interpolates SGLANG_ARGS verbatim), so a template that moves
+# the engine sent this REQUIRED test to poll a dead socket for its full health timeout
+# and then fail. The sibling contract test in this same suite already derives it this
+# way, with a comment naming the hazard; the serving test did not.
+SGLANG_INTERNAL_PORT="${SGLANG_INTERNAL_PORT:-18000}"
+_declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${SGLANG_ARGS:-}" | head -1)
+[[ -n "$_declared_port" ]] && SGLANG_INTERNAL_PORT="$_declared_port"
 SGLANG_LOG="/var/log/sglang.log"
 HEALTH_TIMEOUT="${SGLANG_HEALTH_TIMEOUT:-3600}"  # 1 hour for model loading + warmup
 MAX_RESTARTS=2                                   # fail after this many supervisor restarts (crash loop)

@@ -4,7 +4,15 @@
 source "$(dirname "$0")/../lib.sh"
 
 # ── Constants (adjust as needed) ──────────────────────────────────────
-VLLM_INTERNAL_PORT=18000          # vLLM listens here (localhost); Caddy proxies 8000 with auth
+# The port the ENGINE was actually launched with, not a literal. The unconditional
+# assignment discarded an exported override AND never read VLLM_ARGS — and the launcher
+# bakes no port (vllm.sh interpolates VLLM_ARGS verbatim), so a template that moves
+# the engine sent this REQUIRED test to poll a dead socket for its full health timeout
+# and then fail. The sibling contract test in this same suite already derives it this
+# way, with a comment naming the hazard; the serving test did not.
+VLLM_INTERNAL_PORT="${VLLM_INTERNAL_PORT:-18000}"
+_declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${VLLM_ARGS:-}" | head -1)
+[[ -n "$_declared_port" ]] && VLLM_INTERNAL_PORT="$_declared_port"
 VLLM_LOG="/var/log/vllm.log"
 RAY_LOG="/var/log/ray.log"
 HEALTH_TIMEOUT="${VLLM_HEALTH_TIMEOUT:-3600}"  # 1 hour for model loading + graph compilation

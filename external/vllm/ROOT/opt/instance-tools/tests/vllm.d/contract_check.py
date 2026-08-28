@@ -573,11 +573,28 @@ def check_bind(rep: Report, rep_port: int, tokens: list[str]) -> None:
     if not bound:
         rep.error("bind-loopback", f"nothing is listening on :{rep_port} to attribute")
         return
-    wide = [a for a in bound if a.startswith(("0.0.0.0:", "*:", "[::]:"))]
-    if wide:
+    # POSITIVE predicate: the address must BE loopback. The previous form listed the
+    # wildcard spellings and passed everything else, so a check named `bind-loopback`
+    # reported ok for `172.17.0.2:18000` — the docker bridge address, genuinely reachable
+    # from co-tenant containers on the same host, and exactly what "bound to loopback and
+    # reached through Caddy, which is what authenticates" is supposed to exclude.
+    # Enumerating the bad forms cannot be complete; enumerating the good ones can.
+    def _is_loopback(addr: str) -> bool:
+        host = addr.rsplit(":", 1)[0]
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if host in ("::1",):
+            return True
+        parts = host.split(".")
+        return len(parts) == 4 and parts[0] == "127" and all(p.isdigit() for p in parts)
+
+    exposed = [a for a in bound if not _is_loopback(a)]
+    if exposed:
         rep.violation("bind-loopback",
-                      f"vLLM is bound to {wide} (--host {host_flag}) — the engine must bind "
-                      "loopback and be reached through Caddy, which is what authenticates")
+                      f"vLLM is bound to {exposed} (--host {host_flag}) — the engine must bind "
+                      "loopback and be reached through Caddy, which is what authenticates. "
+                      "A wildcard OR any routable interface address (e.g. the docker bridge, "
+                      "reachable by co-tenant containers) fails this.")
     else:
         rep.ok("bind-loopback", f"listening on {bound} (--host {host_flag})")
 

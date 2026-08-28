@@ -120,6 +120,11 @@ discover_tests() {
         done < <(find "$d" -name '*.sh' -executable | sort)
     done < <(find "${TESTS_DIR}" -maxdepth 1 -name '*.d' -type d | sort)
 
+    # Guard the empty case explicitly: `printf '%s\n' "${empty[@]}"` emits one BLANK
+    # LINE, not nothing, so the caller's `mapfile` yields a one-element array holding ""
+    # and the zero-test guard downstream is unreachable — the runner would log
+    # "Discovered 1 tests" and then exec `bash ""`, which exits 127.
+    (( ${#tests[@]} )) || return 0
     printf '%s\n' "${tests[@]}"
 }
 
@@ -404,20 +409,23 @@ fi
 # In automated mode, wait for a client to connect before running tests.
 # This ensures the SSE stream is established and no results are missed.
 if [[ "$MANUAL" == "false" ]]; then
-    wait_for_client
-
-    # OPEN_BUTTON_TOKEN is required in automated mode — without a real token
-    # the results server is unauthenticated on a public port.
-    # "1" is a Vast placeholder meaning "enabled", not a valid secret.
-    # Check after client connects so the failure is visible via SSE.
+    # BEFORE wait_for_client, deliberately. This used to run after, "so the failure is
+    # visible via SSE" — but that is exactly the window the guard exists to close: the
+    # results server is already bound on a mapped public port, _check_auth returns True
+    # unconditionally when the token is falsy, and GET /test-stream calls
+    # signal_client_ready() before serving. So an unauthenticated stranger could read the
+    # stream AND release the wait. Losing the SSE delivery of this one message is the
+    # correct trade: it still reaches the instance log, and refusing to serve at all is
+    # the point.
     _obt="${OPEN_BUTTON_TOKEN:-}"
     if [[ -z "$_obt" || "$_obt" == "1" ]]; then
         echo "FATAL: OPEN_BUTTON_TOKEN is not set or invalid (got '${_obt:-}')." | log_output
         echo "  The template must provide a real token for results server auth." | log_output
         write_results "failed"
-        sleep 5  # give SSE client time to receive the failure
         exit 1
     fi
+
+    wait_for_client
 fi
 
 # No blind provisioning wait — test 12-provisioning.sh handles monitoring.
@@ -425,11 +433,20 @@ fi
 
 # Discover tests
 mapfile -t ALL_TESTS < <(discover_tests)
+# Drop any empty element regardless of what the producer did — a blank path silently
+# becomes `bash ""` (exit 127) attributed to a test that does not exist.
+_kept=(); for _t in "${ALL_TESTS[@]}"; do [[ -n "$_t" ]] && _kept+=("$_t"); done
+ALL_TESTS=("${_kept[@]}")
 
 if [[ ${#ALL_TESTS[@]} -eq 0 ]]; then
-    echo "No tests found in ${TESTS_DIR}"
-    write_results "passed"
-    exit 0
+    # NOT "passed". This branch is upstream of the INSTANCE_TEST_REQUIRE_PASS check, and
+    # test_template.py trusts the verdict it reports — so a suite that discovered nothing
+    # would certify an image it never touched. Discovering zero tests inside an image
+    # that ships base/*.sh means the suite itself is broken (a bad TESTS_DIR, a lost
+    # executable bit), which is a failure, not a pass.
+    echo "No tests found in ${TESTS_DIR} — the suite is broken, not empty"
+    write_results "failed"
+    exit 1
 fi
 
 echo "Discovered ${#ALL_TESTS[@]} tests" | log_output

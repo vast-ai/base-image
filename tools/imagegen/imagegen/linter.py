@@ -99,6 +99,11 @@ RULES: list[tuple[str, str, str]] = [
     ("L078", ERROR, "An image that bakes a serverless `BACKEND` served by pyworker's OpenAI-compatible core (vllm/sglang/llama/openai) must pin its engine to 127.0.0.1:18000, and must pin it somewhere a template cannot silently erase. That address is not negotiable and cannot be overridden: `MODEL_SERVER_URL = \"http://127.0.0.1\"` and `MODEL_SERVER_PORT = 18000` are module CONSTANTS in vastai/pyworker `workers/openai/core.py` — unlike every other value the same file reads (MODEL_LOG, MODEL_HEALTH_ENDPOINT, MODEL_LOAD_LOG_MSG, and the model name across four spellings), all of which ARE `os.environ` reads. Two arms, because the two sides get it wrong differently. (a) The image must not hide the pin inside a `${VAR:-...}` default. `llama.sh` shipped `pty llama-server -hf \"$LLAMA_MODEL\" ${LLAMA_ARGS:---port 18000}`, and that default applies only when LLAMA_ARGS is entirely UNSET — a template setting it for any unrelated reason (`-ngl 99`, `--ctx-size 8192`) erased the port and llama-server fell back to its own default of 8080 (llama.cpp `common.h`: `int32_t port = 8080`), breaking both the worker proxy and the portal API entry PORTAL_CONFIG fronts at 18000. Nothing could catch it: `10-llama-serving.sh` carried a COMMENT describing the quirk and no assertion, and the QA template happens to pass the port, so every cell stayed green — a defect documented into permanence instead of gated. (b) vLLM and SGLang supply no image-side default at all; `vllm.sh`/`sglang.sh` interpolate `${VLLM_ARGS:-}`/`${SGLANG_ARGS:-}` bare, so for them the address exists ONLY in the template, and a template that omits it leaves vLLM on its own default of `0.0.0.0:8000` — not merely unreachable by the worker but PUBLICLY bound, the shape the loopback-behind-Caddy rule exists to prevent. So a gating QA template for such an image must pin both `--host 127.0.0.1` and `--port 18000` in an engine-args variable. Scope honestly: this reaches the templates in THIS repo, which is what a production template is copied from — it cannot see published templates that live outside it, and it checks that the pin is PRESENT, not that the engine honoured it (llama.d/10 and the serverless cell do that live). Out of scope by construction: backends whose worker hardcodes a different address (comfyui-json/ace/wan at 18288, tgi at 5001). comfyui carries the same erasable SHAPE in `${COMFYUI_ARGS:-...}` without the same contract — its worker port 18288 is pinned unconditionally in `api-wrapper.sh`, and every template plus the README states the port as part of a whole-string replacement"),
     ("L079", ERROR, "A QA gate that turns serverless ON must pin REPORT_ADDR to an address that CANNOT resolve. The serverless worker POSTs its status to `${REPORT_ADDR}/worker_status/` and both layers default that variable to the real production autoscaler — `start_server.sh`: `REPORT_ADDR=\"${REPORT_ADDR:-https://run.vast.ai}\"`, and the SDK's `backend.py`: `os.environ.get(\"REPORT_ADDR\", \"https://run.vast.ai\")`. So a cell that sets nothing does not go nowhere; it goes to production. Measured 2026-08-27: every declared serverless cell on sglang and llama-cpp had been announcing itself to `https://run.vast.ai/worker_status/` with an unset MASTER_TOKEN and a real CONTAINER_ID, from disposable QA instances, on every run since those cells existed — phantom workers reporting to the live autoscaler, which nobody chose and nobody would have looked for. The cause is a GOOD rule applied to the wrong variable: those cells deliberately pass nothing beyond `SERVERLESS=true` so that BACKEND, MODEL_NAME and MODEL_LOG are read from the image's own bakes rather than overridden by the gate — correct for product configuration, and wrong for the address of a live external service, where 'inherit the default' means 'inherit production'. This is an ALLOWLIST on the value, not a blocklist of known production hosts: the host must be under the RFC 2606 reserved `.invalid` TLD or a loopback literal, because blocklisting `run.vast.ai` would pass every other real endpoint someone might reach for next — the same enumerate-the-failures shape that let a cancelled run announce a promotion. Scoped to gates that actually enable serverless, declared or inferred, read from the caller's extra_env: a cell that never turns the worker on cannot post anything and is not asked to declare an address"),
     ("L080", ERROR, "No shipped template declares UNSECURED. It is a QA-only lever and it belongs in a gate's `extra_env`, never in a template.yml. `UNSECURED=true` makes the serverless worker skip TWO things: the pubkey gate that blocks marking the model loaded, and `__check_signature`, which then returns True for every inbound request without verifying it — so on a live worker it turns off request-signature verification entirely. The QA cells set it deliberately, and only because they also set an unresolvable sentinel REPORT_ADDR (L079): `GET ${REPORT_ADDR}/pubkey/` cannot succeed against `.invalid`, so the gate is guaranteed to fail for a reason QA created, and skipping it masks nothing that any configuration of ours could have made pass. Measured on a live debug instance: benchmark score 995.55 written, then `Cannot mark model as loaded: pubkey fetch failed`. That reasoning holds ONLY where the sentinel holds. A template has no sentinel, reaches the real autoscaler, and is — by L079's own argument — what a production template gets copied from, so the flag would travel from a QA artefact into a customer-facing one and silently disable authentication on a real endpoint. The extra_env/template split is the whole control: scaffolding stays in the workflow where a copy cannot pick it up"),
+    ("L082", ERROR, "No shipped instance test decides a BIND ADDRESS by matching an `ss` line as a whole. `ss -tln` prints `State Recv-Q Send-Q Local:Port Peer:Port`, and for a LISTENING socket the peer column is always `0.0.0.0:*` (or `[::]:*`). So `ss -tln | grep -q '0.0.0.0:'` matches every listener ever printed, whatever it actually bound to — the address being tested is in field 4 and the match lands on field 5. Measured live on a QA host: `LISTEN 0 2048 127.0.0.1:18888 0.0.0.0:*` — a correct loopback bind — reported as `bound to a PUBLIC interface` and failed the cell, then burned two redraws reproducing an image-independent test bug on fresh hardware. The same mistake sits in `base/65-conditional-services` pointing the other way: it expects 0.0.0.0 there, so the always-true match returns the desired answer by accident and its WARN branch can never fire — a check that cannot fail, which is the shape this suite exists to eliminate. Extract the local address (`awk '{print $4}'`, or `ss -tlnH` and read field 4) and match THAT, anchored at the start so `0.0.0.0` cannot match inside a port or a v6 form. Scoped to address matching: reading an `ss` line to find a PORT (`grep -q \":${port} \"`) or a pid is unaffected, because neither is ambiguous across columns"),
+    ("L083", ERROR, "`fail_later` is called with exactly two arguments. lib.sh's signature is `fail_later LABEL MSG`: a third argument is silently DROPPED, the operator's message truncates mid-sentence, and — because callers reach for a third arg by splitting prose across line continuations — the whole first fragment becomes the FAILURES label, so `report_failures` emits a sentence where a greppable label belongs. Found twice in base/67-service-functionality, where a syncthing failure reported `syncthing config.xml has a listen address with an EMPTY port` as its LABEL and lost the two clauses that said what to do about it. Exact and false-positive-free: the rule counts top-level quoted arguments on the call"),
+    ("L084", ERROR, "A `curl -w '%{http_code}'` capture is not followed by `|| echo <status>`. curl WRITES the -w template and THEN exits non-zero on a connection failure, so `code=$(curl -w '%{http_code}' … || echo 000)` yields `000000` — matching neither the 000 arm the author wrote nor any success arm, so a dead socket is reported as whatever the final `*)` says (in unsloth.d/10: \"the app is not serving\"). curl already emits `000` itself; the fallback is not merely redundant, it corrupts the value. NOT extended to every literal `--max-time` in a test: that was tried and rejected on evidence. L070's 20s floor is measured on a cost-14 bcrypt verification behind Caddy's auth, and applying it repo-wide fired on 15 plain loopback /health probes where no such cost exists. The floor belongs to the authenticated path, and `http_check` — which is L070-gated — is how a test reaches it"),
+    ("L085", ERROR, "A shipped test's `# TEST_TIMEOUT=N` header exceeds every readiness-timeout DEFAULT declared in the same file. runner.sh execs each test under `timeout ${TEST_TIMEOUT}`, so a wait budgeted longer than the file's own header can never complete: it is killed mid-wait and reported as `FAILED (timeout after Ns)` naming no check at all — the least actionable failure the harness can produce. Measured on llama.d/11-llama-offload, which declared TEST_TIMEOUT=1800 and then waited up to 3600s for readiness. The check reads the same header runner.sh parses, so the two cannot disagree about what the budget is"),
+    ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
 
@@ -2369,10 +2374,9 @@ def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
     if not re.search(r"(?:\btest|\[\[?)\s+-f\s+\S*libggml-cuda\.so", code):
         yield Finding("L056", ERROR, img.name, "Dockerfile",
                       "source-builds Unsloth Studio's llama.cpp (`unsloth studio setup`) but has no "
-                      "post-build existence assertion for the CUDA backend — the GPU-less docker build "
+                      "existence assertion for the CUDA backend — the GPU-less docker build "
                       "silently produces a CPU-only binary; add a `test -f …/libggml-cuda.so || exit 1` "
                       "guard (a bare mention of the filename does not count) (ADR 0016)")
-
 
 # ADR 0016 at runtime. The evidence tokens are deliberately about the RUNNING server,
 # not about the image's contents: `test -f libggml-cuda.so` passes on an image whose
@@ -2916,10 +2920,236 @@ def check_no_template_declares_unsecured(repo: Path) -> Iterable[Finding]:
                               "template cannot pick up (L079, L080)")
 
 
+# `ss -tln` columns: State Recv-Q Send-Q Local:Port Peer:Port. For a LISTENER the peer
+# column is ALWAYS 0.0.0.0:* / [::]:*, so a whole-line match for a wildcard address is
+# true for every listener regardless of its actual bind (L082).
+_SS_INVOCATION = re.compile(r"\bss\s+-[a-zA-Z]*t[a-zA-Z]*l[a-zA-Z]*n")
+_WILDCARD_ADDR = re.compile(r"0\\?\.0\\?\.0\\?\.0|\\\[::\\\]|\[::\]")
+# Evidence the LOCAL field was isolated before matching.
+# Only the SHARED helpers count. A bare `$4` was accepted as proof of correctness, and
+# that is precisely how 67-service-functionality's awk passed lint while reporting the
+# first listener on the box (sshd on :22): its program had been destroyed by shell
+# quoting into a constant-true pattern, and it still contained a `$4`. Hand-rolled ss
+# parsing has been wrong every time it has been written here.
+_LOCAL_FIELD = re.compile(r"listener_local_addr|listener_is_public|listener_owner")
+
+
+def check_bind_address_reads_the_local_field(repo: Path) -> Iterable[Finding]:
+    """L082 — a bind-address verdict must come from ss's LOCAL column, not the whole line."""
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").rglob("ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").rglob("ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sh in sorted(root.rglob("*.sh")):
+            try:
+                body = sh.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for lineno, raw in enumerate(body.splitlines(), 1):
+                # Comment-stripped: the files that DOCUMENT this trap quote the broken
+                # form verbatim, and firing on the explanation is the trap one level up.
+                line = _strip_comment(raw)
+                if not _SS_INVOCATION.search(line) or not _WILDCARD_ADDR.search(line):
+                    continue
+                if _LOCAL_FIELD.search(line):
+                    continue
+                try:
+                    rel = str(sh.relative_to(repo))
+                except ValueError:
+                    rel = sh.name
+                yield Finding("L082", ERROR, "-", f"{rel}:{lineno}",
+                              "decides a bind address by matching an `ss` line as a whole — the peer "
+                              "column is 0.0.0.0:* for EVERY listener, so this is true regardless of "
+                              "what the socket actually bound to. Extract the local address (field 4) "
+                              "and match that, anchored (L082)")
+
+
+# lib.sh: `fail_later LABEL MSG`. A third argument is dropped and the prose fragment
+# becomes the label (L083).
+_FAIL_LATER_CALL = re.compile(r"\bfail_later\s+(.*)$")
+
+def _quoted_arg_count(text: str) -> int:
+    """Count TOP-LEVEL double-quoted arguments in a shell call's argument text.
+
+    Command substitutions are skipped, quotes and all. A naive quote count reported
+    `fail_later "label" "msg: $(echo "$x" | tail -3)"` as three arguments — the two
+    quotes inside the substitution are not argument boundaries, they are nested shell.
+    That was a false ERROR on a correct call, which is the failure mode a linter can
+    least afford.
+    """
+    n, i, depth = 0, 0, 0
+    quote = ""            # "" | '"' | "'"
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            i += 2; continue
+
+        # Inside a command substitution nothing else matters until it closes. Quotes in
+        # there belong to the nested shell, not to this call's arguments.
+        if depth:
+            if text[i:i + 2] == "$(":
+                depth += 1; i += 2; continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1; continue
+
+        # A `$( )` is STILL a substitution inside double quotes — that is the whole point
+        # of `"msg: $(echo "$x")"`. Treating the inner quotes as argument boundaries made
+        # that read as three arguments and reported a correct call as a defect.
+        if quote != "'" and text[i:i + 2] == "$(":
+            depth += 1; i += 2; continue
+
+        if quote:
+            if c == quote:
+                quote = ""
+            i += 1; continue
+
+        # The CALL ends at the first unquoted statement separator. Counting past it made
+        # `fail_later "a" "b"; echo "c"` read as three arguments.
+        if c in ";&|":
+            break
+        if c in "\"'":
+            n += 1
+            quote = c
+        i += 1
+    return n
+
+
+def _shipped_test_files(repo: Path):
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").rglob("ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").rglob("ROOT/opt/instance-tools/tests"))
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sh in sorted(root.rglob("*.sh")):
+            yield sh
+
+
+def check_fail_later_arity(repo: Path) -> Iterable[Finding]:
+    """L083 — fail_later takes LABEL and MSG; a third arg is silently dropped."""
+    for sh in _shipped_test_files(repo):
+        try:
+            body = sh.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # Join line continuations first: the offending calls split prose across them.
+        joined, buf, start = [], "", 0
+        for lineno, raw in enumerate(body.splitlines(), 1):
+            line = _strip_comment(raw)
+            if not buf:
+                start = lineno
+            buf += line.rstrip("\\")
+            if line.rstrip().endswith("\\"):
+                continue
+            joined.append((start, buf)); buf = ""
+        for lineno, line in joined:
+            m = _FAIL_LATER_CALL.search(line)
+            if not m or "()" in line:
+                continue
+            if _quoted_arg_count(m.group(1)) > 2:
+                yield Finding("L083", ERROR, "-",
+                              f"{sh.relative_to(repo)}:{lineno}",
+                              "fail_later called with more than two arguments — lib.sh takes "
+                              "LABEL and MSG, so the extra is DROPPED and the prose fragment "
+                              "becomes the FAILURES label (L083)")
+
+
+# Match the capture and its fallback inside ONE command substitution. Two earlier forms
+# were both wrong and in opposite directions: a per-line regex missed the real defect
+# entirely (the `curl` and the `|| echo` sit either side of a line continuation), and a
+# whole-line form fired on `code=$(curl -w '%{http_code}' …); [[ … ]] || echo WARN`,
+# where the fallback belongs to a LATER statement and is correct.
+_CURL_CODE_FALLBACK = re.compile(
+    r"\$\((?:[^()]|\$\([^()]*\))*%\{http_code\}(?:[^()]|\$\([^()]*\))*\|\|\s*echo",
+    re.S)
+
+
+def check_curl_status_capture(repo: Path) -> Iterable[Finding]:
+    """L084 — no `|| echo` after a %{http_code} capture; --max-time meets L070's floor."""
+    for sh in _shipped_test_files(repo):
+        try:
+            body = sh.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # Join line continuations before matching: the defect this rule exists for spans
+        # one, and a per-line scan could not see it.
+        joined, buf, start = [], "", 0
+        for lineno, raw in enumerate(body.splitlines(), 1):
+            line = _strip_comment(raw)
+            if not buf:
+                start = lineno
+            buf += line.rstrip("\\")
+            if line.rstrip().endswith("\\"):
+                continue
+            joined.append((start, buf)); buf = ""
+        if buf:
+            joined.append((start, buf))
+        for lineno, line in joined:
+            if _CURL_CODE_FALLBACK.search(line):
+                yield Finding("L084", ERROR, "-", f"{sh.relative_to(repo)}:{lineno}",
+                              "`curl -w '%{http_code}' … || echo …` — curl writes the template "
+                              "THEN exits non-zero, so the fallback APPENDS and the capture "
+                              "becomes e.g. `000000`, matching no arm the author wrote. curl "
+                              "already emits 000 (L084)")
+
+
+_TEST_TIMEOUT_HDR = re.compile(r"^#\s*TEST_TIMEOUT=(\d+)", re.M)
+_READY_DEFAULT = re.compile(r"^\s*\w*(?:TIMEOUT|_TIMEOUT)\w*=\"?\$\{[A-Z_]+:-(\d+)\}", re.M)
+
+
+def check_test_timeout_covers_its_waits(repo: Path) -> Iterable[Finding]:
+    """L085 — the file's TEST_TIMEOUT must exceed every readiness default it declares."""
+    for sh in _shipped_test_files(repo):
+        try:
+            body = sh.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        hdr = _TEST_TIMEOUT_HDR.search(body)
+        if not hdr:
+            continue
+        budget = int(hdr.group(1))
+        for m in _READY_DEFAULT.finditer(body):
+            val = int(m.group(1))
+            if val >= budget:
+                lineno = body[:m.start()].count("\n") + 1
+                yield Finding("L085", ERROR, "-", f"{sh.relative_to(repo)}:{lineno}",
+                              f"a readiness default of {val}s is not less than this file's own "
+                              f"`# TEST_TIMEOUT={budget}` — runner.sh execs the test under "
+                              f"`timeout {budget}`, so the wait is killed mid-flight and reported "
+                              f"as a bare timeout naming no check (L085)")
+
+
+_SERVICE_RUNNING_GUARD = re.compile(r"\bservice_running\b[^\n]*&&[^\n]*\bwait_for_port\b")
+
+
+def check_running_is_not_a_serving_verdict(repo: Path) -> Iterable[Finding]:
+    """L086 — RUNNING plus a port wait must be assert_service_serving, not an `if` guard."""
+    for sh in _shipped_test_files(repo):
+        try:
+            body = sh.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for lineno, raw in enumerate(body.splitlines(), 1):
+            line = _strip_comment(raw)
+            if _SERVICE_RUNNING_GUARD.search(line):
+                yield Finding("L086", ERROR, "-", f"{sh.relative_to(repo)}:{lineno}",
+                              "`service_running … && wait_for_port …` as a guard collapses "
+                              "'not configured', 'RUNNING but never bound' and 'no such program' "
+                              "into one silent skip — a hung service reports ALL TESTS PASSED. "
+                              "Use assert_service_serving and decide 'configured' positively (L086)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
-    check_no_template_declares_unsecured]
+    check_no_template_declares_unsecured, check_bind_address_reads_the_local_field,
+    check_fail_later_arity, check_curl_status_capture,
+    check_test_timeout_covers_its_waits, check_running_is_not_a_serving_verdict]
 
 
 def lint_repo(repo: Path) -> list[Finding]:
