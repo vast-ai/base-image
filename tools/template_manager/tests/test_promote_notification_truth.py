@@ -688,3 +688,97 @@ def test_the_guard_runs_when_a_BUILD_workflow_changes():
                    for p in paths), (
             f"imagegen-tests.yml does not run on {event} to .github/workflows/**, so the "
             f"notification-truth guard cannot see a headline edit; paths={paths}")
+
+
+# ---- an ADVISORY cell must not block by omission (2026-08-27) ----------------
+#
+# The serverless cells sit on ADR 0006's advisory ramp: named in merge-manifests' `needs`
+# so they are ORDERED ahead of the production approval prompt, absent from its `if` so
+# they cannot BLOCK. Every workflow's comment says exactly that.
+#
+# It is not true by default. A job named in `needs` blocks unless you say otherwise:
+# GitHub implicitly skips a job when anything it needs fails, and only `!cancelled()`
+# (or `always()`) switches that off. build-comfyui.yml carried the ramp comment while its
+# `if` was a bare `needs.preflight.outputs.should-run == 'true'` — so adding the two cells
+# to `needs` silently made them GATING, and one config_error skipped merge-manifests on a
+# run whose four other cells were green. The documentation said advisory and the machinery
+# said blocking.
+
+
+def _serverless_cell_names(jobs: dict) -> set:
+    """Jobs that hand qa-gate.yml an extra_env which turns serverless on."""
+    out = set()
+    for jn, j in jobs.items():
+        if not isinstance(j, dict) or not str(j.get("uses", "")).endswith("qa-gate.yml"):
+            continue
+        env = str((j.get("with") or {}).get("extra_env", "") or "")
+        pairs = dict(ln.split("=", 1) for ln in env.splitlines()
+                     if "=" in ln and not ln.lstrip().startswith("#"))
+        declared = pairs.get("SERVERLESS", "").strip().lower() == "true"
+        inferred = bool(pairs.get("MASTER_TOKEN", "").strip() and pairs.get("REPORT_ADDR", "").strip())
+        if declared or inferred:
+            out.add(jn)
+    return out
+
+
+def test_an_advisory_serverless_cell_cannot_block_the_promotion_job():
+    """Wherever a serverless cell is wired for ORDERING, the promoting job must carry
+    `!cancelled()` — otherwise the cell gates, which is the opposite of the ramp."""
+    bad = []
+    for f in sorted(WF.glob("*.yml")):
+        try:
+            data = yaml.safe_load(f.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        jobs = data.get("jobs") or {}
+        cells = _serverless_cell_names(jobs)
+        if not cells:
+            continue
+        for promoter in _PROMOTING_JOBS:
+            job = jobs.get(promoter)
+            if not isinstance(job, dict):
+                continue
+            needs = job.get("needs") or []
+            if isinstance(needs, str):
+                needs = [needs]
+            wired = cells & set(needs)
+            if not wired:
+                continue
+            cond = " ".join(str(job.get("if", "")).split())
+            if "!cancelled()" not in cond and "always()" not in cond:
+                bad.append(
+                    f"{f.name}:{promoter} needs {sorted(wired)} for ordering but its `if` "
+                    f"has no !cancelled(), so those cells BLOCK by GitHub's default")
+    assert not bad, "advisory cells that actually gate:\n  " + "\n  ".join(bad)
+
+
+def test_the_ramp_still_blocks_on_the_things_it_should():
+    """The other half: `!cancelled()` switches off the implicit skip for EVERYTHING, so
+    the results that must still block have to be named explicitly. Turning the ramp on
+    without naming them would let a red build or a red standard cell promote."""
+    bad = []
+    for f in sorted(WF.glob("*.yml")):
+        try:
+            data = yaml.safe_load(f.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        jobs = data.get("jobs") or {}
+        if not _serverless_cell_names(jobs):
+            continue
+        for promoter in _PROMOTING_JOBS:
+            job = jobs.get(promoter)
+            if not isinstance(job, dict):
+                continue
+            cond = " ".join(str(job.get("if", "")).split())
+            if "!cancelled()" not in cond:
+                continue
+            needs = job.get("needs") or []
+            for must in ("build", "qa"):
+                if must in needs and f"needs.{must}.result == 'success'" not in cond:
+                    bad.append(f"{f.name}:{promoter} disables the implicit skip but never "
+                               f"requires `{must}` to succeed")
+    assert not bad, "\n  ".join(bad)
