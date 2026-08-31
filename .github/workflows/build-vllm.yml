@@ -113,8 +113,10 @@ jobs:
           # that still ship both don't produce duplicate CUDA 13.0 builds.
           MATRIX=$(echo "$VARIANTS" | jq -c --arg version "$VERSION" '
             map(
-              # Skip arch-specific tags (we use multi-arch builds)
-              select(test("-(x86_64|aarch64)") | not)
+              # Skip arch-specific tags (we use multi-arch builds).
+              # Releases suffix -x86_64/-aarch64; per-model dev tags
+              # (e.g. glm53-flash-arm64-cu130) use -arm64 instead.
+              select(test("-(x86_64|aarch64|arm64)") | not)
               # Skip ubuntu2404 (and any other non-CUDA) variants
               | select(test("-ubuntu") | not)
             )
