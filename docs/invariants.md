@@ -941,6 +941,39 @@ QA cell has ever proved that worker status REACHES the autoscaler, and none can 
 require POSTing fabricated status to production with a fake token. The cells now decline to
 imply otherwise rather than quietly doing the real thing.
 
+### A CUDA label is read off the ARTIFACT, never inferred from the tag name — ADR 0035
+
+An upstream tag's spelling is not a stable statement about its contents, because we do
+not control the vocabulary and upstream can re-point a name without renaming it.
+
+`vllm/vllm-omni` did exactly that: the bare tag meant CUDA 12.9 up to `v0.18.0` and
+CUDA 13.0 from `v0.20.0`, with no `-cu130` variant published to signal the change.
+`build-vllm-omni.yml` hardcoded bare -> 12.9, so five published tags
+(`v0.20.0` through `v0.28.0`, `-cuda-12.9`) contain CUDA **13.0.2**. The CUDA minor
+drives host driver matching, so an understated label can place an image on a host whose
+driver cannot run it. The genuine 12.9 image (`minimax-h3-cu129`) was never built,
+because the mapper had no `-cu129` branch.
+
+The trap worth recording: `build-vllm.yml` had already met this change and answered it
+with `$has_cu130` — treat the bare tag as 13.0 only when no explicit `-cu130` exists.
+Copying that to omni looks like the obvious fix and is wrong, because omni has never
+published `-cu130`; verified against live tags, it relabels the genuinely-12.9
+`v0.14.0`/`v0.16.0`/`v0.18.0` images as 13.0. **A heuristic that is correct for one
+upstream is not correct for another that spells things differently.**
+
+So: read `CUDA_VERSION` from the upstream image config, truncate to `major.minor`, and
+skip any variant whose CUDA cannot be read rather than defaulting it. Selection is
+anchored to `^<version>(-cu[0-9]+)?$` (as `build-sglang.yml:118` already does), which is
+what makes reading the artifact safe — `startswith` alone admits `v0.28.0rc1` and
+`v0.26.0post1.*`, whose configs resolve to a real CUDA and would enter the matrix as
+duplicates.
+
+**Not yet gated, and deliberately so.** The natural rule — no workflow assigns a literal
+CUDA version to an upstream bare tag — would fire on `build-vllm.yml:131`, which still
+uses the `$has_cu130` heuristic. That is a known exception, not an oversight: it is
+correct for `vllm/vllm-openai` today. Gating this means converting that workflow too, and
+per the Bug -> Invariant protocol the baseline must be clean before the rule lands.
+
 ### A Slack headline may claim a promotion only where the promotion SUCCEEDED — **GATED (test_promote_notification_truth.py)**
 
 The rule is one sentence: **enumerate the way it goes RIGHT, never the ways it goes wrong.**

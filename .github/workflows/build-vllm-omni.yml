@@ -91,6 +91,20 @@ jobs:
           trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.VLLM_OMNI_VERSION }}
 
+      # The matrix step reads each upstream image's config to learn its real CUDA
+      # version. Authenticate first: anonymous manifest reads share a per-IP quota
+      # with every other job on the runner fleet, and a 429 here would look like
+      # "no CUDA_VERSION" and silently drop variants.
+      - name: Log in to Docker Hub
+        if: >-
+          inputs.VLLM_OMNI_VERSION != 'nightly'
+          && steps.release-check.outputs.new-release == 'true'
+          && steps.secrets.outputs.available == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build matrix from variant tags
         id: build-matrix
         if: inputs.VLLM_OMNI_VERSION != 'nightly' && steps.release-check.outputs.new-release == 'true'
@@ -107,25 +121,61 @@ jobs:
           VARIANTS=$(cat /tmp/variants.json)
           echo "Available variants: $VARIANTS"
 
-          # Convert variant tags to build matrix
-          # Base tag (v0.14.0) is CUDA 12.9, -cu130 is CUDA 13.0
-          MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
-            map(
-              # Skip arch-specific tags (we use multi-arch builds)
-              select(test("-(x86_64|aarch64)") | not)
-            )
-            | map(
-              if . == $ver then
-                {tag: ., cuda: "12.9"}
-              elif endswith("-cu130") then
-                {tag: ., cuda: "13.0"}
-              elif endswith("-cu128") then
-                {tag: ., cuda: "12.8"}
-              else
-                empty
-              end
-            )
+          # Select only the tags this version owns: the bare tag and its
+          # explicit -cuNNN variants. Anchored on both ends, so neighbouring
+          # families (v0.28.0rc1, v0.26.0post1.*) and arch-specific tags
+          # (-x86_64/-aarch64/-arm64, and upstream's typo spellings) cannot
+          # leak in. Same shape as build-sglang.yml's selection.
+          CANDIDATES=$(echo "$VARIANTS" | jq -r --arg ver "$VERSION" '
+            .[] | select(test("^" + $ver + "(-cu[0-9]+)?$"))
           ')
+
+          # Read the CUDA version out of the ARTIFACT, never off the tag name.
+          # Upstream changed what the bare tag MEANS -- 12.9 before v0.20.0,
+          # 13.0 from v0.20.0 -- without changing how it is spelled, and it
+          # publishes no -cu130 here to disambiguate. A name-based rule was
+          # therefore wrong for one era or the other, and shipped five tags
+          # labelled cuda-12.9 that contain CUDA 13.0.2 (ADR 0035).
+          MATRIX="[]"
+          while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              # `|| true` on both stages: an unreadable tag must reach the guard
+              # below, not abort the step. Without it this line is one `shell: bash`
+              # away from dying on pipefail instead of warning.
+              config=$(docker buildx imagetools inspect \
+                  --format '{{ json .Image }}' "vllm/vllm-omni:${tag}" 2>/dev/null || true)
+              # An index reports one config per platform. Take the distinct set: if
+              # the platforms disagree there is no single right answer, so fail
+              # rather than pick one.
+              mapfile -t cuda_seen < <(printf '%s' "$config" \
+                  | jq -r '[.. | objects | select(has("Env")) | .Env[]?
+                            | select(startswith("CUDA_VERSION="))] | unique | .[]' 2>/dev/null \
+                  | cut -d= -f2 || true)
+              if (( ${#cuda_seen[@]} > 1 )); then
+                  echo "::error::${tag}: platforms report different CUDA versions (${cuda_seen[*]}); refusing to label this image"
+                  exit 1
+              fi
+              cuda_full="${cuda_seen[0]:-}"
+              if [[ -z "$cuda_full" ]]; then
+                  echo "::warning::${tag}: image config reports no CUDA_VERSION; refusing to guess, skipping this variant"
+                  continue
+              fi
+              # 13.0.2 -> 13.0
+              cuda="${cuda_full%.*}"
+              echo "  ${tag} -> CUDA ${cuda} (image reports ${cuda_full})"
+              MATRIX=$(echo "$MATRIX" | jq -c --arg t "$tag" --arg c "$cuda" '. + [{tag: $t, cuda: $c}]')
+          done <<< "$CANDIDATES"
+
+          # Two variants resolving to the same CUDA version would publish to one
+          # output tag, and the loser would be silently overwritten.
+          COLLISIONS=$(echo "$MATRIX" | jq -r '
+            group_by(.cuda) | map(select(length > 1)) | .[]
+            | "CUDA " + .[0].cuda + ": " + (map(.tag) | join(", "))
+          ')
+          if [[ -n "$COLLISIONS" ]]; then
+              echo "::error::Variants collide on one output tag: ${COLLISIONS}"
+              exit 1
+          fi
 
           echo "Build matrix: $MATRIX"
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
