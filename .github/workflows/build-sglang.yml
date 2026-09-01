@@ -65,14 +65,51 @@ jobs:
             echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
+      # The nightly step reads the upstream image's config to learn its real CUDA
+      # version. Authenticate first: anonymous manifest reads share a per-IP quota
+      # with every other job on the runner fleet, and a 429 here is indistinguishable
+      # from "no CUDA_VERSION".
+      - name: Log in to Docker Hub
+        if: inputs.SGLANG_VERSION == 'nightly' && steps.secrets.outputs.available == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Handle nightly build
         id: nightly-check
         if: inputs.SGLANG_VERSION == 'nightly'
         run: |
+          set -uo pipefail
           echo "is-nightly=true" >> $GITHUB_OUTPUT
           echo "version=nightly-$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
-          echo 'matrix=[{"tag":"dev","cuda":"12.9"}]' >> $GITHUB_OUTPUT
-          echo "Nightly build requested - using upstream 'dev' tag"
+
+          # Read the CUDA version off the ARTIFACT, never off the tag name (ADR 0035).
+          # This was hardcoded to 12.9. Upstream moved `dev` to CUDA 13 without
+          # renaming it -- on 2026-09-01 lmsysorg/sglang:dev reported 13.0.3 -- so
+          # every nightly we published as -cuda-12.9 carried CUDA 13. The genuine
+          # 12.9 line moved to the `dev-cu12` tag, which this path does not build.
+          config=$(docker buildx imagetools inspect \
+              --format '{{ json .Image }}' lmsysorg/sglang:dev 2>/dev/null || true)
+          # An index reports one config per platform; if they disagree there is no
+          # single right answer, so fail rather than pick one.
+          mapfile -t cuda_seen < <(printf '%s' "$config" \
+              | jq -r '[.. | objects | select(has("Env")) | .Env[]?
+                        | select(startswith("CUDA_VERSION="))] | unique | .[]' 2>/dev/null \
+              | cut -d= -f2 || true)
+          if (( ${#cuda_seen[@]} > 1 )); then
+              echo "::error::lmsysorg/sglang:dev reports different CUDA versions per platform (${cuda_seen[*]}); refusing to label it"
+              exit 1
+          fi
+          cuda_full="${cuda_seen[0]:-}"
+          if [[ -z "$cuda_full" ]]; then
+              echo "::error::could not read CUDA_VERSION from lmsysorg/sglang:dev; refusing to guess a label"
+              exit 1
+          fi
+          # 13.0.3 -> 13.0
+          CUDA="${cuda_full%.*}"
+          echo "matrix=[{\"tag\":\"dev\",\"cuda\":\"${CUDA}\"}]" >> $GITHUB_OUTPUT
+          echo "Nightly build requested - upstream 'dev' reports CUDA ${cuda_full}, labelling ${CUDA}"
 
       - name: Check release and resolve version
         id: release-check
