@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-08-26
+ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-01
 FROM ${PYTORCH_BASE}
 
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
