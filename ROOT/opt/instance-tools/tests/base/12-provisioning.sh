@@ -65,28 +65,43 @@ get_log_mtime() {
     stat -c '%Y' "$PROV_LOG" 2>/dev/null || echo "0"
 }
 
-# Count descendant processes of the provisioner (pip, git, apt, curl, wget, etc.)
-provisioner_children() {
-    local prov_pid
-    prov_pid=$(pgrep -f "provisioner" 2>/dev/null | head -1)
-    if [[ -n "$prov_pid" ]]; then
-        # Count all descendants
-        pgrep -P "$prov_pid" 2>/dev/null | wc -l
-    else
-        echo "0"
+# Work the provisioner is DOING, counted as its live descendants.
+#
+# The previous version word-matched cmdlines for "(pip|uv pip|git clone|apt|wget|curl|
+# conda|provisioner)", and the `provisioner` alternative matched THE PROVISIONER ITSELF —
+# its shim ends in `exec python -m provisioner`. So activity was pinned true for exactly
+# as long as the provisioner was alive, which is to say for the whole of a hang: the
+# stall detector could not fire in the one state it exists to detect. It was promiscuous
+# in the other direction too, matching unrelated processes on the host (measured: 12
+# matches here, including `local-path-provisioner`).
+#
+# Descendants are the honest signal: a provisioner that is working has spawned something
+# (pip, git, curl); one that is wedged has not. The pid is resolved from the pidfile the
+# provisioner writes, falling back to a cmdline match anchored on the module invocation
+# rather than the bare word.
+#
+# NOTE this is a DIAGNOSTIC accelerator, not the safety net: the PROV_TIMEOUT branch
+# above still fails the cell. Its value is failing at the stall instead of ~57 minutes
+# later, with a message that names the cause.
+provisioner_pid() {
+    local pid=""
+    [[ -r /run/provisioner.pid ]] && pid=$(cat /run/provisioner.pid 2>/dev/null)
+    if [[ -z "$pid" || ! -d "/proc/$pid" ]]; then
+        pid=$(pgrep -f 'python[0-9.]* -m provisioner' 2>/dev/null | head -1)
     fi
+    printf '%s' "$pid"
 }
 
-# Check for any common provisioning-related processes
 active_provisioning_processes() {
-    # `grep -c` PRINTS the count and EXITS 1 when the count is zero, so the old
-    # `|| echo "0"` appended a second line and this returned "0\n0" — which made
-    # `[[ "$active_procs" -gt 0 ]]` throw a bash syntax error on every poll and be
-    # permanently false. One of three stall detectors was dead from the day it was
-    # written, and nobody saw it because the file was not executable and had never
-    # run. Count without the short-circuit.
-    local n
-    n=$(pgrep -af "(pip|uv pip|git clone|apt|wget|curl|conda|provisioner)" 2>/dev/null | grep -cv "pgrep")
+    local prov_pid n
+    prov_pid=$(provisioner_pid)
+    # No provisioner process at all is NOT activity. /.provisioning still being present
+    # with no provisioner alive is itself the stall worth reporting.
+    [[ -n "$prov_pid" && -d "/proc/$prov_pid" ]] || { echo 0; return; }
+    # Direct children only. `pgrep -P` does not recurse, and pretending otherwise was
+    # part of what made the old helper unusable; one level is enough to tell "spawning
+    # work" from "wedged", and it cannot match anything outside this process tree.
+    n=$(pgrep -P "$prov_pid" 2>/dev/null | wc -l)
     echo "${n:-0}"
 }
 

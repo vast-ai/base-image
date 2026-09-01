@@ -42,7 +42,13 @@ _declared_port=$(sed -n 's/.*--port[= ]\+\([0-9]\+\).*/\1/p' <<< "${LLAMA_ARGS:-
 LLAMA_LOG=/var/log/llama.log
 [[ -f "$LLAMA_LOG" ]] || LLAMA_LOG=/var/log/portal/llama.log
 
-READY_TIMEOUT="${LLAMA_OFFLOAD_READY_TIMEOUT:-3600}"   # matches 10-llama-serving's cold-start budget
+# MUST stay under this file's own `# TEST_TIMEOUT=1800` header, with room for the checks
+# that follow. runner.sh execs the test under `timeout ${TEST_TIMEOUT}`, so a 3600s wait
+# could never complete: it was killed at 1800 and reported as "FAILED (timeout after
+# 1800s)" naming no check — the least actionable possible failure. 10-llama-serving owns
+# the long cold-start wait; by the time this file runs the model is already loaded, so
+# this budget only needs to cover a restart, not a first load.
+READY_TIMEOUT="${LLAMA_OFFLOAD_READY_TIMEOUT:-900}"
 # Baked numbers can only be corrected by rebuilding and re-promoting (L070). Cold CUDA
 # context init on a many-GPU host with persistence mode off can exceed a minute.
 LIST_DEVICES_TIMEOUT="${LLAMA_LIST_DEVICES_TIMEOUT:-120}"
@@ -184,8 +190,15 @@ if [[ -z "$apps" ]]; then
         fail_later "offload-no-gpu-process" "no process holds GPU memory and the device reports ${dev_used:-0} MiB in use while llama-server is serving — the model is in system RAM and inference is running on CPU (the ggml_backend_dl silent-fallback path; /health, /v1/models and completions all still pass in this state)"
     fi
 elif [[ -n "$srv_pid" ]] && grep -qE "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps"; then
-    row=$(grep -E "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps" | head -1)
-    mib=$(sed -n 's/.*,[[:space:]]*\([0-9]\+\).*/\1/p' <<< "$row")
+    # SUM every row for this pid, do not take the first. On a multi-GPU box llama.cpp's
+    # default split puts a slice on each device and nvidia-smi reports one row PER
+    # DEVICE — this file's own comment records 530 and 634 MiB for a single pid on a
+    # two-GPU QA host. The floor is derived from the WHOLE model, so comparing one
+    # device's slice against it fails a correctly-offloaded server. The empty-list
+    # branch below already sums for exactly this reason; this branch did not.
+    rows=$(grep -E "^[[:space:]]*${srv_pid}[[:space:]]*," <<< "$apps")
+    row=$(head -1 <<< "$rows")
+    mib=$(sed -n 's/.*,[[:space:]]*\([0-9]\+\).*/\1/p' <<< "$rows" | paste -sd+ | bc 2>/dev/null)
     if [[ -z "$mib" ]]; then
         # "934, [N/A]" — MIG and some vGPU hosts. The driver declining to report a
         # number is not the same claim as "0 MiB", and reporting it as zeroed weights

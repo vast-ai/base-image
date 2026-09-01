@@ -21,7 +21,7 @@ done
 
 # /etc/environment must exist and contain PATH
 assert_file_exists /etc/environment
-grep -q "PATH=" /etc/environment || test_fail "/etc/environment missing PATH"
+grep -q '^PATH=' /etc/environment || test_fail "/etc/environment missing PATH"
 
 # /etc/portal.yaml — not expected in serverless mode
 if ! is_serverless; then

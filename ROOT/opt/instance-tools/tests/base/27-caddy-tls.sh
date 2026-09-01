@@ -58,7 +58,12 @@ fi
 # and the test_skip below is a GREEN run that asserted nothing about TLS. This
 # file was only ever fixed for the other half (passing $test_port to
 # wait_for_caddy); it never had a readiness wait of its own.
-wait_for_caddy_ports || echo "  WARN: caddy ports not ready before enumeration"
+# `|| test_fail`, matching the six sibling calls in this file. Falling open here made
+# the skip below mean "we asked too early" instead of "there are no external caddy
+# ports", and neither this test nor its file is named in any INSTANCE_TEST_REQUIRE_PASS,
+# so nothing converted the skip into a failure. The comment above already said this
+# wait is what makes the skip trustworthy.
+wait_for_caddy_ports || test_fail "caddy never bound its declared site ports — cannot tell whether the tls assertions below are absent or merely early"
 
 find_caddy_ports
 test_port="${REPLY[0]:-}"
@@ -94,7 +99,7 @@ inspect_served_cert() {
     # Check trust — instance certs are typically self-signed or from a private CA
     local verify_code
     verify_code=$(echo | openssl s_client -connect "127.0.0.1:${port}" \
-        -servername localhost 2>&1 | grep -oP 'verify return code: \K\d+' || echo "?")
+        -servername localhost 2>&1 | grep -oiP 'verify return code: \K\d+' || echo "?")
     if [[ "$verify_code" == "0" ]]; then
         echo "  cert validation: trusted (signed by known CA)"
     else
@@ -107,12 +112,12 @@ check_http_redirect() {
     local port="$1"
     local label="${2:-}"
     local redirect_status
-    redirect_status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
+    redirect_status=$(curl -s --max-time "${HTTP_CHECK_MAX_TIME:-20}" -o /dev/null -w '%{http_code}' \
         "http://127.0.0.1:${port}/" 2>/dev/null)
     if [[ "$redirect_status" =~ ^(301|302|307|308)$ ]]; then
         # Verify the redirect Location points to https
         local redirect_loc
-        redirect_loc=$(curl -s --max-time 5 -D- -o /dev/null \
+        redirect_loc=$(curl -s --max-time "${HTTP_CHECK_MAX_TIME:-20}" -D- -o /dev/null \
             "http://127.0.0.1:${port}/" 2>/dev/null \
             | grep -iP '^location:' | head -1)
         echo "  http → https redirect${label}: ${redirect_status} (${redirect_loc})"
@@ -120,8 +125,12 @@ check_http_redirect() {
             fail_later "tls-redirect-target${label}" "redirect Location does not point to https"
         fi
     elif [[ "$redirect_status" == "000" ]]; then
-        # Some Caddy versions reject plain HTTP at the connection level
-        echo "  http → https${label}: connection rejected (TLS-only listener, acceptable)"
+        # 000 means curl got NO HTTP status — which is exactly what a raw TLS listener
+        # with no http_redirect wrapper does to a plaintext GET. That is the regression
+        # this check exists to detect, so accepting it made the fail_later below
+        # unreachable: neither the healthy config (301/302) nor the broken one (000)
+        # could reach it. A port the Caddyfile declares `https` must answer the redirect.
+        fail_later "tls-http-redirect${label}" "http://127.0.0.1:${port} gave no HTTP response (000) — a plaintext request to a declared https port must be redirected, so the http_redirect wrapper is missing"
     else
         fail_later "tls-http-redirect${label}" "http://127.0.0.1:${port} returned ${redirect_status}, expected 301/302/307/308 redirect to HTTPS"
     fi

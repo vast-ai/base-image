@@ -9,7 +9,20 @@ source "$(dirname "$0")/../lib.sh"
 
 # ── Instance Portal ──────────────────────────────────────────────────
 
-if service_running instance_portal && wait_for_port 11111 5; then
+# EXPECTED = configured AND routed AND not-serverless. The .conf alone is not enough and
+# assuming it was would have broken the build: syncthing.conf and tensorboard.conf ship
+# UNCONDITIONALLY in base, but 5 of the 7 QA templates carry no portal entry for them, so
+# exit_portal.sh correctly exits 0 and the service sits EXITED by design. Requiring the
+# port there means a 60s wait and a hard fail on a healthy image — and runner.sh skips the
+# entire derivative phase on any base/* failure, so it would have reddened every
+# derivative QA cell. base-qa and pytorch-qa list every entry, which is exactly why this
+# looked safe when only base was considered.
+#
+# `! is_serverless` is the other half: base/85-serverless-services asserts these SAME
+# programs are STOPPED in serverless mode. Without it two base tests assert opposite
+# verdicts on one instance. 65-conditional-services already uses this exact predicate.
+if [[ -f /etc/supervisor/conf.d/instance_portal.conf ]] && portal_has_entry "instance portal" && ! is_serverless; then
+    assert_service_serving instance_portal 11111
     echo "  -- instance_portal --"
 
     # HTML UI
@@ -49,12 +62,18 @@ assert any(k in d for k in ('cpu', 'gpu', 'memory', 'disk'))
         echo "  WARN: /supervisor/processes did not return a JSON list"
     fi
 else
-    echo "  skip: instance_portal (not running)"
+    echo "  skip: instance_portal (not configured, not routed, or serverless)"
 fi
 
 # ── Tunnel Manager ───────────────────────────────────────────────────
 
-if service_running tunnel_manager && wait_for_port 11112 5; then
+# CONFIGURED is decided from the supervisor conf, never from the status word: every
+# failure mode also produces a non-RUNNING word, so `if service_running x` collapsed
+# "not configured", "RUNNING but never bound", and "supervisord never heard of it" into
+# one silent skip that let test_pass fire. A hung service — RUNNING, binding nothing —
+# was reported as ALL TESTS PASSED. assert_service_serving fails on either half.
+if [[ -f /etc/supervisor/conf.d/tunnel_manager.conf ]] && portal_has_entry "tunnel" && ! is_serverless; then
+    assert_service_serving tunnel_manager 11112
     echo "  -- tunnel_manager --"
 
     # /get-all-quick-tunnels returns JSON array
@@ -66,12 +85,13 @@ if service_running tunnel_manager && wait_for_port 11112 5; then
         fail_later "tunnel_manager" "/get-all-quick-tunnels did not return a JSON array"
     fi
 else
-    echo "  skip: tunnel_manager (not running)"
+    echo "  skip: tunnel_manager (not configured, not routed, or serverless)"
 fi
 
 # ── TensorBoard ──────────────────────────────────────────────────────
 
-if service_running tensorboard && wait_for_port 16006 5; then
+if [[ -f /etc/supervisor/conf.d/tensorboard.conf ]] && portal_has_entry "tensorboard" && ! is_serverless; then
+    assert_service_serving tensorboard 16006
     echo "  -- tensorboard --"
 
     # Root page returns HTML
@@ -82,12 +102,13 @@ if service_running tensorboard && wait_for_port 16006 5; then
         fail_later "tensorboard" "/ returned empty response"
     fi
 else
-    echo "  skip: tensorboard (not running)"
+    echo "  skip: tensorboard (not configured, not routed, or serverless)"
 fi
 
 # ── Syncthing ────────────────────────────────────────────────────────
 
-if service_running syncthing && wait_for_port 18384 5; then
+if [[ -f /etc/supervisor/conf.d/syncthing.conf ]] && portal_has_entry "syncthing" && ! is_serverless; then
+    assert_service_serving syncthing 18384
     echo "  -- syncthing --"
 
     # insecure-admin-access is enabled so no API key needed for local requests.
@@ -112,7 +133,7 @@ if service_running syncthing && wait_for_port 18384 5; then
         fail_later "syncthing" "/rest/system/status did not return valid JSON"
     fi
 else
-    echo "  skip: syncthing (not running)"
+    echo "  skip: syncthing (not configured, not routed, or serverless)"
 fi
 
 # ── Jupyter ──────────────────────────────────────────────────────────
@@ -172,7 +193,7 @@ check_jupyter_functional() {
         # distinguish jupyter-not-ready from something-else-is-bound, and that
         # ambiguity cost a full cell to resolve from logs after the fact.
         local owner
-        owner=$(ss -tlnpH 2>/dev/null | awk -v p=":${port}$" '"'"'$4 ~ p'"'"' | head -1)
+        owner=$(listener_owner "${port}")
         echo "  listener on ${port}: ${owner:-<none>}"
         fail_later "jupyter" "/ returned empty response on port ${port} after ${JUPYTER_READY_TIMEOUT}s"
         return
@@ -200,14 +221,26 @@ if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" 
 fi
 
 # Check supervisor-managed jupyter (port 18080)
-if ! $jupyter_tested && service_running jupyter && wait_for_port 18080 5; then
+# Same rule as the services above: presence of the supervisor conf decides whether jupyter
+# is EXPECTED here, and once expected, RUNNING-but-unbound is a failure rather than a skip.
+# `.launch`-managed jupyter (checked above) legitimately means no supervisor jupyter.
+# `.launch`-managed jupyter means the SUPERVISOR unit must be EXITED — 65 asserts exactly
+# that. Detect who manages it the way 65 does, rather than inferring it from whether the
+# probe above happened to win a startup race this file's own comments document losing.
+launch_manages_jupyter=false
+if [[ -f /.launch ]] && grep -qi jupyter /.launch && [[ "${JUPYTER_OVERRIDE,,}" != "true" ]]; then
+    launch_manages_jupyter=true
+fi
+if ! $launch_manages_jupyter && ! is_serverless \
+   && [[ -f /etc/supervisor/conf.d/jupyter.conf ]] && portal_has_entry "jupyter"; then
     echo "  -- jupyter (supervisor-managed, port 18080) --"
+    assert_service_serving jupyter 18080 "${JUPYTER_READY_TIMEOUT:-60}"
     check_jupyter_functional 18080 "supervisor"
     jupyter_tested=true
 fi
 
 if ! $jupyter_tested; then
-    echo "  skip: jupyter (not running or not listening)"
+    echo "  skip: jupyter (.launch-managed, serverless, or not routed)"
 fi
 
 # ── syncthing: the configured listener must be usable, not just present ──
@@ -227,9 +260,8 @@ if service_running syncthing; then
     _st_conf="${STCONFDIR:-/opt/syncthing/config}/config.xml"
     if [[ -r "$_st_conf" ]]; then
         if grep -qE '<listenAddress>(tcp|quic)://[^<]*:</listenAddress>' "$_st_conf"; then
-            fail_later "syncthing config.xml has a listen address with an EMPTY port" \
-                       "— syncthing resolves that to its own default (22000), which no" \
-                       "template publishes, so direct sync cannot work (ADR 0028)"
+            fail_later "syncthing-empty-port" \
+                       "config.xml has a listen address with an EMPTY port — syncthing resolves that to its own default (22000), which no template publishes, so direct sync cannot work (ADR 0028)"
         else
             echo "     ok: no empty-port listen address"
         fi
@@ -239,9 +271,8 @@ if service_running syncthing; then
             if grep -qF "tcp://0.0.0.0:${VAST_TCP_PORT_72299}<" "$_st_conf"; then
                 echo "     ok: direct listener on mapped port ${VAST_TCP_PORT_72299}"
             else
-                fail_later "VAST_TCP_PORT_72299=${VAST_TCP_PORT_72299} is mapped but" \
-                           "syncthing has no matching listen address — direct peer" \
-                           "connections will not work and sync stays relay-only"
+                fail_later "syncthing-mapped-port" \
+                           "VAST_TCP_PORT_72299=${VAST_TCP_PORT_72299} is mapped but syncthing has no matching listen address — direct peer connections will not work and sync stays relay-only"
             fi
         else
             echo "     ok: port unmapped, relay-only by design"

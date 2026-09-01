@@ -74,7 +74,12 @@ echo "  WEB_USERNAME=${WEB_USERNAME:-<not set>} (basic auth user: ${basic_user})
 # reached find_caddy_ports with no readiness at all — the fail-open re-opened by
 # a template variable. It is what makes the skip below mean "this image has no
 # external caddy ports" rather than "we asked too early".
-wait_for_caddy_ports || echo "  WARN: caddy ports not ready before enumeration"
+# `|| test_fail`, matching the six sibling calls in this file. Falling open here made
+# the skip below mean "we asked too early" instead of "there are no external caddy
+# ports", and neither this test nor its file is named in any INSTANCE_TEST_REQUIRE_PASS,
+# so nothing converted the skip into a failure. The comment above already said this
+# wait is what makes the skip trustworthy.
+wait_for_caddy_ports || test_fail "caddy never bound its declared site ports — cannot tell whether the auth assertions below are absent or merely early"
 
 find_caddy_ports
 all_caddy_ports=("${REPLY[@]}")

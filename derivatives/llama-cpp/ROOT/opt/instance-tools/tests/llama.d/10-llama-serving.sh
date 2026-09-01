@@ -90,11 +90,26 @@ while (( elapsed < HEALTH_TIMEOUT )); do
         test_fail "llama service FATAL (supervisor stopped restarting)"
     fi
 
-    if [[ "$llama_sup_state" != "RUNNING" && "$llama_sup_state" != "STARTING" ]]; then
-        echo "  llama service in state: ${llama_sup_state}"
-        _dump_log_tail
-        test_fail "llama service not running (state: ${llama_sup_state})"
-    fi
+    # ENUMERATE the terminal states; do not treat "anything else" as one. lib.sh's own
+    # contract (the _service_status comment) says a word that is not a real state means
+    # "cannot tell", not a verdict: an unreachable socket yields `no` (from
+    # "unix:///... no such file") and a failed invocation yields "". Both used to hard-
+    # fail here. So did BACKOFF and STOPPING, which are NORMAL in-flight states — and a
+    # 5s poll can easily land on the BACKOFF window of the very restart this file's
+    # MAX_RESTARTS tolerance exists to allow, so the catch-all partly defeated it.
+    case "$llama_sup_state" in
+        ERROR|EXITED|STOPPED)
+            echo "  llama service in terminal state: ${llama_sup_state}"
+            _dump_log_tail
+            test_fail "llama service not running (state: ${llama_sup_state})"
+            ;;
+        RUNNING|STARTING) ;;
+        *)
+            # BACKOFF, STOPPING, "", `no` — keep polling; the deadline below is what
+            # ends this, with a message naming the last state seen.
+            echo "  llama service state: ${llama_sup_state:-unknown} (still waiting)"
+            ;;
+    esac
 
     if [[ -n "$last_pid" && -n "$cur_pid" && "$cur_pid" != "$last_pid" ]]; then
         restart_count=$((restart_count + 1))

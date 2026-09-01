@@ -109,10 +109,17 @@ check_jupyter() {
         fi
         if ss -tln | grep -q ":8080 "; then
             echo "  jupyter: listening on port 8080"
-            if ss -tln | grep ":8080 " | grep -q "0.0.0.0:"; then
+            # .launch runs jupyter PUBLICLY on purpose, so 0.0.0.0 is the expected
+            # answer here — the opposite direction from every other bind check. This read
+            # the whole `ss` line, which matches the peer column (always 0.0.0.0:* for a
+            # listener), so it reported "bound to all interfaces" for any listener at all
+            # and the WARN below could never fire: a check that cannot fail. Same defect
+            # measured live on an unsloth-studio QA cell, where the inverted direction
+            # made it fail every time instead (L082).
+            if listener_is_public 8080; then
                 echo "  jupyter: bound to all interfaces"
             else
-                echo "  WARN: jupyter on port 8080 but not bound to 0.0.0.0"
+                echo "  WARN: jupyter on port 8080 but not bound to 0.0.0.0 ($(listener_local_addr 8080))"
             fi
         else
             fail_later "jupyter" ".launch-managed but not listening on port 8080"
@@ -133,10 +140,15 @@ check_jupyter() {
     elif [[ -f /etc/supervisor/conf.d/jupyter.conf ]]; then
         if portal_has_entry "jupyter"; then
             check_running "jupyter"
-            if wait_for_port 18080 10; then
+            # A port miss is a FAILURE, not a remark. `check_running` already treats a
+            # wrong supervisor state as one, and "RUNNING but never bound" is the case
+            # neither autorestart nor the state word can see — the whole reason
+            # 67-service-functionality grew assert_service_serving. 10s was also below
+            # every measured readiness floor in this repo (L070 starts at 60).
+            if wait_for_port 18080 "${SERVICE_SERVING_TIMEOUT:-60}"; then
                 echo "  jupyter: supervisor-managed, port 18080 listening"
             else
-                echo "  WARN: jupyter running but port 18080 not listening yet"
+                fail_later "jupyter-port" "jupyter is RUNNING but nothing is listening on 18080 after ${SERVICE_SERVING_TIMEOUT:-60}s"
             fi
         else
             check_stopped "jupyter"
@@ -171,10 +183,11 @@ for entry in "${SERVICES[@]}"; do
 
     if portal_has_entry "$search_term" && ! is_serverless; then
         check_running "$name"
-        if wait_for_port "$port" 10; then
+        # Same rule as jupyter above: RUNNING and not serving is a failure.
+        if wait_for_port "$port" "${SERVICE_SERVING_TIMEOUT:-60}"; then
             echo "  ${name}: port ${port} listening"
         else
-            echo "  WARN: ${name} running but port ${port} not listening yet"
+            fail_later "${name}-port" "${name} is RUNNING but nothing is listening on ${port} after ${SERVICE_SERVING_TIMEOUT:-60}s"
         fi
     else
         check_stopped "$name"

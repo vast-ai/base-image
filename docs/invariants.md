@@ -981,6 +981,88 @@ level up. Two supporting properties, each of which was independently missing:
   guard reads every workflow, so a PR touching only `build-vllm.yml`'s headline has to run
   it — under the old list it did not, which is precisely how (4) shipped.
 
+### A bind verdict comes from ss's LOCAL column, never the whole line — **GATED (L082)**
+
+`ss -tln` prints `State Recv-Q Send-Q Local:Port Peer:Port`, and for a **listening** socket
+the peer column is always `0.0.0.0:*` (or `[::]:*`) whatever the socket bound to. So
+
+```bash
+ss -tln | grep ":8080 " | grep -q "0.0.0.0:"      # true for EVERY listener
+```
+
+matches the peer column and is true regardless of the address under test. The address is
+field 4.
+
+**Both directions of this were shipping at once**, from one root cause:
+
+- A test expecting LOOPBACK makes the always-true match **always fail**. Measured live on
+  a QA cell: `LISTEN 0 2048 127.0.0.1:18888 0.0.0.0:*` — a correct bind — reported as
+  `bound to a PUBLIC interface`, failed the cell, and then burned two host redraws
+  reproducing an image-independent test bug on fresh hardware.
+- `base/65-conditional-services` expects `0.0.0.0` (`.launch`-managed jupyter is
+  deliberately public, with TLS), so the same match returned the desired answer **by
+  accident** and its `WARN` branch could never fire — a check that cannot fail, in the
+  shipped base image.
+
+The fix is a shared helper rather than a corrected regex per caller, because the trap is
+in the column layout and every hand-written match re-encounters it: `listener_local_addr`
+extracts field 4, `listener_is_public` anchors a wildcard match at the start of it —
+unanchored, `0.0.0.0` also matches inside a port or a longer address form, and the port
+match is anchored too so `118888` is not a listener on `18888`.
+
+**Scope honestly:** this gates ADDRESS matching only. Reading an `ss` line for a PORT
+(`grep -q ":${port} "`) or a pid is unambiguous across columns and is deliberately not
+caught — over-firing would push authors toward `awk` for cases that never needed it.
+
+### A supervisor state is not a functional verdict, and "expected" is decided positively — **GATED (L086)**
+
+`service_running` reports a supervisord STATE. Using it as an `if` guard —
+`if service_running x && wait_for_port p; then … else skip; fi` — collapses three different
+worlds into one silent pass: **not configured**, **RUNNING but never bound its port**, and
+**supervisord has never heard of it**. A jupyter that hangs without exiting binds nothing,
+and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the
+hang is precisely the state nothing else covers. `assert_service_serving NAME PORT` fails on
+either half.
+
+**The correction to the first fix is the more important half.** Deciding "is this service
+expected?" from `/etc/supervisor/conf.d/NAME.conf` alone is WRONG and would have broken the
+build: `syncthing.conf` and `tensorboard.conf` ship unconditionally in base, but 5 of the 7
+QA templates carry no portal entry for them, so `exit_portal.sh` correctly exits 0 and the
+service sits EXITED by design. Requiring the port there is a 60s wait and a hard fail on a
+healthy image — and `runner.sh` skips the entire derivative phase on any `base/*` failure,
+so it would have reddened every derivative QA cell. `base-qa` and `pytorch-qa` list every
+entry, which is exactly why it looked safe when only base was considered.
+
+The predicate is **configured AND routed AND not-serverless**:
+
+```bash
+[[ -f /etc/supervisor/conf.d/<name>.conf ]] && portal_has_entry "<term>" && ! is_serverless
+```
+
+The `! is_serverless` half is not optional: `base/85-serverless-services` asserts these SAME
+programs are STOPPED in serverless mode, so without it two base tests assert opposite
+verdicts on one instance.
+
+### Three more shapes codified from the same audit — **GATED (L083, L084, L085)**
+
+- **`fail_later` takes LABEL and MSG.** A third argument is dropped, the message truncates,
+  and the prose fragment becomes the FAILURES label, so `report_failures` emits a sentence
+  where a greppable label belongs.
+- **`curl -w '%{http_code}' … || echo 000` yields `000000`.** curl writes the template and
+  THEN exits non-zero, so the fallback appends and the value matches no arm the author
+  wrote. curl already emits `000`.
+- **A readiness default must be under the file's own `# TEST_TIMEOUT`.** `runner.sh` execs
+  each test under `timeout ${TEST_TIMEOUT}`, so a longer wait is killed mid-flight and
+  reported as a bare timeout naming no check — the least actionable failure the harness can
+  produce.
+
+**Both new rules shipped broken and were caught before merge**, which is the argument for
+running a rule against real input rather than reasoning about it: `L084` was INERT against
+the two-line form it was written from (capture and fallback either side of a line
+continuation) while FIRING on correct code (a `|| echo WARN` belonging to a later
+statement), and the arity counter ran past `;` and ignored single quotes. A rule that cannot
+fire is decoration; a rule that fires on correct code is worse than none.
+
 ### The cloudflared binary is unpinned, and a CONTRACT is what guards it
 
 `Dockerfile` fetches `cloudflared-linux-${TARGETARCH}` from `releases/latest`, so

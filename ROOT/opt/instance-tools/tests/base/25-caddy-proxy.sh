@@ -22,18 +22,35 @@ is_serverless && test_skip "caddy not expected in serverless mode"
 # is a wrapper script, so `supervisorctl pid caddy` returns the shell's pid and
 # the listener attribution below would match nothing.
 assert_service_running caddy
-caddy_pid=""
+# `pidof caddy` matches by BASENAME, and caddy_config_manager.py spawns transient
+# `caddy hash-password` (bcrypt cost 14 — measured at 43s on a contended host) and
+# `caddy fmt` children. With two alive, pidof returns "P1 P2", a space-separated string
+# that can never appear in an `ss` row, so a perfectly healthy image failed with
+# "caddy has no listening sockets". 20-portal.sh does not protect against this: the
+# config manager writes /etc/portal.yaml before it hashes anything, so the portal
+# releases while bcrypt is still running — on first boot, not only stop/start.
+#
+# Match the SERVER process by its full command line, iterate every candidate rather than
+# assuming one, and retry on a deadline instead of judging a single instant.
 _caddy_deadline=$(( SECONDS + CADDY_READY_TIMEOUT ))
+caddy_listeners=0
 while :; do
-    caddy_pid=$(pidof caddy 2>/dev/null) && break
+    caddy_pids=$(pgrep -f '(^|/)caddy run' 2>/dev/null || true)
+    if [[ -n "$caddy_pids" ]]; then
+        # Anchor the pid with a trailing comma: `pid=1234` is a prefix of `pid=12345`.
+        _rows=$(ss -tlnp 2>/dev/null || true)
+        caddy_listeners=0
+        while IFS= read -r _p; do
+            [[ -n "$_p" ]] || continue
+            caddy_listeners=$(( caddy_listeners + $(grep -c "pid=${_p}," <<< "$_rows") ))
+        done <<< "$caddy_pids"
+        (( caddy_listeners > 0 )) && break
+    fi
     (( SECONDS >= _caddy_deadline )) && test_fail \
-        "caddy is RUNNING under supervisord but its binary never started (${CADDY_READY_TIMEOUT}s)"
+        "caddy is RUNNING under supervisord but has no listening sockets after ${CADDY_READY_TIMEOUT}s (server pids: ${caddy_pids:-none})"
     sleep 1
 done
-
-# Has listening sockets
-caddy_listeners=$(ss -tlnp 2>/dev/null | grep "pid=${caddy_pid}" | wc -l)
-[[ "$caddy_listeners" -gt 0 ]] || test_fail "caddy has no listening sockets"
+caddy_pid=$(head -1 <<< "$caddy_pids")
 
 # Caddyfile exists and is non-empty
 assert_file_exists /etc/Caddyfile
