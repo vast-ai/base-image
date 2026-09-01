@@ -77,6 +77,33 @@ def test_a_socket_that_arrives_late_is_waited_for(tmp_path):
 
 
 def test_a_socket_that_never_arrives_times_out_and_reports_failure(tmp_path):
+    """IF THIS FAILS IN CI WITH `took ~2.0s`, IT IS THE RUNNER'S CLOCK, NOT A REGRESSION.
+
+    `wait_for_supervisor` budgets with bash's SECONDS (lib.sh:131,139), which is
+    derived from CLOCK_REALTIME. This test measures with time.monotonic(). An NTP
+    step forward mid-wait moves the first and not the second, so the budget is
+    spent in less wall-clock time than it declares and `elapsed` lands under the
+    lower bound. Reproduced deterministically (12/12 at exactly 2.0s) with an
+    LD_PRELOAD shim applying a 1s forward step to time()/gettimeofday()/
+    clock_gettime(CLOCK_REALTIME); unstepped it is 3.02s every run, and load can
+    only make it longer, never shorter.
+
+    Deliberately NOT fixed, 2026-09-01. The fix is a monotonic source
+    (/proc/uptime, CLOCK_BOOTTIME, unsteppable) and it works — but it would touch
+    23 SECONDS-based budgets across lib.sh, 25-caddy-proxy, 67-service-functionality
+    and 13-provisioner-selftest, which is high-consequence readiness code gating
+    every image. Production exposure does not justify it: instance tests run in
+    containers, which inherit the host clock and cannot step it without
+    CAP_SYS_TIME, and a synced host slews rather than steps. The exposure is CI,
+    where runners are fresh VMs.
+
+    So: re-run it. If it starts costing more than a re-run, the contained fix is a
+    _mono helper used by wait_for_supervisor and wait_for_port only.
+
+    Do not "fix" this by relaxing the lower bound — it is what proves the budget is
+    wall-clock rather than a count of sleeps, which is the defect this file exists
+    to catch (see test_the_budget_is_WALL_CLOCK_not_a_count_of_sleeps).
+    """
     p, elapsed, _ = _run(tmp_path, ["4"], 'wait_for_supervisor 3 || echo GAVEUP')
     assert "GAVEUP" in p.stdout
     assert 3 <= elapsed < 12, f"budget is wall-clock seconds, took {elapsed:.1f}s"
