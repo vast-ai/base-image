@@ -1,0 +1,61 @@
+# Unsloth Studio QA template (ADR 0005 live-GPU QA gate).
+#
+# This image had NO gate of any kind: no template, no instance tests, no `qa` job. Every
+# build shipped on a green `docker build` alone, which is precisely the state ADR 0001
+# says is not a correctness check. It is also the image whose CUDA backend has silently
+# regressed to CPU once already (ADR 0016), a failure a build cannot see.
+#
+# Mirrors the production launch path — runtype jupyter, Instance Portal, the studio on
+# 8888 — because the point is to exercise what a customer gets, not a reduced variant.
+name: "Unsloth Studio QA — serving + CUDA backend smoke"
+image: vastai/unsloth-studio
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8888:8888"                   # Unsloth Studio (Caddy front; the studio binds 18888)
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # Matches 05-unsloth-env.sh's default verbatim. Stated rather than inherited so the
+  # gate fails if that default ever moves, instead of quietly testing a different map.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8888:18888:/:Unsloth Studio|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  # Required-pass gate (ADR 0019). Without it a self-skipping test reports the suite
+  # green: the GPU trio skips when nvidia-smi or libcuda never came up, and
+  # unsloth.d/11-llama-offload opens with `has_gpu || test_skip`, so on a GPU-less draw
+  # the entire point of this gate would evaporate and the image would promote. Gated by
+  # L057 (declaration present, trio covered) and L072 (an OWN-suite test is named).
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries unsloth.d/10-unsloth-serving unsloth.d/11-llama-offload"
+# QA gate floors (ADR 0005): smallest viable box that still exercises the real path.
+extra_filters:
+  # sm_80. The prebuilt bundle carries SASS down to sm_75 and the build asserts it, so
+  # Turing is now reachable — but admitting it is a SEPARATE step gated on a live run on
+  # Turing hardware (ADR 0018). Image first, floor second: lowering it here would admit
+  # a GPU class this gate has never once drawn.
+  compute_cap:
+    gte: 800
+  cuda_max_good:
+    gte: 12.9                     # matches the cu128 torch and the cuda12 bundle
+  # The studio builds a frontend and loads a CUDA context; it does not load a model in
+  # this smoke, so the floor is headroom for the toolchain rather than model size.
+  gpu_ram:
+    gte: 16384
+  reliability2:
+    gte: 0.95                     # excludes the flaky tail; see templates/base-qa
+  inet_down:
+    gte: 500                      # Mbps — bounds the image pull inside the launch window
+  direct_port_count:
+    gte: 64                       # see templates/base-qa for the measurement
+  disk_space:
+    gte: 60                       # L058: must match recommended_disk_space or the rent fails late
+recommended_disk_space: 60.0      # pytorch base + studio venv + node frontend + llama.cpp bundle

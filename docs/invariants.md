@@ -981,6 +981,43 @@ level up. Two supporting properties, each of which was independently missing:
   guard reads every workflow, so a PR touching only `build-vllm.yml`'s headline has to run
   it — under the old list it did not, which is precisely how (4) shipped.
 
+### The studio's CUDA backend must be USABLE, not merely present — **GATED (L056, L081)**
+
+ADR 0016 found `unsloth studio setup` shipping a CPU-only llama.cpp: `setup.sh` gates
+`-DGGML_CUDA=ON` on a runtime GPU probe that `docker build` cannot satisfy, so it fell
+through silently and every inference ran on CPU. The guard was `test -f …libggml-cuda.so`,
+and while the binary was COMPILED here that was sufficient — the failure produced no file
+at all.
+
+**ADR 0018 invalidates that reasoning.** Once the backend arrives as a prebuilt bundle,
+`test -f` is satisfied by `tar x` and proves nothing. llama.cpp is built
+`GGML_BACKEND_DL=ON`, so the CUDA backend is a dlopen'd plugin: one that fails to load is
+skipped **silently** and the binary serves correct answers, slowly, forever. Same defect,
+now expressible with the file present.
+
+Three failures, three instruments, and none of them subsumes another:
+
+| Failure | Instrument | Why the others miss it |
+|---|---|---|
+| the install did not happen | `test -f …libggml-cuda.so` | — |
+| it happened against the wrong CUDA | `ldd -r`, **output inspected** | the file exists; `cuobjdump` reads cubins, not the link closure |
+| no cubin for an admitted GPU | `cuobjdump --list-elf` vs literal `sm_NN` | it resolves and loads; it CRASHES at kernel launch (no-kernel-image) rather than falling back |
+
+**`ldd -r` exits 0 while printing `undefined symbol`.** Running it is not the check —
+reading its output is. An unchecked run is decoration of the same shape as the
+`file … || true` that once "verified" an architecture.
+
+**Read the arch set from the ARTIFACT, never the vendor's metadata.** Measured on a real
+release, the bundle's own manifest claimed `sm_103` that `cuobjdump` shows the binary does
+not contain.
+
+**Name the BRACKET, not one arch** — the template's `compute_cap` floor and its ceiling. A
+build can satisfy one end of the admitted range and miss the other.
+
+Scope: both rules trigger on `unsloth studio setup`, so they cover `unsloth-studio` (now
+prebuilt) and `aio-studio` (still source-built). The `ldd -r` requirement applies to both
+because the failure it catches does not depend on where the binary came from.
+
 ### A bind verdict comes from ss's LOCAL column, never the whole line — **GATED (L082)**
 
 `ss -tln` prints `State Recv-Q Send-Q Local:Port Peer:Port`, and for a **listening** socket

@@ -33,6 +33,9 @@ on:
         description: "Push to username/<repo>"
         required: true
         default: "unsloth-studio"
+      LLAMA_CPP_VERSION:
+        description: "Unsloth llama.cpp release tag to bake (empty = the pinned default)"
+        required: false
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
@@ -48,6 +51,7 @@ jobs:
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
       unsloth-version: ${{ steps.release-check.outputs.resolved-version }}
+      llama-cpp-version: ${{ steps.llama-check.outputs.resolved-ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,6 +80,31 @@ jobs:
           age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
           trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.UNSLOTH_VERSION }}
+
+      # The llama.cpp bundle version is DERIVED from the publisher, not carried as a
+      # literal in this file — a pin here would go stale silently and every rebuild
+      # would keep shipping whatever bundle was current the day someone last edited it.
+      # `manual-ref` lets a dispatch name an exact release when one is wanted.
+      #
+      # This resolver deliberately does NOT feed `should-run` below: the build TRIGGER is
+      # a new unsloth release. A new llama.cpp is not a reason to rebuild this image on
+      # its own, and wiring it in would make an upstream cadence we do not control drive
+      # our build schedule. It only answers "which bundle should the build that IS
+      # happening bake?".
+      #
+      # tag-pattern is required, not decoration: the fork publishes TWO tag lines in one
+      # repo — the `-mix-` builds and an older bare `bNNNN` line — and without it the
+      # resolver sorts by updated_at across both and can select from the wrong one.
+      - name: Resolve the llama.cpp bundle release
+        id: llama-check
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: unslothai/llama.cpp
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ github.event_name }}
+          manual-ref: ${{ inputs.LLAMA_CPP_VERSION }}
+          resolve-master-to-commit: "false"
+          tag-pattern: '-mix-'
 
       - name: Determine if build should run
         id: decision
@@ -149,12 +178,52 @@ jobs:
           build-args: |
             PYTORCH_BASE=${{ matrix.base_image }}
             UNSLOTH_VERSION=${{ needs.preflight.outputs.unsloth-version }}
+            LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005). This image had NO gate: merge-manifests depended only
+  # on `build`, so a green `docker build` was the whole bar — which ADR 0001 says is not
+  # a correctness check. It is also the image whose CUDA backend silently regressed to
+  # CPU once already (ADR 0016), a class of failure no build can see.
+  #
+  # The staging tag is reassembled here rather than passed between jobs: `build` writes
+  # it to $GITHUB_ENV, which does not cross a job boundary, and the pieces (unsloth
+  # version, cuda, python) are all preflight outputs or literals in this file.
+  #
+  # IT DOES NOT GATE YET (ADR 0006's advisory ramp). merge-manifests lists it in `needs`
+  # so it is ORDERED ahead of the production approval prompt — a human is never asked to
+  # approve before this cell's evidence exists — and `!cancelled()` keeps it from
+  # BLOCKING, with the results that must still block named explicitly. Promote it by
+  # adding `needs.qa.result == 'success'` to that `if` after two consecutive green runs.
+  qa:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'unsloth-studio' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.unsloth-version }}-cuda-12.9-py312-amd64
+      template_dir: derivatives/pytorch/derivatives/unsloth-studio/templates/unsloth-studio-qa
+      label: base-image-qa-unsloth-studio
+      log_paths: "/var/log/portal/unsloth-studio.log"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries unsloth.d/10-unsloth-serving unsloth.d/11-llama-offload"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  merge-manifests:
+    # `qa` is in `needs` to ORDER it ahead of the production approval prompt and absent
+    # from the `if` so it cannot BLOCK — the advisory ramp. `!cancelled()` is what makes
+    # that true and is not decoration: a job named in `needs` blocks BY DEFAULT, because
+    # GitHub implicitly skips a job when anything it needs fails. Since that implicit
+    # skip is now off for everything, the result that MUST still block is named.
+    needs: [preflight, build, qa]
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:

@@ -225,6 +225,21 @@ RUN \
     # wrong arch set (would crash at runtime on an admitted GPU). Checked before the copy.
     test -f /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so || \
         { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent)"; exit 1; } && \
+    # ...and that it RESOLVES, not merely that it exists. llama.cpp is built
+    # GGML_BACKEND_DL=ON, so a libggml-cuda.so whose dlopen fails is skipped SILENTLY and
+    # every inference runs on CPU — ADR 0016's defect with the file present. Existence
+    # was a sufficient guard only while a CPU-only fallback produced no file at all.
+    # `ldd -r` EXITS 0 while printing `undefined symbol`, so the OUTPUT is the check, not
+    # the exit status. Gated by L056.
+    #
+    # aio-studio keeps its SOURCE build (ADR 0018 moved only unsloth-studio to the
+    # prebuilt bundle); this is the assertion half of that change, applied here too
+    # because the failure it catches does not depend on where the binary came from.
+    ldd -r /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so > /tmp/ggml-cuda.ldd 2>&1; \
+    if grep -qE "not found|undefined symbol" /tmp/ggml-cuda.ldd; then \
+        echo "FATAL: libggml-cuda.so does not resolve:"; cat /tmp/ggml-cuda.ldd; exit 1; \
+    fi && \
+    rm -f /tmp/ggml-cuda.ldd && \
     # Capture the cubin list ONCE, then match in-shell. Do NOT pipe into `grep -q`:
     # under `set -o pipefail` grep's early exit SIGPIPEs cuobjdump (rc 141) and the
     # pipeline reports failure even on a match.

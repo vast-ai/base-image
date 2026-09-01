@@ -3164,6 +3164,101 @@ def test_L080_the_real_repo_ships_no_template_with_it():
     assert not bad, f"templates declaring UNSECURED: {[f.path for f in bad]}"
 
 
+# ---- L056 (amended) + L081: the studio's CUDA backend must be USABLE, not just present ----
+#
+# Existence was a sufficient guard only while the binary was COMPILED here: a CPU-only
+# fallback then produced no libggml-cuda.so at all (ADR 0016). Once it arrives as a
+# prebuilt bundle (ADR 0018), `test -f` is satisfied by `tar x`. GGML_BACKEND_DL=ON means
+# an unresolvable backend is skipped silently and every inference runs on CPU — the same
+# defect, now expressible with the file present.
+
+_STUDIO_DF = VALID_DF.replace(
+    "RUN torch_versions_pre=$(pip list); \\",
+    "RUN unsloth studio setup && \\\n    torch_versions_pre=$(pip list); \\")
+
+
+def _studio(tmp_path, asserts: str):
+    df = _STUDIO_DF.replace("uv pip install foo;", f"uv pip install foo; {asserts}")
+    return make(tmp_path, df=df)
+
+
+_EXISTS = 'test -f /opt/llama-cpp/build/bin/libggml-cuda.so || exit 1;'
+_LDD = ('ldd -r /opt/llama-cpp/build/bin/libggml-cuda.so > /tmp/l.ldd 2>&1; '
+        'grep -qE "not found|undefined symbol" /tmp/l.ldd && exit 1;')
+_SASS = ('_elf="$(cuobjdump --list-elf /opt/llama-cpp/build/bin/libggml-cuda.so)"; '
+         'for _a in sm_75 sm_120; do [[ "$_elf" == *"$_a"* ]] || exit 1; done;')
+
+
+def test_L056_existence_without_ldd_fires(tmp_path):
+    """THE mutation for the prebuilt era: the file is there because tar put it there."""
+    img = _studio(tmp_path, _EXISTS + _SASS)
+    assert has(img, tmp_path, "L056", "never runs `ldd -r`")
+
+
+def test_L056_ldd_whose_output_is_never_read_does_not_satisfy_it(tmp_path):
+    """`ldd -r` EXITS 0 while printing `undefined symbol`. Running it and discarding the
+    result is decoration — the same shape as `file … || true` in an earlier rule."""
+    img = _studio(tmp_path, _EXISTS + 'ldd -r /opt/llama-cpp/build/bin/libggml-cuda.so;' + _SASS)
+    assert has(img, tmp_path, "L056", "never inspects the output")
+
+
+def test_L056_existence_is_still_required(tmp_path):
+    """The two halves fail differently: a missing file means the install did not happen,
+    an unresolved one means it happened against the wrong CUDA. Both stay required."""
+    img = _studio(tmp_path, _LDD + _SASS)
+    assert has(img, tmp_path, "L056", "existence assertion")
+
+
+def test_L056_both_halves_present_is_clean(tmp_path):
+    img = _studio(tmp_path, _EXISTS + _LDD + _SASS)
+    assert "L056" not in errs(img, tmp_path)
+
+
+def test_L081_no_sass_check_fires(tmp_path):
+    """A resolvable backend with no cubin for an admitted GPU CRASHES (no-kernel-image);
+    it does not fall back, so neither L056 half can see it."""
+    img = _studio(tmp_path, _EXISTS + _LDD)
+    assert has(img, tmp_path, "L081", "never checks the SASS arch coverage")
+
+
+def test_L081_a_single_arch_does_not_satisfy_it(tmp_path):
+    """A build can satisfy one end of the admitted range and miss the other, so the
+    BRACKET is the requirement — floor and ceiling, not one arch."""
+    one = ('_elf="$(cuobjdump --list-elf /opt/llama-cpp/build/bin/libggml-cuda.so)"; '
+           '[[ "$_elf" == *"sm_120"* ]] || exit 1;')
+    img = _studio(tmp_path, _EXISTS + _LDD + one)
+    assert has(img, tmp_path, "L081", "fewer than two literal sm_NN")
+
+
+def test_L081_reading_the_manifest_instead_of_the_artifact_does_not_satisfy_it(tmp_path):
+    """Measured on a real release: the bundle's own manifest claimed an sm_103 the
+    binary does not contain. The rule requires cuobjdump ON the .so."""
+    manifest = ('python3 -c "import json;print(json.load(open(\'/opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json\'))"'
+                '; grep -q sm_75 /opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json && grep -q sm_120 /opt/llama-cpp/UNSLOTH_PREBUILT_INFO.json;')
+    img = _studio(tmp_path, _EXISTS + _LDD + manifest)
+    assert has(img, tmp_path, "L081", "never checks the SASS arch coverage")
+
+
+def test_L056_and_L081_do_not_fire_on_an_image_without_the_studio(tmp_path):
+    """Scoped to `unsloth studio setup`. Every other image owes nothing here."""
+    img = make(tmp_path)
+    assert "L056" not in errs(img, tmp_path)
+    assert "L081" not in errs(img, tmp_path)
+
+
+def test_the_real_studio_images_assert_a_usable_backend():
+    """Round-trip over the REAL images: both studio images must satisfy both rules."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    seen = []
+    for img in discover(repo):
+        if "unsloth studio setup" not in L.code_text(parse(img.text)):
+            continue
+        seen.append(img.name)
+        bad = [f.msg for f in lint_image(img, repo) if f.code in ("L056", "L081")]
+        assert not bad, f"{img.name}: {bad}"
+    assert sorted(seen) == ["aio-studio", "unsloth-studio"], seen
+
+
 # ---- L082: a bind verdict must read ss's LOCAL column, not the whole line ----
 #
 # `ss -tln` prints State Recv-Q Send-Q Local:Port Peer:Port, and for a LISTENING socket
