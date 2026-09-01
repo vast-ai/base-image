@@ -159,14 +159,14 @@ jobs:
           [
             {
               "cuda": "12.9",
-              "base_tag": "cuda-12.9-mini-py312-2026-08-26",
+              "base_tag": "cuda-12.9-mini-py312-2026-08-28",
               "bundle": "cuda12-portable",
               "driver_floor": "12.9",
               "arches": ["amd64"]
             },
             {
               "cuda": "13.2",
-              "base_tag": "cuda-13.2-mini-py312-2026-08-26",
+              "base_tag": "cuda-13.2-mini-py312-2026-08-28",
               "bundle": "cuda13-portable",
               "driver_floor": "13.2",
               "arches": ["amd64", "arm64"]

@@ -13,7 +13,7 @@
 # 2.8.0). The UPPER bound is real too — upstream master carries
 # "# 2.9 deprecates used functions" against it — so this is a fixed point, not a
 # floor to raise later: do not move it to 2.9.x without re-reading upstream.
-ARG PYTORCH_BASE=vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py312-2026-08-26
+ARG PYTORCH_BASE=vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py312-2026-09-01
 
 FROM ${PYTORCH_BASE}
 
