@@ -701,14 +701,23 @@ def _own_test_prefixes(img: Image) -> list[str]:
     base stores and reports `base/`. Both are returned verbatim as they appear on
     disk, because that is what the runner emits.
     """
-    tests = img.root / "opt/instance-tools/tests"
-    if not tests.is_dir():
-        return []
+    # EVERY overlay the image ships, not just ROOT. aio-studio is a two-STAGE build:
+    # Dockerfile.base copies ROOT_BASE (the cached base layer) and Dockerfile copies
+    # ROOT on top, so a suite living in ROOT_BASE ships in BOTH images and is as much
+    # this image's own as anything in ROOT. Scanning ROOT alone made L072 report that
+    # the base's QA template "names no test from this image's own suite" while it was
+    # naming two of them. Generalised by glob rather than by hardcoding ROOT_BASE, so a
+    # future second overlay is not a second silent gap.
     out = []
-    for sub in sorted(tests.iterdir()):
-        if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
-            out.append(sub.name)
-    return out
+    for overlay in sorted(img.dir.glob("ROOT*")):
+        tests = overlay / "opt/instance-tools/tests"
+        if not tests.is_dir():
+            continue
+        for sub in sorted(tests.iterdir()):
+            if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
+                if sub.name not in out:
+                    out.append(sub.name)
+    return sorted(out)
 
 
 def _serverless_gate_callers(repo: Path) -> dict[str, int]:

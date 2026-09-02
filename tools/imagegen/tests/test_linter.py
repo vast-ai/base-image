@@ -3607,3 +3607,20 @@ def test_L088_does_not_sweep_in_the_ubiquitous_lib_source(tmp_path):
     a path segment, not a sibling, and a rule that fired on it would red the repo."""
     repo = _suite(tmp_path, {"10-x.sh": '#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n'})
     assert not _codes(repo, "L088")
+
+
+def test_own_test_prefixes_sees_every_overlay_not_just_ROOT(tmp_path):
+    """aio-studio is a two-STAGE build: Dockerfile.base copies ROOT_BASE (the cached
+    base layer) and Dockerfile copies ROOT on top, so a suite in ROOT_BASE ships in BOTH
+    images. Scanning ROOT alone made L072 report that the base's QA template named no
+    own-suite test while it was naming two of them."""
+    d = tmp_path / "img"
+    for overlay, suite in (("ROOT", "app.d"), ("ROOT_BASE", "base-layer.d")):
+        sub = d / overlay / "opt/instance-tools/tests" / suite
+        sub.mkdir(parents=True)
+        (sub / "10-x.sh").write_text("#!/bin/bash\n")
+    (d / "Dockerfile").write_text("FROM scratch\n")
+    img = Image(name="img", cls="pytorch-nested", dir=d,
+                dockerfile=d / "Dockerfile", text="FROM scratch\n",
+                root=d / "ROOT")
+    assert L._own_test_prefixes(img) == ["app.d", "base-layer.d"]
