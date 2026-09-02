@@ -1,0 +1,157 @@
+# vLLM-Omni QA template (ADR 0005 live-GPU QA gate).
+#
+# Mirrors external/vllm/templates/vllm-qa deliberately: vllm-omni.sh runs the SAME
+# `vllm serve` command, reads the same VLLM_MODEL/VLLM_ARGS, and hard-waits on the same
+# Ray gcs_server, so the smoke that certifies one certifies the other. Where this file
+# differs from vllm-qa, the difference is real and noted inline; anything unmarked is
+# intentionally identical and should be changed in both.
+#
+# TEXT ONLY, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (2026-09-02).
+# vLLM-Omni's distinguishing feature is opt-in: omni-modality is enabled by `--omni`
+# in VLLM_ARGS, and this template deliberately does not pass it. So what this gate
+# certifies is that the image works as a vLLM server — engine boots, Ray comes up,
+# /v1 answers, the contract holds. It certifies NOTHING about image generation, TTS,
+# video or any other omni pipeline. Do not read a green run here as evidence the omni
+# path works.
+#
+# Covering it was scoped and deferred, not forgotten. Upstream serves image generation
+# as `vllm serve <model> --omni` + `POST /v1/images/generations` -> data[0].b64_json,
+# and 10-vllm-omni-serving.sh's VLLM_TEST_ENDPOINT switch is the extension point for
+# it. Two things make it a separate piece of work rather than a model swap: the
+# smallest clean image model is ~24 GB against this model's ~1 GB, which moves the
+# disk and VRAM floors and thins the offer pool; and 12-vllm-omni-contract is
+# text-LLM-shaped (token arithmetic, --max-model-len overflow, streaming chat), so it
+# cannot pass against a diffusion model and would have to move to a second cell rather
+# than be deleted.
+#
+# NO SERVERLESS CELL, unlike vllm-qa. This image has no serverless wiring at all — no
+# BACKEND, no MODEL_LOG, no EXPOSE 3000, no pyworker — so there is nothing to turn on
+# and port 3000 is deliberately NOT mapped here. If omni gains serverless support, the
+# 3000 mapping and a qa-serverless cell come with it.
+#
+# Mirrors the production launch path:
+# runtype: jupyter, OPEN_BUTTON/JUPYTER env, the vLLM serving path. QA-only deltas
+# (per ADR 0005 rollout note — smoke model != production model):
+#  - VLLM_MODEL is a deliberately TINY chat model (prod ships Qwen3.5-9B @ 24GB floor,
+#    which would brick the small-box selector); vllm.d hits /v1/chat/completions and
+#    asserts completion_tokens > 0, so it must be chat-capable.
+#  - Single-GPU smoke: AUTO_PARALLEL off, so vLLM serves on one GPU with no tensor
+#    parallelism. Ray STILL runs: ray.sh self-skips (exit_portal "ray dash") unless a
+#    "Ray Dashboard" entry is in PORTAL_CONFIG, and vllm.sh hard-waits for Ray's
+#    gcs_server before it will serve — so the Ray Dashboard entry is mandatory for the
+#    image's real launch path, not decorative. Model UI (7860) is the one production
+#    service we omit: it's optional and skipping it avoids a port check on a service the
+#    serving smoke doesn't exercise. A portal entry whose port isn't listening fails the
+#    harness's port check, so we list only entries that actually bind.
+#  - Selection floors tuned for serving-path headroom (below production's 24GB floor —
+#    see the gpu_ram note for why the floor is per-GPU and NOT sized to the tiny model).
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag.
+name: "vLLM-Omni QA — tiny-model smoke"
+image: vastai/vllm-omni
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8000:8000"                   # vLLM-Omni API
+  - "8265:8265"                   # Ray Dashboard (ray.sh gates on this portal entry)
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:vLLM-Omni API|localhost:8265:28265:/:Ray Dashboard|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  AUTO_PARALLEL: "false"          # single-GPU smoke — no tensor parallelism (Ray head still required by vllm.sh)
+  RAY_ADDRESS: "127.0.0.1"        # local Ray head (mirrors production 070-vllm)
+  # Required-pass gate (ADR 0019, widened to this template by ADR 0031). Without
+  # it every assertion below is optional: the GPU trio self-skips when nvidia-smi
+  # or libcuda never came up, and `vllm.d/10-vllm-serving` opens with
+  #   [[ -n "${VLLM_MODEL:-}" ]] || test_skip "VLLM_MODEL not set"
+  # so losing ONE line of this env block deletes the entire vLLM assertion set and
+  # the image still promotes green. ADR 0005 named that file as the canonical
+  # skip-as-pass hole in June 2026; base and pytorch closed it, this gate did not.
+  # Enforced twice — by the runner in-instance and by qa_verdict.py in CI, via the
+  # matching `require_tests` in build-vllm.yml — so a template that loses this line
+  # still cannot produce a passing verdict. Gated by linter rules L057 (declaration
+  # present, trio covered) and L072 (an OWN-suite test is named, not just the
+  # inherited trio).
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries vllm-omni.d/10-vllm-omni-serving vllm-omni.d/12-vllm-omni-contract"
+  VLLM_MODEL: "Qwen/Qwen2.5-0.5B-Instruct"   # tiny chat model (~1 GB), fast load
+  # --enforce-eager is a QA-only delta: it disables torch.compile + CUDA-graph capture
+  # (VLLM_COMPILE captures 50+ graph sizes). That phase is silent, multi-minute and
+  # RAM/compile-heavy; on the smallest box it collided with the boot test sweep and the
+  # instance dropped before serving. A smoke proves the serving path works, not compiled
+  # throughput, so eager is the right trade — production keeps full compilation.
+  # --revision pins the model, and that is a QA property rather than a vLLM one
+  # (ADR 0031 decision 2). VLLM_MODEL names a FLOATING third-party ref: the gate's
+  # identity and prompt-token round-trip assertions compare what the server serves
+  # against what this template asked for, and an upstream re-upload of the repo —
+  # a changed chat template is the realistic one — would move both sides at once
+  # and read as an image regression on a build that changed nothing. The sha is
+  # Qwen/Qwen2.5-0.5B-Instruct as of 2024-09-25; bump it deliberately, never as a
+  # side effect.
+  VLLM_ARGS: "--enforce-eager --max-model-len 4096 --revision 7ae557604adf67be50417f59c2c2f167def9a775 --download-dir /workspace/models --host 127.0.0.1 --port 18000"
+# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
+extra_filters:
+  compute_cap:
+    gte: 800                      # sm_80 — matches vllm-qa (same engine, same kernels)
+  cuda_max_good:
+    gte: 13.0                     # host driver must satisfy the newest matrix variant (cuda-13.0)
+  # Headroom floor, not model size (ADR 0005: "floors carry headroom, not the
+  # model's resting size"). vLLM fills gpu_memory_utilization (0.92 on current
+  # nightlies) with KV cache during sizing, then allocates AFTER sizing during
+  # kernel warmup (FlashInfer sampling workspace, ~150 MiB). On an 8 GB card the
+  # post-budget margin is ~30 MiB and the engine OOMs on startup even with a
+  # 0.5B model; 16 GB leaves >1 GiB above the budget. Small-card viability of
+  # upstream defaults is upstream's concern, not what this smoke certifies.
+  #
+  # Floor the PER-GPU VRAM (gpu_ram), NOT the sum (gpu_total_ram): this is a
+  # single-GPU smoke (AUTO_PARALLEL off), so the model loads on ONE card. A
+  # multi-GPU box with small cards clears a 16 GB *total* floor and then OOMs on
+  # a single ~9-10 GB card — observed live on the cu13.0 cell (GPU 0 = 9.64 GiB).
+  gpu_ram:
+    gte: 16384                    # 16 GB PER GPU (single-GPU smoke — not the sum)
+  # Host-reliability floor. The QA account kept drawing the cheapest boxes, and
+  # cheap unreliable hosts fail in host-specific ways the image can't fix: a
+  # truncated image pull ("unexpected eof"), and a host with no outbound egress
+  # ('[Errno 101] Network is unreachable' fetching the model from HuggingFace) —
+  # both observed live on cu13.0. reliability2 is Vast's aggregate host score
+  # (good hosts ~0.92-0.99); 0.95 excludes the flaky tail with margin while
+  # keeping a healthy offer pool at this VRAM band. Tunable: lower if the pool
+  # thins, raise toward `verified` if flakes persist.
+  # Bandwidth floor. The cell pulls a multi-GB image before a single test can run,
+  # and that pull sits inside the launch window the client bounds with poll_timeout —
+  # so a slow link does not merely make the run late, it can burn the whole attempt
+  # and force a redraw (ADR 0029) on a host that had nothing wrong with the image.
+  #
+  # Measured against the live pool matching these same floors: median ~900 Mbps, but
+  # the bottom decile advertises 326-524 and the slowest offer 34 Mbps. At 34 Mbps a
+  # ~25 GB image is over an hour of pull before the suite starts; 500 bounds it to
+  # single-digit minutes and still keeps 65-88% of the pool depending on the template.
+  #
+  # This is COMPLEMENTARY to direct_port_count, not a replacement — the two exclude
+  # different failures, and neither subsumes the other. Advertised bandwidth is a
+  # claim, so this floor cannot catch a host that overstates its link; the port floor
+  # is what covers that. What this floor catches is the host that is honestly slow,
+  # which the port floor does not look at.
+  #
+  # DIRECTION: a LOWER bound. Tunable: raise toward 1000 if pulls still drag, at the
+  # cost of roughly two thirds of the offer pool.
+  inet_down:
+    gte: 500                      # Mbps
+  # Host-networking floor, matching base-qa and pytorch-qa. See the longer note in
+  # templates/base-qa/template.yml for the measurement behind the value.
+  #
+  # DIRECTION: a LOWER bound. An `lte` here would select FOR the hosts it excludes.
+  direct_port_count:
+    gte: 64
+  reliability2:
+    gte: 0.95
+recommended_disk_space: 32.0      # vLLM-Omni image + small model + workspace

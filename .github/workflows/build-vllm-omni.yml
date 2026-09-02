@@ -329,9 +329,53 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005). This image had NO gate until now: no template, no
+  # own-suite tests, no qa job — it promoted on a successful docker build alone, which
+  # certifies that the layers assembled and nothing about whether the engine serves.
+  #
+  # Mirrors build-vllm.yml's cell, because vllm-omni.sh runs the same `vllm serve` on
+  # the same VLLM_MODEL/VLLM_ARGS behind the same Ray wait. Two deliberate differences:
+  #
+  #  - NO qa-serverless cell. This image has no serverless wiring (no BACKEND, no
+  #    MODEL_LOG, no EXPOSE 3000, no pyworker), so there is nothing to switch on. A
+  #    cell here would assert the absence of a feature, which is not what the
+  #    serverless cell is for.
+  #  - amd64 only, matching the build matrix. That is this image's current arch
+  #    posture, not a QA choice; if omni gains arm64 the tag suffix below follows it.
+  qa:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.preflight.outputs.merge-matrix) }}
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'vllm-omni' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.vllm-omni-version }}-cuda-${{ matrix.cuda }}-amd64
+      template_dir: external/vllm-omni/templates/vllm-omni-qa
+      label: base-image-qa-vllm-omni
+      log_paths: "/var/log/portal/vllm-omni.log /var/log/portal/ray.log"
+      # CI-side half of the template's INSTANCE_TEST_REQUIRE_PASS (ADR 0019/0031).
+      # Declared in BOTH places on purpose: the runner enforces it in-instance, and
+      # this enforces it against the verdict payload, so a template edit that drops
+      # the env var still cannot produce a passing gate.
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries vllm-omni.d/10-vllm-omni-serving vllm-omni.d/12-vllm-omni-contract"
+      # ADR 0029 condition 5: the redraw rule is not forked per image.
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  merge-manifests:
+    # `qa` is BOTH ordered and blocking here. No `!cancelled()`: this workflow has no
+    # advisory cell to keep alive, so the default "skip if a needed job failed" is the
+    # behaviour we want, and the explicit result check states it rather than relying on
+    # it. A red QA cell therefore leaves merge-manifests SKIPPED, which is not
+    # 'success', which the notify headline below reports as not-promoted.
+    needs: [preflight, build, qa]
+    if: needs.preflight.outputs.should-run == 'true' && needs.qa.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -415,11 +459,16 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, merge-manifests, collect-tags]
+    needs: [preflight, build, qa, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.merge-manifests.result }}
+      # ENUMERATE THE WAY IT GOES RIGHT, never the ways it go wrong. Every arm that can
+      # render "promoted" is keyed on merge-manifests — the promoting job — taking the
+      # negative branch first, so a cancelled or skipped run cannot fall through to the
+      # success text. This repo has been bitten four times by the other shape.
+      headline: ${{ (needs.build.result != 'success' && 'vLLM-Omni build failed') || (needs.qa.result == 'failure' && 'vLLM-Omni QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM-Omni promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM-Omni NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'vLLM-Omni promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM-Omni"
       image-ref: ${{ needs.preflight.outputs.vllm-omni-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
