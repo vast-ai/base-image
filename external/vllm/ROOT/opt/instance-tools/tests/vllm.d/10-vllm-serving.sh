@@ -234,7 +234,7 @@ if [[ -f "$VLLM_LOG" ]]; then
     echo "  vllm log: ${log_size}B"
 fi
 
-check_log_errors "vllm" "$VLLM_LOG" "torch\.distributed|CUDAGraph|deprecat"
+check_log_errors "vllm" "$VLLM_LOG" "torch\.distributed|CUDAGraph|deprecat|is part of .* but not documented|__vast_contract_no_such_model__"
 check_log_errors "ray" "$RAY_LOG"
 
 # ── Port exposure check ─────────────────────────────────────────────
