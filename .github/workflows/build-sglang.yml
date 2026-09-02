@@ -65,12 +65,13 @@ jobs:
             echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
-      # The nightly step reads the upstream image's config to learn its real CUDA
-      # version. Authenticate first: anonymous manifest reads share a per-IP quota
-      # with every other job on the runner fleet, and a 429 here is indistinguishable
-      # from "no CUDA_VERSION".
+      # BOTH matrix steps -- nightly and release -- read each upstream image's
+      # config to learn its real CUDA version, so authenticate before either runs.
+      # Anonymous manifest reads share a per-IP quota with every other job on the
+      # runner fleet, and a 429 is indistinguishable from "no CUDA_VERSION": it
+      # would drop variants silently instead of failing.
       - name: Log in to Docker Hub
-        if: inputs.SGLANG_VERSION == 'nightly' && steps.secrets.outputs.available == 'true'
+        if: steps.secrets.outputs.available == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -140,37 +141,78 @@ jobs:
           VARIANTS=$(cat /tmp/variants.json)
           echo "Available variants: $VARIANTS"
 
-          # Convert variant tags to build matrix.
-          # Upstream tag scheme (v0.5.11+): multi-arch manifests, no -amd64 suffix.
-          # SGLang flipped the default CUDA from 12.9 to 13.0 in v0.5.11, so
-          # the bare <ver> tag now IS the CUDA 13.0 image (and is published
-          # alongside an explicit -cu130 alias). Prefer explicit -cuNNN
-          # suffixes; treat the bare $VERSION tag as CUDA 13.0 only when no
-          # -cu130 variant exists, so releases that ship both don't produce
-          # a duplicate CUDA 13.0 build (and the bare doesn't get mistagged
-          # as 12.9, clobbering the real -cu129 image at push time).
-          # Exclude rocm/xeon/cann/runtime variants by exact-matching
-          # ^<VERSION>(-cu[0-9]+)?$.
-          MATRIX=$(echo "$VARIANTS" | jq -c --arg ver "$VERSION" '
-            map(select(test("^" + $ver + "(-cu[0-9]+)?$")))
-            | . as $variants
-            | ($variants | any(endswith("-cu130"))) as $has_cu130
-            | $variants
-            | map(
-                . as $tag
-                | if $tag | endswith("-cu130") then
-                    {tag: $tag, cuda: "13.0"}
-                  elif $tag | endswith("-cu129") then
-                    {tag: $tag, cuda: "12.9"}
-                  elif $tag | endswith("-cu128") then
-                    {tag: $tag, cuda: "12.8"}
-                  elif $tag == $ver and ($has_cu130 | not) then
-                    {tag: $tag, cuda: "13.0"}
-                  else
-                    empty
-                  end
-              )
+          # Select only the tags this version owns: the bare tag and its explicit
+          # -cuNNN variants. Anchored on BOTH ends, so rocm/xeon/cann/runtime and
+          # neighbouring families cannot leak in.
+          #
+          # ORDER MATTERS: explicit -cuNNN first. Upstream publishes the same image
+          # under two names (v0.5.18 and v0.5.18-cu130 are one digest), and the
+          # dedup below keeps whichever it meets first -- the descriptive one.
+          CANDIDATES=$(echo "$VARIANTS" | jq -r --arg ver "$VERSION" '
+            [ .[] | select(test("^" + $ver + "(-cu[0-9]+)?$")) ]
+            | sort_by(test("-cu[0-9]+$") | not)
+            | .[]
           ')
+
+          # Read the CUDA version out of the ARTIFACT, never off the tag name
+          # (ADR 0035). The rule this replaces inferred it from the suffix and
+          # treated a bare tag as 13.0 whenever no -cu130 existed. That encoded one
+          # era of upstream's tagging: before v0.5.11 the bare tag WAS the 12.9
+          # image (lmsysorg/sglang:v0.5.8 reports CUDA 12.9.1 today), published
+          # alongside -cu130 and no -cu129 -- a shape under which the old rule
+          # silently DROPPED the genuine 12.9 image rather than mislabelling it.
+          # Reading the artifact is correct in both eras without having to know
+          # which one it is looking at.
+          MATRIX="[]"
+          seen_digests=""
+          while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              ref="lmsysorg/sglang:${tag}"
+              # `|| true` on each: an unreadable tag must reach the guards below
+              # rather than abort the step under pipefail.
+              digest=$(docker buildx imagetools inspect \
+                  --format '{{ json .Manifest }}' "$ref" 2>/dev/null \
+                  | jq -r '.digest // empty' 2>/dev/null || true)
+              config=$(docker buildx imagetools inspect \
+                  --format '{{ json .Image }}' "$ref" 2>/dev/null || true)
+              # An index reports one config per platform. Take the distinct set: if
+              # the platforms disagree there is no single right answer.
+              mapfile -t cuda_seen < <(printf '%s' "$config" \
+                  | jq -r '[.. | objects | select(has("Env")) | .Env[]?
+                            | select(startswith("CUDA_VERSION="))] | unique | .[]' 2>/dev/null \
+                  | cut -d= -f2 || true)
+              if (( ${#cuda_seen[@]} > 1 )); then
+                  echo "::error::${tag}: platforms report different CUDA versions (${cuda_seen[*]}); refusing to label this image"
+                  exit 1
+              fi
+              cuda_full="${cuda_seen[0]:-}"
+              if [[ -z "$cuda_full" ]]; then
+                  echo "::warning::${tag}: image config reports no CUDA_VERSION; refusing to guess, skipping this variant"
+                  continue
+              fi
+              # Upstream aliases the bare tag onto an explicit one. Same digest is
+              # the same image, so build it once, under the explicit name.
+              if [[ -n "$digest" && " $seen_digests " == *" $digest "* ]]; then
+                  echo "  ${tag}: same image as an already-selected tag (${digest:0:19}); skipping the alias"
+                  continue
+              fi
+              seen_digests="$seen_digests $digest"
+              # 13.0.3 -> 13.0
+              cuda="${cuda_full%.*}"
+              echo "  ${tag} -> CUDA ${cuda} (image reports ${cuda_full})"
+              MATRIX=$(echo "$MATRIX" | jq -c --arg t "$tag" --arg c "$cuda" '. + [{tag: $t, cuda: $c}]')
+          done <<< "$CANDIDATES"
+
+          # Two DIFFERENT images resolving to one CUDA version would publish to a
+          # single output tag, and the loser would be silently overwritten.
+          COLLISIONS=$(echo "$MATRIX" | jq -r '
+            group_by(.cuda) | map(select(length > 1)) | .[]
+            | "CUDA " + .[0].cuda + ": " + (map(.tag) | join(", "))
+          ')
+          if [[ -n "$COLLISIONS" ]]; then
+              echo "::error::Variants collide on one output tag: ${COLLISIONS}"
+              exit 1
+          fi
 
           echo "Build matrix: $MATRIX"
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT

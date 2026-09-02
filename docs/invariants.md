@@ -968,11 +968,30 @@ what makes reading the artifact safe — `startswith` alone admits `v0.28.0rc1` 
 `v0.26.0post1.*`, whose configs resolve to a real CUDA and would enter the matrix as
 duplicates.
 
+**A second failure mode, found converting `build-sglang.yml`'s release path
+(2026-09-02).** The same inference can DROP an image rather than mislabel one, which is
+quieter still. That rule read "treat the bare tag as 13.0 only when no `-cu130` exists",
+so for the pre-v0.5.11 shape — bare plus `-cu130`, no `-cu129` — the bare tag matched no
+branch and fell through to `empty`. `lmsysorg/sglang:v0.5.8` reports CUDA 12.9.1 today,
+so rebuilding it would have silently produced ONE image instead of two, losing the 12.9
+build with no error anywhere. Reading the artifact is correct in both eras without
+knowing which one it is looking at.
+
+That conversion also has to keep an alias from becoming a duplicate: upstream publishes
+the bare tag and `-cuNNN` as the SAME digest (`v0.5.18` and `v0.5.18-cu130` are one
+image). Dedupe on **digest**, preferring the explicit name, and reserve the hard error
+for two DIFFERENT digests landing on one CUDA label. A blanket collision error — correct
+for `vllm-omni`, which has no aliases — would fail every sglang release build.
+
 **Not yet gated, and deliberately so.** The natural rule — no workflow assigns a literal
-CUDA version to an upstream bare tag — would fire on `build-vllm.yml:131`, which still
-uses the `$has_cu130` heuristic. That is a known exception, not an oversight: it is
-correct for `vllm/vllm-openai` today. Gating this means converting that workflow too, and
-per the Bug -> Invariant protocol the baseline must be clean before the rule lands.
+CUDA version to an upstream bare tag — would fire on `build-vllm.yml:128-134`, which still
+uses the `$has_cu130` heuristic, and on `build-vllm-omni.yml:80`, whose NIGHTLY path
+hardcodes 12.9 while `vllm/vllm-omni:nightly` reports 13.0.2 (missed when that file's
+release path was converted). Those are the two known holdouts. Gating means converting
+both, and per the Bug -> Invariant protocol the baseline must be clean before the rule
+lands. Note the rule must not fire on `build-comfyui.yml`'s `{cuda: "12.9", py: "py312"}`
+matrix: that selects OUR pytorch base and is a build input we control, not a claim about
+someone else's artifact.
 
 ### A Slack headline may claim a promotion only where the promotion SUCCEEDED — **GATED (test_promote_notification_truth.py)**
 
