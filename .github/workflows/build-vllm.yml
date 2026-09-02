@@ -525,6 +525,22 @@ jobs:
       && needs.preflight.outputs.should-run == 'true'
       && needs.build.result == 'success'
       && needs.qa.result == 'success'
+      # GATING as of 2026-09-02, completing ADR 0006 condition 2's ramp. It was
+      # advisory — ordered ahead of the approval prompt so a human never approved
+      # before its evidence existed, but unable to block. The ramp's bar was two
+      # consecutive green runs; every engine cleared it, and the greens were checked
+      # for VACUITY rather than taken at face value: in each cell
+      # `base/85-serverless-services` and the engine's own `20-serverless-pyworker`
+      # both PASSED, and the caddy tests correctly SKIPPED, which only happens when
+      # `is_serverless` is true. A cell that had silently skipped its way to green
+      # would have been the wrong thing to start gating on.
+      # Evidence: vllm 2026-09-01.
+      #
+      # Flipped on all four engines together, not one at a time. Forking a gate rule
+      # per image is the shape ADR 0029 condition 5 was written against — a cell that
+      # blocks on one image and not another means the same defect promotes or does
+      # not depending on which workflow found it.
+      && needs.qa-serverless.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -628,7 +644,7 @@ jobs:
       # promotion that did not happen. Measured 2026-08-27: three branch dispatches
       # cancelled at the production approval gate, every QA cell green, Slack saying
       # "vLLM promoted — live-GPU QA passed" beside a red run card.
-      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'vLLM promoted — but the ADVISORY serverless cell FAILED (not gating yet)') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
+      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.qa-serverless.result == 'failure' && 'vLLM SERVERLESS QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM"
       image-ref: ${{ needs.preflight.outputs.vllm-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

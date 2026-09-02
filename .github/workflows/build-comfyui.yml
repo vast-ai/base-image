@@ -293,7 +293,7 @@ jobs:
       # start_server.sh: `[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit`.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
   merge-manifests:
-    # qa-serverless and qa-serverless-detect are in `needs` to ORDER them ahead of the
+    # qa-serverless is in `needs` to ORDER it ahead of the
     # production approval prompt, and absent from the `if` so they cannot BLOCK — the
     # advisory ramp every other engine's serverless cell uses.
     #
@@ -310,6 +310,22 @@ jobs:
       && needs.preflight.outputs.should-run == 'true'
       && needs.build.result == 'success'
       && needs.qa.result == 'success'
+      # GATING as of 2026-09-02, completing ADR 0006 condition 2's ramp. It was
+      # advisory — ordered ahead of the approval prompt so a human never approved
+      # before its evidence existed, but unable to block. The ramp's bar was two
+      # consecutive green runs; every engine cleared it, and the greens were checked
+      # for VACUITY rather than taken at face value: in each cell
+      # `base/85-serverless-services` and the engine's own `20-serverless-pyworker`
+      # both PASSED, and the caddy tests correctly SKIPPED, which only happens when
+      # `is_serverless` is true. A cell that had silently skipped its way to green
+      # would have been the wrong thing to start gating on.
+      # Evidence: comfyui 2026-09-02 (4/4 cells).
+      #
+      # Flipped on all four engines together, not one at a time. Forking a gate rule
+      # per image is the shape ADR 0029 condition 5 was written against — a cell that
+      # blocks on one image and not another means the same defect promotes or does
+      # not depending on which workflow found it.
+      && needs.qa-serverless.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -397,7 +413,12 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [preflight, build, qa, merge-manifests, collect-tags]
+    # qa-serverless is in `needs` so the headline below can READ its result. A
+    # `needs.<job>` reference that is not in this list evaluates to empty, so the
+    # serverless arm would silently never fire — the failure looks like a headline
+    # that simply never mentions serverless, which is indistinguishable from one
+    # that had nothing to report.
+    needs: [preflight, build, qa, qa-serverless, merge-manifests, collect-tags]
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
@@ -414,7 +435,7 @@ jobs:
       # promotion that did not happen. Measured 2026-08-27: three branch dispatches
       # cancelled at the production approval gate, every QA cell green, Slack saying
       # "ComfyUI promoted — live-GPU QA passed" beside a red run card.
-      headline: ${{ (needs.build.result != 'success' && 'ComfyUI build failed') || (needs.qa.result == 'failure' && 'ComfyUI QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'ComfyUI promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'ComfyUI NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'ComfyUI promoted — live-GPU QA passed') || '' }}
+      headline: ${{ (needs.build.result != 'success' && 'ComfyUI build failed') || (needs.qa.result == 'failure' && 'ComfyUI QA FAILED on real GPU — not promoted') || (needs.qa-serverless.result == 'failure' && 'ComfyUI SERVERLESS QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'ComfyUI promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'ComfyUI NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'ComfyUI promoted — live-GPU QA passed') || '' }}
       image-name: "ComfyUI"
       image-ref: ${{ needs.preflight.outputs.comfyui-ref }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
