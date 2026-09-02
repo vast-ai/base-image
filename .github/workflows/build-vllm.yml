@@ -31,6 +31,12 @@ on:
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (Auto default)"
         required: false
+      QA_SET_FILTERS:
+        description: "Raise QA selection floors, space-separated KEY.OP=VALUE (e.g. 'compute_cap.gte=1000' for a Blackwell-only model)"
+        required: false
+      QA_MAX_PRICE:
+        description: "QA offer price ceiling in $/hr (default 2.00) - raise when the floors above only match expensive cards"
+        required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "vllm"
@@ -289,6 +295,25 @@ jobs:
       # A real defect still blocks — it fails every draw — and each failed attempt
       # records its machine and excludes it from the next.
       retries: 2
+      # Per-model selection floors. The template's compute_cap floor is the generic
+      # vLLM one (sm_80 — external/vllm/templates/vllm-qa/template.yml), which is
+      # right for most models and wrong for a Blackwell-only build: offers are
+      # searched cheapest-first, so the gate draws an Ampere card and the engine dies
+      # with "no kernel image is available for execution on the device". It then
+      # redraws onto another cheap card and fails identically, which reads as a
+      # reproducible image defect and is not one — the image was never run on a GPU
+      # it has kernels for. Observed on hy4-preview: three draws, A10 / RTX 3080 /
+      # RTX 4000 Ada (cc 860, 860, 890), same error each time.
+      #
+      # RAISE-ONLY: create.py rejects an override that would widen selection, so this
+      # cannot loosen the linted floors, and an empty value (every scheduled run, and
+      # every dispatch that does not set it) leaves them exactly as they are.
+      set_filters: ${{ inputs.QA_SET_FILTERS }}
+      # Companion to the above rather than an independent knob. Raising compute_cap
+      # without raising the ceiling can empty the offer pool, and the gate's response
+      # to an empty pool is to wait and redraw — so the run burns its retries on
+      # "no offers matched the floors" instead of reporting a verdict.
+      max_price: ${{ inputs.QA_MAX_PRICE || '2.00' }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
@@ -410,6 +435,12 @@ jobs:
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
       require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
       retries: 2
+      # Same floors as the standard cell, for the same reason — see the note there.
+      # These must not fork: a Blackwell-only image that the standard cell refuses to
+      # draw an Ampere card for would still draw one here, and the run would carry one
+      # red cell that means nothing about the image.
+      set_filters: ${{ inputs.QA_SET_FILTERS }}
+      max_price: ${{ inputs.QA_MAX_PRICE || '2.00' }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
