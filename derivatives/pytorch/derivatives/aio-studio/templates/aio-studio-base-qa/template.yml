@@ -41,9 +41,21 @@ env:
   OPEN_BUTTON_TOKEN: "1"
   JUPYTER_DIR: "/"
   DATA_DIRECTORY: "/workspace/"
-  # No PORTAL_CONFIG override: the base ships no aio PORTAL_CONFIG of its own (that
-  # comes from the app layer's 05-aio-studio-env.sh), and inventing one here would have
-  # the cell grade the template rather than the image.
+  # PORTAL_CONFIG IS REQUIRED HERE, and omitting it was a real failure: the first run
+  # of this cell went red on base/15-boot-markers, base/20-portal, base/25-caddy-proxy
+  # and base/65-conditional-services, all tracing to `file not found: /etc/Caddyfile`.
+  #
+  # The Caddyfile is GENERATED at boot from PORTAL_CONFIG. The app image supplies a
+  # default from 05-aio-studio-env.sh — but that file lives in ROOT, which only
+  # Dockerfile (the app stage) copies. The BASE image gets ROOT_BASE, so it has no
+  # PORTAL_CONFIG of its own and Caddy has nothing to build from. The reasoning that
+  # applies to aio-studio-qa ("let the image's own default be what the test grades")
+  # is exactly wrong one layer down, where there is no default to grade.
+  #
+  # Minimal on purpose: the two services the base actually runs. Listing an app here
+  # would be a route to something this image does not contain, and base/67 fails a
+  # portal entry whose port never binds.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
   #
   # Required-pass gate (ADR 0019/0031). Without it the GPU trio self-skips when
   # nvidia-smi never came up and a suite of skips reports green. Enforced twice — by the
