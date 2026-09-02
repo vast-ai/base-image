@@ -6,6 +6,24 @@
 # differs from vllm-qa, the difference is real and noted inline; anything unmarked is
 # intentionally identical and should be changed in both.
 #
+# TEXT ONLY, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (2026-09-02).
+# vLLM-Omni's distinguishing feature is opt-in: omni-modality is enabled by `--omni`
+# in VLLM_ARGS, and this template deliberately does not pass it. So what this gate
+# certifies is that the image works as a vLLM server — engine boots, Ray comes up,
+# /v1 answers, the contract holds. It certifies NOTHING about image generation, TTS,
+# video or any other omni pipeline. Do not read a green run here as evidence the omni
+# path works.
+#
+# Covering it was scoped and deferred, not forgotten. Upstream serves image generation
+# as `vllm serve <model> --omni` + `POST /v1/images/generations` -> data[0].b64_json,
+# and 10-vllm-omni-serving.sh's VLLM_TEST_ENDPOINT switch is the extension point for
+# it. Two things make it a separate piece of work rather than a model swap: the
+# smallest clean image model is ~24 GB against this model's ~1 GB, which moves the
+# disk and VRAM floors and thins the offer pool; and 12-vllm-omni-contract is
+# text-LLM-shaped (token arithmetic, --max-model-len overflow, streaming chat), so it
+# cannot pass against a diffusion model and would have to move to a second cell rather
+# than be deleted.
+#
 # NO SERVERLESS CELL, unlike vllm-qa. This image has no serverless wiring at all — no
 # BACKEND, no MODEL_LOG, no EXPOSE 3000, no pyworker — so there is nothing to turn on
 # and port 3000 is deliberately NOT mapped here. If omni gains serverless support, the

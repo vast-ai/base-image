@@ -3563,3 +3563,41 @@ jobs:
           echo 'matrix=[{"tag":"x","cuda":"12.9"}]'
 """, name="build-comfyui.yml")
     assert not _codes(repo, "L087")
+
+
+# ---- L088: a test ships the sibling helper it reaches for ----
+
+
+def _suite(tmp_path, files: dict, suite="engine.d"):
+    d = tmp_path / "ROOT/opt/instance-tools/tests" / suite
+    d.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        f = d / name
+        f.write_text(body)
+        if name.endswith(".sh"):
+            f.chmod(0o755)
+    return tmp_path
+
+
+_REACHES = '#!/bin/bash\nCHECKER="$(dirname "$0")/contract_check.py"\n'
+
+
+def test_L088_a_missing_sibling_helper_fires(tmp_path):
+    """THE real defect, 2026-09-02: the vllm-omni gate was built by copying two .sh
+    files out of vllm.d and shipped without the 811-line contract_check.py beside
+    them. The suite failed correctly on a rented GPU — after a full image build."""
+    repo = _suite(tmp_path, {"12-engine-contract.sh": _REACHES})
+    assert _codes(repo, "L088")
+
+
+def test_L088_shipping_the_helper_is_clean(tmp_path):
+    repo = _suite(tmp_path, {"12-engine-contract.sh": _REACHES,
+                             "contract_check.py": "# assertions\n"})
+    assert not _codes(repo, "L088")
+
+
+def test_L088_does_not_sweep_in_the_ubiquitous_lib_source(tmp_path):
+    """Every test in the tree opens with `source "$(dirname "$0")/../lib.sh"`. That is
+    a path segment, not a sibling, and a rule that fired on it would red the repo."""
+    repo = _suite(tmp_path, {"10-x.sh": '#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n'})
+    assert not _codes(repo, "L088")
