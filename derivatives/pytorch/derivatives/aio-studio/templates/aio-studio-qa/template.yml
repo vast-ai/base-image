@@ -1,0 +1,98 @@
+# AIO Studio QA template (ADR 0005 live-GPU QA gate).
+#
+# THIS IMAGE HAD NO QA AT ALL. It promoted on a successful `docker build`, and on the
+# bi-weekly schedule it pushed straight to the production namespace and moved `:latest`
+# with no gate in the path. What this template gates is the first live-GPU evidence the
+# image has ever produced.
+#
+# WHAT IT ASSERTS, AND WHY IT IS NOT "the eight apps work".
+# All nine supervisor programs ship autostart=false: the user picks one, because eight
+# heavyweight apps cannot share a GPU. So no cell can assert they are serving without
+# choosing one app and paying for its models, and a cell that started all of them would
+# be testing something the product does not do. The gate therefore asserts the two
+# properties that ARE true of every launch:
+#
+#   aio.d/10-aio-app-venvs  every app venv resolves the torch it was built against,
+#                           from inside its own interpreter — the multi-torch base
+#                           contract, checked where the _base.pth indirection is real
+#   aio.d/20-aio-services   every app is a program supervisord knows, whose launcher
+#                           exists and is executable, and which something routes to
+#
+# Those are exactly the failures that today reach a customer as a portal button that
+# does nothing, or an app that dies on `import torch`.
+#
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag.
+name: "AIO Studio QA — venv and service contract"
+image: vastai/aio-studio
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # The image's own default PORTAL_CONFIG is what 20-aio-services checks its routes
+  # against, so this template deliberately does NOT set one: overriding it here would
+  # make the test grade the template instead of the image. 05-aio-studio-env.sh sets it
+  # when unset, and drops the Desktop entry when selkies is absent — which that test
+  # treats as a legitimate state rather than a failure.
+  #
+  # Required-pass gate (ADR 0019/0031). Without it both assertions below are optional:
+  # a venv test that cannot find /venv/main would `test_fail`, but the GPU trio
+  # self-skips when nvidia-smi never came up, and a suite of skips reports green.
+  # Enforced twice — by the runner in-instance and by qa_verdict.py in CI via the
+  # matching `require_tests` — so a template edit that drops this line still cannot
+  # produce a passing verdict. Gated by L057 and L072.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio.d/10-aio-app-venvs aio.d/20-aio-services"
+# QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
+extra_filters:
+  compute_cap:
+    gte: 750                      # sm_75 — nothing here compiles kernels; the venv
+                                  # probes only need a GPU torch can see
+  cuda_max_good:
+    gte: 12.9                     # the multi-210-291-271 base's newest CUDA line
+  # This gate loads no models and runs no inference — it imports torch in eight venvs
+  # and reads supervisor state. 12 GB is headroom for the CUDA context of three
+  # representative probes, not a model footprint, and keeps the offer pool wide.
+  gpu_ram:
+    gte: 12288
+  # Host-reliability and bandwidth floors, matching the other gates. This image is the
+  # LARGEST in the fleet — eight app venvs plus a desktop — so a slow link burns the
+  # launch window before a single test runs (ADR 0029's redraw is not free).
+  inet_down:
+    gte: 500                      # Mbps
+  direct_port_count:
+    gte: 64
+  reliability2:
+    gte: 0.95
+  # PAIRED with recommended_disk_space below. The request on its own filters nothing:
+  # the client REQUESTS recommended_disk_space at create time and rejects an instance
+  # that comes up with less than the full request (DISK_TOLERANCE), so without a
+  # matching SEARCH floor the cell rents a box that cannot satisfy it and fails for a
+  # reason that is not about the image. base-qa pairs these; vllm-qa and comfyui-qa do
+  # not. L058 enforces the relationship.
+  #
+  # DIRECTION: a LOWER bound. Keep >= recommended_disk_space (L058).
+  disk_space:
+    gte: 32
+# NOT sized from the image. The image does not count against container disk on Vast,
+# so its 28 GB compressed / ~60 GB unpacked is irrelevant here — sizing off it would
+# thin the offer pool for no reason. What IS charged is the writable layer plus
+# $WORKSPACE, and this image boot-syncs two trees into it
+# (/opt/workspace-internal/{stable-diffusion-webui-forge,unsloth} via
+# 36-sync-workspace.sh). This gate additionally downloads no models and runs no
+# inference — it imports torch in eight venvs and reads supervisor state — so 32 GB is
+# that sync plus ordinary container writes with headroom, in line with vllm-qa.
+#
+# DIRECTION: raise it together with the disk_space floor above, never alone.
+recommended_disk_space: 32.0
