@@ -75,10 +75,28 @@ jobs:
         id: nightly-check
         if: inputs.VLLM_OMNI_VERSION == 'nightly'
         run: |
+          set -uo pipefail
           echo "is-nightly=true" >> $GITHUB_OUTPUT
           echo "version=nightly-$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
-          echo 'matrix=[{"tag":"nightly","cuda":"12.9"}]' >> $GITHUB_OUTPUT
-          echo "Nightly build requested - skipping version matching"
+
+          # Read the CUDA version off the ARTIFACT, never off the tag name
+          # (ADR 0035). This was hardcoded to 12.9 and is 13.0.2 today -- the same
+          # defect this file's RELEASE path was converted for, in the same file,
+          # left behind because only the one path was looked at.
+          config=$(docker buildx imagetools inspect \
+              --format '{{ json .Image }}' vllm/vllm-omni:nightly 2>/dev/null || true)
+          mapfile -t cuda_seen < <(printf '%s' "$config" \
+              | jq -r '[.. | objects | select(has("Env")) | .Env[]?
+                        | select(startswith("CUDA_VERSION="))] | unique | .[]' 2>/dev/null \
+              | cut -d= -f2 || true)
+          if (( ${#cuda_seen[@]} != 1 )); then
+              echo "::error::vllm/vllm-omni:nightly reports ${#cuda_seen[@]} distinct CUDA versions (${cuda_seen[*]:-none}); refusing to guess a label"
+              exit 1
+          fi
+          cuda_full="${cuda_seen[0]}"
+          CUDA="${cuda_full%.*}"
+          echo "matrix=[{\"tag\":\"nightly\",\"cuda\":\"${CUDA}\"}]" >> $GITHUB_OUTPUT
+          echo "Nightly build requested - upstream 'nightly' reports CUDA ${cuda_full}, labelling ${CUDA}"
 
       - name: Check release and resolve version
         id: release-check
@@ -91,15 +109,13 @@ jobs:
           trigger: ${{ github.event_name }}
           manual-version: ${{ inputs.VLLM_OMNI_VERSION }}
 
-      # The matrix step reads each upstream image's config to learn its real CUDA
-      # version. Authenticate first: anonymous manifest reads share a per-IP quota
-      # with every other job on the runner fleet, and a 429 here would look like
-      # "no CUDA_VERSION" and silently drop variants.
+      # BOTH matrix steps -- nightly and release -- read each upstream image's
+      # config to learn its real CUDA version, so authenticate before either runs.
+      # Anonymous manifest reads share a per-IP quota with every other job on the
+      # runner fleet, and a 429 is indistinguishable from "no CUDA_VERSION": it
+      # would drop variants silently instead of failing.
       - name: Log in to Docker Hub
-        if: >-
-          inputs.VLLM_OMNI_VERSION != 'nightly'
-          && steps.release-check.outputs.new-release == 'true'
-          && steps.secrets.outputs.available == 'true'
+        if: steps.secrets.outputs.available == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

@@ -983,15 +983,21 @@ image). Dedupe on **digest**, preferring the explicit name, and reserve the hard
 for two DIFFERENT digests landing on one CUDA label. A blanket collision error — correct
 for `vllm-omni`, which has no aliases — would fail every sglang release build.
 
-**Not yet gated, and deliberately so.** The natural rule — no workflow assigns a literal
-CUDA version to an upstream bare tag — would fire on `build-vllm.yml:128-134`, which still
-uses the `$has_cu130` heuristic, and on `build-vllm-omni.yml:80`, whose NIGHTLY path
-hardcodes 12.9 while `vllm/vllm-omni:nightly` reports 13.0.2 (missed when that file's
-release path was converted). Those are the two known holdouts. Gating means converting
-both, and per the Bug -> Invariant protocol the baseline must be clean before the rule
-lands. Note the rule must not fire on `build-comfyui.yml`'s `{cuda: "12.9", py: "py312"}`
-matrix: that selects OUR pytorch base and is a build input we control, not a claim about
-someone else's artifact.
+**GATED (L087), 2026-09-02.** All six sites now read the artifact — `build-vllm.yml`
+(nightly + release), `build-vllm-omni.yml` (nightly + release), `build-sglang.yml`
+(nightly + release) — so the rule lands on a clean baseline.
+
+Two things about the rule's shape are load-bearing, and both come from how this defect
+actually behaved rather than from how it was first described:
+
+- **Scoped to workflows that consume `check-dockerhub-release`**, i.e. those resolving
+  someone else's image by tag. `build-comfyui.yml`'s `{cuda: "12.9", py: "py312"}` matrix
+  selects OUR pytorch base: a build input we control, not a claim about a foreign
+  artifact. A rule that reds it would be wrong.
+- **Checked PER STEP, not per file.** `build-vllm-omni.yml` had its release path
+  converted and its nightly path left hardcoded in the same file — a file-level check
+  finds `CUDA_VERSION` present and calls it clean, which is precisely how that one
+  survived a fix aimed at it. `test_L087_is_PER_STEP_not_per_file` pins this.
 
 ### A Slack headline may claim a promotion only where the promotion SUCCEEDED — **GATED (test_promote_notification_truth.py)**
 

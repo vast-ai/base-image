@@ -3474,3 +3474,92 @@ def test_L083_a_substitution_inside_a_quoted_argument_is_not_an_argument(tmp_pat
     read as three arguments."""
     repo = _t(tmp_path, 'fail_later "lbl" "failed: $(echo "$out" | tail -3)"\n')
     assert not _codes(repo, "L083")
+
+
+# ---- L087: an upstream image's CUDA label is READ, not inferred (ADR 0035) ----
+
+
+def _wf(tmp_path, body, name="build-thing.yml"):
+    f = tmp_path / ".github/workflows" / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(body)
+    return tmp_path
+
+
+_RESOLVES_UPSTREAM = """
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/check-dockerhub-release
+        with:
+          repository: vendor/thing
+"""
+
+
+def test_L087_a_hardcoded_upstream_cuda_label_fires(tmp_path):
+    """The real defect: build-vllm-omni.yml pinned its nightly matrix to 12.9 while
+    vllm/vllm-omni:nightly reported 13.0.2, so every nightly said cuda-12.9 and
+    carried CUDA 13."""
+    repo = _wf(tmp_path, _RESOLVES_UPSTREAM + """      - name: Handle nightly build
+        run: |
+          echo 'matrix=[{"tag":"nightly","cuda":"12.9"}]' >> $GITHUB_OUTPUT
+""")
+    assert _codes(repo, "L087")
+
+
+def test_L087_the_suffix_chain_that_dropped_an_image_fires(tmp_path):
+    """The sglang release shape. Not a wrong label — the bare tag matched no branch
+    and the genuine 12.9 image was dropped with no error anywhere."""
+    repo = _wf(tmp_path, _RESOLVES_UPSTREAM + """      - name: Build matrix from variant tags
+        run: |
+          MATRIX=$(echo "$VARIANTS" | jq -c '
+            map(if endswith("-cu130") then {tag: ., cuda: "13.0"}
+                elif endswith("-cu129") then {tag: ., cuda: "12.9"}
+                else empty end)')
+""")
+    assert _codes(repo, "L087")
+
+
+def test_L087_reading_the_artifact_is_clean(tmp_path):
+    repo = _wf(tmp_path, _RESOLVES_UPSTREAM + """      - name: Build matrix from variant tags
+        run: |
+          config=$(docker buildx imagetools inspect --format '{{ json .Image }}' "$ref")
+          cuda=$(printf '%s' "$config" | jq -r '.. | .Env? // empty' | grep CUDA_VERSION | cut -d= -f2)
+          MATRIX=$(jq -cn --arg c "${cuda%.*}" '[{tag: "x", cuda: $c}]')
+""")
+    assert not _codes(repo, "L087")
+
+
+def test_L087_is_PER_STEP_not_per_file(tmp_path):
+    """THE miss this rule exists to catch. build-vllm-omni.yml had its release path
+    converted to read the artifact and its nightly path left hardcoded, in the same
+    file — a file-level check sees CUDA_VERSION present and calls it clean."""
+    repo = _wf(tmp_path, _RESOLVES_UPSTREAM + """      - name: Handle nightly build
+        run: |
+          echo 'matrix=[{"tag":"nightly","cuda":"12.9"}]' >> $GITHUB_OUTPUT
+      - name: Build matrix from variant tags
+        run: |
+          config=$(docker buildx imagetools inspect --format '{{ json .Image }}' "$ref")
+          cuda=$(printf '%s' "$config" | grep CUDA_VERSION | cut -d= -f2)
+""")
+    assert _codes(repo, "L087")
+
+
+def test_L087_our_own_base_matrix_is_not_an_upstream_claim(tmp_path):
+    """build-comfyui.yml's `{cuda: "12.9", py: "py312"}` selects OUR pytorch base. It
+    is a build input we control, not a claim about someone else's artifact, and a rule
+    that reds it would be wrong."""
+    repo = _wf(tmp_path, """
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { cuda: "12.9", py: "py312" }
+    steps:
+      - run: |
+          echo 'matrix=[{"tag":"x","cuda":"12.9"}]'
+""", name="build-comfyui.yml")
+    assert not _codes(repo, "L087")
