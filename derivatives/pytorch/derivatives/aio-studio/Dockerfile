@@ -1,6 +1,48 @@
-ARG AIO_BASE=robatvastai/aio-studio:base-2026-04-01
+# AIO_BASE carries NO default ON PURPOSE, for the reason ADR 0018 records for
+# LLAMA_CPP_VERSION: a default here is a SECOND source of truth for the same fact,
+# and it silently loses. The workflow always passes --build-arg AIO_BASE (from its
+# `AIO_BASE` input, falling back to `DEFAULT_AIO_BASE`), so the value baked here was
+# only ever consulted by a plain `docker build` -- where it pointed at
+# <staging-ns>/aio-studio:base-2026-04-01, a tag from a base build that FAILED, in the
+# STAGING namespace, four and a half months stale. That is worse than no default: it
+# builds, and it builds on the wrong thing. Fail loudly instead.
+#
+# The base is a SEPARATE image on purpose and stays that way: it is large, Vast hosts
+# cache its layers, and an app-layer update is then a small delta rather than a full
+# re-pull. Folding it into this Dockerfile would defeat that.
+ARG AIO_BASE
 
 FROM ${AIO_BASE}
+
+# Guard the ARG at the top of the build rather than letting a missing value surface as
+# a confusing failure deep in an app install. `FROM ${AIO_BASE}` with an empty ARG is
+# itself an error, so this mainly catches a value that resolved to something unusable.
+#
+# THE VENVS ARE THE REAL CONTRACT. `create_app_venv <app> <base>` resolves /venv/$base,
+# so a base that does not carry every venv the apps below ask for fails partway through
+# a multi-hour build with an error that names uv, not the base. The list is asserted
+# here, once, against what this file actually uses:
+#
+#   main         comfyui, forge, unsloth, ace-step
+#   torch-2.7.1  ostris, wan2gp, whisper
+#   torch-2.9.1  voicebox
+#
+# This is also what pins the base to the RIGHT multi-torch family. vastai/pytorch
+# publishes several (multi-210-291-271, multi-2130-2121, multi-2130-2121-2110); only
+# the first carries 2.9.1 and 2.7.1, so "upgrade to the newest multi base" would remove
+# four apps' torch and is caught here rather than in the app layer.
+RUN set -euo pipefail && \
+    missing=""; \
+    for v in main torch-2.7.1 torch-2.9.1; do \
+        [ -x "/venv/$v/bin/python" ] || missing="$missing $v"; \
+    done; \
+    if [ -n "$missing" ]; then \
+        echo "FATAL: AIO_BASE lacks the venv(s):$missing"; \
+        echo "  present: $(ls -1 /venv 2>/dev/null | tr '\n' ' ')"; \
+        echo "  this base is not built on the multi-210-291-271 pytorch family"; \
+        exit 1; \
+    fi; \
+    echo "base venv contract OK: $(ls -1 /venv | tr '\n' ' ')"
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"

@@ -419,7 +419,12 @@ def check_skeleton(img: Image, repo: Path) -> Iterable[Finding]:
 # same reason. Grandfathered here rather than via EXCEPTIONS because L041 only emits its
 # ERROR when the namespace env is set, which would make the msg-scoped exception read as
 # "stale" on an env-unset run (test_no_stale_exceptions).
-_L041_GRANDFATHERED = frozenset({"aio-studio"})
+# EMPTY, and that is the point: an exemption here expires by being FIXED, not by
+# accumulating. aio-studio was the sole entry — its Dockerfile pinned a base in the
+# staging namespace — and removing that pin (2026-09-02) retired the exemption
+# rather than renewing it. Add a name here only with a dated reason and a plan to
+# remove it.
+_L041_GRANDFATHERED: frozenset[str] = frozenset()
 
 
 def check_no_hardcoded_staging_namespace(img: Image, repo: Path) -> Iterable[Finding]:

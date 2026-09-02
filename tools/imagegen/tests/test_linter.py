@@ -514,13 +514,19 @@ def test_L041_warns_not_errors_when_env_unset(tmp_path, monkeypatch):
     assert "L041" in {f.code for f in findings if f.severity == "WARN"}
 
 
-def test_L041_grandfathers_staging_based_image(tmp_path, monkeypatch):
-    # aio-studio legitimately builds FROM a staging-account base (invariants §2), so it
-    # must not false-gate even with the namespace set.
+def test_L041_no_image_is_grandfathered_any_more(tmp_path, monkeypatch):
+    """The exemption list is EMPTY, and aio-studio — its only ever entry — is the case
+    that proves it. It was exempted because its Dockerfile pinned a base in the staging
+    namespace; that pin was removed 2026-09-02, so the exemption was retired by being
+    FIXED rather than renewed. A name reappearing here should fail this test and force
+    the question of why, which is the whole point of an exemption that expires."""
+    assert L._L041_GRANDFATHERED == frozenset(), (
+        f"L041 exemptions are back: {sorted(L._L041_GRANDFATHERED)} — an exemption is a "
+        f"deferred fix, not a permanent state")
     monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
     df = VALID_DF.replace("uv pip install foo", "uv pip install foo  # acmestaging/x")
     img = replace(make(tmp_path, df=df), name="aio-studio")
-    assert "L041" not in errs(img, tmp_path)
+    assert "L041" in errs(img, tmp_path), "aio-studio must now be gated like every other image"
 
 
 def test_rules_catalog_matches_emitted_codes():
