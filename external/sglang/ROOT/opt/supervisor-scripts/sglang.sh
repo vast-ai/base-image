@@ -28,9 +28,24 @@ cd ${WORKSPACE}
 AUTO_PARALLEL_ARGS=""
 # Rewrite var name
 AUTO_PARALLEL="${AUTO_PARALLEL:-true}"
+
+# Expert parallelism is spelled --ep-size N here; --enable-expert-parallel is
+# vLLM's spelling and does nothing on this server. Because N must equal the
+# instance GPU count it cannot be written into a static template arg string, so
+# translate the portable flag into the sized one and drop the original.
+# Without it Qwen3.8-Flash-Next-FP8 will not load: sglang reports
+#   (moe_intermediate_size=640 / moe_tp_size=4) % weight_block_size_n=128 != 0
+# because moe_tp_size is tp_size/ep_size and ep_size defaulted to 1.
+EP_ARGS=""
+if [[ $SGLANG_ARGS =~ --enable-expert-parallel ]]; then
+    SGLANG_ARGS="${SGLANG_ARGS//--enable-expert-parallel/}"
+    [[ $SGLANG_ARGS =~ --ep-size ]] || EP_ARGS="--ep-size $GPU_COUNT"
+fi
+
 if [[ "${AUTO_PARALLEL,,}" = "true" ]] && ! [[ $SGLANG_ARGS =~ parallel-size ]]; then
     AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"
 fi
+AUTO_PARALLEL_ARGS="${AUTO_PARALLEL_ARGS} ${EP_ARGS}"
 
 # Force Caches to be written in workspace (vols)
 export HOME=${WORKSPACE}
