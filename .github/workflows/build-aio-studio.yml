@@ -30,6 +30,9 @@ on:
         description: "Custom tag (default: date)"
         required: false
       # App ref overrides — leave empty for auto-detection
+      LLAMA_CPP_VERSION:
+        description: "Unsloth llama.cpp bundle release (empty = latest -mix-)"
+        required: false
       COMFYUI_REF:
         description: "ComfyUI ref (empty = latest release)"
         required: false
@@ -77,6 +80,11 @@ jobs:
       whisper-ref: ${{ steps.whisper.outputs.resolved-ref }}
       ace-step-ref: ${{ steps.ace-step.outputs.resolved-ref }}
       ace-step-ui-ref: ${{ steps.ace-step-ui.outputs.ref }}
+      # Unsloth Studio's llama.cpp now comes from the prebuilt bundle rather than a
+      # source compile (ADR 0018, aligning with the standalone image). The Dockerfile
+      # carries NO default for it on purpose, so this resolver is load-bearing: without
+      # it the build fails on the deliberate empty-value guard.
+      llama-cpp-version: ${{ steps.llama-check.outputs.resolved-ref }}
       image-tag: ${{ steps.tag.outputs.tag }}
       should-run: ${{ steps.decision.outputs.should-run }}
     steps:
@@ -219,6 +227,21 @@ jobs:
           fi
           echo "ref=${REF}" >> $GITHUB_OUTPUT
 
+      # tag-pattern '-mix-' because unslothai/llama.cpp publishes TWO release lines in
+      # one repo — the `-mix-` builds and an older bare `bNNNN` line — and without it the
+      # resolver sorts by updated_at across both and can select from the wrong one.
+      # Identical to build-unsloth-studio.yml's step; the two images install the same
+      # bundle and should resolve it the same way.
+      - name: Resolve the llama.cpp bundle release
+        id: llama-check
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: unslothai/llama.cpp
+          trigger: ${{ github.event_name }}
+          manual-ref: ${{ inputs.LLAMA_CPP_VERSION }}
+          resolve-master-to-commit: "false"
+          tag-pattern: '-mix-'
+
       - name: Generate image tag
         id: tag
         shell: bash
@@ -295,6 +318,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --build-arg AIO_BASE="${AIO_BASE}" \
+            --build-arg LLAMA_CPP_VERSION=${{ needs.resolve-refs.outputs.llama-cpp-version }} \
             --build-arg COMFYUI_REF=${{ needs.resolve-refs.outputs.comfyui-ref }} \
             --build-arg FORGE_REF=${{ needs.resolve-refs.outputs.forge-ref }} \
             --build-arg VOICEBOX_REF=${{ needs.resolve-refs.outputs.voicebox-ref }} \

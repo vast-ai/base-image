@@ -85,9 +85,16 @@ env:
   INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
 # QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
 extra_filters:
+  # sm_80, NOT sm_75, and the reason is Unsloth Studio's llama.cpp rather than anything
+  # this cell runs. The bundled backend carries SASS for 80;86;89;90;100;120 and has NO
+  # sm_75 kernel; an admitted GPU with no kernel image CRASHES (no-kernel-image), it
+  # does not fall back. A 750 floor here would draw Turing boxes on which one of the
+  # eight apps is broken — the gate would pass (it never starts the apps) and the
+  # customer would find it. Matches unsloth-studio-qa, which holds 800 for the same
+  # reason: ADR 0018 makes admitting Turing a SEPARATE step gated on a live run on
+  # Turing hardware, image first and floor second.
   compute_cap:
-    gte: 750                      # sm_75 — nothing here compiles kernels; the venv
-                                  # probes only need a GPU torch can see
+    gte: 800
   cuda_max_good:
     gte: 12.9                     # the multi-210-291-271 base's newest CUDA line
   # This gate loads no models and runs no inference — it imports torch in eight venvs
