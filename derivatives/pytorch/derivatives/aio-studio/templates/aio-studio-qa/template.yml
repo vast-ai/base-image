@@ -21,6 +21,30 @@
 # Those are exactly the failures that today reach a customer as a portal button that
 # does nothing, or an app that dies on `import torch`.
 #
+# ── COVERAGE LIMIT: THE APPLICATIONS THEMSELVES ARE NOT TESTED ON GPU ──────────────
+#
+# STATE THIS PLAINLY so a green run here is not read as more than it is. This gate
+# proves the PLUMBING: the right torch resolves in the right venv, and every app is a
+# launchable program with a route. It does NOT start ComfyUI, Forge, Voicebox,
+# AI Toolkit, Wan2GP, Whisper, ACE Step or Unsloth Studio, so it says nothing about
+# whether any of them serves, loads a model, or even resolves its own non-torch
+# imports. An app can pass everything here and still die on its first import.
+#
+# That coverage is currently provided by MANUAL testing, deliberately and for now.
+#
+# WHY IT IS NOT SIMPLY ADDED HERE. Testing eight applications programmatically is a
+# large piece of work, and it is the same work already outstanding for the standalone
+# images several of these apps come from — not every one of them has its own QA gate
+# yet. Writing eight bespoke app probes in this template would duplicate that effort in
+# the place it is hardest to maintain, and would drift from whatever the standalone
+# images eventually assert.
+#
+# THE PLAN, so this note has an exit. As each standalone image gains its own live-GPU
+# tests, those tests are the ones to port here — this image bundles the same
+# applications, so the assertions should be the same assertions, not a second
+# independently-written set. Until then the gap is known, recorded, and covered by
+# hand rather than being an unexamined hole.
+#
 # CI overrides image/tag with the freshly-built staging tag via create.py --tag.
 name: "AIO Studio QA — venv and service contract"
 image: vastai/aio-studio
@@ -53,7 +77,12 @@ env:
   # Enforced twice — by the runner in-instance and by qa_verdict.py in CI via the
   # matching `require_tests` — so a template edit that drops this line still cannot
   # produce a passing verdict. Gated by L057 and L072.
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio.d/10-aio-app-venvs aio.d/20-aio-services"
+  # Includes the two aio-base.d tests even though they ship in ROOT_BASE: they RUN on
+  # this image (the app layer is built on top of that overlay), so leaving them out of
+  # the required list would let them self-skip here unnoticed — the skip-as-pass hole
+  # ADR 0019 exists to close. A base contract that broke in the app layer is exactly
+  # what this image is placed to catch.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
 # QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
 extra_filters:
   compute_cap:

@@ -20,6 +20,17 @@ source "$(dirname "$0")/../lib.sh"
 #
 # The pairing with PORTAL_CONFIG is the other half. A program with no route is
 # unreachable; a route with no program is a dead button. Both are silent.
+#
+# WHAT THIS FILE DELIBERATELY DOES NOT DO: start any application. Nothing here proves
+# ComfyUI serves, that Forge's UI loads, or that an app resolves its own non-torch
+# imports — an app can be a known program with a route and a working torch and still
+# die on first import. That coverage is MANUAL for now.
+#
+# When adding it, port the assertions from each application's own standalone image
+# rather than writing new ones here: this image bundles the same applications, so the
+# assertions should be the same assertions. Several of those images do not have a
+# live-GPU gate of their own yet, which is the actual blocker — write it there, then
+# bring it here.
 
 wait_for_supervisor 60 || test_fail "supervisord did not become reachable"
 

@@ -53,7 +53,15 @@ on:
         required: false
 
 env:
-  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-04-15"
+  # Bumped 2026-09-03 to the first base ever built through build -> qa -> promote:
+  # it passed a live-GPU cell (three torch venvs importing 2.10.0/2.9.1/2.7.1,
+  # flash_attn, create_app_venv, the desktop stack) before publication. The previous
+  # value, base-2026-04-15, predated the QA stage and was four and a half months old.
+  #
+  # ONE source of truth: the dispatch input defaults to empty and falls back here, and
+  # the Dockerfile carries no default at all. Bump this only to a tag that already
+  # EXISTS — naming one before it is published is the defect this branch started on.
+  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-09-02"
   DEFAULT_DOCKERHUB_REPO: "aio-studio"
 
 jobs:
@@ -335,7 +343,7 @@ jobs:
       # Declared in BOTH places on purpose: the runner enforces it in-instance, and this
       # enforces it against the verdict payload, so a template edit that drops the env
       # var still cannot produce a passing gate.
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio.d/10-aio-app-venvs aio.d/20-aio-services"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
       # ADR 0029 condition 5: the redraw rule is not forked per image.
       retries: 2
     secrets:
