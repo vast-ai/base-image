@@ -69,6 +69,11 @@ download_hf_file() {
   # Acquire slot for parallel download limiting
   local slot=$(acquire_slot)
   
+  # Ensure the lockfile's parent directory exists; otherwise mkdir below
+  # fails with ENOENT and the while-loop silently misreports as "lock
+  # held by another process", causing an infinite wait.
+  mkdir -p "$(dirname "$output_path")"
+
   # Acquire lock for this specific file
   while ! mkdir "$lockfile" 2>/dev/null; do
     echo "Another process is downloading to $output_path (waiting...)"
