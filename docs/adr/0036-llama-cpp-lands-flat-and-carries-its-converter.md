@@ -121,7 +121,25 @@ this was checked rather than assumed:
    dereferenced instead, the mirror would have doubled what lands on the volume — which is
    the failure this note exists to rule out.
 
-3. **A failing link is silent on its own.** `find -exec` does not propagate the exit status
+3. **The mirror must carry symlinks, not just files — and must be proved to RUN.**
+   The first attempt used `find -maxdepth 1 -type f -exec ln -f`, and the build failed on
+   `llama-server does not execute`. The binaries carry `RUNPATH=$ORIGIN`, so each copy
+   resolves its libraries beside itself, and `-type f` silently skipped the five versioned
+   `.so` symlinks (`libggml.so.0 -> libggml.so.0.22.0` and friends). The mirror had 56
+   regular files, none of the links, and `ldd` reported five `not found`.
+
+   `cp -al` is the correct instrument: it hardlinks regular files and recreates symlinks
+   as symlinks. The bundle ships its own `build/`, so that entry is excluded rather than
+   recursed into.
+
+   The deeper lesson is about the assertion, not the command. Every check at that point
+   tested PRESENCE — `test -x`, `test -f` — and presence is not enough when resolution is
+   position-dependent: a mirror can be complete in filenames and still not start. Both
+   binaries are now executed (`--version`, the cheapest call that forces the full link
+   closure). Had the original assertions included that, this would have been caught in the
+   first build rather than the second.
+
+4. **A failing link is silent on its own.** `find -exec` does not propagate the exit status
    of the command it runs: a failing `ln` leaves `find` returning 0 and the build
    continuing. Measured. The separate `build/bin` assertions are therefore load-bearing —
    they are what turns a silently-missing mirror into a failed build.

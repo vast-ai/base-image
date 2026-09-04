@@ -300,9 +300,18 @@ tarfile.open(src).extractall(dest, filter='data')" \
     #     failing `ln` would leave find returning 0 and the build continuing. That is why
     #     the build/bin assertions below are separate and explicit: they are what turns a
     #     silently-missing mirror into a failed build.
+    #  4. `cp -al`, not `find -type f -exec ln`. The first attempt used the latter and
+    #     the build failed on `llama-server does not execute`: the binaries carry
+    #     RUNPATH=$ORIGIN, so they resolve libraries NEXT TO THEMSELVES, and `-type f`
+    #     silently skipped the five versioned .so SYMLINKS (libggml.so.0 ->
+    #     libggml.so.0.22.0 and friends). The mirror had 56 regular files and none of the
+    #     links, so ldd reported five `not found` and the binary would not start from
+    #     build/bin. `cp -al` hardlinks regular files AND recreates symlinks as symlinks,
+    #     which is what $ORIGIN resolution needs. The bundle ships its own `build/`, so
+    #     that entry is excluded rather than recursed into.
     mkdir -p /opt/llama-cpp/build/bin && \
-    find /opt/llama-cpp -maxdepth 1 -mindepth 1 -type f \
-        -exec ln -f {} /opt/llama-cpp/build/bin/ ';' && \
+    find /opt/llama-cpp -maxdepth 1 -mindepth 1 ! -name build \
+        -exec cp -al -t /opt/llama-cpp/build/bin/ {} + && \
     # THE CUDA BUNDLE IS BINARIES ONLY — no convert_hf_to_gguf.py, no gguf-py (verified
     # against the real artifact: zero .py files). check_llama_cpp requires a quantizer AND
     # a converter, so with the bundle alone it can never pass, whatever the layout, and the
@@ -349,6 +358,14 @@ t.extractall('/opt/llama-cpp/gguf-py', members=[m for m in ms if m.name], filter
         { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
         { echo "FATAL: build/bin mirror lacks llama-server — studio setup.sh will not find it"; exit 1; } && \
+    # PRESENCE IS NOT ENOUGH, and this is the assertion the first attempt was missing.
+    # RUNPATH=$ORIGIN means each copy resolves libraries beside itself, so a mirror can be
+    # complete in filenames and still not start. Run BOTH; --version is the cheapest call
+    # that forces the full link closure.
+    /opt/llama-cpp/llama-server --version >/dev/null || \
+        { echo "FATAL: root llama-server does not execute — link closure incomplete"; exit 1; } && \
+    /opt/llama-cpp/build/bin/llama-server --version >/dev/null || \
+        { echo "FATAL: mirrored llama-server does not execute — the mirror is missing libraries it resolves via RUNPATH=\$ORIGIN"; exit 1; } && \
     test -f /opt/llama-cpp/libggml-cuda.so || \
         { echo "FATAL: ${package_name} ships no CUDA backend"; exit 1; } && \
     test -f /opt/llama-cpp/build/bin/libggml-cuda.so || \
