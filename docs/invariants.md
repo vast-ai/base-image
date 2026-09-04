@@ -1401,6 +1401,35 @@ Two further rules, both themselves tested:
   linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
   a self-skipped GPU suite classify as a pass.
 
+### A vendored script is proven by RUNNING it, not by `test -f` — **GATED (L089)**
+
+An image that fetches a Python entrypoint into itself must EXECUTE that script during the
+build. Presence is not importability: a script can land byte-perfect and still be unusable
+because a module it imports at module scope was never fetched with it.
+
+Measured 2026-09-04. `unsloth-studio` vendored `convert_hf_to_gguf.py` from the pinned
+llama.cpp source tag, guarded by `test -f` and a separate `import gguf` probe. Both passed.
+Upstream had refactored that script into a thin CLI wrapper over a sibling `conversion/`
+package of 89 modules, which the build never fetched. The image built green, passed its QA
+gate, was promoted, and GGUF export failed on a rented GPU with `ModuleNotFoundError: No
+module named 'conversion'` — the first moment anything executed the file.
+
+The probe is the part worth keeping in mind. It asserted the sibling the author had in
+mind rather than the closure the script actually reaches for, so it could only confirm an
+existing belief. **The file is the authority on what it imports.** Running it (`--help` is
+enough — argparse returns 0 only after every module-scope import resolves) settles the
+question in seconds, and must use the interpreter the CONSUMER will use: asserting with the
+system `python3` when the app runs `/venv/main/bin/python` proves the wrong environment.
+It must also run at a point where that environment is COMPLETE: the same converter reaches
+`transformers` through `conversion/`, which arrives with the app's own install, so a probe
+placed in an earlier stage reds a healthy build instead of proving anything.
+
+This is L088 one layer up — a test that reaches for a sibling helper must ship it; a
+script that imports a sibling package must have it fetched alongside — and the same blind
+spot as the `find -type f` mirror bug in ADR 0036, where presence was asserted and
+behaviour was what mattered. Not gated by QA and cannot be: the export path runs after
+every cell has closed, so the build-time assertion is the only control (ADR 0036 amendment).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

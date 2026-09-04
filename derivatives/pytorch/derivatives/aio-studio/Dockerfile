@@ -1,6 +1,48 @@
-ARG AIO_BASE=robatvastai/aio-studio:base-2026-04-01
+# AIO_BASE carries NO default ON PURPOSE, for the reason ADR 0018 records for
+# LLAMA_CPP_VERSION: a default here is a SECOND source of truth for the same fact,
+# and it silently loses. The workflow always passes --build-arg AIO_BASE (from its
+# `AIO_BASE` input, falling back to `DEFAULT_AIO_BASE`), so the value baked here was
+# only ever consulted by a plain `docker build` -- where it pointed at
+# <staging-ns>/aio-studio:base-2026-04-01, a tag from a base build that FAILED, in the
+# STAGING namespace, four and a half months stale. That is worse than no default: it
+# builds, and it builds on the wrong thing. Fail loudly instead.
+#
+# The base is a SEPARATE image on purpose and stays that way: it is large, Vast hosts
+# cache its layers, and an app-layer update is then a small delta rather than a full
+# re-pull. Folding it into this Dockerfile would defeat that.
+ARG AIO_BASE
 
 FROM ${AIO_BASE}
+
+# Guard the ARG at the top of the build rather than letting a missing value surface as
+# a confusing failure deep in an app install. `FROM ${AIO_BASE}` with an empty ARG is
+# itself an error, so this mainly catches a value that resolved to something unusable.
+#
+# THE VENVS ARE THE REAL CONTRACT. `create_app_venv <app> <base>` resolves /venv/$base,
+# so a base that does not carry every venv the apps below ask for fails partway through
+# a multi-hour build with an error that names uv, not the base. The list is asserted
+# here, once, against what this file actually uses:
+#
+#   main         comfyui, forge, unsloth, ace-step
+#   torch-2.7.1  ostris, wan2gp, whisper
+#   torch-2.9.1  voicebox
+#
+# This is also what pins the base to the RIGHT multi-torch family. vastai/pytorch
+# publishes several (multi-210-291-271, multi-2130-2121, multi-2130-2121-2110); only
+# the first carries 2.9.1 and 2.7.1, so "upgrade to the newest multi base" would remove
+# four apps' torch and is caught here rather than in the app layer.
+RUN set -euo pipefail && \
+    missing=""; \
+    for v in main torch-2.7.1 torch-2.9.1; do \
+        [ -x "/venv/$v/bin/python" ] || missing="$missing $v"; \
+    done; \
+    if [ -n "$missing" ]; then \
+        echo "FATAL: AIO_BASE lacks the venv(s):$missing"; \
+        echo "  present: $(ls -1 /venv 2>/dev/null | tr '\n' ' ')"; \
+        echo "  this base is not built on the multi-210-291-271 pytorch family"; \
+        exit 1; \
+    fi; \
+    echo "base venv contract OK: $(ls -1 /venv | tr '\n' ' ')"
 
 # Maintainer details
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
@@ -172,85 +214,256 @@ RUN \
     uv pip install --no-cache-dir -r requirements.txt
 
 # ---------- Unsloth Studio (base: main/torch2.10) ----------
+# llama.cpp comes from the Unsloth fork's PREBUILT portable bundle, matching the
+# standalone unsloth-studio image (ADR 0018). This image bundles the same application,
+# so it should install it the same way — and until 2026-09-03 it did not: the standalone
+# moved to the prebuilt bundle while this file kept source-compiling, which is exactly
+# the drift that makes a bundled copy worse than the thing it copies.
+#
+# What the source build cost here, identically to the standalone: a 20-40 minute CUDA
+# compile on every image build; a FABRICATED nvidia-smi stub, because setup.sh gates
+# -DGGML_CUDA=ON on a runtime GPU probe `docker build` cannot satisfy and without it
+# silently produced a CPU-only binary (ADR 0016); and a hand-pinned arch list
+# (80;86;89;90;100;120) with NO sm_75, so Turing had no kernel image at all.
+#
+# LLAMA_CPP_VERSION carries no default ON PURPOSE, for the reason ADR 0018 records: it
+# is RESOLVED from the publisher in CI (check-github-release against unslothai/llama.cpp)
+# and passed in, so a default here would be a second, silently-stale source of truth.
+ARG LLAMA_CPP_VERSION
+ARG LLAMA_BUNDLE=cuda12-portable
+ENV LLAMA_CPP_RELEASE=${LLAMA_CPP_VERSION}
+RUN \
+    set -euo pipefail && \
+    [[ -n "${LLAMA_CPP_VERSION}" ]] || { echo "Must specify LLAMA_CPP_VERSION"; exit 1; } && \
+    case "$(dpkg --print-architecture)" in \
+        amd64) arch_slug=x64 ;; \
+        *) echo "aio-studio is amd64-only; got $(dpkg --print-architecture)"; exit 1 ;; \
+    esac && \
+    package_name="app-${LLAMA_CPP_VERSION}-linux-${arch_slug}-${LLAMA_BUNDLE}.tar.gz" && \
+    base_url="https://github.com/unslothai/llama.cpp/releases/download/${LLAMA_CPP_VERSION}" && \
+    mkdir -p /opt/llama-cpp/build/bin /tmp/llama-dl && \
+    wget -O "/tmp/llama-dl/${package_name}" "${base_url}/${package_name}" && \
+    wget -O /tmp/llama-dl/sha256.json "${base_url}/llama-prebuilt-sha256.json" && \
+    python3 -c "\
+import json,hashlib,sys;\
+name=sys.argv[1];\
+m=json.load(open('/tmp/llama-dl/sha256.json')).get('artifacts',{});\
+e=m.get(name) or sys.exit('no sha256 entry for '+name+' in llama-prebuilt-sha256.json');\
+want=e.get('sha256') or sys.exit('empty sha256 entry for '+name);\
+h=hashlib.sha256(open('/tmp/llama-dl/'+name,'rb').read()).hexdigest();\
+sys.exit(0) if h==want else sys.exit('sha256 mismatch for '+name+': got '+h+' want '+want)\
+" "${package_name}" && \
+    python3 -c "\
+import sys, tarfile;\
+src, dest = sys.argv[1], sys.argv[2];\
+tarfile.open(src).extractall(dest, filter='data')" \
+        "/tmp/llama-dl/${package_name}" /opt/llama-cpp && \
+    rm -rf /tmp/llama-dl && \
+    # EXTRACT FLAT, THEN MIRROR INTO build/bin. The bundle IS flat, and its two
+    # consumers disagree about where the binaries live:
+    #
+    #   studio setup.sh              expects a source-tree shape, build/bin/
+    #   unsloth_zoo check_llama_cpp  searches ONLY the folder ROOT on Linux
+    #                                (search_dirs = [llama_cpp_folder]; build/bin is
+    #                                consulted on Windows and nowhere else)
+    #
+    # ADR 0018 extracted into build/bin/ for the first and left the root holding two
+    # marker files. That satisfied the installer and broke the exporter: on 2026-09-04 a
+    # GGUF export found no llama-quantize at the root, concluded llama.cpp was missing,
+    # and installed its OWN prebuilt — which resolved to the CPU bundle and was laid over
+    # the root, leaving the image with two llama.cpp installs and a 24-byte
+    # llama-quantize stub. Inference kept using build/bin and stayed on the GPU, which is
+    # why the downgrade stayed invisible until an export was attempted, long after every
+    # build assertion and QA cell had passed.
+    #
+    # Root is now the real install, matching the bundle's own shape, so the exporter finds
+    # it and never reinstalls. build/bin is populated by HARDLINK — same inodes, so no
+    # second copy of a 350 MB backend — and setup.sh's expected shape is intact.
+    #
+    # WHY HARDLINKS ARE SAFE HERE, given they cannot cross a filesystem:
+    #
+    #  1. Both ends are inside /opt/llama-cpp, created and linked in THIS single RUN
+    #     layer. There is no mount boundary between a directory and its own child, so
+    #     EXDEV is not reachable at build time.
+    #
+    #  2. $WORKSPACE — which IS a volume on many instances — never receives these files.
+    #     The boot sync (36-sync-workspace.sh) copies /opt/workspace-internal with
+    #     `cp -ru`, and the llama.cpp entry there is a SYMLINK to /opt/llama-cpp, not a
+    #     copy of it. `cp -ru` preserves symlinks rather than dereferencing them, so the
+    #     volume gets a 14-byte link and the binaries stay in the image. Verified on a
+    #     live instance 2026-09-04:
+    #         /workspace/unsloth/llama.cpp -> /opt/llama-cpp
+    #     So no hardlink is ever copied ACROSS the image/volume boundary, and mounting a
+    #     volume at $WORKSPACE cannot split the linked pair or duplicate the 350 MB.
+    #
+    #  3. `find -exec` does NOT propagate the exit status of the command it runs — a
+    #     failing `ln` would leave find returning 0 and the build continuing. That is why
+    #     the build/bin assertions below are separate and explicit: they are what turns a
+    #     silently-missing mirror into a failed build.
+    #  4. `cp -al`, not `find -type f -exec ln`. The first attempt used the latter and
+    #     the build failed on `llama-server does not execute`: the binaries carry
+    #     RUNPATH=$ORIGIN, so they resolve libraries NEXT TO THEMSELVES, and `-type f`
+    #     silently skipped the five versioned .so SYMLINKS (libggml.so.0 ->
+    #     libggml.so.0.22.0 and friends). The mirror had 56 regular files and none of the
+    #     links, so ldd reported five `not found` and the binary would not start from
+    #     build/bin. `cp -al` hardlinks regular files AND recreates symlinks as symlinks,
+    #     which is what $ORIGIN resolution needs. The bundle ships its own `build/`, so
+    #     that entry is excluded rather than recursed into.
+    mkdir -p /opt/llama-cpp/build/bin && \
+    find /opt/llama-cpp -maxdepth 1 -mindepth 1 ! -name build \
+        -exec cp -al -t /opt/llama-cpp/build/bin/ {} + && \
+    # THE CUDA BUNDLE IS BINARIES ONLY — no convert_hf_to_gguf.py, no gguf-py (verified
+    # against the real artifact: zero .py files). check_llama_cpp requires a quantizer AND
+    # a converter, so with the bundle alone it can never pass, whatever the layout, and the
+    # exporter reinstalls every time. That is what actually happened on 2026-09-04: the
+    # reinstall resolved to the -cpu bundle (which DOES carry the converter) and laid it
+    # over our tree.
+    #
+    # So take the converter from the SAME source tag the binaries were built from, rather
+    # than letting the studio fetch a whole second bundle to get it. Pure Python, no build,
+    # and pinned to ${LLAMA_CPP_VERSION} so the two halves cannot drift apart.
+    _src="https://raw.githubusercontent.com/unslothai/llama.cpp/${LLAMA_CPP_VERSION}" && \
+    wget -qO /opt/llama-cpp/convert_hf_to_gguf.py "${_src}/convert_hf_to_gguf.py" && \
+    # The converter is NOT self-contained. At b10715-mix-86bd2d3 upstream refactored it
+    # into a 307-line CLI wrapper over a sibling `conversion/` package (89 modules, one
+    # per architecture family), so the script alone imports nothing and GGUF export dies
+    # with `ModuleNotFoundError: No module named 'conversion'`. Both subtrees come from
+    # the SAME tarball as the converter, so all three halves are pinned together.
+    #
+    # `conversion` is imported unqualified, so it must be a SIBLING of the script: Python
+    # puts the script's own directory on sys.path, and the studio runs the converter from
+    # this folder (unsloth_zoo writes its patched copy in beside it). gguf-py is different
+    # - the script inserts that one itself, relative to __file__.
+    wget -qO /tmp/llama-src.tar.gz \
+        "https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/${LLAMA_CPP_VERSION}" && \
+    for _sub in gguf-py conversion; do \
+        mkdir -p "/opt/llama-cpp/${_sub}" && \
+        python3 -c "\
+import sys,tarfile;\
+p,d,v=sys.argv[1],sys.argv[2],sys.argv[3];\
+t=tarfile.open(p);\
+ms=[m for m in t.getmembers() if '/'+d+'/' in m.name];\
+sys.exit('no '+d+' in source tag '+v) if not ms else None;\
+root=ms[0].name.split('/'+d+'/')[0]+'/'+d+'/';\
+[setattr(m,'name',m.name[len(root):]) for m in ms];\
+t.extractall('/opt/llama-cpp/'+d, members=[m for m in ms if m.name], filter='data')\
+" /tmp/llama-src.tar.gz "${_sub}" "${LLAMA_CPP_VERSION}" || exit 1; \
+    done && \
+    rm -f /tmp/llama-src.tar.gz && \
+    # BOTH layouts must hold. Asserted separately so a regression names which consumer it
+    # broke, rather than failing on a generic "llama-server missing".
+    test -x /opt/llama-cpp/llama-quantize || \
+        { echo "FATAL: ${package_name} leaves no llama-quantize at the ROOT — check_llama_cpp would reinstall over it (ADR 0036)"; exit 1; } && \
+    test -f /opt/llama-cpp/convert_hf_to_gguf.py || \
+        { echo "FATAL: convert_hf_to_gguf.py did not land from source tag ${LLAMA_CPP_VERSION} — GGUF export would reinstall llama.cpp"; exit 1; } && \
+    test -f /opt/llama-cpp/gguf-py/gguf/__init__.py || \
+        { echo "FATAL: gguf-py did not land from source tag ${LLAMA_CPP_VERSION} — the converter cannot import gguf"; exit 1; } && \
+    test -f /opt/llama-cpp/conversion/__init__.py || \
+        { echo "FATAL: conversion/ did not land from source tag ${LLAMA_CPP_VERSION} — the converter imports it at module scope and GGUF export dies with ModuleNotFoundError (L089)"; exit 1; } && \
+    # PRESENCE IS NOT IMPORTABILITY — but the assertion that proves it CANNOT live here.
+    # It has to run the converter with the interpreter the exporter uses, and in this image
+    # that is /venv/unsloth, which does not exist yet: the unsloth stage is further down.
+    # Asserting with /venv/main because it happens to be on hand would prove the wrong
+    # environment and pass while the real one was broken, which is the exact shape of the
+    # miss this whole change exists to close. The execution assertion is in the unsloth
+    # stage instead, beside the venv it is about (L089, ADR 0036).
+    test -x /opt/llama-cpp/llama-server || \
+        { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
+    test -x /opt/llama-cpp/build/bin/llama-server || \
+        { echo "FATAL: build/bin mirror lacks llama-server — studio setup.sh will not find it"; exit 1; } && \
+    # PRESENCE IS NOT ENOUGH, and this is the assertion the first attempt was missing.
+    # RUNPATH=$ORIGIN means each copy resolves libraries beside itself, so a mirror can be
+    # complete in filenames and still not start. Run BOTH; --version is the cheapest call
+    # that forces the full link closure.
+    /opt/llama-cpp/llama-server --version >/dev/null || \
+        { echo "FATAL: root llama-server does not execute — link closure incomplete"; exit 1; } && \
+    /opt/llama-cpp/build/bin/llama-server --version >/dev/null || \
+        { echo "FATAL: mirrored llama-server does not execute — the mirror is missing libraries it resolves via RUNPATH=\$ORIGIN"; exit 1; } && \
+    test -f /opt/llama-cpp/libggml-cuda.so || \
+        { echo "FATAL: ${package_name} ships no CUDA backend"; exit 1; } && \
+    test -f /opt/llama-cpp/build/bin/libggml-cuda.so || \
+        { echo "FATAL: build/bin mirror lacks libggml-cuda.so"; exit 1; } && \
+    test -f /opt/llama-cpp/THIRD_PARTY_LICENSES.txt || \
+        { echo "FATAL: bundle ${package_name} ships no third-party licence notice"; exit 1; } && \
+    # Fingerprint the ROOT binary: it is the authoritative install now, and the
+    # build/bin mirror is a hardlink of the same inode, so this covers both.
+    sha256sum /opt/llama-cpp/llama-server > /opt/llama-cpp.server.sha256
+
 ARG UNSLOTH_VERSION=0.1.35-Beta
 RUN \
     set -euo pipefail && \
-    # Ensure the CUDA math/runtime libs the llama.cpp CUDA build links against are
-    # present, so a libggml-cuda.so that builds also LOADS at runtime (the base ships
-    # the toolkit + dev headers, but pin the runtime libs explicitly; if the base
-    # lacks the CUDA apt repo this fails loudly rather than shipping a broken backend).
-    # cuda-cuobjdump is needed by the post-build arch-coverage assertion.
+    # cuda-cuobjdump is still needed: the SASS arch-coverage assertion below reads the
+    # SHIPPED binary. The cublas/cudart DEV packages the source build linked against are
+    # no longer required — the bundle is prebuilt — but the runtime libs must still be
+    # present for libggml-cuda.so to LOAD, which `ldd -r` below proves.
     apt-get update && \
-    apt-get install -y --no-install-recommends libcublas-dev-12-9 cuda-cudart-dev-12-9 cuda-cuobjdump-12-9 && \
+    apt-get install -y --no-install-recommends cuda-cuobjdump-12-9 && \
     rm -rf /var/lib/apt/lists/* && ldconfig && \
     . /opt/nvm/nvm.sh && \
     create_app_venv unsloth main && \
     . /venv/unsloth/bin/activate && \
     uv pip install --no-cache-dir unsloth && \
-    # Store unsloth data under /opt so it survives volume mounts over /root
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
-    # Symlink studio venv -> /venv/unsloth so setup.sh finds an existing venv
     ln -sf /venv/unsloth /opt/workspace-internal/unsloth/studio/unsloth_studio && \
-    # Patch install_python_stack.py to use cu128 torch backend
+    # EXECUTE the vendored converter with the interpreter the studio will actually invoke
+    # — the line above is what makes that /venv/unsloth, since the exporter resolves python
+    # through .../studio/unsloth_studio/bin/python. `--help` is enough: argparse returns 0
+    # only after every module-scope import has resolved, so gguf, conversion and torch are
+    # all covered in one call. `test -f` on the files was what let a converter that could
+    # not import ship green, pass QA and fail at export time on a rented GPU (L089, ADR 0036).
+    /venv/unsloth/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
+        { echo "FATAL: convert_hf_to_gguf.py does not execute under /venv/unsloth — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
     find /venv/unsloth/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
-    # Patch setup.sh to build llama.cpp with portable CPU dispatch instead of -march=native.
-    # Without this the build host's AVX-512 leaks into libggml-cpu.so and SIGILLs on any runtime
-    # CPU lacking it (e.g. Zen 2). GGML_CPU_ALL_VARIANTS emits per-microarch backends chosen at runtime.
-    find /venv/unsloth/lib -name 'setup.sh' -path '*/studio/*' \
-        -exec sed -i 's|-DGGML_NATIVE=ON|-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON|' {} + && \
-    # Force the CUDA llama.cpp build. setup.sh gates -DGGML_CUDA=ON on a RUNTIME GPU probe
-    # (nvidia-smi -L / /proc/driver/nvidia/gpus) absent inside `docker build`, so it silently
-    # falls through to a CPU-only binary (no libggml-cuda.so) and every inference runs on CPU.
-    # Provide a build-only stub nvidia-smi so the probe passes, put nvcc on PATH, and pin the
-    # CUDA arch list (the studio's UNSLOTH_LLAMA_CUDA_ARCHS override wins verbatim). The stub
-    # answers ONLY `-L` and returns no compute_cap, so if a studio release ignores the arch
-    # env var the build finds no capability and goes CPU-only -> the assertion below fails the
-    # build (fail closed) rather than baking a narrow single-arch binary. Removed before the
-    # layer ends so it never shadows the real runtime nvidia-smi.
-    printf '%s\n' '#!/bin/sh' 'case "$*" in' '  *-L*) echo "GPU 0: build-stub (UUID: GPU-00000000)";;' '  *) exit 0;;' 'esac' > /usr/local/bin/nvidia-smi && \
-    chmod +x /usr/local/bin/nvidia-smi && \
-    export PATH="/usr/local/cuda/bin:${PATH}" && \
-    export CUDA_HOME="/usr/local/cuda" && \
-    # Ampere(80) .. Blackwell-cons(120); 100 = datacenter Blackwell, admitted by an sm_80
-    # floor (100<120) and would crash (no-kernel-image, SASS-only) if omitted.
-    export UNSLOTH_LLAMA_CUDA_ARCHS="80;86;89;90;100;120" && \
-    # Build llama.cpp from source (Unsloth pins its own tested version)
-    export UNSLOTH_LLAMA_FORCE_COMPILE=1 && \
+    # Point setup.sh at the VERIFIED bundle. Because this path differs from the canonical
+    # install dir, setup.sh symlinks the canonical dir at it and sets
+    # _NEED_LLAMA_SOURCE_BUILD=false + _SKIP_PREBUILT_INSTALL=true, so it neither
+    # downloads (its resolver needs a real driver, absent here) nor compiles.
+    #
+    # Fail-closed by construction: if a future studio release drops that reuse branch,
+    # setup falls through to its own prebuilt path (unavailable without a driver) and
+    # then to a source build with no nvcc on PATH — which produces no libggml-cuda.so,
+    # so the assertions below fail the build rather than shipping a CPU-only binary.
+    export UNSLOTH_LOCAL_LLAMA_CPP_DIR=/opt/llama-cpp && \
     export SKIP_STUDIO_BASE=1 && \
     unsloth studio setup && \
-    rm -f /usr/local/bin/nvidia-smi && \
-    # Fail the build if the CUDA backend is missing (CPU-only fallback) or built for the
-    # wrong arch set (would crash at runtime on an admitted GPU). Checked before the copy.
-    test -f /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so || \
-        { echo "FATAL: llama.cpp built WITHOUT the CUDA backend (libggml-cuda.so absent)"; exit 1; } && \
-    # ...and that it RESOLVES, not merely that it exists. llama.cpp is built
-    # GGML_BACKEND_DL=ON, so a libggml-cuda.so whose dlopen fails is skipped SILENTLY and
-    # every inference runs on CPU — ADR 0016's defect with the file present. Existence
-    # was a sufficient guard only while a CPU-only fallback produced no file at all.
-    # `ldd -r` EXITS 0 while printing `undefined symbol`, so the OUTPUT is the check, not
-    # the exit status. Gated by L056.
-    #
-    # aio-studio keeps its SOURCE build (ADR 0018 moved only unsloth-studio to the
-    # prebuilt bundle); this is the assertion half of that change, applied here too
-    # because the failure it catches does not depend on where the binary came from.
-    ldd -r /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so > /tmp/ggml-cuda.ldd 2>&1; \
+    # PROVE the reuse branch fired — do not infer it. Two independent facts: the
+    # canonical install path resolves to our tree, AND the binary is byte-identical to
+    # the one whose sha256 was verified before setup ran.
+    [[ "$(readlink -f /opt/workspace-internal/unsloth/llama.cpp)" == "/opt/llama-cpp" ]] || \
+        { echo "FATAL: studio setup did not reuse /opt/llama-cpp — it built or downloaded its own llama.cpp"; exit 1; } && \
+    sha256sum -c /opt/llama-cpp.server.sha256 >/dev/null || \
+        { echo "FATAL: llama-server changed during studio setup — the verified bundle was replaced"; exit 1; } && \
+    rm -f /opt/llama-cpp.server.sha256 && \
+    # The binary must EXECUTE: the fork links llama-server against OpenSSL, so `test -x`
+    # can pass on a binary that dies at load time.
+    /opt/llama-cpp/build/bin/llama-server --version || \
+        { echo "FATAL: llama-server does not execute — its link closure is incomplete"; exit 1; } && \
+    # GGML_BACKEND_DL=ON, so a libggml-cuda.so whose dlopen fails is skipped SILENTLY
+    # and every inference runs on CPU. `ldd -r` EXITS 0 while printing `undefined
+    # symbol`, so the OUTPUT is the check, not the status. Gated by L056.
+    export PATH="/usr/local/cuda/bin:${PATH}" && \
+    ldd -r /opt/llama-cpp/build/bin/libggml-cuda.so > /tmp/ggml-cuda.ldd 2>&1; \
     if grep -qE "not found|undefined symbol" /tmp/ggml-cuda.ldd; then \
         echo "FATAL: libggml-cuda.so does not resolve:"; cat /tmp/ggml-cuda.ldd; exit 1; \
     fi && \
     rm -f /tmp/ggml-cuda.ldd && \
-    # Capture the cubin list ONCE, then match in-shell. Do NOT pipe into `grep -q`:
-    # under `set -o pipefail` grep's early exit SIGPIPEs cuobjdump (rc 141) and the
-    # pipeline reports failure even on a match.
-    _elf="$(cuobjdump --list-elf /opt/workspace-internal/unsloth/llama.cpp/build/bin/libggml-cuda.so)" && \
+    # SASS coverage read from the BINARY, not the bundle's manifest. Bracket the QA
+    # template's floor: sm_80 (its compute_cap gte 800) and sm_120 (consumer Blackwell).
+    # The bundle also carries sm_75, but admitting Turing is a SEPARATE step gated on a
+    # live run on Turing hardware (ADR 0018) — image first, floor second. Capture ONCE
+    # then match in-shell: piping into `grep -q` SIGPIPEs cuobjdump under pipefail and
+    # reports failure on a MATCH. Gated by L081.
+    _elf="$(cuobjdump --list-elf /opt/llama-cpp/build/bin/libggml-cuda.so)" && \
     for _a in sm_80 sm_120; do \
         [[ "$_elf" == *"$_a"* ]] || \
-            { echo "FATAL: libggml-cuda.so has no $_a SASS — the CUDA arch list did not take effect"; exit 1; }; \
+            { echo "FATAL: libggml-cuda.so has no $_a SASS — wrong bundle for this image's GPU floor"; exit 1; }; \
     done && \
-    # Copy llama.cpp binaries to a fixed path outside workspace sync
-    cp -a /opt/workspace-internal/unsloth/llama.cpp/build/bin /opt/llama-cpp-gpu && \
-    echo "/opt/llama-cpp-gpu" > /etc/ld.so.conf.d/llama-cpp.conf && \
+    # The runtime loader needs the bundle's shared objects on the path. The source build
+    # copied them to /opt/llama-cpp-gpu; the bundle already lives outside the workspace
+    # sync, so point at it directly rather than duplicating a gigabyte.
+    echo "/opt/llama-cpp" > /etc/ld.so.conf.d/llama-cpp.conf && \
     ldconfig
 
 # ---------- Whisper WebUI (base: torch-2.7.1) ----------
@@ -309,6 +522,21 @@ RUN \
     npm install && \
     cd server && \
     npm install && \
+    # better-sqlite3 v11 predates Node 24 and ABORTS on load under it:
+    #   node::RemoveEnvironmentCleanupHook at ../src/api/hooks.cc:142
+    #   Assertion failed: (env) != nullptr   <- better_sqlite3.node Statement::~Statement()
+    # server/package.json asks for "^11.0.0", which resolves to 11.10.0, and this image
+    # ships ONLY Node 24 — there is no older runtime to fall back to. The UI backend
+    # therefore died on every boot, nothing listened on 3001, and the frontend served a
+    # UI whose every /api call was refused (observed live 2026-09-04: user creation 500s
+    # on /api/auth/setup). Take the newest v12 line, which supports Node 24.
+    #
+    # Pinned as >=12 rather than a fixed version so a patch release is picked up, and
+    # asserted immediately: a silent no-op here reinstates a crash that only shows up as
+    # a browser 500, three layers from the cause.
+    npm install --no-save "better-sqlite3@^12" && \
+    node -e "const v=require(\"better-sqlite3/package.json\").version; if(+v.split(\".\")[0]<12){console.error(\"FATAL: better-sqlite3 \"+v+\" is the Node 24 abort; wanted >=12\");process.exit(1)} console.log(\"better-sqlite3 \"+v+\" ok for node \"+process.version)" && \
+    node -e "new (require(\"better-sqlite3\"))(\":memory:\").prepare(\"select 1\").get(); console.log(\"better-sqlite3 loads and executes under \"+process.version)" && \
     cp .env.example .env
 
 # ---------- Google Chrome (amd64 only — no aarch64 .deb from Google) ----------

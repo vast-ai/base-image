@@ -25,11 +25,17 @@ on:
         required: false
 
 jobs:
+  # BUILD TO STAGING, GATE THE PROMOTE. The gate used to sit here, on the build job, so
+  # a reviewer was asked to approve before anything had been built -- approving a promise.
+  # There is no QA for the base ALONE (it carries no apps; the app image is what
+  # aio-studio-qa exercises), so the promote gate here is human judgement rather than
+  # evidence. That is still the right order: you approve an artifact that exists, whose
+  # build log you can read, rather than an intention.
   build:
     runs-on: ubuntu-latest
-    environment: production
     outputs:
-      FULL_IMAGE: ${{ steps.build.outputs.FULL_IMAGE }}
+      STAGING_TAG: ${{ steps.build.outputs.STAGING_TAG }}
+      TAG: ${{ steps.build.outputs.TAG }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,7 +55,7 @@ jobs:
       - name: Build and push
         id: build
         run: |
-          NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE }}"
+          NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}"
           REPO="${{ inputs.DOCKERHUB_REPO }}"
           TAG_SUFFIX="${{ inputs.CUSTOM_IMAGE_TAG || '' }}"
           if [ -z "$TAG_SUFFIX" ]; then
@@ -62,20 +68,75 @@ jobs:
             --platform linux/amd64 \
             --build-arg PYTORCH_BASE=${{ inputs.PYTORCH_BASE }} \
             -f Dockerfile.base \
-            -t "${NAMESPACE}/${REPO}:${TAG}" \
+            -t "${NAMESPACE}/${REPO}:${TAG}-amd64" \
             . --push
 
-          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_ENV
-          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_OUTPUT
-          echo "### Base Image Built" >> $GITHUB_STEP_SUMMARY
-          echo "\`${NAMESPACE}/${REPO}:${TAG}\`" >> $GITHUB_STEP_SUMMARY
+          echo "STAGING_TAG=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_OUTPUT
+          echo "TAG=${TAG}" >> $GITHUB_OUTPUT
+          echo "### Base image staged (not yet published)" >> $GITHUB_STEP_SUMMARY
+          echo "\`${NAMESPACE}/${REPO}:${TAG}-amd64\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Record built tag
+  # Live-GPU QA on the STAGED base, before anyone is asked to approve it.
+  #
+  # Without this the promote gate was human judgement with nothing to judge: the base is
+  # built rarely and by hand — the last successful one before 2026-09-02 was 2026-04-15 —
+  # so "it built" is the weakest possible evidence for an artifact eight app venvs are
+  # about to be constructed on.
+  #
+  # It asserts the base's two reasons to exist: the three shared torch venvs plus
+  # create_app_venv, and the desktop stack. Both tests ship in ROOT_BASE, so they run
+  # again on the app image where a later layer could break the same contract.
+  qa:
+    needs: build
+    if: needs.build.result == 'success'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO }}
+      tag: ${{ needs.build.outputs.TAG }}-amd64
+      template_dir: derivatives/pytorch/derivatives/aio-studio/templates/aio-studio-base-qa
+      label: base-image-qa-aio-studio-base
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
+      # ADR 0029 condition 5: the redraw rule is not forked per image.
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # The approval now reviews a built AND TESTED artifact rather than an intention.
+  # `needs.qa.result == 'success'` is stated explicitly rather than left to GitHub's
+  # implicit skip-on-failure, so the gate is visible in the file.
+  promote:
+    needs: [build, qa]
+    if: needs.build.result == 'success' && needs.qa.result == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive tags
+        run: |
+          REPO="${{ inputs.DOCKERHUB_REPO }}"
+          TAG="${{ needs.build.outputs.TAG }}"
+          echo "STAGING_TAG_BASE=${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${REPO}:${TAG}" >> $GITHUB_ENV
+          echo "PROD_TAG=${{ secrets.DOCKERHUB_NAMESPACE }}/${REPO}:${TAG}" >> $GITHUB_ENV
+
+      - name: Publish the staged base
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          arches: amd64
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record promoted tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag.txt
+          echo "${{ env.PROD_TAG }}" > built-tags/tag.txt
 
-      - name: Upload built tag
+      - name: Upload promoted tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag
@@ -83,11 +144,14 @@ jobs:
           retention-days: 1
 
   notify:
-    needs: build
+    needs: [build, qa, promote]
     if: always()
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      # PROMOTE, not build: a staged image that was never approved has not shipped, and
+      # saying otherwise is the defect this repo keeps re-finding.
+      build-result: ${{ needs.promote.result }}
+      headline: ${{ (needs.build.result != 'success' && 'AIO Studio base build failed') || (needs.qa.result == 'failure' && 'AIO Studio base QA FAILED on real GPU — not published') || (needs.promote.result == 'failure' && 'AIO Studio base promotion failed') || (needs.promote.result != 'success' && 'AIO Studio base staged but NOT published — approval did not run') || 'AIO Studio base published — live-GPU QA passed' }}
       image-name: "AIO Studio Base"
       image-ref: "base"
       image-tags: ${{ needs.build.outputs.FULL_IMAGE && format('["{0}"]', needs.build.outputs.FULL_IMAGE) || '[]' }}

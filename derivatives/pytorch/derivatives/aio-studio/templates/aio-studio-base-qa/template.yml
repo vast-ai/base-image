@@ -1,0 +1,94 @@
+# AIO Studio BASE QA template (ADR 0005 live-GPU QA gate).
+#
+# The base is an intermediate — it carries no apps — so this gate is not "does the
+# product work"; the app image's own gate (aio-studio-qa) answers that. What this
+# answers is whether the artifact the app layer is about to be built ON is the artifact
+# it assumes, which is worth its own cell because the base is built RARELY and by hand:
+# the last successful one before 2026-09-02 was 2026-04-15, and nothing between those
+# dates would have noticed if it had been wrong.
+#
+# Two assertions, both cheap and both about the base's reason to exist:
+#
+#   aio-base.d/10-base-venvs    /venv/{main,torch-2.9.1,torch-2.7.1} exist, import the
+#                               torch they claim, carry the shared flash-attn wheel, and
+#                               create_app_venv is present — everything the eight app
+#                               venvs are built from
+#   aio-base.d/20-base-desktop  supervisord is up and knows the desktop program, and
+#                               selkies/VirtualGL/Chrome are installed — the desktop
+#                               infrastructure that makes this base worth caching
+#                               separately in the first place
+#
+# Both tests ship in ROOT_BASE, so they run here AND again on the app image, where a
+# later layer could break the same contract.
+#
+# CI overrides image/tag with the freshly-built staging tag via create.py --tag.
+name: "AIO Studio Base QA — venv and desktop contract"
+image: vastai/aio-studio
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # PORTAL_CONFIG IS REQUIRED HERE, and omitting it was a real failure: the first run
+  # of this cell went red on base/15-boot-markers, base/20-portal, base/25-caddy-proxy
+  # and base/65-conditional-services, all tracing to `file not found: /etc/Caddyfile`.
+  #
+  # The Caddyfile is GENERATED at boot from PORTAL_CONFIG. The app image supplies a
+  # default from 05-aio-studio-env.sh — but that file lives in ROOT, which only
+  # Dockerfile (the app stage) copies. The BASE image gets ROOT_BASE, so it has no
+  # PORTAL_CONFIG of its own and Caddy has nothing to build from. The reasoning that
+  # applies to aio-studio-qa ("let the image's own default be what the test grades")
+  # is exactly wrong one layer down, where there is no default to grade.
+  #
+  # Minimal on purpose: the two services the base actually runs. Listing an app here
+  # would be a route to something this image does not contain, and base/67 fails a
+  # portal entry whose port never binds.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  #
+  # Required-pass gate (ADR 0019/0031). Without it the GPU trio self-skips when
+  # nvidia-smi never came up and a suite of skips reports green. Enforced twice — by the
+  # runner in-instance and by qa_verdict.py in CI via the matching `require_tests`.
+  # Gated by L057 and L072.
+  # THREE at this layer, not eleven: the app venvs are created by the app Dockerfile, so
+  # a base carrying more or fewer than these three is the wrong artifact. Declaring it
+  # turns pytorch.d/05-venv-manifest from a skip into the check that catches a base
+  # rebuilt on the wrong multi-torch family by ABSENCE rather than by version.
+  EXPECTED_TORCH_VENVS: "main torch-2.9.1 torch-2.7.1"
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
+# QA gate floors (ADR 0005): smallest viable box.
+extra_filters:
+  compute_cap:
+    gte: 750                      # sm_75 — this cell compiles nothing; the venv probes
+                                  # only need a GPU torch can see
+  cuda_max_good:
+    gte: 12.9                     # the multi-210-291-271 family's newest CUDA line
+  # No models, no inference — three torch imports and a package inventory. 12 GB is CUDA
+  # context headroom, not a footprint, and keeps the offer pool wide.
+  gpu_ram:
+    gte: 12288
+  inet_down:
+    gte: 500                      # Mbps — the base is large; a slow link burns the
+                                  # launch window before a test runs (ADR 0029)
+  direct_port_count:
+    gte: 64
+  reliability2:
+    gte: 0.95
+  # PAIRED with recommended_disk_space: the request alone filters nothing, so without a
+  # search floor the cell rents a box that cannot satisfy it (L058 enforces the pair).
+  disk_space:
+    gte: 32
+# The image is not charged against container disk on Vast, so this is the writable layer
+# plus $WORKSPACE, not the image size. This cell pulls no models.
+recommended_disk_space: 32.0
