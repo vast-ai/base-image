@@ -3708,3 +3708,26 @@ def test_L089_converter_is_executed_by_the_interpreter_the_exporter_uses(name):
     assert ex.group(0).startswith(f"{studio_venv}/bin/python"), (
         f"{name}: converter executed by {ex.group(0).split()[0]} but the exporter "
         f"resolves python through {studio_venv}")
+
+
+@pytest.mark.parametrize("name", ["unsloth-studio", "aio-studio"])
+def test_L089_converter_runs_after_the_venv_it_needs_is_complete(name):
+    """The converter's import closure reaches `transformers` THROUGH `conversion/`, and
+    transformers arrives with unsloth. Executing it before that install fails on an
+    environment that is merely unfinished rather than broken.
+
+    Measured 2026-09-04: the first fix ran the assertion inside the llama.cpp stage,
+    which precedes the unsloth install in unsloth-studio, and the build failed with
+    `ModuleNotFoundError: No module named 'transformers'`. The failure direction was
+    safe — a red build, not a silent pass — but the assertion has to sit where the venv
+    is complete or it can never go green. aio-studio was already correct because its
+    assertion was placed beside /venv/unsloth, which only exists after the install."""
+    _, img = _real(name)
+    install = re.search(r"uv pip install[^\n]*unsloth", img.text)
+    assert install, "no unsloth install found"
+    ex = _EXEC_RE.search(img.text)
+    assert ex, "converter is never executed"
+    assert install.start() < ex.start(), (
+        f"{name}: the converter is executed at offset {ex.start()} but unsloth (and with "
+        f"it transformers) is not installed until {install.start()} — the closure is "
+        f"incomplete at that point and the build cannot pass")

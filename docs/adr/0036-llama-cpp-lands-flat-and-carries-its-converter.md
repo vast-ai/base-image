@@ -185,6 +185,16 @@ to RUN it, with the interpreter the exporter uses: `--help` returns 0 only after
 module-scope import has resolved, covering `gguf`, `conversion` and `torch` in one call and
 costing seconds.
 
+**The assertion must also run where that environment is COMPLETE, which is later than it
+looks.** The converter's closure reaches `transformers` — `conversion/base.py` imports
+`AutoConfig` at module scope, and 27 of the 89 modules touch it — and transformers arrives
+with unsloth, not with the base. Run inside the llama.cpp stage, the probe therefore failed
+on `ModuleNotFoundError: No module named 'transformers'` against an environment that was
+merely unfinished rather than broken. The failure direction was right (a red build, never a
+silent pass) but an assertion that cannot go green on a healthy image is not usable. It has
+to sit after the unsloth install. This is the same misjudgement as the interpreter one
+below, one step further out: the first pass checked WHICH python without checking WHEN.
+
 **The assertion must sit beside the venv it is about, which is not the same place in both
 images.** The exporter resolves python through `.../studio/unsloth_studio/bin/python`, and
 that symlink points at `/venv/main` in `unsloth-studio` but `/venv/unsloth` in `aio-studio`,

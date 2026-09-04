@@ -1420,6 +1420,9 @@ existing belief. **The file is the authority on what it imports.** Running it (`
 enough — argparse returns 0 only after every module-scope import resolves) settles the
 question in seconds, and must use the interpreter the CONSUMER will use: asserting with the
 system `python3` when the app runs `/venv/main/bin/python` proves the wrong environment.
+It must also run at a point where that environment is COMPLETE: the same converter reaches
+`transformers` through `conversion/`, which arrives with the app's own install, so a probe
+placed in an earlier stage reds a healthy build instead of proving anything.
 
 This is L088 one layer up — a test that reaches for a sibling helper must ship it; a
 script that imports a sibling package must have it fetched alongside — and the same blind

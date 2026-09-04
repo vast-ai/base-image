@@ -190,22 +190,12 @@ t.extractall('/opt/llama-cpp/'+d, members=[m for m in ms if m.name], filter='dat
         { echo "FATAL: gguf-py did not land from source tag ${LLAMA_CPP_VERSION} — the converter cannot import gguf"; exit 1; } && \
     test -f /opt/llama-cpp/conversion/__init__.py || \
         { echo "FATAL: conversion/ did not land from source tag ${LLAMA_CPP_VERSION} — the converter imports it at module scope and GGUF export dies with ModuleNotFoundError (L089)"; exit 1; } && \
-    # PRESENCE IS NOT IMPORTABILITY, and this is the assertion the previous attempt got
-    # wrong. It probed `import gguf` — the sibling that had been thought about — and passed
-    # while the converter's own first import was unsatisfiable. The image built green,
-    # passed QA and was promoted; the miss surfaced on a rented GPU at export time, which
-    # was the first moment anything executed the file.
-    #
-    # So EXECUTE the script the way the studio does. `--help` is enough: argparse only
-    # reaches its exit after every module-scope import has resolved, which covers gguf,
-    # conversion and torch in one call. No PYTHONPATH — resolving it exactly as the
-    # exporter will is the point, and a PYTHONPATH we set here is one the studio will not.
-    #
-    # /venv/main's interpreter, not the bare `python3` on PATH: this closure needs torch
-    # and numpy, which the venv has and the system python does not. Asserting with an
-    # interpreter the exporter never uses would prove the wrong environment.
-    /venv/main/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
-        { echo "FATAL: convert_hf_to_gguf.py does not execute — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
+    # PRESENCE IS NOT IMPORTABILITY — but the assertion that proves it CANNOT live here.
+    # The converter's closure reaches `transformers` (through `conversion/`), which arrives
+    # with unsloth in a LATER stage, so running it at this point fails on an environment
+    # that is merely unfinished rather than broken. Asserting here would either red a
+    # healthy build or, if weakened to make it pass, prove nothing. It runs in the unsloth
+    # stage instead, once the venv the exporter uses is complete (L089, ADR 0036).
     test -x /opt/llama-cpp/llama-server || \
         { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
@@ -251,6 +241,16 @@ RUN \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
     # Symlink studio venv → /venv/main so setup.sh finds an existing venv
     ln -sf /venv/main /opt/workspace-internal/unsloth/studio/unsloth_studio && \
+    # EXECUTE the vendored converter, now that the venv the exporter resolves python
+    # through is complete. `--help` is enough: argparse returns 0 only after every
+    # module-scope import has resolved, which is the whole closure — gguf and conversion
+    # from the pinned source tag, torch from the base, and transformers, which `conversion/`
+    # imports and which arrives with unsloth on the line above. That last dependency is why
+    # this cannot sit in the llama.cpp stage: there the failure would be an unfinished
+    # environment, not a broken one. `test -f` on the files is what let a converter that
+    # could not import ship green, pass QA and fail at export on a rented GPU (L089, ADR 0036).
+    /venv/main/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
+        { echo "FATAL: convert_hf_to_gguf.py does not execute under /venv/main — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
     # Patch install_python_stack.py to use cu128 torch backend instead of auto-detection
     find /venv/main/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
