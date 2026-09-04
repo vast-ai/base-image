@@ -87,18 +87,102 @@ sys.exit(0) if h==want else sys.exit('sha256 mismatch for '+name+': got '+h+' wa
 import sys, tarfile;\
 src, dest = sys.argv[1], sys.argv[2];\
 tarfile.open(src).extractall(dest, filter='data')" \
-        "/tmp/llama-dl/${package_name}" /opt/llama-cpp/build/bin && \
+        "/tmp/llama-dl/${package_name}" /opt/llama-cpp && \
     rm -rf /tmp/llama-dl && \
-    # The bundle is FLAT, but the studio installer expects a llama.cpp source-tree shape
-    # with build/bin/. Extract into build/bin and lift the tree-level metadata up, so the
-    # binaries stay where both the installer and its runtime callers look for them.
-    for _m in UNSLOTH_PREBUILT_INFO.json THIRD_PARTY_LICENSES.txt; do \
-        if [[ -f "/opt/llama-cpp/build/bin/${_m}" ]]; then mv "/opt/llama-cpp/build/bin/${_m}" /opt/llama-cpp/; fi; \
-    done && \
+    # EXTRACT FLAT, THEN MIRROR INTO build/bin. The bundle IS flat, and its two
+    # consumers disagree about where the binaries live:
+    #
+    #   studio setup.sh              expects a source-tree shape, build/bin/
+    #   unsloth_zoo check_llama_cpp  searches ONLY the folder ROOT on Linux
+    #                                (search_dirs = [llama_cpp_folder]; build/bin is
+    #                                consulted on Windows and nowhere else)
+    #
+    # ADR 0018 extracted into build/bin/ for the first and left the root holding two
+    # marker files. That satisfied the installer and broke the exporter: on 2026-09-04 a
+    # GGUF export found no llama-quantize at the root, concluded llama.cpp was missing,
+    # and installed its OWN prebuilt — which resolved to the CPU bundle and was laid over
+    # the root, leaving the image with two llama.cpp installs and a 24-byte
+    # llama-quantize stub. Inference kept using build/bin and stayed on the GPU, which is
+    # why the downgrade stayed invisible until an export was attempted, long after every
+    # build assertion and QA cell had passed.
+    #
+    # Root is now the real install, matching the bundle's own shape, so the exporter finds
+    # it and never reinstalls. build/bin is populated by HARDLINK — same inodes, so no
+    # second copy of a 350 MB backend — and setup.sh's expected shape is intact.
+    #
+    # WHY HARDLINKS ARE SAFE HERE, given they cannot cross a filesystem:
+    #
+    #  1. Both ends are inside /opt/llama-cpp, created and linked in THIS single RUN
+    #     layer. There is no mount boundary between a directory and its own child, so
+    #     EXDEV is not reachable at build time.
+    #
+    #  2. $WORKSPACE — which IS a volume on many instances — never receives these files.
+    #     The boot sync (36-sync-workspace.sh) copies /opt/workspace-internal with
+    #     `cp -ru`, and the llama.cpp entry there is a SYMLINK to /opt/llama-cpp, not a
+    #     copy of it. `cp -ru` preserves symlinks rather than dereferencing them, so the
+    #     volume gets a 14-byte link and the binaries stay in the image. Verified on a
+    #     live instance 2026-09-04:
+    #         /workspace/unsloth/llama.cpp -> /opt/llama-cpp
+    #     So no hardlink is ever copied ACROSS the image/volume boundary, and mounting a
+    #     volume at $WORKSPACE cannot split the linked pair or duplicate the 350 MB.
+    #
+    #  3. `find -exec` does NOT propagate the exit status of the command it runs — a
+    #     failing `ln` would leave find returning 0 and the build continuing. That is why
+    #     the build/bin assertions below are separate and explicit: they are what turns a
+    #     silently-missing mirror into a failed build.
+    mkdir -p /opt/llama-cpp/build/bin && \
+    find /opt/llama-cpp -maxdepth 1 -mindepth 1 -type f \
+        -exec ln -f {} /opt/llama-cpp/build/bin/ ';' && \
+    # THE CUDA BUNDLE IS BINARIES ONLY — no convert_hf_to_gguf.py, no gguf-py (verified
+    # against the real artifact: zero .py files). check_llama_cpp requires a quantizer AND
+    # a converter, so with the bundle alone it can never pass, whatever the layout, and the
+    # exporter reinstalls every time. That is what actually happened on 2026-09-04: the
+    # reinstall resolved to the -cpu bundle (which DOES carry the converter) and laid it
+    # over our tree.
+    #
+    # So take the converter from the SAME source tag the binaries were built from, rather
+    # than letting the studio fetch a whole second bundle to get it. Pure Python, no build,
+    # and pinned to ${LLAMA_CPP_VERSION} so the two halves cannot drift apart.
+    _src="https://raw.githubusercontent.com/unslothai/llama.cpp/${LLAMA_CPP_VERSION}" && \
+    wget -qO /opt/llama-cpp/convert_hf_to_gguf.py "${_src}/convert_hf_to_gguf.py" && \
+    mkdir -p /opt/llama-cpp/gguf-py && \
+    python3 -c "\
+import io,sys,tarfile,urllib.request;\
+v=sys.argv[1];\
+u='https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/'+v;\
+t=tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(u, timeout=180).read()));\
+ms=[m for m in t.getmembers() if '/gguf-py/' in m.name];\
+sys.exit('no gguf-py in source tag '+v) if not ms else None;\
+root=ms[0].name.split('/gguf-py/')[0]+'/gguf-py/';\
+[setattr(m,'name',m.name[len(root):]) for m in ms];\
+t.extractall('/opt/llama-cpp/gguf-py', members=[m for m in ms if m.name], filter='data')\
+" "${LLAMA_CPP_VERSION}" && \
+    # BOTH layouts must hold. Asserted separately so a regression names which consumer it
+    # broke, rather than failing on a generic "llama-server missing".
+    test -x /opt/llama-cpp/llama-quantize || \
+        { echo "FATAL: ${package_name} leaves no llama-quantize at the ROOT — check_llama_cpp would reinstall over it (ADR 0036)"; exit 1; } && \
+    test -f /opt/llama-cpp/convert_hf_to_gguf.py || \
+        { echo "FATAL: convert_hf_to_gguf.py did not land from source tag ${LLAMA_CPP_VERSION} — GGUF export would reinstall llama.cpp"; exit 1; } && \
+    test -f /opt/llama-cpp/gguf-py/gguf/__init__.py || \
+        { echo "FATAL: gguf-py did not land from source tag ${LLAMA_CPP_VERSION} — the converter cannot import gguf"; exit 1; } && \
+    # Prove the converter is USABLE, not merely present: import gguf out of the tree we
+    # just assembled. A file that exists but cannot import leaves the exporter in exactly
+    # the state this change exists to prevent.
+    #
+    # Uses /venv/main's interpreter, not the bare `python3` on PATH: gguf imports numpy,
+    # which the venv has (torch depends on it) and the system python may not. Asserting
+    # with an interpreter the exporter never uses would prove the wrong thing — and would
+    # fail this build for a missing numpy rather than a missing converter.
+    PYTHONPATH=/opt/llama-cpp/gguf-py /venv/main/bin/python -c \
+        "import gguf; print('gguf importable from the pinned tree:', gguf.__file__)" && \
+    test -x /opt/llama-cpp/llama-server || \
+        { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
-        { echo "FATAL: bundle ${package_name} contains no build/bin/llama-server"; exit 1; } && \
+        { echo "FATAL: build/bin mirror lacks llama-server — studio setup.sh will not find it"; exit 1; } && \
+    test -f /opt/llama-cpp/libggml-cuda.so || \
+        { echo "FATAL: ${package_name} ships no CUDA backend"; exit 1; } && \
     test -f /opt/llama-cpp/build/bin/libggml-cuda.so || \
-        { echo "FATAL: bundle ${package_name} ships no CUDA backend"; exit 1; } && \
+        { echo "FATAL: build/bin mirror lacks libggml-cuda.so"; exit 1; } && \
     # MIT requires the notice to accompany binary redistribution. The bundle carries it
     # in THIRD_PARTY_LICENSES.txt (there is no separate LICENSE file), so assert the
     # notice we actually ship rather than trusting a future bundle to keep it.
@@ -107,7 +191,9 @@ tarfile.open(src).extractall(dest, filter='data')" \
     # Fingerprint the verified binary so the post-setup check can prove the tree was
     # REUSED rather than replaced. The marker file alone cannot: `unsloth studio setup`
     # writes an identically-named marker on its own prebuilt path.
-    sha256sum /opt/llama-cpp/build/bin/llama-server > /opt/llama-cpp.server.sha256
+    # Fingerprint the ROOT binary: it is the authoritative install now, and the
+    # build/bin mirror is a hardlink of the same inode, so this covers both.
+    sha256sum /opt/llama-cpp/llama-server > /opt/llama-cpp.server.sha256
 
 # Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
 # everything into our existing venv (avoids a duplicate torch install), then
