@@ -82,7 +82,19 @@ env:
   # the required list would let them self-skip here unnoticed — the skip-as-pass hole
   # ADR 0019 exists to close. A base contract that broke in the app layer is exactly
   # what this image is placed to catch.
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
+  # The ELEVEN venvs this image must ship: three shared torch bases plus one per app.
+  #
+  # pytorch.d's other tests DISCOVER venvs by globbing /venv/*/ and validate whatever
+  # they find, which cannot detect ABSENCE — if create_app_venv silently failed for one
+  # app, they would validate the remaining ten perfectly and report green (ADR 0021
+  # decision 6). 05-venv-manifest is the test that closes that, and it SKIPS unless the
+  # expected set is declared here. On an image whose whole premise is eleven venvs, it
+  # is the cheapest real coverage in the gate: no GPU time, no extra cell.
+  #
+  # aio.d/10-aio-app-venvs overlaps deliberately and is not redundant: it checks each app
+  # venv resolves the RIGHT torch version, which a name-only manifest cannot see.
+  EXPECTED_TORCH_VENVS: "main torch-2.9.1 torch-2.7.1 comfyui forge voicebox ostris wan2gp unsloth whisper ace-step"
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
 # QA gate floors (ADR 0005): smallest viable box, VRAM bounded 3x.
 extra_filters:
   # sm_80, NOT sm_75, and the reason is Unsloth Studio's llama.cpp rather than anything

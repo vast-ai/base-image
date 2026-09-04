@@ -95,7 +95,7 @@ jobs:
       tag: ${{ needs.build.outputs.TAG }}-amd64
       template_dir: derivatives/pytorch/derivatives/aio-studio/templates/aio-studio-base-qa
       label: base-image-qa-aio-studio-base
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
       # ADR 0029 condition 5: the redraw rule is not forked per image.
       retries: 2
     secrets:

@@ -61,7 +61,12 @@ env:
   # nvidia-smi never came up and a suite of skips reports green. Enforced twice — by the
   # runner in-instance and by qa_verdict.py in CI via the matching `require_tests`.
   # Gated by L057 and L072.
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
+  # THREE at this layer, not eleven: the app venvs are created by the app Dockerfile, so
+  # a base carrying more or fewer than these three is the wrong artifact. Declaring it
+  # turns pytorch.d/05-venv-manifest from a skip into the check that catches a base
+  # rebuilt on the wrong multi-torch family by ABSENCE rather than by version.
+  EXPECTED_TORCH_VENVS: "main torch-2.9.1 torch-2.7.1"
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
 # QA gate floors (ADR 0005): smallest viable box.
 extra_filters:
   compute_cap:

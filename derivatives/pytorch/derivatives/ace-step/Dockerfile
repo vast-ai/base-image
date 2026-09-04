@@ -54,6 +54,21 @@ RUN \
     npm install && \
     cd server && \
     npm install && \
+    # better-sqlite3 v11 predates Node 24 and ABORTS on load under it:
+    #   node::RemoveEnvironmentCleanupHook at ../src/api/hooks.cc:142
+    #   Assertion failed: (env) != nullptr   <- better_sqlite3.node Statement::~Statement()
+    # server/package.json asks for "^11.0.0", which resolves to 11.10.0, and this image
+    # ships ONLY Node 24 — there is no older runtime to fall back to. The UI backend
+    # therefore died on every boot, nothing listened on 3001, and the frontend served a
+    # UI whose every /api call was refused (observed live 2026-09-04: user creation 500s
+    # on /api/auth/setup). Take the newest v12 line, which supports Node 24.
+    #
+    # Pinned as >=12 rather than a fixed version so a patch release is picked up, and
+    # asserted immediately: a silent no-op here reinstates a crash that only shows up as
+    # a browser 500, three layers from the cause.
+    npm install --no-save "better-sqlite3@^12" && \
+    node -e "const v=require(\"better-sqlite3/package.json\").version; if(+v.split(\".\")[0]<12){console.error(\"FATAL: better-sqlite3 \"+v+\" is the Node 24 abort; wanted >=12\");process.exit(1)} console.log(\"better-sqlite3 \"+v+\" ok for node \"+process.version)" && \
+    node -e "new (require(\"better-sqlite3\"))(\":memory:\").prepare(\"select 1\").get(); console.log(\"better-sqlite3 loads and executes under \"+process.version)" && \
     cp .env.example .env && \
     # Verify torch ecosystem unchanged. ace-step's pyproject.toml strip
     # above prevents upstream pins from leaking through; this is the

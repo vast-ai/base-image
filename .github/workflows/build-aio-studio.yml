@@ -367,7 +367,7 @@ jobs:
       # Declared in BOTH places on purpose: the runner enforces it in-instance, and this
       # enforces it against the verdict payload, so a template edit that drops the env
       # var still cannot produce a passing gate.
-      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
       # ADR 0029 condition 5: the redraw rule is not forked per image.
       retries: 2
     secrets:
