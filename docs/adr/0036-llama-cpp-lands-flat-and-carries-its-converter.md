@@ -148,6 +148,62 @@ this was checked rather than assumed:
   later degraded. The build-time assertions are the whole control here; there is no live
   cell that would catch a regression.
 
+## Amendment, 2026-09-04 — the converter is not one file, and presence is not importability
+
+The first build under this ADR shipped, passed QA, was promoted, and GGUF export still
+failed:
+
+```
+unsloth_convert_hf_to_gguf.py, line 18, in <module>
+    from conversion import (
+ModuleNotFoundError: No module named 'conversion'
+```
+
+The reinstall this ADR exists to prevent was genuinely gone — llama.cpp was found at the
+flat root and the converter ran. What was wrong is narrower and was ours. At
+`b10715-mix-86bd2d3` upstream had refactored `convert_hf_to_gguf.py` into a 307-line CLI
+wrapper over a sibling `conversion/` package of 89 modules, one per architecture family.
+This ADR's fetch took the single `.py` file and `gguf-py`, so the script landed complete
+and could not import.
+
+Two things follow, and only the second is interesting.
+
+**The fetch now takes the whole closure.** `gguf-py` and `conversion` are extracted from
+the same source tarball as the converter, pinned to the same `${LLAMA_CPP_VERSION}`, in one
+download rather than two. `conversion` is imported unqualified, so it must be a SIBLING of
+the script — Python puts the script's own directory on `sys.path`, and unsloth_zoo writes
+its patched copy into that same folder. `gguf-py` is different: the script inserts that one
+itself, relative to `__file__`.
+
+**The build-time assertion was the real defect.** This ADR's own lesson was to assert a
+binary EXECUTES rather than merely exists, and the binaries were asserted exactly that way.
+The converter was not. It got `test -f`, plus a probe that imported `gguf` — the sibling
+that had been thought about — which passed while the script's own first import was
+unsatisfiable. An assertion chosen from what the author believed the file needed can only
+ever confirm that belief; the file is the authority on what it imports. So the guard is now
+to RUN it, with the interpreter the exporter uses: `--help` returns 0 only after every
+module-scope import has resolved, covering `gguf`, `conversion` and `torch` in one call and
+costing seconds.
+
+**The assertion must sit beside the venv it is about, which is not the same place in both
+images.** The exporter resolves python through `.../studio/unsloth_studio/bin/python`, and
+that symlink points at `/venv/main` in `unsloth-studio` but `/venv/unsloth` in `aio-studio`,
+where `main` is only the base the app venv was built from. Asserting with `/venv/main` in
+both — the first form this fix took — would have passed in `aio-studio` against an
+environment the exporter never uses, and would have run before `/venv/unsloth` existed at
+all. So `unsloth-studio` asserts inside the llama.cpp stage, while `aio-studio` asserts in
+its unsloth stage, immediately after the symlink that decides which interpreter that is. A
+test pins the two together, so the pair cannot drift back apart silently.
+
+Generalised as **L089**: a Python entrypoint vendored into an image must be executed by the
+build, not merely tested for presence. It fired on both `unsloth-studio` and `aio-studio`
+before the fix and is clean after. This is L088 one layer up — there, a test that reaches
+for a sibling helper must ship it; here, a script that imports a sibling package must have
+it fetched alongside.
+
+The same blind spot produced both this and the `find -type f` mirror bug that failed the
+previous build: in each case presence was asserted where behaviour was what mattered.
+
 ## What would reverse this
 
 Upstream shipping the converter inside the CUDA bundle, or `check_llama_cpp` learning to

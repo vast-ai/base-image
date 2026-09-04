@@ -324,18 +324,32 @@ tarfile.open(src).extractall(dest, filter='data')" \
     # and pinned to ${LLAMA_CPP_VERSION} so the two halves cannot drift apart.
     _src="https://raw.githubusercontent.com/unslothai/llama.cpp/${LLAMA_CPP_VERSION}" && \
     wget -qO /opt/llama-cpp/convert_hf_to_gguf.py "${_src}/convert_hf_to_gguf.py" && \
-    mkdir -p /opt/llama-cpp/gguf-py && \
-    python3 -c "\
-import io,sys,tarfile,urllib.request;\
-v=sys.argv[1];\
-u='https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/'+v;\
-t=tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(u, timeout=180).read()));\
-ms=[m for m in t.getmembers() if '/gguf-py/' in m.name];\
-sys.exit('no gguf-py in source tag '+v) if not ms else None;\
-root=ms[0].name.split('/gguf-py/')[0]+'/gguf-py/';\
+    # The converter is NOT self-contained. At b10715-mix-86bd2d3 upstream refactored it
+    # into a 307-line CLI wrapper over a sibling `conversion/` package (89 modules, one
+    # per architecture family), so the script alone imports nothing and GGUF export dies
+    # with `ModuleNotFoundError: No module named 'conversion'`. Both subtrees come from
+    # the SAME tarball as the converter, so all three halves are pinned together.
+    #
+    # `conversion` is imported unqualified, so it must be a SIBLING of the script: Python
+    # puts the script's own directory on sys.path, and the studio runs the converter from
+    # this folder (unsloth_zoo writes its patched copy in beside it). gguf-py is different
+    # - the script inserts that one itself, relative to __file__.
+    wget -qO /tmp/llama-src.tar.gz \
+        "https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/${LLAMA_CPP_VERSION}" && \
+    for _sub in gguf-py conversion; do \
+        mkdir -p "/opt/llama-cpp/${_sub}" && \
+        python3 -c "\
+import sys,tarfile;\
+p,d,v=sys.argv[1],sys.argv[2],sys.argv[3];\
+t=tarfile.open(p);\
+ms=[m for m in t.getmembers() if '/'+d+'/' in m.name];\
+sys.exit('no '+d+' in source tag '+v) if not ms else None;\
+root=ms[0].name.split('/'+d+'/')[0]+'/'+d+'/';\
 [setattr(m,'name',m.name[len(root):]) for m in ms];\
-t.extractall('/opt/llama-cpp/gguf-py', members=[m for m in ms if m.name], filter='data')\
-" "${LLAMA_CPP_VERSION}" && \
+t.extractall('/opt/llama-cpp/'+d, members=[m for m in ms if m.name], filter='data')\
+" /tmp/llama-src.tar.gz "${_sub}" "${LLAMA_CPP_VERSION}" || exit 1; \
+    done && \
+    rm -f /tmp/llama-src.tar.gz && \
     # BOTH layouts must hold. Asserted separately so a regression names which consumer it
     # broke, rather than failing on a generic "llama-server missing".
     test -x /opt/llama-cpp/llama-quantize || \
@@ -344,16 +358,15 @@ t.extractall('/opt/llama-cpp/gguf-py', members=[m for m in ms if m.name], filter
         { echo "FATAL: convert_hf_to_gguf.py did not land from source tag ${LLAMA_CPP_VERSION} — GGUF export would reinstall llama.cpp"; exit 1; } && \
     test -f /opt/llama-cpp/gguf-py/gguf/__init__.py || \
         { echo "FATAL: gguf-py did not land from source tag ${LLAMA_CPP_VERSION} — the converter cannot import gguf"; exit 1; } && \
-    # Prove the converter is USABLE, not merely present: import gguf out of the tree we
-    # just assembled. A file that exists but cannot import leaves the exporter in exactly
-    # the state this change exists to prevent.
-    #
-    # Uses /venv/main's interpreter, not the bare `python3` on PATH: gguf imports numpy,
-    # which the venv has (torch depends on it) and the system python may not. Asserting
-    # with an interpreter the exporter never uses would prove the wrong thing — and would
-    # fail this build for a missing numpy rather than a missing converter.
-    PYTHONPATH=/opt/llama-cpp/gguf-py /venv/main/bin/python -c \
-        "import gguf; print('gguf importable from the pinned tree:', gguf.__file__)" && \
+    test -f /opt/llama-cpp/conversion/__init__.py || \
+        { echo "FATAL: conversion/ did not land from source tag ${LLAMA_CPP_VERSION} — the converter imports it at module scope and GGUF export dies with ModuleNotFoundError (L089)"; exit 1; } && \
+    # PRESENCE IS NOT IMPORTABILITY — but the assertion that proves it CANNOT live here.
+    # It has to run the converter with the interpreter the exporter uses, and in this image
+    # that is /venv/unsloth, which does not exist yet: the unsloth stage is further down.
+    # Asserting with /venv/main because it happens to be on hand would prove the wrong
+    # environment and pass while the real one was broken, which is the exact shape of the
+    # miss this whole change exists to close. The execution assertion is in the unsloth
+    # stage instead, beside the venv it is about (L089, ADR 0036).
     test -x /opt/llama-cpp/llama-server || \
         { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
@@ -393,6 +406,14 @@ RUN \
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
     ln -sf /venv/unsloth /opt/workspace-internal/unsloth/studio/unsloth_studio && \
+    # EXECUTE the vendored converter with the interpreter the studio will actually invoke
+    # — the line above is what makes that /venv/unsloth, since the exporter resolves python
+    # through .../studio/unsloth_studio/bin/python. `--help` is enough: argparse returns 0
+    # only after every module-scope import has resolved, so gguf, conversion and torch are
+    # all covered in one call. `test -f` on the files was what let a converter that could
+    # not import ship green, pass QA and fail at export time on a rented GPU (L089, ADR 0036).
+    /venv/unsloth/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
+        { echo "FATAL: convert_hf_to_gguf.py does not execute under /venv/unsloth — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
     find /venv/unsloth/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
     # Point setup.sh at the VERIFIED bundle. Because this path differs from the canonical

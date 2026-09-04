@@ -154,18 +154,32 @@ tarfile.open(src).extractall(dest, filter='data')" \
     # and pinned to ${LLAMA_CPP_VERSION} so the two halves cannot drift apart.
     _src="https://raw.githubusercontent.com/unslothai/llama.cpp/${LLAMA_CPP_VERSION}" && \
     wget -qO /opt/llama-cpp/convert_hf_to_gguf.py "${_src}/convert_hf_to_gguf.py" && \
-    mkdir -p /opt/llama-cpp/gguf-py && \
-    python3 -c "\
-import io,sys,tarfile,urllib.request;\
-v=sys.argv[1];\
-u='https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/'+v;\
-t=tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(u, timeout=180).read()));\
-ms=[m for m in t.getmembers() if '/gguf-py/' in m.name];\
-sys.exit('no gguf-py in source tag '+v) if not ms else None;\
-root=ms[0].name.split('/gguf-py/')[0]+'/gguf-py/';\
+    # The converter is NOT self-contained. At b10715-mix-86bd2d3 upstream refactored it
+    # into a 307-line CLI wrapper over a sibling `conversion/` package (89 modules, one
+    # per architecture family), so the script alone imports nothing and GGUF export dies
+    # with `ModuleNotFoundError: No module named 'conversion'`. Both subtrees come from
+    # the SAME tarball as the converter, so all three halves are pinned together.
+    #
+    # `conversion` is imported unqualified, so it must be a SIBLING of the script: Python
+    # puts the script's own directory on sys.path, and the studio runs the converter from
+    # this folder (unsloth_zoo writes its patched copy in beside it). gguf-py is different
+    # - the script inserts that one itself, relative to __file__.
+    wget -qO /tmp/llama-src.tar.gz \
+        "https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/${LLAMA_CPP_VERSION}" && \
+    for _sub in gguf-py conversion; do \
+        mkdir -p "/opt/llama-cpp/${_sub}" && \
+        python3 -c "\
+import sys,tarfile;\
+p,d,v=sys.argv[1],sys.argv[2],sys.argv[3];\
+t=tarfile.open(p);\
+ms=[m for m in t.getmembers() if '/'+d+'/' in m.name];\
+sys.exit('no '+d+' in source tag '+v) if not ms else None;\
+root=ms[0].name.split('/'+d+'/')[0]+'/'+d+'/';\
 [setattr(m,'name',m.name[len(root):]) for m in ms];\
-t.extractall('/opt/llama-cpp/gguf-py', members=[m for m in ms if m.name], filter='data')\
-" "${LLAMA_CPP_VERSION}" && \
+t.extractall('/opt/llama-cpp/'+d, members=[m for m in ms if m.name], filter='data')\
+" /tmp/llama-src.tar.gz "${_sub}" "${LLAMA_CPP_VERSION}" || exit 1; \
+    done && \
+    rm -f /tmp/llama-src.tar.gz && \
     # BOTH layouts must hold. Asserted separately so a regression names which consumer it
     # broke, rather than failing on a generic "llama-server missing".
     test -x /opt/llama-cpp/llama-quantize || \
@@ -174,16 +188,24 @@ t.extractall('/opt/llama-cpp/gguf-py', members=[m for m in ms if m.name], filter
         { echo "FATAL: convert_hf_to_gguf.py did not land from source tag ${LLAMA_CPP_VERSION} — GGUF export would reinstall llama.cpp"; exit 1; } && \
     test -f /opt/llama-cpp/gguf-py/gguf/__init__.py || \
         { echo "FATAL: gguf-py did not land from source tag ${LLAMA_CPP_VERSION} — the converter cannot import gguf"; exit 1; } && \
-    # Prove the converter is USABLE, not merely present: import gguf out of the tree we
-    # just assembled. A file that exists but cannot import leaves the exporter in exactly
-    # the state this change exists to prevent.
+    test -f /opt/llama-cpp/conversion/__init__.py || \
+        { echo "FATAL: conversion/ did not land from source tag ${LLAMA_CPP_VERSION} — the converter imports it at module scope and GGUF export dies with ModuleNotFoundError (L089)"; exit 1; } && \
+    # PRESENCE IS NOT IMPORTABILITY, and this is the assertion the previous attempt got
+    # wrong. It probed `import gguf` — the sibling that had been thought about — and passed
+    # while the converter's own first import was unsatisfiable. The image built green,
+    # passed QA and was promoted; the miss surfaced on a rented GPU at export time, which
+    # was the first moment anything executed the file.
     #
-    # Uses /venv/main's interpreter, not the bare `python3` on PATH: gguf imports numpy,
-    # which the venv has (torch depends on it) and the system python may not. Asserting
-    # with an interpreter the exporter never uses would prove the wrong thing — and would
-    # fail this build for a missing numpy rather than a missing converter.
-    PYTHONPATH=/opt/llama-cpp/gguf-py /venv/main/bin/python -c \
-        "import gguf; print('gguf importable from the pinned tree:', gguf.__file__)" && \
+    # So EXECUTE the script the way the studio does. `--help` is enough: argparse only
+    # reaches its exit after every module-scope import has resolved, which covers gguf,
+    # conversion and torch in one call. No PYTHONPATH — resolving it exactly as the
+    # exporter will is the point, and a PYTHONPATH we set here is one the studio will not.
+    #
+    # /venv/main's interpreter, not the bare `python3` on PATH: this closure needs torch
+    # and numpy, which the venv has and the system python does not. Asserting with an
+    # interpreter the exporter never uses would prove the wrong environment.
+    /venv/main/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
+        { echo "FATAL: convert_hf_to_gguf.py does not execute — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
     test -x /opt/llama-cpp/llama-server || \
         { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
