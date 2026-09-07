@@ -1401,6 +1401,39 @@ Two further rules, both themselves tested:
   linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
   a self-skipped GPU suite classify as a pass.
 
+### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
+
+Without `-f`/`--fail`, curl writes the ERROR BODY to the target and exits 0. The build then
+carries on with a 404 or 504 page as its artifact, and fails later somewhere unrelated.
+
+Measured 2026-09-07: GitHub's release CDN returned 504s during a base build, and
+`curl -L -o /tmp/miniforge3.sh` saved the HTML. `bash` ran it. Seven of 25 configs died with
+
+```
+miniforge3.sh: line 1: `<html><body><h1>504 Gateway Timeout
+miniforge3.sh: line 4: Hello: command not found
+```
+
+which names neither the download nor the URL. 17 configs passed, so it also read as a flaky
+build rather than a missing guard.
+
+**`wget` is not in scope and is not the same defect:** it exits 8 on a server error and does
+not leave the body as the artifact, so a `set -e` build already stops there. What wget lacked
+was retries, which is a robustness fix rather than a correctness one.
+
+Two details the rule earns the hard way. `-f` counts inside a cluster (`-LsSf`, this repo's
+house style), and the check runs after blanking quoted strings and bare URLs — a `-f` inside
+`conda-forge` in the URL is not the flag, and matching it there produced a wrong first answer
+when this was investigated by hand. The scan also joins backslash continuations first: a
+hardened curl wraps across lines, and a scan that stopped at the newline saw no `-o`, skipped
+the command as "not writing a file", and exempted the very line it existed for.
+
+**`--fail` only judges the STATUS.** A 200 carrying the wrong body still becomes the artifact,
+so the base additionally asserts the payload is a script (`head -1 | grep -q '^#!'`) before
+executing it — the artifact, not the transfer. That assertion is BRACED so its `||` binds to
+the check alone; left bare, `curl && check || FATAL` reports "not a script" for a download
+that never happened.
+
 ### AI Toolkit's public UI listener is pinned to loopback at BUILD time — **GATED (L091)**
 
 An image that installs AI Toolkit must pin its UI's public listener to `127.0.0.1` during

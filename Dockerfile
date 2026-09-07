@@ -259,7 +259,13 @@ RUN \
     . /opt/portal-aio/venv/bin/activate && \
     uv pip install -r /opt/portal-aio/requirements.txt && \
     deactivate && \
-    wget -O /opt/portal-aio/tunnel_manager/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH} && \
+    # Retries only. Unlike curl, wget already fails closed on an HTTP error (exit 8) and
+    # does not leave the error body behind as the artifact, so this is not L092's defect —
+    # what it lacked was patience through the same CDN flakiness that broke the miniforge
+    # fetch. The binary it produces is contract-tested separately.
+    wget --tries=5 --waitretry=2 --retry-connrefused \
+        -O /opt/portal-aio/tunnel_manager/cloudflared \
+        https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH} && \
     chmod +x /opt/portal-aio/tunnel_manager/cloudflared && \
     # Make these portal-provided tools easily reachable
     ln -s /opt/portal-aio/caddy_manager/caddy /opt/instance-tools/bin/caddy && \
@@ -333,7 +339,28 @@ ENV PYTHON_VERSION=${PYTHON_VERSION}
 
 RUN \
     set -euo pipefail && \
-    curl -L -o /tmp/miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" && \
+    # -f, and it is load-bearing. Without it curl writes the HTTP ERROR BODY to the file
+    # and exits 0, so `bash` runs it: on 2026-09-07 GitHub's release CDN returned 504s and
+    # 7 of 25 configs died with `miniforge3.sh: line 1: `<html><body><h1>504 Gateway
+    # Timeout`, a shell-syntax error several lines from the real cause (L092).
+    #
+    # Retries because this is the flakiest kind of dependency — a redirect to a CDN that
+    # rate-limits and times out. --retry-all-errors covers the 5xx and the connection
+    # resets alike; curl on the oldest base here (Ubuntu 22.04, 7.81) supports it.
+    #
+    # And an assertion, because -f only judges the STATUS. A 200 carrying the wrong body
+    # would still be saved and executed, so check the payload is a script before running
+    # it — the artifact, not the transfer.
+    curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
+        -o /tmp/miniforge3.sh \
+        "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" && \
+    # BRACED, so the `||` binds to the payload check alone. Left bare it reads
+    # `curl && check || FATAL`, and a curl failure would fall through to the FATAL and
+    # report "not a script" for a download that never happened — a misleading message,
+    # which is the very thing this change exists to stop. Braced, a curl failure just
+    # ends the AND-list and `set -e` fails the RUN with curl's own error.
+    { head -1 /tmp/miniforge3.sh | grep -q '^#!' || \
+        { echo "FATAL: miniforge installer is not a script — the download returned something else (L092)"; head -3 /tmp/miniforge3.sh; exit 1; }; } && \
     bash /tmp/miniforge3.sh -b -p /opt/miniforge3 && \
     /opt/miniforge3/bin/conda init && \
     su -l user -c "/opt/miniforge3/bin/conda init" && \

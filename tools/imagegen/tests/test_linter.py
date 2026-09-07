@@ -3862,3 +3862,58 @@ def test_L091_unrecognised_upstream_shape_is_fatal(name):
     _, img = _real(name)
     assert re.search(r"else[^\n]*\\?\s*\n?[^\n]*FATAL[^\n]*unrecognised AI Toolkit",
                      img.text), "no FATAL fallthrough for an unknown launch shape"
+
+
+# ---- L092: a curl that writes a file must fail on an HTTP error ----
+
+
+def test_L092_the_real_base_image_is_clean():
+    """base fetches miniforge and must do it fail-closed."""
+    repo, img = _real("base-image") if any(
+        i.name == "base-image" for i in discover(find_repo_root(Path(__file__).resolve().parent))
+    ) else (find_repo_root(Path(__file__).resolve().parent), None)
+    if img is None:
+        img = [i for i in discover(repo) if i.cls == "base"][0]
+    assert "miniforge" in img.text
+    assert "L092" not in errs(img, repo)
+
+
+def test_mut_curl_without_fail_writes_the_error_body():
+    """THE real defect, 2026-09-07. GitHub's release CDN returned 504s and
+    `curl -L -o /tmp/miniforge3.sh` saved the HTML error page, which bash then executed:
+    7 of 25 base configs died with ``miniforge3.sh: line 1: `<html><body><h1>504 Gateway
+    Timeout`` — a shell-syntax error several lines from the cause. Drop -f and L092 must
+    fire."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    img = [i for i in discover(repo) if i.cls == "base"][0]
+    mut = replace(img, text=img.text.replace("curl -fL --retry 5", "curl -L --retry 5"))
+    assert "curl -fL" not in mut.text, "mutation did not apply"
+    assert "L092" in errs(mut, repo)
+
+
+def test_L092_f_inside_a_url_does_not_satisfy_it(tmp_path):
+    """The false positive that cost a wrong first answer: the miniforge URL contains
+    `conda-forge`, so a naive flag search finds `-f` in the URL and calls the line safe."""
+    df = ('FROM scratch\nRUN curl -L -o /tmp/x.sh '
+          '"https://github.com/conda-forge/miniforge/releases/latest/download/x.sh"\n')
+    assert "L092" in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L092_f_in_a_flag_cluster_counts(tmp_path):
+    """House style is `curl -LsSf`. The flag need not be standalone."""
+    df = 'FROM scratch\nRUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv.sh\n'
+    assert "L092" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L092_a_curl_that_writes_no_file_is_out_of_scope(tmp_path):
+    """Piped or captured output is read by something that can judge it."""
+    df = 'FROM scratch\nRUN curl -sL https://example.invalid/x | grep -q ok\n'
+    assert "L092" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L092_wget_is_not_in_scope(tmp_path):
+    """wget exits 8 on a server error and does not leave the body as the artifact, so a
+    `set -e` build already stops there. Sweeping it in would be a rule about a defect
+    that does not exist."""
+    df = 'FROM scratch\nRUN wget -O /tmp/x https://example.invalid/x\n'
+    assert "L092" not in errs(make(tmp_path, df=df), tmp_path)
