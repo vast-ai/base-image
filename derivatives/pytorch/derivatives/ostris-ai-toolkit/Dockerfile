@@ -43,6 +43,35 @@ RUN \
     sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements_base.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     cd ui && \
+    # AI Toolkit's UI binds EVERY interface. On the current tree `cron/fileServer.ts`
+    # ends in `server.listen(publicPort)` with no host argument, which is 0.0.0.0; the
+    # older shape launches `next start --port 8675`, equally wide. Note the same file
+    # already pins its INTERNAL Next.js upstream with `--hostname 127.0.0.1` — only the
+    # public half is exposed. Everything here sits behind Caddy, so the public listener
+    # belongs on loopback (L091).
+    #
+    # Detect the shape rather than assume it, and make an unrecognised one FATAL. BOTH
+    # images resolve the upstream ref in CI (each workflow resolves HEAD and passes
+    # <APP>_REF), so neither is anchored to a known shape and either can meet either one
+    # on any given day. The ARG default below is a local-build fallback that CI never
+    # uses; it is stale enough to describe a DIFFERENT launch shape, which is precisely
+    # why the shape must be read from the tree rather than inferred from the ref. A sed
+    # that silently matched nothing would ship the public bind, which is the failure this
+    # guard exists to prevent.
+    #
+    # Patched BEFORE `npm run build`, because tsc compiles cron/*.ts into dist/cron/.
+    if [ -f cron/fileServer.ts ]; then \
+        sed -i -E "s/server\.listen\(publicPort\)/server.listen(publicPort, '127.0.0.1')/" cron/fileServer.ts && \
+        grep -qE "listen\(publicPort, ['\"]127\.0\.0\.1['\"]\)" cron/fileServer.ts || \
+            { echo "FATAL: fileServer.ts public listen could not be pinned to 127.0.0.1 loopback — upstream changed shape (L091)"; exit 1; }; \
+    elif grep -q 'next start' package.json; then \
+        grep -q 'next start --hostname 127.0.0.1' package.json || \
+            sed -i -E 's/next start/next start --hostname 127.0.0.1/' package.json; \
+        grep -q 'next start --hostname 127.0.0.1' package.json || \
+            { echo "FATAL: next start could not be pinned to 127.0.0.1 loopback (L091)"; exit 1; }; \
+    else \
+        echo "FATAL: unrecognised AI Toolkit UI launch shape at ${AI_TOOLKIT_REF} — refusing to ship a bind we cannot pin to loopback (L091)"; exit 1; \
+    fi && \
     npm install && \
     npm run update_db && \
     npm run build && \

@@ -3796,3 +3796,69 @@ def test_L090_rewrites_the_requirements_file_not_just_the_installed_package(name
         "the opencv pin is not rewritten in the requirements file"
     assert re.search(r"grep -qiE '\^opencv[^\n]*forge_req", img.text), \
         "nothing fails the build when the requirements file still pins a GUI opencv"
+
+
+# ---- L091: AI Toolkit's public UI listener is pinned to loopback ----
+
+
+_AITK_IMAGES = ["ostris-ai-toolkit", "aio-studio"]
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_L091_real_ai_toolkit_images_are_clean(name):
+    """Both images that install AI Toolkit pin its public listener and fail closed."""
+    repo, img = _real(name)
+    assert "ai-toolkit" in img.text
+    assert "L091" not in errs(img, repo)
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_mut_ai_toolkit_left_bound_to_all_interfaces(name):
+    """THE real defect, reported 2026-09-07. Upstream's public server takes no host
+    argument — `server.listen(publicPort)` on the current tree, `next start --port 8675`
+    on the older one — so it binds 0.0.0.0 and is reachable however the platform maps
+    ports. Strip the loopback pin and L091 must fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=img.text.replace("127.0.0.1", "0.0.0.0"))
+    assert "L091" in errs(mut, repo)
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_mut_ai_toolkit_pin_that_cannot_fail(name):
+    """A patch that silently matches nothing is the dangerous case, because BOTH images resolve
+    the upstream ref in CI: the day the launch shape changes, a best-effort sed would ship
+    a public bind and say nothing. Remove the FATAL
+    guards and L091 must still fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=re.sub(r"FATAL[^\n]*(bind|loopback|listen|127\.0\.0\.1)[^\n]*",
+                                   "echo patched", img.text, flags=re.I))
+    assert "L091" in errs(mut, repo)
+
+
+def test_L091_an_image_without_ai_toolkit_is_out_of_scope(tmp_path):
+    assert "L091" not in errs(make(tmp_path), tmp_path)
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_L091_pin_is_applied_before_the_ui_is_built(name):
+    """`npm run build` runs `tsc -p tsconfig.worker.json`, which compiles cron/*.ts into
+    dist/cron/ — the files the launcher actually runs. A pin applied after the build would
+    edit sources nothing loads, leaving the shipped bundle bound to every interface. Same
+    class as L089's ordering trap: the right assertion in the wrong place proves nothing."""
+    _, img = _real(name)
+    # code_text, not the raw file: the comment above the patch says "Patched BEFORE
+    # `npm run build`", and a raw search finds that prose ahead of the pin itself.
+    code = L.code_text(L.parse(img.text))
+    pin = code.find("server.listen(publicPort, '127.0.0.1')")
+    build = code.find("npm run build")
+    assert pin != -1 and build != -1, "expected both the pin and the UI build"
+    assert pin < build, "the loopback pin must be applied before `npm run build` compiles it"
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_L091_unrecognised_upstream_shape_is_fatal(name):
+    """Neither known shape matching must be a hard failure, not a fallthrough. both images resolve the ref in CI, so
+    neither is anchored to a known shape; silence is the one outcome that ships the bug."""
+    _, img = _real(name)
+    assert re.search(r"else[^\n]*\\?\s*\n?[^\n]*FATAL[^\n]*unrecognised AI Toolkit",
+                     img.text), "no FATAL fallthrough for an unknown launch shape"

@@ -1401,6 +1401,37 @@ Two further rules, both themselves tested:
   linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
   a self-skipped GPU suite classify as a pass.
 
+### AI Toolkit's public UI listener is pinned to loopback at BUILD time — **GATED (L091)**
+
+An image that installs AI Toolkit must pin its UI's public listener to `127.0.0.1` during
+the build, and must FAIL the build when the patch does not apply.
+
+Upstream binds every interface. On the current tree `ui/cron/fileServer.ts` ends in
+`server.listen(publicPort)` with no host argument; the older shape launches
+`next start --port 8675`. Both are 0.0.0.0. Tellingly, that same file already pins its
+INTERNAL Next.js upstream with `--hostname 127.0.0.1` — only the public half is exposed.
+Everything here sits behind Caddy, so a service binding a public interface inside the
+container is reachable however the platform maps ports.
+
+**The runtime control cannot see this.** `base/28-inadvertent-exposure` scans listeners, and
+every app in these images ships `autostart=false`, so during a QA gate nothing is listening
+and the scan inspects an empty set. The build is the only place it can be caught — the same
+reason ADR 0036 and ADR 0037 put their guards there.
+
+**Detect the launch shape; never assume it.** BOTH images resolve the upstream ref in CI —
+each workflow resolves HEAD and passes `<APP>_REF` — so neither is anchored to a known shape
+and either can meet either one on any given day. The `ARG <APP>_REF=` default in each
+Dockerfile is a local-build fallback CI never uses; it is stale enough to name a DIFFERENT
+launch shape, which is what makes reading the shape from the tree the only reliable move. An unrecognised third shape must be FATAL: a sed that
+silently matches nothing would ship the public bind, which is exactly the failure the guard
+exists to prevent. The pin is applied BEFORE `npm run build`, because `tsc` compiles
+`cron/*.ts` into the `dist/cron/` files the launcher actually runs — a pin applied afterwards
+would edit sources nothing loads (the ordering trap of L089).
+
+L091 requires the pin be attached to AI Toolkit's own launch, not merely present in the file:
+aio-studio builds nine apps and already pins loopback for ComfyUI and voicebox, either of
+which satisfied a whole-file check while AI Toolkit stayed wide open.
+
 ### Forge's OpenCV is headless, fixed in the requirements FILE — **GATED (L090)**
 
 An image that installs Forge must rewrite the opencv pin to the headless build *in the
