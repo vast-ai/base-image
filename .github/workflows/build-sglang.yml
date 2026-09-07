@@ -425,16 +425,16 @@ jobs:
       # more tests that must have passed (base/85 and the pyworker score) because in
       # this mode they are no longer inert. Keeping it here is the difference between
       # QA scaffolding and the template's own configuration.
-      # THE AUTOSCALER'S OWN SIGNALS, NOT SERVERLESS=true (ADR 0034). ONE serverless cell,
-      # exercising the INFERRED path, because that is the strictly harder one: it requires
-      # 01-detect-serverless.sh to run, decide and EXPORT SERVERLESS — and the export to
-      # reach the test runner, since `is_serverless` reads the variable, not the marker
-      # file. A declared SERVERLESS=true arrives via docker -e and is a SUBSET of that, so
-      # a cell passing here would pass there.
+      # ONE serverless cell, DECLARING SERVERLESS as the platform now does (ADR 0038).
+      # It used to withhold the variable and drive the cell through the autoscaler
+      # inference in 01-detect-serverless.sh, on the argument that the inferred path was
+      # the strictly harder one. With the backend injecting SERVERLESS itself that stage
+      # is deleted, and declaring it is no longer the weaker test — it is the only path
+      # a real worker takes.
       #
-      # It therefore doubles as the per-image canary for "did this image actually inherit
-      # the stage": a stale base pin yields an image with no 01-detect-serverless.sh,
-      # where a DECLARED cell still passes and this one cannot.
+      # The per-image canary the inferred cell doubled as (a stale base pin yielding an
+      # image without the stage) is lost with it. That signal belonged to the bridge and
+      # goes with the bridge; L041 already gates stale base pins statically.
       #
       # The declared branch keeps its coverage where it is cheap and exact —
       # tools/imagegen/tests/test_detect_serverless_sh.py drives the real script through
@@ -469,7 +469,11 @@ jobs:
         # returns True immediately). It lives in extra_env precisely because a
         # template.yml is what a production template gets copied from. Gated by L080.
         UNSECURED=true
-        SERVERLESS_DETECT_EXPECT=detected
+        # DECLARED, not inferred. This cell used to reach serverless mode through
+        # 01-detect-serverless.sh, which is gone (ADR 0038): the backend injects
+        # SERVERLESS itself now, so the gate declares what the platform declares.
+        # MASTER_TOKEN and REPORT_ADDR stay because pyworker itself reads them.
+        SERVERLESS=true
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker
       require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services sglang.d/10-sglang-serving sglang.d/12-sglang-contract sglang.d/20-serverless-pyworker"
       retries: 2

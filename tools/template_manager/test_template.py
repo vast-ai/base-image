@@ -1385,24 +1385,22 @@ def detect_serverless(template: dict, env_overrides=()) -> bool:
 
     Substring, not a parse, because the two template fields are opaque strings in
     the platform's own format ("-e SERVERLESS=true", "export SERVERLESS=true").
+
+    There used to be a FOURTH source: the client mirrored the image's autoscaler
+    inference by treating a MASTER_TOKEN override as serverless. That inference is
+    gone from the image (ADR 0038), so mirroring it here would make the client
+    believe a cell runs serverless while the instance does not — the two drifting
+    apart in exactly the direction this helper exists to prevent.
     """
     haystacks = [template.get("env", "") or "",
                  template.get("onstart", "") or ""]
     haystacks.extend(env_overrides or ())
     if any("SERVERLESS=true" in h for h in haystacks):
         return True
-    # An explicit SERVERLESS=false wins over the inference, matching what the image does
-    # at 01-detect-serverless.sh. Without this the client would launch believing one mode
-    # while the instance runs the other.
-    if any("SERVERLESS=false" in h for h in haystacks):
-        return False
-    # A FOURTH source (ADR 0034): the image infers the mode from MASTER_TOKEN, which the
-    # autoscaler injects into every worker. A cell exercising the DETECTION path carries
-    # no `SERVERLESS=true` at all, so reading only the literal returns False here and
-    # skips the OPEN_BUTTON_TOKEN override at the call site — repeating, deliberately
-    # this time, the coincidence the docstring above describes. Presence only; the value
-    # is a credential and is never inspected.
-    return any("MASTER_TOKEN=" in h for h in haystacks)
+    # Anything else is not serverless, including an explicit SERVERLESS=false. That
+    # needed its own branch while an inference followed it; with the inference gone the
+    # default IS the off state, and a separate branch would only assert it twice.
+    return False
 
 
 def main():
