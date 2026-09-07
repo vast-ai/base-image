@@ -59,12 +59,6 @@ def test_serverless_false_is_not_serverless():
 # ---- ADR 0034: the image can infer the mode, so the client must recognise that too ----
 
 
-def test_master_token_override_is_detected_as_serverless():
-    """A cell exercising the DETECTION path carries no SERVERLESS=true anywhere. Reading
-    only the literal returns False, which skips the OPEN_BUTTON_TOKEN override and
-    repeats the coincidence this module was written to eliminate."""
-    assert tt.detect_serverless({}, ("MASTER_TOKEN=fake-sentinel",)) is True
-
 
 def test_explicit_false_beats_the_inference():
     """The image gives an explicit SERVERLESS=false precedence over MASTER_TOKEN
@@ -73,9 +67,13 @@ def test_explicit_false_beats_the_inference():
     assert tt.detect_serverless({}, ("SERVERLESS=false", "MASTER_TOKEN=fake-sentinel")) is False
 
 
-def test_master_token_in_template_env_is_detected():
-    """Not only as an --env override: a template could carry it directly."""
-    assert tt.detect_serverless({"env": "-e MASTER_TOKEN=fake-sentinel"}, ()) is True
+def test_master_token_alone_is_no_longer_serverless():
+    """The client used to mirror the image's autoscaler inference and call a bare
+    MASTER_TOKEN serverless. That inference is gone from the image (ADR 0038), so
+    mirroring it here would have the client believe a cell runs serverless while the
+    instance does not — drift in the exact direction detect_serverless exists to stop."""
+    assert tt.detect_serverless({"env": "-e MASTER_TOKEN=fake-sentinel"}, ()) is False
+    assert tt.detect_serverless({}, ("MASTER_TOKEN=fake-sentinel",)) is False
 
 
 def test_an_ordinary_template_is_still_not_serverless():

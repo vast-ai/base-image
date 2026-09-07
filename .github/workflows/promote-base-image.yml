@@ -371,15 +371,12 @@ jobs:
       poll_timeout: "900"
       max_price: "1.00"
       timeout: "2400"
-      # SERVERLESS_DETECT_EXPECT=none asserts detection DECLINED here (ADR 0034). The
-      # qa-detect matrix proves the inference fires when it should; this proves it does
-      # not fire when it should not, which is the direction that darkens a customer's
-      # instance. Without it a false positive is invisible on this cell: base/20-portal
-      # and the caddy tests self-skip under serverless and are NOT in require_tests, so
-      # they would go quiet rather than red, and base/15's round trip would agree with
-      # itself because the marker and is_serverless() would both say true.
+      # This cell is deliberately NOT serverless: it is the on-demand path, and the
+      # portal and caddy tests that self-skip under serverless are the point of it.
+      # It used to assert that the autoscaler inference DECLINED here; with that
+      # inference gone (ADR 0038) there is nothing left to decline, and the only way
+      # this cell becomes serverless now is if someone declares it.
       extra_env: |
-        SERVERLESS_DETECT_EXPECT=none
         PROV_TIMEOUT=900
         INSTANCE_TEST_DEFAULT_TIMEOUT=900
         VLLM_HEALTH_TIMEOUT=900
@@ -423,10 +420,15 @@ jobs:
   # into conversation with the production autoscaler, which is not what this asserts, so
   # it travels through extra_env rather than the secrets block — it is not a secret.
   #
-  # What makes it meaningful: with no SERVERLESS anywhere in the template or the
-  # overrides, base/85 can only pass if the image inferred the mode itself. It opens with
-  # `is_serverless || test_skip`, and runner.sh turns a skipped REQUIRED test into
-  # REQUIRED-FAIL — so a broken inference is a red cell, not a quiet green.
+  # What makes it meaningful: base/85 opens with `is_serverless || test_skip`, and
+  # runner.sh turns a skipped REQUIRED test into REQUIRED-FAIL — so if serverless mode
+  # does not reach the instance this is a red cell, not a quiet green.
+  #
+  # This matrix used to prove the autoscaler INFERENCE fired. That inference is gone
+  # (ADR 0038) and the cell now DECLARES SERVERLESS, as the backend does. Renaming it
+  # would churn the notify wiring for no gain; what changed is the premise, not the
+  # coverage. Keeping it is deliberate: it is the only cell in which base's serverless
+  # path — base/85 and pyworker on an image with no inference engine — runs at all.
   qa-detect:
     # SEQUENCED AFTER `qa`, not beside it. Both matrices are max-parallel 4, and running
     # them concurrently would put 8 cells into the offer market that the `qa` job's own
@@ -457,7 +459,9 @@ jobs:
       extra_env: |
         MASTER_TOKEN=qa-detection-sentinel-not-a-real-token
         REPORT_ADDR=https://qa-detection-sentinel.invalid
-        SERVERLESS_DETECT_EXPECT=detected
+        # DECLARED, not inferred (ADR 0038). MASTER_TOKEN and REPORT_ADDR stay because
+        # pyworker itself reads them, and REPORT_ADDR must remain unresolvable (L079).
+        SERVERLESS=true
         # Base has no inference engine, so a worker here is meaningless — but pyworker.sh
         # starts on ANY serverless instance with no onstart bootstrap, which is precisely
         # this cell. Without this it curl-pipes start_server.sh to root and then dies in

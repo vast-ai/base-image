@@ -1,6 +1,10 @@
 # ADR 0034 — serverless mode is detected from the platform, not only declared by the template
 
-- **Status:** Accepted
+- **Status:** SUPERSEDED by [ADR 0038](0038-serverless-mode-is-declared-by-the-platform.md), 2026-09-07
+  — the backend now injects `SERVERLESS` at instance-create, which is the retirement condition this
+  ADR wrote for itself, so the inference bridge is deleted. ADR 0038 records what replaced it, which
+  parts of this ADR outlive the bridge (the cold-start block, the QA coverage), and why the
+  retraction this ADR made a binding condition was not shipped with the deletion.
 - **Date:** 2026-08-25
 - **Decision owner:** Rob Ballantyne
 

@@ -1629,25 +1629,35 @@ oobabooga). The `new-image` skill + generator encode them.
   log only what the script ADDED, never the operator's args, which may carry `--api-key` and are
   tee'd to a log the portal serves and the gate collects.
 
-- **Serverless mode is decided once, at boot stage 01, and the user can always overrule it
-  (GATED, L077 for the expiry; asserted by `base/15-boot-markers`).** `SERVERLESS=true`
-  switches the whole runtime: `boot_default.sh`'s update flags, every service sourcing
-  `utils/exit_serverless.sh` (caddy, portal, jupyter, syncthing, tensorboard, tunnel
-  manager, the engine images' model-ui), `pyworker.sh`, and supervisor units authored from
-  a provisioning manifest, which default to `skip_on_serverless: True`. The autoscaler
-  injects `MASTER_TOKEN` into every worker but not `SERVERLESS`, so
-  `01-detect-serverless.sh` infers it — **only when `SERVERLESS` is unset or empty**. An
-  inference from a proxy must never overrule an explicit declaration: it is the
-  lower-confidence signal and its false positive costs every interactive service on the
-  box, permanently (`exit_serverless.sh` exits 0 and those units are
-  `autorestart=unexpected` + `exitcodes=0`, so supervisord never restarts them). That rule
-  is also what makes the mechanism inert the day the backend injects `SERVERLESS` itself.
-  **The stage EXPORTS and never writes `/etc/environment`** — stage 10 sources that file
-  afterwards, so a user's edit prevails, which is the ownership boundary the platform seeds
-  at first boot and the user owns thereafter. Re-deciding every boot would be wrong twice:
-  `endpt_id` is written only at instance-create, so the answer cannot change, and rewriting
-  the file would reclaim territory the user owns. `VAST_SERVERLESS_DETECT=false|off`
-  disables it without a rebuild. Deleting the stage on expiry owes an explicit `unset`
-  retraction — a first-boot snapshot outlives the mechanism, the same trap ADR 0025 hit
-  (ADR 0034).
+- **Serverless mode is DECLARED by the platform; the image never infers it.**
+  `SERVERLESS=true` switches the whole runtime: `boot_default.sh`'s update flags, every
+  service sourcing `utils/exit_serverless.sh` (caddy, portal, jupyter, syncthing,
+  tensorboard, tunnel manager, the engine images' model-ui), `pyworker.sh`, and supervisor
+  units authored from a provisioning manifest, which default to `skip_on_serverless: True`.
+
+  For a period the autoscaler injected `MASTER_TOKEN` but not `SERVERLESS`, and
+  `01-detect-serverless.sh` inferred the mode from `MASTER_TOKEN` + `REPORT_ADDR` as a
+  declared bridge (ADR 0034). The backend now injects `SERVERLESS` at instance-create, so
+  the bridge is deleted and **no inference remains anywhere** — not in the image, and not
+  in `test_template.py`'s `detect_serverless`, which mirrored it and would otherwise have
+  the client believe a cell runs serverless while the instance does not (ADR 0038).
+
+  Two things the bridge owned that outlive it. The **cold-start block** — a serverless
+  worker skips the portal and vast-cli updates — now lives in `25-first-boot.sh`, beside
+  the `first_boot/` scripts that read those flags, and therefore AFTER `10-prep-env.sh`
+  sources `/etc/environment`: a `SERVERLESS` set by hand in that file is honoured there
+  where it was invisible to stage 01. And the **QA cells that exercised the inference now
+  declare `SERVERLESS=true`**, which is what a real worker gets; `promote-base-image`'s
+  `qa-detect` matrix is kept, because it is the only cell in which base's serverless path
+  runs at all.
+
+  **No retraction shipped with the deletion, deliberately.** ADR 0034 made one a binding
+  condition, reasoning that stage 10's first-boot `env -0` dump bakes `SERVERLESS` into
+  `/etc/environment` where deleting the stage cannot clear it. That is true, but it is a
+  pre-existing condition rather than anything the removal causes: a correctly-detected
+  instance now receives `SERVERLESS` from the backend regardless, and a false positive is
+  already darkened today and stays exactly as it was. There is also no persistent
+  provenance — the marker lived in tmpfs — so a strip could not tell our inference from a
+  value the user typed, and `/etc/environment` is the user's file by the same ADR. The
+  residue is therefore left as environment, which is what it now is (ADR 0038).
 

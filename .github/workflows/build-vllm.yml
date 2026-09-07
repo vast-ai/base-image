@@ -455,17 +455,19 @@ jobs:
       # more tests that must have passed (base/85 and the pyworker score) because in
       # this mode they are no longer inert. Keeping it here is the difference between
       # QA scaffolding and the template's own configuration.
-      # THE AUTOSCALER'S OWN SIGNALS, NOT SERVERLESS=true (ADR 0034). This cell is now the
-      # only end-to-end proof of the inference: base's detection cells switch the mode but
-      # base has no engine, so nothing there shows a REAL worker starting and reaching a
-      # benchmark score under a mode the image inferred rather than was told.
+      # DECLARING SERVERLESS as the platform now does (ADR 0038). This cell was the only
+      # end-to-end proof of the autoscaler INFERENCE — base's detection cells switched the
+      # mode but base has no engine, so nothing there showed a real worker reaching a
+      # benchmark score. With the backend injecting SERVERLESS itself that inference is
+      # deleted, and what this cell proves now is the thing that still matters: a real
+      # worker starting, serving and scoring under serverless mode.
       #
-      # Both sentinels are self-evidently fake and safe in plaintext — the stage tests
-      # PRESENCE only and never reads either value, and .invalid cannot resolve.
+      # Both sentinels are self-evidently fake and safe in plaintext, and pyworker reads
+      # them; .invalid cannot resolve, which L079 requires.
       #
-      # Every test named below can only pass if the image inferred the mode: they open
-      # with `is_serverless || test_skip`, and runner.sh turns a skipped REQUIRED test
-      # into REQUIRED-FAIL. So a broken inference is a red cell, not a quiet green.
+      # Every test named below can only pass if serverless mode reaches the instance: they
+      # open with `is_serverless || test_skip`, and runner.sh turns a skipped REQUIRED test
+      # into REQUIRED-FAIL. So a mode that fails to arrive is a red cell, not a quiet green.
       #
       # The EXPLICIT SERVERLESS=true path keeps its coverage on sglang and llama-cpp,
       # whose serverless cells are unchanged — 9 of 10 published autoscaler templates
@@ -493,7 +495,11 @@ jobs:
         # returns True immediately). It lives in extra_env precisely because a
         # template.yml is what a production template gets copied from. Gated by L080.
         UNSECURED=true
-        SERVERLESS_DETECT_EXPECT=detected
+        # DECLARED, not inferred. This cell used to reach serverless mode through
+        # 01-detect-serverless.sh, which is gone (ADR 0038): the backend injects
+        # SERVERLESS itself now, so the gate declares what the platform declares.
+        # MASTER_TOKEN and REPORT_ADDR stay because pyworker itself reads them.
+        SERVERLESS=true
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
       require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
       retries: 2
