@@ -2683,7 +2683,9 @@ def test_L076_a_neutered_assertion_keeping_its_comments_does_not_satisfy_it(tmp_
 
 
 def _expiring_stage(tmp_path, expires_line):
-    """A shipped boot stage declaring itself temporary, the way ADR 0034's does."""
+    """A shipped boot stage declaring itself temporary. Modelled on ADR 0034's bridge,
+    which has since been removed (ADR 0038) — the fixture is synthetic, so the rule keeps
+    its coverage whether or not such a stage currently exists in the tree."""
     d = tmp_path / "ROOT/etc/vast_boot.d"
     d.mkdir(parents=True, exist_ok=True)
     f = d / "01-detect-serverless.sh"

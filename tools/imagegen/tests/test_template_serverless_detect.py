@@ -56,14 +56,15 @@ def test_serverless_false_is_not_serverless():
     assert not tt.detect_serverless({"env": "-e SERVERLESS=false"}, [])
 
 
-# ---- ADR 0034: the image can infer the mode, so the client must recognise that too ----
+# ---- ADR 0038: the image no longer infers the mode, and neither may the client ----
 
 
 
-def test_explicit_false_beats_the_inference():
-    """The image gives an explicit SERVERLESS=false precedence over MASTER_TOKEN
-    (01-detect-serverless.sh). The client must agree, or it launches believing one mode
-    while the instance runs the other."""
+def test_explicit_false_with_a_master_token_is_not_serverless():
+    """Kept from the era when the image inferred the mode from MASTER_TOKEN and this
+    asserted that an explicit SERVERLESS=false beat that inference. The inference is gone
+    (ADR 0038), so the case is now trivially false — but a worker DOES carry MASTER_TOKEN,
+    and this is what pins the client to reading the declaration and nothing else."""
     assert tt.detect_serverless({}, ("SERVERLESS=false", "MASTER_TOKEN=fake-sentinel")) is False
 
 
