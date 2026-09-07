@@ -138,7 +138,19 @@ RUN \
     # Any specifier form, not just `==`: a variant that moved to `opencv-python>=4.8`
     # would otherwise keep the GUI pin, and the sweep below would then uninstall a package
     # the requirements file still names — reopening the boot-time reinstall path silently.
-    sed -i -E -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?([[:space:]]*[=<>~!])/\1-headless\4/' -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?[[:space:]]*$/\1-headless/' "$forge_req" && \
+    # An `==` pin is RELAXED to `>=` with a same-major ceiling, not renamed in place.
+    # classic pins `opencv-python==4.8.1.78` while its own `albumentations==1.4.3` requires
+    # `opencv-python-headless>=4.9.0`. Under the old names those coexisted as two distinct
+    # distributions — which is precisely why a GUI wheel was present to abort — so renaming
+    # the pin to `opencv-python-headless==4.8.1.78` collided head-on with that floor and
+    # the resolver gave up (ResolutionImpossible, measured). Upstream's exact version was
+    # already contradicted inside its own requirements file; the floor is the part worth
+    # keeping. `<MAJOR.9999` stops the relaxation drifting into the next major on its own.
+    sed -i -E \
+        -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?[[:space:]]*==[[:space:]]*([0-9]+)((\.[0-9]+)*)/\1-headless>=\4\5,<\4.9999/' \
+        -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?([[:space:]]*[<>~!])/\1-headless\4/' \
+        -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?[[:space:]]*$/\1-headless/' \
+        "$forge_req" && \
     uv pip install --no-cache-dir -r "$forge_req" && \
     # This image tracks the Haoming02 line, which pins opencv, but the pin rewrite has
     # nothing to bite on where a variant takes opencv transitively. Sweep what landed.

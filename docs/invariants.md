@@ -1422,9 +1422,15 @@ stays satisfied. The variants disagree about whether they declare opencv at all 
 pins 4.8.1.78, neo 5.0.0.93, lllyasviel and reForge take it transitively), so the sweep for
 a transitively-installed build is also required.
 
-L090 demands a headless PIN (`-headless==`), never a mention: its own first draft was
-satisfied by its FATAL string and would have passed an image shipping the GUI wheel
-(ADR 0037).
+An `==` pin is RELAXED to `>=VERSION,<MAJOR.9999` rather than renamed in place. `classic`
+pins `opencv-python==4.8.1.78` while its own `albumentations==1.4.3` requires
+`opencv-python-headless>=4.9.0`; under the original names those coexist as two distributions
+(the mechanism by which a GUI wheel is present at all), and merging the names surfaces the
+contradiction as a hard `ResolutionImpossible`. Keep the floor, drop the false precision.
+
+L090 demands a headless pin that is OPERATIVE (`-headless` followed by a version operator),
+never a mention: its own first draft was satisfied by its FATAL string and would have passed
+an image shipping the GUI wheel (ADR 0037).
 
 ### A vendored script is proven by RUNNING it, not by `test -f` — **GATED (L089)**
 

@@ -3737,7 +3737,7 @@ def test_L089_converter_runs_after_the_venv_it_needs_is_complete(name):
 
 
 _FORGE_IMAGES = ["sd-forge", "aio-studio"]
-_CV_REWRITE = re.compile(r"sed -i -E 's/\^\(opencv[^\n]*headless[^\n]*\n?")
+_CV_REWRITE = re.compile(r"sed -i -E(?:[^\n]*\n)*?[^\n]*opencv[^\n]*headless")
 _CV_ASSERT = re.compile(r"python -c \"import cv2[^\n]*qt[^\n]*\n?")
 
 
@@ -3757,8 +3757,13 @@ def test_mut_forge_opencv_left_as_the_gui_wheel(name):
     it with no X server kills the subprocess that touched cv2 while Forge survives, so
     supervisord still reports RUNNING. Drop the pin rewrite and L090 must fire."""
     repo, img = _real(name)
-    mut = replace(img, text=re.sub(r"[^\n]*sed -i -E[^\n]*opencv[^\n]*headless[^\n]*\n", "", img.text))
-    assert "opencv[-_](contrib[-_])?python)([-_]headless)?" not in mut.text, "mutation did not apply"
+    mut = replace(img, text=re.sub(
+        r"[^\n]*sed -i -E(?:[^\n]*\n)*?[^\n]*headless(?:[^\n]*\n)*?[^\n]*\"\$forge_req\"[^\n]*\n",
+        "", img.text, count=1))
+    # Check the CODE, not the raw file: the comments above the block explain the
+    # albumentations conflict and mention `-headless>=` in prose.
+    assert not re.search(r"opencv[^\n]*[-_]headless[\\=<>~!]",
+                         L.code_text(L.parse(mut.text))), "mutation did not apply"
     assert "L090" in errs(mut, repo)
 
 
@@ -3786,7 +3791,8 @@ def test_L090_rewrites_the_requirements_file_not_just_the_installed_package(name
     included — on every container start. So the pin in the FILE must be rewritten, and
     the build must refuse to ship a file that still names a non-headless opencv."""
     _, img = _real(name)
-    assert re.search(r"sed -i -E[^\n]*opencv[^\n]*headless[^\n]*forge_req", img.text), \
+    assert re.search(r"sed -i -E(?:[^\n]*\n)*?[^\n]*opencv[^\n]*headless(?:[^\n]*\n)*?[^\n]*forge_req",
+                     img.text), \
         "the opencv pin is not rewritten in the requirements file"
     assert re.search(r"grep -qiE '\^opencv[^\n]*forge_req", img.text), \
         "nothing fails the build when the requirements file still pins a GUI opencv"

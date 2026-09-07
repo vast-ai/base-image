@@ -88,6 +88,33 @@ python -c "import cv2, pathlib, sys; d = pathlib.Path(cv2.__file__).parent; \
 A final `grep` fails the build if the requirements file still pins a non-headless opencv —
 the guard against the reinstall path reopening silently.
 
+## Amendment, same day — the pin is RELAXED, not renamed in place
+
+The first build under this ADR failed on `classic`:
+
+```
+ERROR: Cannot install -r requirements.txt (line 3) and opencv-python-headless==4.8.1.78
+       because these package versions have conflicting dependencies.
+ResolutionImpossible
+```
+
+Line 3 is `albumentations==1.4.3`, which requires `opencv-python-headless>=4.9.0`. Upstream
+pins `opencv-python==4.8.1.78`. Under the ORIGINAL names there was no conflict to notice,
+because those are two different distributions: pip installed both, and whichever landed last
+owned `cv2`. That is not a detail — it is the mechanism by which a GUI wheel was present to
+abort in the first place. Renaming the pin to `opencv-python-headless==4.8.1.78` merged the
+two names into one and exposed a contradiction that upstream's own requirements file had
+been carrying silently.
+
+So the version is not preserved verbatim. An `==` pin becomes `>=VERSION,<MAJOR.9999`: the
+floor upstream asked for is kept, the ceiling stops the relaxation drifting into the next
+major on its own, and the resolver is free to satisfy a co-dependency's higher floor. For
+`classic` that yields a 4.x headless at or above 4.9.0; for `neo`, 5.0.0.93 or a later 5.x.
+
+The honest reading is that upstream's exact pin was never in force: `albumentations` was
+already pulling a newer headless build into the same environment. Keeping the floor and
+dropping the false precision reflects what was actually installed.
+
 ## Consequences
 
 - Both Forge-bearing images are covered. Gated by **L090**, which carries two obligations:
