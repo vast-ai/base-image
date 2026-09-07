@@ -120,8 +120,43 @@ RUN \
     # Pin setuptools<78 for legacy CLIP compatibility
     echo 'setuptools<78' > /tmp/pip-constraint.txt && \
     export PIP_CONSTRAINT=/tmp/pip-constraint.txt && \
-    uv pip install --no-cache-dir \
-        -r $([[ -f requirements_versions.txt ]] && echo "requirements_versions.txt" || echo "requirements.txt") && \
+    forge_req="$([[ -f requirements_versions.txt ]] && echo requirements_versions.txt || echo requirements.txt)" && \
+    # OpenCV must be the HEADLESS build. The GUI wheel bundles Qt — opencv-python
+    # 5.0.0.93 ships a `cv2/qt/` plugin tree (29 Qt/xcb entries; the headless wheel of
+    # the same version ships none) — and in a container with no X server loading it
+    # aborts the process: `Could not load the Qt platform plugin "xcb"`, then `Aborted`.
+    # Forge itself survives, so supervisord keeps reporting RUNNING while whichever
+    # subprocess touched cv2 is gone.
+    #
+    # Rewrite the PIN, do not swap the installed package afterwards. `requirements_met()`
+    # resolves every pinned name through `importlib.metadata.version()`, so an uninstalled
+    # `opencv-python` raises, the check returns False, and Forge reinstalls the WHOLE
+    # requirements file — non-headless opencv included — on every container start. Editing
+    # the file means the GUI wheel is never fetched and the boot-time check stays satisfied.
+    # Same version, only the distribution name changes; headless builds exist for every
+    # version the variants pin (4.8.1.78, 5.0.0.93, 4.11.0.86 all verified on PyPI).
+    # Any specifier form, not just `==`: a variant that moved to `opencv-python>=4.8`
+    # would otherwise keep the GUI pin, and the sweep below would then uninstall a package
+    # the requirements file still names — reopening the boot-time reinstall path silently.
+    sed -i -E -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?([[:space:]]*[=<>~!])/\1-headless\4/' -e 's/^(opencv[-_](contrib[-_])?python)([-_]headless)?[[:space:]]*$/\1-headless/' "$forge_req" && \
+    uv pip install --no-cache-dir -r "$forge_req" && \
+    # This image tracks the Haoming02 line, which pins opencv, but the pin rewrite has
+    # nothing to bite on where a variant takes opencv transitively. Sweep what landed.
+    # Safe to uninstall precisely BECAUSE it is not in the requirements file: nothing at
+    # boot resolves its metadata, so this cannot trigger the reinstall described above.
+    for _cv in opencv-python opencv-contrib-python; do \
+        _cvv="$(python -c "import importlib.metadata as m; print(m.version('${_cv}'))" 2>/dev/null || true)" && \
+        [[ -n "${_cvv}" ]] || continue; \
+        echo "Replacing transitively-installed ${_cv}==${_cvv} with the headless build" && \
+        uv pip uninstall "${_cv}" && \
+        uv pip install --no-cache-dir "${_cv}-headless==${_cvv}" || exit 1; \
+    done && \
+    # PROVE IT ON THE ARTIFACT. A headless install that resolved back to the GUI wheel
+    # through some later dependency is invisible until a subprocess aborts at runtime, so
+    # ask the installed cv2 what it actually is rather than trusting the install lines.
+    python -c "import cv2, pathlib, sys; d = pathlib.Path(cv2.__file__).parent; sys.exit('FATAL: cv2 ships a Qt plugin tree at ' + str(d / 'qt') + ' — the GUI build aborts in a headless container (L090, ADR 0037)') if (d / 'qt').exists() else print('cv2 is headless:', cv2.__version__)" && \
+    grep -qiE '^opencv[-_](contrib[-_])?python([[:space:]]*[=<>~!]|[[:space:]]*$)' "$forge_req" && \
+        { echo "FATAL: $forge_req still pins a non-headless opencv — Forge would reinstall it on every container start (L090, ADR 0037)"; exit 1; } || true && \
     # Quick startup test in CPU mode
     LD_PRELOAD=libtcmalloc_minimal.so.4 \
         python launch.py \

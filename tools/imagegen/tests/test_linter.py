@@ -3731,3 +3731,62 @@ def test_L089_converter_runs_after_the_venv_it_needs_is_complete(name):
         f"{name}: the converter is executed at offset {ex.start()} but unsloth (and with "
         f"it transformers) is not installed until {install.start()} — the closure is "
         f"incomplete at that point and the build cannot pass")
+
+
+# ---- L090: Forge ships a headless OpenCV, proven on the artifact ----
+
+
+_FORGE_IMAGES = ["sd-forge", "aio-studio"]
+_CV_REWRITE = re.compile(r"sed -i -E 's/\^\(opencv[^\n]*headless[^\n]*\n?")
+_CV_ASSERT = re.compile(r"python -c \"import cv2[^\n]*qt[^\n]*\n?")
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_L090_real_forge_images_are_clean(name):
+    """Both Forge-bearing images rewrite the opencv pin and prove cv2 is Qt-free."""
+    repo, img = _real(name)
+    assert "stable-diffusion-webui-forge" in img.text
+    assert "L090" not in errs(img, repo)
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_mut_forge_opencv_left_as_the_gui_wheel(name):
+    """THE real defect, reported 2026-09-07: Forge printed `Could not load the Qt
+    platform plugin "xcb"` then `Aborted`. opencv-python 5.0.0.93 ships a cv2/qt/ tree
+    (29 Qt/xcb entries; the headless wheel of the same version ships none), and loading
+    it with no X server kills the subprocess that touched cv2 while Forge survives, so
+    supervisord still reports RUNNING. Drop the pin rewrite and L090 must fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=re.sub(r"[^\n]*sed -i -E[^\n]*opencv[^\n]*headless[^\n]*\n", "", img.text))
+    assert "opencv[-_](contrib[-_])?python)([-_]headless)?" not in mut.text, "mutation did not apply"
+    assert "L090" in errs(mut, repo)
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_mut_forge_opencv_headless_but_never_verified(name):
+    """Installing the headless build is not proof it survived. A later dependency can
+    resolve cv2 back to the GUI wheel, and nothing says so until a subprocess aborts on
+    a rented GPU. Remove the cv2 artifact assertion and L090 must still fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=re.sub(r"[^\n]*python -c \"import cv2[^\n]*\n", "", img.text))
+    assert "L090" in errs(mut, repo)
+
+
+def test_L090_an_image_without_forge_is_out_of_scope(tmp_path):
+    """The rule keys off the Forge clone directory; unrelated images stay clean."""
+    assert "L090" not in errs(make(tmp_path), tmp_path)
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_L090_rewrites_the_requirements_file_not_just_the_installed_package(name):
+    """The reinstall trap, and the reason a package swap alone is wrong.
+    `launch_utils.requirements_met()` resolves every pinned name through
+    `importlib.metadata.version()`. Uninstalling `opencv-python` makes that raise, the
+    check returns False, and Forge reinstalls the WHOLE requirements file — GUI opencv
+    included — on every container start. So the pin in the FILE must be rewritten, and
+    the build must refuse to ship a file that still names a non-headless opencv."""
+    _, img = _real(name)
+    assert re.search(r"sed -i -E[^\n]*opencv[^\n]*headless[^\n]*forge_req", img.text), \
+        "the opencv pin is not rewritten in the requirements file"
+    assert re.search(r"grep -qiE '\^opencv[^\n]*forge_req", img.text), \
+        "nothing fails the build when the requirements file still pins a GUI opencv"

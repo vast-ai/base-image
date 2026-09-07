@@ -1401,6 +1401,31 @@ Two further rules, both themselves tested:
   linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
   a self-skipped GPU suite classify as a pass.
 
+### Forge's OpenCV is headless, fixed in the requirements FILE — **GATED (L090)**
+
+An image that installs Forge must rewrite the opencv pin to the headless build *in the
+requirements file*, and must prove on the artifact that the installed `cv2` carries no Qt.
+
+The GUI wheel bundles Qt: `opencv-python==5.0.0.93` ships 29 Qt/xcb entries including a
+`cv2/qt/` plugin tree; the headless wheel of the same version ships none (measured against
+both wheels). With no X server, loading it aborts the process — `Could not load the Qt
+platform plugin "xcb"`, then `Aborted`. **Forge survives**: the abort takes whichever
+subprocess touched cv2, so the log continues and supervisord still reports RUNNING. Nothing
+in QA sees it, which is why this is a build-time obligation.
+
+**Swapping the installed package is not the fix and reintroduces the bug at every boot.**
+`launch_utils.requirements_met()` resolves each pinned name through
+`importlib.metadata.version()`; an uninstalled `opencv-python` raises, the check returns
+False, and Forge reinstalls the whole requirements file — GUI opencv included — on every
+container start. Editing the pin means the GUI wheel is never fetched and the boot check
+stays satisfied. The variants disagree about whether they declare opencv at all (classic
+pins 4.8.1.78, neo 5.0.0.93, lllyasviel and reForge take it transitively), so the sweep for
+a transitively-installed build is also required.
+
+L090 demands a headless PIN (`-headless==`), never a mention: its own first draft was
+satisfied by its FATAL string and would have passed an image shipping the GUI wheel
+(ADR 0037).
+
 ### A vendored script is proven by RUNNING it, not by `test -f` — **GATED (L089)**
 
 An image that fetches a Python entrypoint into itself must EXECUTE that script during the
