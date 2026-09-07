@@ -17,9 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       AIO_BASE:
-        description: "Base image (from build-aio-studio-base)"
-        required: true
-        default: "vastai/aio-studio:base-2026-04-15"
+        # Empty = use DEFAULT_AIO_BASE below. Deliberately NOT defaulted here as well:
+        # two defaults for one fact is what left the Dockerfile pinning a failed build
+        # in the staging namespace while this workflow named a different tag. One source.
+        description: "Base image (empty = the workflow default)"
+        required: false
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
         required: true
@@ -28,6 +30,9 @@ on:
         description: "Custom tag (default: date)"
         required: false
       # App ref overrides — leave empty for auto-detection
+      LLAMA_CPP_VERSION:
+        description: "Unsloth llama.cpp bundle release (empty = latest -mix-)"
+        required: false
       COMFYUI_REF:
         description: "ComfyUI ref (empty = latest release)"
         required: false
@@ -51,7 +56,15 @@ on:
         required: false
 
 env:
-  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-04-15"
+  # Bumped 2026-09-03 to the first base ever built through build -> qa -> promote:
+  # it passed a live-GPU cell (three torch venvs importing 2.10.0/2.9.1/2.7.1,
+  # flash_attn, create_app_venv, the desktop stack) before publication. The previous
+  # value, base-2026-04-15, predated the QA stage and was four and a half months old.
+  #
+  # ONE source of truth: the dispatch input defaults to empty and falls back here, and
+  # the Dockerfile carries no default at all. Bump this only to a tag that already
+  # EXISTS — naming one before it is published is the defect this branch started on.
+  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-09-02"
   DEFAULT_DOCKERHUB_REPO: "aio-studio"
 
 jobs:
@@ -67,6 +80,11 @@ jobs:
       whisper-ref: ${{ steps.whisper.outputs.resolved-ref }}
       ace-step-ref: ${{ steps.ace-step.outputs.resolved-ref }}
       ace-step-ui-ref: ${{ steps.ace-step-ui.outputs.ref }}
+      # Unsloth Studio's llama.cpp now comes from the prebuilt bundle rather than a
+      # source compile (ADR 0018, aligning with the standalone image). The Dockerfile
+      # carries NO default for it on purpose, so this resolver is load-bearing: without
+      # it the build fails on the deliberate empty-value guard.
+      llama-cpp-version: ${{ steps.llama-check.outputs.resolved-ref }}
       image-tag: ${{ steps.tag.outputs.tag }}
       should-run: ${{ steps.decision.outputs.should-run }}
     steps:
@@ -76,7 +94,10 @@ jobs:
       - name: Check for required secrets
         id: secrets
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" ]]; then
+          # DOCKERHUB_NAMESPACE_STAGING joined this list when the build moved to
+          # staging: unset, the build would push to a malformed "/repo:tag" rather than
+          # skip, which is a confusing failure at best.
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE }}" && -n "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]]; then
             echo "available=true" >> $GITHUB_OUTPUT
           else
             echo "available=false" >> $GITHUB_OUTPUT
@@ -206,6 +227,21 @@ jobs:
           fi
           echo "ref=${REF}" >> $GITHUB_OUTPUT
 
+      # tag-pattern '-mix-' because unslothai/llama.cpp publishes TWO release lines in
+      # one repo — the `-mix-` builds and an older bare `bNNNN` line — and without it the
+      # resolver sorts by updated_at across both and can select from the wrong one.
+      # Identical to build-unsloth-studio.yml's step; the two images install the same
+      # bundle and should resolve it the same way.
+      - name: Resolve the llama.cpp bundle release
+        id: llama-check
+        uses: ./.github/actions/check-github-release
+        with:
+          repository: unslothai/llama.cpp
+          trigger: ${{ github.event_name }}
+          manual-ref: ${{ inputs.LLAMA_CPP_VERSION }}
+          resolve-master-to-commit: "false"
+          tag-pattern: '-mix-'
+
       - name: Generate image tag
         id: tag
         shell: bash
@@ -241,11 +277,20 @@ jobs:
           echo "| **Image Tag** | **${{ steps.tag.outputs.tag }}** |" >> $GITHUB_STEP_SUMMARY
 
   # ── Build app image ──
+  # BUILD PUSHES TO STAGING, NOT PRODUCTION, and carries no environment gate.
+  #
+  # It used to do both wrong things at once: push straight to the production namespace
+  # (moving :latest with it) and carry `environment: production` on the BUILD job. That
+  # gate asked for approval BEFORE anything existed, so a reviewer approved a promise;
+  # and because the environment was conditional on workflow_dispatch, the bi-weekly
+  # SCHEDULE had no gate at all and shipped to customers unattended and untested.
+  #
+  # The gate now sits on `promote`, after `qa` has run against the built artifact —
+  # which is the only order in which an approval means anything.
   build:
     needs: resolve-refs
     if: needs.resolve-refs.outputs.should-run == 'true'
     runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -262,9 +307,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push to STAGING
         run: |
-          NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE }}"
+          NAMESPACE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}"
           REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
           TAG="${{ needs.resolve-refs.outputs.image-tag }}"
           AIO_BASE="${{ inputs.AIO_BASE || env.DEFAULT_AIO_BASE }}"
@@ -273,6 +318,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --build-arg AIO_BASE="${AIO_BASE}" \
+            --build-arg LLAMA_CPP_VERSION=${{ needs.resolve-refs.outputs.llama-cpp-version }} \
             --build-arg COMFYUI_REF=${{ needs.resolve-refs.outputs.comfyui-ref }} \
             --build-arg FORGE_REF=${{ needs.resolve-refs.outputs.forge-ref }} \
             --build-arg VOICEBOX_REF=${{ needs.resolve-refs.outputs.voicebox-ref }} \
@@ -282,18 +328,99 @@ jobs:
             --build-arg ACE_STEP_REF=${{ needs.resolve-refs.outputs.ace-step-ref }} \
             --build-arg ACE_STEP_UI_REF=${{ needs.resolve-refs.outputs.ace-step-ui-ref }} \
             --build-context comfyui=../comfyui \
-            -t "${NAMESPACE}/${REPO}:${TAG}" \
-            -t "${NAMESPACE}/${REPO}:latest" \
+            -t "${NAMESPACE}/${REPO}:${TAG}-amd64" \
             . --push
 
-          echo "FULL_IMAGE=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_ENV
+          # -amd64 suffix so `merge-arch-manifests` can stitch the production index from
+          # it (arches: amd64 — this image is single-arch today). NO :latest here: that
+          # is a production pointer and moving it before QA is what let an untested
+          # image become the default pull.
+          echo "STAGING_TAG=${NAMESPACE}/${REPO}:${TAG}" >> $GITHUB_ENV
 
-      - name: Record built tag
+      # No tag artifact here any more. collect-tags feeds the Slack message, and a
+      # STAGING tag reported as a build output is a tag nobody can pull. What shipped is
+      # decided by `promote`, so `promote` is what records it.
+      - name: Note the staged tag
+        run: echo "staged ${{ env.STAGING_TAG }}-amd64 (not published until QA passes)" >> $GITHUB_STEP_SUMMARY
+
+  # Live-GPU QA gate (ADR 0005). This image had NO gate of any kind until now: it
+  # promoted on a successful docker build, which certifies that the layers assembled and
+  # nothing about whether the eight apps it exists to provide are usable.
+  #
+  # It does NOT start the apps, and that is correct rather than lazy: all nine supervisor
+  # programs ship autostart=false because eight heavyweight apps cannot share a GPU, so
+  # "every app is RUNNING" is not a property this image has. The cell asserts the two
+  # things that ARE true of every launch — each app venv resolves the torch it was built
+  # against, and each app is a program supervisord knows with a launcher and a route.
+  qa:
+    needs: [resolve-refs, build]
+    if: needs.resolve-refs.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'aio-studio' }}
+      tag: ${{ needs.resolve-refs.outputs.image-tag }}-amd64
+      template_dir: derivatives/pytorch/derivatives/aio-studio/templates/aio-studio-qa
+      label: base-image-qa-aio-studio
+      # The apps log under their own names; these two are what a failing cell needs.
+      log_paths: "/var/log/portal/comfyui.log /var/log/portal/unsloth-studio.log"
+      # CI-side half of the template's INSTANCE_TEST_REQUIRE_PASS (ADR 0019/0031).
+      # Declared in BOTH places on purpose: the runner enforces it in-instance, and this
+      # enforces it against the verdict payload, so a template edit that drops the env
+      # var still cannot produce a passing gate.
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio.d/10-aio-app-venvs aio.d/20-aio-services"
+      # ADR 0029 condition 5: the redraw rule is not forked per image.
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # PROMOTE is where the production namespace, the :latest pointer and the approval gate
+  # all live — after QA, never before.
+  #
+  # `needs.qa.result == 'success'` is stated explicitly rather than left to GitHub's
+  # implicit skip-on-failure, so the gate is visible in the file. There is no
+  # `!cancelled()` here because this workflow has no advisory cell to keep alive.
+  #
+  # The environment is conditional on workflow_dispatch, matching every other image in
+  # the repo: QA is the automated gate that always applies, and human approval is the
+  # extra a manual run gets. What changed is that the approval now follows the evidence.
+  promote:
+    needs: [resolve-refs, build, qa]
+    if: needs.resolve-refs.outputs.should-run == 'true' && needs.qa.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive tags
+        run: |
+          REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          TAG="${{ needs.resolve-refs.outputs.image-tag }}"
+          echo "STAGING_TAG_BASE=${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${REPO}:${TAG}" >> $GITHUB_ENV
+          echo "PROD_TAG=${{ secrets.DOCKERHUB_NAMESPACE }}/${REPO}:${TAG}" >> $GITHUB_ENV
+          echo "LATEST_TAG=${{ secrets.DOCKERHUB_NAMESPACE }}/${REPO}:latest" >> $GITHUB_ENV
+
+      - name: Assemble production index from the QA'd staging image
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # Single-arch today. When this image gains arm64, add it here and to the build
+          # matrix together — a suffix listed here that was never built fails loudly.
+          arches: amd64
+          # :latest moves ONLY here, aliased off the dated tag that just passed QA.
+          extra-tags: ${{ env.LATEST_TAG }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record promoted tag
         run: |
           mkdir -p built-tags
-          echo "${{ env.FULL_IMAGE }}" > built-tags/tag.txt
+          printf '%s\n%s\n' "${{ env.PROD_TAG }}" "${{ env.LATEST_TAG }}" > built-tags/tag.txt
 
-      - name: Upload built tag
+      - name: Upload promoted tag
         uses: actions/upload-artifact@v4
         with:
           name: built-tag
@@ -301,7 +428,7 @@ jobs:
           retention-days: 1
 
   collect-tags:
-    needs: [resolve-refs, build]
+    needs: [resolve-refs, build, promote]
     if: always() && needs.resolve-refs.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -325,11 +452,20 @@ jobs:
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
   notify:
-    needs: [resolve-refs, build, collect-tags]
+    needs: [resolve-refs, build, qa, promote, collect-tags]
     if: always() && needs.resolve-refs.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
-      build-result: ${{ needs.build.result }}
+      # PROMOTE, not build. Keying this on `needs.build.result` meant a green build whose
+      # QA failed still announced success -- the recurring defect this repo has been bitten
+      # by four times, and the reason notify now lists qa and promote in `needs` (a
+      # `needs.<job>` reference to a job absent from that list evaluates to empty and the
+      # arm silently never fires).
+      build-result: ${{ needs.promote.result }}
+      # ENUMERATE THE WAY IT GOES RIGHT: every arm that can render "promoted" is keyed on
+      # promote taking the negative branch first, so a cancelled or skipped run cannot
+      # fall through to the success text.
+      headline: ${{ (needs.build.result != 'success' && 'AIO Studio build failed') || (needs.qa.result == 'failure' && 'AIO Studio QA FAILED on real GPU — not promoted') || (needs.promote.result == 'failure' && 'AIO Studio promotion failed') || (needs.promote.result != 'success' && 'AIO Studio NOT promoted — promotion did not run') || 'AIO Studio promoted — live-GPU QA passed' }}
       image-name: "AIO Studio"
       image-ref: ${{ needs.resolve-refs.outputs.image-tag }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

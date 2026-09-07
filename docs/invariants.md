@@ -1401,6 +1401,97 @@ Two further rules, both themselves tested:
   linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
   a self-skipped GPU suite classify as a pass.
 
+### AI Toolkit's public UI listener is pinned to loopback at BUILD time — **GATED (L091)**
+
+An image that installs AI Toolkit must pin its UI's public listener to `127.0.0.1` during
+the build, and must FAIL the build when the patch does not apply.
+
+Upstream binds every interface. On the current tree `ui/cron/fileServer.ts` ends in
+`server.listen(publicPort)` with no host argument; the older shape launches
+`next start --port 8675`. Both are 0.0.0.0. Tellingly, that same file already pins its
+INTERNAL Next.js upstream with `--hostname 127.0.0.1` — only the public half is exposed.
+Everything here sits behind Caddy, so a service binding a public interface inside the
+container is reachable however the platform maps ports.
+
+**The runtime control cannot see this.** `base/28-inadvertent-exposure` scans listeners, and
+every app in these images ships `autostart=false`, so during a QA gate nothing is listening
+and the scan inspects an empty set. The build is the only place it can be caught — the same
+reason ADR 0036 and ADR 0037 put their guards there.
+
+**Detect the launch shape; never assume it.** BOTH images resolve the upstream ref in CI —
+each workflow resolves HEAD and passes `<APP>_REF` — so neither is anchored to a known shape
+and either can meet either one on any given day. The `ARG <APP>_REF=` default in each
+Dockerfile is a local-build fallback CI never uses; it is stale enough to name a DIFFERENT
+launch shape, which is what makes reading the shape from the tree the only reliable move. An unrecognised third shape must be FATAL: a sed that
+silently matches nothing would ship the public bind, which is exactly the failure the guard
+exists to prevent. The pin is applied BEFORE `npm run build`, because `tsc` compiles
+`cron/*.ts` into the `dist/cron/` files the launcher actually runs — a pin applied afterwards
+would edit sources nothing loads (the ordering trap of L089).
+
+L091 requires the pin be attached to AI Toolkit's own launch, not merely present in the file:
+aio-studio builds nine apps and already pins loopback for ComfyUI and voicebox, either of
+which satisfied a whole-file check while AI Toolkit stayed wide open.
+
+### Forge's OpenCV is headless, fixed in the requirements FILE — **GATED (L090)**
+
+An image that installs Forge must rewrite the opencv pin to the headless build *in the
+requirements file*, and must prove on the artifact that the installed `cv2` carries no Qt.
+
+The GUI wheel bundles Qt: `opencv-python==5.0.0.93` ships 29 Qt/xcb entries including a
+`cv2/qt/` plugin tree; the headless wheel of the same version ships none (measured against
+both wheels). With no X server, loading it aborts the process — `Could not load the Qt
+platform plugin "xcb"`, then `Aborted`. **Forge survives**: the abort takes whichever
+subprocess touched cv2, so the log continues and supervisord still reports RUNNING. Nothing
+in QA sees it, which is why this is a build-time obligation.
+
+**Swapping the installed package is not the fix and reintroduces the bug at every boot.**
+`launch_utils.requirements_met()` resolves each pinned name through
+`importlib.metadata.version()`; an uninstalled `opencv-python` raises, the check returns
+False, and Forge reinstalls the whole requirements file — GUI opencv included — on every
+container start. Editing the pin means the GUI wheel is never fetched and the boot check
+stays satisfied. The variants disagree about whether they declare opencv at all (classic
+pins 4.8.1.78, neo 5.0.0.93, lllyasviel and reForge take it transitively), so the sweep for
+a transitively-installed build is also required.
+
+An `==` pin is RELAXED to `>=VERSION,<MAJOR.9999` rather than renamed in place. `classic`
+pins `opencv-python==4.8.1.78` while its own `albumentations==1.4.3` requires
+`opencv-python-headless>=4.9.0`; under the original names those coexist as two distributions
+(the mechanism by which a GUI wheel is present at all), and merging the names surfaces the
+contradiction as a hard `ResolutionImpossible`. Keep the floor, drop the false precision.
+
+L090 demands a headless pin that is OPERATIVE (`-headless` followed by a version operator),
+never a mention: its own first draft was satisfied by its FATAL string and would have passed
+an image shipping the GUI wheel (ADR 0037).
+
+### A vendored script is proven by RUNNING it, not by `test -f` — **GATED (L089)**
+
+An image that fetches a Python entrypoint into itself must EXECUTE that script during the
+build. Presence is not importability: a script can land byte-perfect and still be unusable
+because a module it imports at module scope was never fetched with it.
+
+Measured 2026-09-04. `unsloth-studio` vendored `convert_hf_to_gguf.py` from the pinned
+llama.cpp source tag, guarded by `test -f` and a separate `import gguf` probe. Both passed.
+Upstream had refactored that script into a thin CLI wrapper over a sibling `conversion/`
+package of 89 modules, which the build never fetched. The image built green, passed its QA
+gate, was promoted, and GGUF export failed on a rented GPU with `ModuleNotFoundError: No
+module named 'conversion'` — the first moment anything executed the file.
+
+The probe is the part worth keeping in mind. It asserted the sibling the author had in
+mind rather than the closure the script actually reaches for, so it could only confirm an
+existing belief. **The file is the authority on what it imports.** Running it (`--help` is
+enough — argparse returns 0 only after every module-scope import resolves) settles the
+question in seconds, and must use the interpreter the CONSUMER will use: asserting with the
+system `python3` when the app runs `/venv/main/bin/python` proves the wrong environment.
+It must also run at a point where that environment is COMPLETE: the same converter reaches
+`transformers` through `conversion/`, which arrives with the app's own install, so a probe
+placed in an earlier stage reds a healthy build instead of proving anything.
+
+This is L088 one layer up — a test that reaches for a sibling helper must ship it; a
+script that imports a sibling package must have it fetched alongside — and the same blind
+spot as the `find -type f` mirror bug in ADR 0036, where presence was asserted and
+behaviour was what mattered. Not gated by QA and cannot be: the export path runs after
+every cell has closed, so the build-time assertion is the only control (ADR 0036 amendment).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

@@ -514,13 +514,19 @@ def test_L041_warns_not_errors_when_env_unset(tmp_path, monkeypatch):
     assert "L041" in {f.code for f in findings if f.severity == "WARN"}
 
 
-def test_L041_grandfathers_staging_based_image(tmp_path, monkeypatch):
-    # aio-studio legitimately builds FROM a staging-account base (invariants §2), so it
-    # must not false-gate even with the namespace set.
+def test_L041_no_image_is_grandfathered_any_more(tmp_path, monkeypatch):
+    """The exemption list is EMPTY, and aio-studio — its only ever entry — is the case
+    that proves it. It was exempted because its Dockerfile pinned a base in the staging
+    namespace; that pin was removed 2026-09-02, so the exemption was retired by being
+    FIXED rather than renewed. A name reappearing here should fail this test and force
+    the question of why, which is the whole point of an exemption that expires."""
+    assert L._L041_GRANDFATHERED == frozenset(), (
+        f"L041 exemptions are back: {sorted(L._L041_GRANDFATHERED)} — an exemption is a "
+        f"deferred fix, not a permanent state")
     monkeypatch.setenv("DOCKERHUB_NAMESPACE_STAGING", "acmestaging")
     df = VALID_DF.replace("uv pip install foo", "uv pip install foo  # acmestaging/x")
     img = replace(make(tmp_path, df=df), name="aio-studio")
-    assert "L041" not in errs(img, tmp_path)
+    assert "L041" in errs(img, tmp_path), "aio-studio must now be gated like every other image"
 
 
 def test_rules_catalog_matches_emitted_codes():
@@ -3601,3 +3607,258 @@ def test_L088_does_not_sweep_in_the_ubiquitous_lib_source(tmp_path):
     a path segment, not a sibling, and a rule that fired on it would red the repo."""
     repo = _suite(tmp_path, {"10-x.sh": '#!/bin/bash\nsource "$(dirname "$0")/../lib.sh"\n'})
     assert not _codes(repo, "L088")
+
+
+def test_own_test_prefixes_sees_every_overlay_not_just_ROOT(tmp_path):
+    """aio-studio is a two-STAGE build: Dockerfile.base copies ROOT_BASE (the cached
+    base layer) and Dockerfile copies ROOT on top, so a suite in ROOT_BASE ships in BOTH
+    images. Scanning ROOT alone made L072 report that the base's QA template named no
+    own-suite test while it was naming two of them."""
+    d = tmp_path / "img"
+    for overlay, suite in (("ROOT", "app.d"), ("ROOT_BASE", "base-layer.d")):
+        sub = d / overlay / "opt/instance-tools/tests" / suite
+        sub.mkdir(parents=True)
+        (sub / "10-x.sh").write_text("#!/bin/bash\n")
+    (d / "Dockerfile").write_text("FROM scratch\n")
+    img = Image(name="img", cls="pytorch-nested", dir=d,
+                dockerfile=d / "Dockerfile", text="FROM scratch\n",
+                root=d / "ROOT")
+    assert L._own_test_prefixes(img) == ["app.d", "base-layer.d"]
+
+
+# ---- L089: a vendored Python entrypoint is EXECUTED, not just tested for presence ----
+
+
+# The two images run the converter with DIFFERENT interpreters, because the studio
+# resolves python through .../studio/unsloth_studio: /venv/main in unsloth-studio,
+# /venv/unsloth in aio-studio. A mutation that hardcoded one would silently no-op on
+# the other and assert nothing, so strip whatever interpreter invocation is there.
+_EXEC_RE = re.compile(r"\S*python\S*\s+\S*convert_hf_to_gguf\.py[^\n]*")
+
+
+@pytest.mark.parametrize("name", ["unsloth-studio", "aio-studio"])
+def test_L089_real_studio_images_execute_their_converter(name):
+    """Both shipping images vendor convert_hf_to_gguf.py from the pinned llama.cpp
+    source tag and run it at build time, so L089 must not fire on them."""
+    repo, img = _real(name)
+    assert "convert_hf_to_gguf.py" in img.text
+    assert "L089" not in errs(img, repo)
+
+
+@pytest.mark.parametrize("name", ["unsloth-studio", "aio-studio"])
+def test_mut_converter_is_fetched_but_never_executed(name):
+    """THE real defect, 2026-09-04. Drop the execution and leave the fetch and the
+    `test -f` guards standing — exactly the shape that built green, passed QA and was
+    promoted, then failed on a rented GPU with `ModuleNotFoundError: No module named
+    'conversion'` because upstream had refactored the script into a wrapper over an
+    89-module sibling package the build never fetched."""
+    repo, img = _real(name)
+    assert _EXEC_RE.search(img.text), "real image does not execute its converter"
+    mut = replace(img, text=_EXEC_RE.sub(
+        "test -f /opt/llama-cpp/convert_hf_to_gguf.py", img.text))
+    assert not _EXEC_RE.search(mut.text), "mutation did not apply"
+    assert "L089" in errs(mut, repo)
+
+
+def test_L089_importing_a_sibling_does_not_substitute_for_running_the_script():
+    """The assertion this rule replaces probed `import gguf` — the sibling the author
+    had in mind — and passed while the converter's own first import was unsatisfiable.
+    Restoring that probe must NOT satisfy L089: only executing the file proves the
+    closure, because only the file knows what it imports."""
+    repo, img = _real("unsloth-studio")
+    mut = replace(img, text=_EXEC_RE.sub(
+        'PYTHONPATH=/opt/llama-cpp/gguf-py /venv/main/bin/python -c "import gguf"', img.text))
+    assert "L089" in errs(mut, repo)
+
+
+def test_L089_an_image_that_vendors_no_script_is_out_of_scope(tmp_path):
+    """The rule keys off a fetched .py. An image that fetches none must stay clean."""
+    assert "L089" not in errs(make(tmp_path), tmp_path)
+
+
+def test_L089_matches_the_output_path_not_the_url():
+    """`wget -qO <dest>.py <url>.py` — a rule that keyed off the URL would read the
+    remote name and, for a fetch whose URL basename differs from the destination,
+    look for the execution of a file the image does not have."""
+    repo, img = _real("unsloth-studio")
+    assert 'wget -qO /opt/llama-cpp/convert_hf_to_gguf.py' in img.text
+    hits = L._FETCHED_PY.findall(L.code_text(L.parse(img.text)))
+    assert hits == ["/opt/llama-cpp/convert_hf_to_gguf.py"], hits
+
+
+@pytest.mark.parametrize("name", ["unsloth-studio", "aio-studio"])
+def test_L089_converter_is_executed_by_the_interpreter_the_exporter_uses(name):
+    """Running the converter proves nothing unless it runs under the venv the STUDIO
+    resolves python through — the exporter invokes
+    `.../studio/unsloth_studio/bin/python`, and that symlink is /venv/main in
+    unsloth-studio but /venv/unsloth in aio-studio.
+
+    Caught during the L089 fix: the assertion was first written against /venv/main for
+    both. In aio-studio that venv is merely the BASE unsloth is built from, so the probe
+    would have passed against an environment the exporter never uses while the real one
+    stayed unverified — a false green of exactly the kind L089 exists to prevent. It
+    would also have run before /venv/unsloth was created at all."""
+    _, img = _real(name)
+    m = re.search(r"ln -sf (/venv/\S+) /opt/workspace-internal/unsloth/studio/unsloth_studio",
+                  img.text)
+    assert m, "no studio venv symlink found"
+    studio_venv = m.group(1)
+    ex = _EXEC_RE.search(img.text)
+    assert ex, "converter is never executed"
+    assert ex.group(0).startswith(f"{studio_venv}/bin/python"), (
+        f"{name}: converter executed by {ex.group(0).split()[0]} but the exporter "
+        f"resolves python through {studio_venv}")
+
+
+@pytest.mark.parametrize("name", ["unsloth-studio", "aio-studio"])
+def test_L089_converter_runs_after_the_venv_it_needs_is_complete(name):
+    """The converter's import closure reaches `transformers` THROUGH `conversion/`, and
+    transformers arrives with unsloth. Executing it before that install fails on an
+    environment that is merely unfinished rather than broken.
+
+    Measured 2026-09-04: the first fix ran the assertion inside the llama.cpp stage,
+    which precedes the unsloth install in unsloth-studio, and the build failed with
+    `ModuleNotFoundError: No module named 'transformers'`. The failure direction was
+    safe — a red build, not a silent pass — but the assertion has to sit where the venv
+    is complete or it can never go green. aio-studio was already correct because its
+    assertion was placed beside /venv/unsloth, which only exists after the install."""
+    _, img = _real(name)
+    install = re.search(r"uv pip install[^\n]*unsloth", img.text)
+    assert install, "no unsloth install found"
+    ex = _EXEC_RE.search(img.text)
+    assert ex, "converter is never executed"
+    assert install.start() < ex.start(), (
+        f"{name}: the converter is executed at offset {ex.start()} but unsloth (and with "
+        f"it transformers) is not installed until {install.start()} — the closure is "
+        f"incomplete at that point and the build cannot pass")
+
+
+# ---- L090: Forge ships a headless OpenCV, proven on the artifact ----
+
+
+_FORGE_IMAGES = ["sd-forge", "aio-studio"]
+_CV_REWRITE = re.compile(r"sed -i -E(?:[^\n]*\n)*?[^\n]*opencv[^\n]*headless")
+_CV_ASSERT = re.compile(r"python -c \"import cv2[^\n]*qt[^\n]*\n?")
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_L090_real_forge_images_are_clean(name):
+    """Both Forge-bearing images rewrite the opencv pin and prove cv2 is Qt-free."""
+    repo, img = _real(name)
+    assert "stable-diffusion-webui-forge" in img.text
+    assert "L090" not in errs(img, repo)
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_mut_forge_opencv_left_as_the_gui_wheel(name):
+    """THE real defect, reported 2026-09-07: Forge printed `Could not load the Qt
+    platform plugin "xcb"` then `Aborted`. opencv-python 5.0.0.93 ships a cv2/qt/ tree
+    (29 Qt/xcb entries; the headless wheel of the same version ships none), and loading
+    it with no X server kills the subprocess that touched cv2 while Forge survives, so
+    supervisord still reports RUNNING. Drop the pin rewrite and L090 must fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=re.sub(
+        r"[^\n]*sed -i -E(?:[^\n]*\n)*?[^\n]*headless(?:[^\n]*\n)*?[^\n]*\"\$forge_req\"[^\n]*\n",
+        "", img.text, count=1))
+    # Check the CODE, not the raw file: the comments above the block explain the
+    # albumentations conflict and mention `-headless>=` in prose.
+    assert not re.search(r"opencv[^\n]*[-_]headless[\\=<>~!]",
+                         L.code_text(L.parse(mut.text))), "mutation did not apply"
+    assert "L090" in errs(mut, repo)
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_mut_forge_opencv_headless_but_never_verified(name):
+    """Installing the headless build is not proof it survived. A later dependency can
+    resolve cv2 back to the GUI wheel, and nothing says so until a subprocess aborts on
+    a rented GPU. Remove the cv2 artifact assertion and L090 must still fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=re.sub(r"[^\n]*python -c \"import cv2[^\n]*\n", "", img.text))
+    assert "L090" in errs(mut, repo)
+
+
+def test_L090_an_image_without_forge_is_out_of_scope(tmp_path):
+    """The rule keys off the Forge clone directory; unrelated images stay clean."""
+    assert "L090" not in errs(make(tmp_path), tmp_path)
+
+
+@pytest.mark.parametrize("name", _FORGE_IMAGES)
+def test_L090_rewrites_the_requirements_file_not_just_the_installed_package(name):
+    """The reinstall trap, and the reason a package swap alone is wrong.
+    `launch_utils.requirements_met()` resolves every pinned name through
+    `importlib.metadata.version()`. Uninstalling `opencv-python` makes that raise, the
+    check returns False, and Forge reinstalls the WHOLE requirements file — GUI opencv
+    included — on every container start. So the pin in the FILE must be rewritten, and
+    the build must refuse to ship a file that still names a non-headless opencv."""
+    _, img = _real(name)
+    assert re.search(r"sed -i -E(?:[^\n]*\n)*?[^\n]*opencv[^\n]*headless(?:[^\n]*\n)*?[^\n]*forge_req",
+                     img.text), \
+        "the opencv pin is not rewritten in the requirements file"
+    assert re.search(r"grep -qiE '\^opencv[^\n]*forge_req", img.text), \
+        "nothing fails the build when the requirements file still pins a GUI opencv"
+
+
+# ---- L091: AI Toolkit's public UI listener is pinned to loopback ----
+
+
+_AITK_IMAGES = ["ostris-ai-toolkit", "aio-studio"]
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_L091_real_ai_toolkit_images_are_clean(name):
+    """Both images that install AI Toolkit pin its public listener and fail closed."""
+    repo, img = _real(name)
+    assert "ai-toolkit" in img.text
+    assert "L091" not in errs(img, repo)
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_mut_ai_toolkit_left_bound_to_all_interfaces(name):
+    """THE real defect, reported 2026-09-07. Upstream's public server takes no host
+    argument — `server.listen(publicPort)` on the current tree, `next start --port 8675`
+    on the older one — so it binds 0.0.0.0 and is reachable however the platform maps
+    ports. Strip the loopback pin and L091 must fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=img.text.replace("127.0.0.1", "0.0.0.0"))
+    assert "L091" in errs(mut, repo)
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_mut_ai_toolkit_pin_that_cannot_fail(name):
+    """A patch that silently matches nothing is the dangerous case, because BOTH images resolve
+    the upstream ref in CI: the day the launch shape changes, a best-effort sed would ship
+    a public bind and say nothing. Remove the FATAL
+    guards and L091 must still fire."""
+    repo, img = _real(name)
+    mut = replace(img, text=re.sub(r"FATAL[^\n]*(bind|loopback|listen|127\.0\.0\.1)[^\n]*",
+                                   "echo patched", img.text, flags=re.I))
+    assert "L091" in errs(mut, repo)
+
+
+def test_L091_an_image_without_ai_toolkit_is_out_of_scope(tmp_path):
+    assert "L091" not in errs(make(tmp_path), tmp_path)
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_L091_pin_is_applied_before_the_ui_is_built(name):
+    """`npm run build` runs `tsc -p tsconfig.worker.json`, which compiles cron/*.ts into
+    dist/cron/ — the files the launcher actually runs. A pin applied after the build would
+    edit sources nothing loads, leaving the shipped bundle bound to every interface. Same
+    class as L089's ordering trap: the right assertion in the wrong place proves nothing."""
+    _, img = _real(name)
+    # code_text, not the raw file: the comment above the patch says "Patched BEFORE
+    # `npm run build`", and a raw search finds that prose ahead of the pin itself.
+    code = L.code_text(L.parse(img.text))
+    pin = code.find("server.listen(publicPort, '127.0.0.1')")
+    build = code.find("npm run build")
+    assert pin != -1 and build != -1, "expected both the pin and the UI build"
+    assert pin < build, "the loopback pin must be applied before `npm run build` compiles it"
+
+
+@pytest.mark.parametrize("name", _AITK_IMAGES)
+def test_L091_unrecognised_upstream_shape_is_fatal(name):
+    """Neither known shape matching must be a hard failure, not a fallthrough. both images resolve the ref in CI, so
+    neither is anchored to a known shape; silence is the one outcome that ships the bug."""
+    _, img = _real(name)
+    assert re.search(r"else[^\n]*\\?\s*\n?[^\n]*FATAL[^\n]*unrecognised AI Toolkit",
+                     img.text), "no FATAL fallthrough for an unknown launch shape"

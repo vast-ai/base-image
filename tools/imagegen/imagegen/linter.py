@@ -106,6 +106,9 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
+    ("L091", ERROR, "An image that installs AI Toolkit must pin its UI's PUBLIC listener to loopback at build time, and fail the build if it cannot. Upstream binds every interface: on the current tree `ui/cron/fileServer.ts` ends in `server.listen(publicPort)` with no host argument, which is 0.0.0.0 - note the same file already pins its INTERNAL Next.js upstream with `--hostname 127.0.0.1`, so only the public half is exposed. On the older shape the UI is `next start --port 8675`, equally wide. Everything behind Caddy binds loopback; a service that binds a public interface inside the container is reachable however the platform maps ports. The runtime control cannot see this: `base/28-inadvertent-exposure` scans listeners, and every app in these images ships `autostart=false`, so during a QA gate nothing is listening and the scan inspects an empty set. That makes the build the only place it can be caught. The launch shape must be handled by DETECTION, not assumption, and an unrecognised third shape must be a FATAL rather than a pass: BOTH images resolve the upstream ref in CI (each workflow resolves HEAD and passes `<APP>_REF`), so neither is anchored to a known shape and either can meet either one on any given day. The `ARG <APP>_REF=` default in each Dockerfile is a local-build fallback CI never uses, and is stale enough to name a DIFFERENT launch shape — reading the shape from the tree is the only reliable move, and a silent no-op patch would ship the wide bind"),
+    ("L090", ERROR, "An image that installs Forge must make OpenCV HEADLESS in the requirements FILE, and prove it. The GUI wheel bundles Qt: `opencv-python==5.0.0.93` ships 29 Qt/xcb entries including a `cv2/qt/` plugin tree, the headless wheel of the same version ships none (measured against both wheels). In a container with no X server that tree aborts the process - `Could not load the Qt platform plugin \"xcb\"` then `Aborted` - killing whichever Forge subprocess touched cv2 while Forge itself survives, so supervisord reports RUNNING and nothing else notices. The variants disagree about whether they even declare it (classic pins `opencv-python==4.8.1.78`, neo `==5.0.0.93`, lllyasviel and reForge name no opencv at all and take it transitively), so BOTH paths must be covered. Swapping the installed package alone is WRONG and reintroduces the bug at every boot: `launch_utils.requirements_met()` resolves each pinned name through `importlib.metadata.version()`, so an uninstalled `opencv-python` raises, the check returns False, and Forge reinstalls the WHOLE requirements file - non-headless opencv included - on every container start. Rewrite the pin in the file (`opencv-python==X` to `opencv-python-headless==X`, same version) so nothing GUI is ever fetched and the boot-time check stays satisfied, then sweep any transitively-installed non-headless build. Presence is not proof: assert on the ARTIFACT by importing cv2 and failing if a `qt` directory sits beside it (ADR 0037)"),
+    ("L089", ERROR, "A Python entrypoint vendored into the image must be EXECUTED by the build, not merely tested for presence. `test -f` proves a file arrived and says nothing about whether it can import. Measured 2026-09-04: unsloth-studio fetched `convert_hf_to_gguf.py` from the pinned llama.cpp source tag and guarded it with `test -f` plus a separate `import gguf` probe. Both passed. But at tag b10715-mix-86bd2d3 upstream had refactored that script into a 307-line CLI wrapper whose line 18 is `from conversion import (...)` - an 89-module sibling package the build never fetched. The image built green, passed QA, was promoted, and GGUF export failed on a rented GPU with `ModuleNotFoundError: No module named 'conversion'`, the first moment anything actually executed the file. The `import gguf` probe asserted the sibling the author had in mind instead of the closure the script really reaches for, which is L088 one layer up. Running the script forces the whole closure and costs seconds: `--help` is enough, because argparse exits 0 only after every import at module scope has resolved. Invoke it with the interpreter the CONSUMER will use, not the system python, or the probe proves the wrong environment. Sibling of ADR 0036, whose lesson was to assert a BINARY executes rather than merely exists - this extends the same rule to scripts"),
     ("L081", ERROR, "An image that installs Unsloth Studio's llama.cpp (`unsloth studio setup`) MUST assert the SASS arch coverage of the shipped `libggml-cuda.so` with `cuobjdump --list-elf`, naming literal `sm_NN` targets. This is a different failure from L056's: a backend that exists and resolves still CRASHES with no-kernel-image on an admitted GPU whose compute capability has no cubin — it does not fall back to CPU, so no amount of dlopen checking sees it. The arch set must be read from the ARTIFACT, never from the vendor's metadata: measured on a real release, the bundle's own manifest claimed sm_103 that `cuobjdump` shows the binary does not contain. Name the BRACKET of the template's admitted range (its floor and its ceiling) rather than one arch, since a build can satisfy one end and miss the other. Capture the listing once and match in-shell — piping `cuobjdump` into `grep -q` SIGPIPEs it under `set -o pipefail`, and the pipeline then reports failure on a MATCH (ADR 0016, ADR 0018)"),
     ("L066", ERROR, "No shipped script uses a KNOWN-BROKEN TLS cert/key check — call `/opt/instance-tools/bin/cert-usable <crt> <key>` (exit 0 usable, 3 matched-but-expired, 1 unusable — 3, not 2, so a syntactically broken helper's own exit 2 cannot be misread as expired). Scope honestly: this rule blocks the two shapes that have already shipped wrong, not every possible re-implementation. `openssl rsa -in KEY -check` (and `-modulus`, which on the certificate side is spelled `openssl x509 -modulus` and contains no `rsa` token) is the RSA-ONLY entry point and cannot load an EC key, so a correct operator-supplied certificate was declared invalid and HTTPS went off — at base/27-caddy-tls.sh, and at portal-aio's caddy_config_manager, which is not a test but the gate on Caddy's TLS listener. Hashing the two public keys before comparing them fails the other way: `sha256sum` of empty input is e3b0c442… on BOTH sides, so two failed extractions compare EQUAL and a `[[ -n ... ]]` guard checks the digest rather than the key. That needs BOTH sides to fail: a certificate whose SPKI algorithm OID openssl cannot decode (parses, passes -checkend, yields no public key) supplies the cert side and an unreadable key the other — an unknown-OID cert against a good key still fails closed (ADR 0026)"),
 ]
@@ -419,7 +422,12 @@ def check_skeleton(img: Image, repo: Path) -> Iterable[Finding]:
 # same reason. Grandfathered here rather than via EXCEPTIONS because L041 only emits its
 # ERROR when the namespace env is set, which would make the msg-scoped exception read as
 # "stale" on an env-unset run (test_no_stale_exceptions).
-_L041_GRANDFATHERED = frozenset({"aio-studio"})
+# EMPTY, and that is the point: an exemption here expires by being FIXED, not by
+# accumulating. aio-studio was the sole entry — its Dockerfile pinned a base in the
+# staging namespace — and removing that pin (2026-09-02) retired the exemption
+# rather than renewing it. Add a name here only with a dated reason and a plan to
+# remove it.
+_L041_GRANDFATHERED: frozenset[str] = frozenset()
 
 
 def check_no_hardcoded_staging_namespace(img: Image, repo: Path) -> Iterable[Finding]:
@@ -696,14 +704,23 @@ def _own_test_prefixes(img: Image) -> list[str]:
     base stores and reports `base/`. Both are returned verbatim as they appear on
     disk, because that is what the runner emits.
     """
-    tests = img.root / "opt/instance-tools/tests"
-    if not tests.is_dir():
-        return []
+    # EVERY overlay the image ships, not just ROOT. aio-studio is a two-STAGE build:
+    # Dockerfile.base copies ROOT_BASE (the cached base layer) and Dockerfile copies
+    # ROOT on top, so a suite living in ROOT_BASE ships in BOTH images and is as much
+    # this image's own as anything in ROOT. Scanning ROOT alone made L072 report that
+    # the base's QA template "names no test from this image's own suite" while it was
+    # naming two of them. Generalised by glob rather than by hardcoding ROOT_BASE, so a
+    # future second overlay is not a second silent gap.
     out = []
-    for sub in sorted(tests.iterdir()):
-        if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
-            out.append(sub.name)
-    return out
+    for overlay in sorted(img.dir.glob("ROOT*")):
+        tests = overlay / "opt/instance-tools/tests"
+        if not tests.is_dir():
+            continue
+        for sub in sorted(tests.iterdir()):
+            if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
+                if sub.name not in out:
+                    out.append(sub.name)
+    return sorted(out)
 
 
 def _serverless_gate_callers(repo: Path) -> dict[str, int]:
@@ -2639,12 +2656,114 @@ def check_worker_model_server_address_is_pinned(img: Image, repo: Path) -> Itera
                     f"from (ADR 0031)")
 
 
+# L089 - a vendored Python entrypoint must be executed by the build, not just
+# `test -f`-ed. Capture the OUTPUT path of a wget/curl fetch (the token right after
+# the -O flag), not the URL, which for a raw.githubusercontent fetch ends in .py too.
+_FETCHED_PY = re.compile(r"(?:wget|curl)\s[^\n]*?-[a-zA-Z]*[oO]\s*(\S+\.py)\b")
+
+
+def check_vendored_script_is_executed(img: Image) -> Iterable[Finding]:
+    """L089 - a Python entrypoint fetched into the image is RUN at build time.
+
+    Presence is not importability. A fetched script can land intact and still be
+    unusable because a sibling module it imports was never fetched with it; nothing
+    reveals that until something executes the file, which by then is a rented GPU.
+    Executing it (`--help` suffices - argparse exits 0 only after module-scope
+    imports resolve) forces the full closure inside the build."""
+    code = code_text(parse(img.text))
+    for out_path in dict.fromkeys(_FETCHED_PY.findall(code)):
+        base = out_path.rsplit("/", 1)[-1]
+        # An interpreter invocation naming the script. The fetch line itself carries
+        # the basename but never `python`, so it cannot satisfy this on its own.
+        if re.search(rf"python\S*\s[^\n]*\b{re.escape(base)}", code):
+            continue
+        yield Finding("L089", ERROR, img.name, "Dockerfile",
+                      f"fetches `{base}` into the image but never executes it - `test -f` proves "
+                      f"the file arrived, not that it can import. A vendored script whose sibling "
+                      f"package was not fetched with it builds green and fails at first use on a "
+                      f"rented GPU; run it (`--help`) with the interpreter the consumer uses")
+
+
+# L090 - Forge pulls a Qt-bearing OpenCV. Detect the image by the clone directory
+# every Forge variant lands in, which is stable across the four upstream repos.
+_FORGE_MARK = re.compile(r"stable-diffusion-webui-forge")
+
+
+def check_forge_opencv_is_headless(img: Image) -> Iterable[Finding]:
+    """L090 - an image that installs Forge ships a headless OpenCV and proves it.
+
+    Two separate obligations, because either alone leaves the bug reachable: the
+    requirements FILE must be rewritten (a swap of the installed package alone makes
+    Forge reinstall the whole file at every boot), and cv2 must be checked on the
+    artifact for a `qt` directory rather than assumed."""
+    code = code_text(parse(img.text))
+    if not _FORGE_MARK.search(code):
+        return
+    # Require headless to be OPERATIVE, not mentioned. `-headless` must be followed by a
+    # version operator or a sed backreference, so both working spellings match — a literal
+    # `opencv-python-headless==X` and a substitution rewriting the pin to `\\1-headless\\4`
+    # — while prose does not. A bare mention must NOT count: the first draft of this rule
+    # was satisfied by its own FATAL string ("still pins a non-headless opencv") and would
+    # have passed an image that shipped the GUI wheel and merely complained about it.
+    if not re.search(r"opencv[^\n]*[-_]headless[\\=<>~!]", code):
+        yield Finding("L090", ERROR, img.name, "Dockerfile",
+                      "installs Forge but never makes OpenCV headless - the GUI wheel's "
+                      "`cv2/qt/` plugin tree aborts any Forge subprocess that touches cv2 in "
+                      "a container with no X server, while Forge survives and supervisord "
+                      "still reports RUNNING; rewrite the pin in the requirements FILE, since "
+                      "swapping only the installed package makes Forge reinstall it at boot")
+    if not re.search(r"import cv2[^\n]*\bqt\b|\bqt\b[^\n]*import cv2", code):
+        yield Finding("L090", ERROR, img.name, "Dockerfile",
+                      "installs Forge but never asserts cv2 is Qt-free - a headless install "
+                      "that silently resolved back to the GUI wheel is invisible until a "
+                      "subprocess aborts at runtime; import cv2 and fail if a `qt` directory "
+                      "sits beside it")
+
+
+# L091 - AI Toolkit's UI binds every interface unless pinned. Detect the image by the
+# upstream repo name, which both images clone.
+_AITK_MARK = re.compile(r"ai-toolkit")
+
+
+def check_ai_toolkit_binds_loopback(img: Image) -> Iterable[Finding]:
+    """L091 - an image that installs AI Toolkit pins its public UI listener to loopback.
+
+    Two obligations. The bind must actually be pinned to 127.0.0.1, and the patch must
+    FAIL the build when it does not apply - BOTH images resolve the upstream ref in CI,
+    so neither is anchored to a known launch shape and a patch that silently matched
+    nothing would ship a public bind."""
+    code = code_text(parse(img.text))
+    if not _AITK_MARK.search(code):
+        return
+    # The pin must be attached to AI TOOLKIT's own launch, not merely present. A
+    # whole-file check is useless here: aio-studio builds nine apps and already pins
+    # loopback for ComfyUI (`--listen 127.0.0.1`) and voicebox (`--host 127.0.0.1`),
+    # either of which satisfied the first draft while AI Toolkit stayed wide open.
+    # Naming the upstream launch shapes is deliberate — when they change, the FATAL
+    # obligation below turns that into a failed build rather than a silent pass.
+    _PINNED = (r"(fileServer|next start|publicPort|--hostname)[^\n]*127\.0\.0\.1"
+               r"|127\.0\.0\.1[^\n]*(fileServer|next start|publicPort|--hostname)")
+    if not re.search(_PINNED, code):
+        yield Finding("L091", ERROR, img.name, "Dockerfile",
+                      "installs AI Toolkit but never pins its UI listener to loopback - "
+                      "upstream's public server takes no host argument and binds 0.0.0.0, "
+                      "reachable however the platform maps ports; everything behind Caddy "
+                      "binds 127.0.0.1")
+    elif not re.search(r"FATAL[^\n]*(bind|loopback|listen|127\.0\.0\.1)", code, re.I):
+        yield Finding("L091", ERROR, img.name, "Dockerfile",
+                      "pins AI Toolkit's bind but does not fail the build when the patch "
+                      "does not apply - one image floats to the latest upstream commit, so "
+                      "a launch shape that stops matching would silently restore the public "
+                      "bind; an unrecognised shape must be FATAL")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
     check_external_env, check_llama_cuda_assert, check_llama_sass_coverage,
-]
+    check_vendored_script_is_executed, check_forge_opencv_is_headless,
+    check_ai_toolkit_binds_loopback]
 
 
 # ---- Repo-level checks (not tied to a single image) -------------------------

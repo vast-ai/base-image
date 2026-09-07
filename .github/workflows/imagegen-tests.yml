@@ -99,6 +99,13 @@ jobs:
           python-version: "3.12"
       - run: pip install pyyaml
       - name: imagegen lint --all
+        # L041 (no hardcoded staging namespace) matches against the namespace supplied
+        # HERE rather than a literal in the linter source. Without it the rule degrades
+        # to a single WARN and cannot block — which is how a base pin in the staging
+        # namespace survived in aio-studio's Dockerfile behind a grandfather entry.
+        # Arming it in CI is what makes the retired exemption mean something.
+        env:
+          DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
         run: PYTHONPATH=tools/imagegen python -m imagegen.cli lint --all
       - name: docs/lint-rules.md is regenerated from RULES
         run: |

@@ -87,18 +87,131 @@ sys.exit(0) if h==want else sys.exit('sha256 mismatch for '+name+': got '+h+' wa
 import sys, tarfile;\
 src, dest = sys.argv[1], sys.argv[2];\
 tarfile.open(src).extractall(dest, filter='data')" \
-        "/tmp/llama-dl/${package_name}" /opt/llama-cpp/build/bin && \
+        "/tmp/llama-dl/${package_name}" /opt/llama-cpp && \
     rm -rf /tmp/llama-dl && \
-    # The bundle is FLAT, but the studio installer expects a llama.cpp source-tree shape
-    # with build/bin/. Extract into build/bin and lift the tree-level metadata up, so the
-    # binaries stay where both the installer and its runtime callers look for them.
-    for _m in UNSLOTH_PREBUILT_INFO.json THIRD_PARTY_LICENSES.txt; do \
-        if [[ -f "/opt/llama-cpp/build/bin/${_m}" ]]; then mv "/opt/llama-cpp/build/bin/${_m}" /opt/llama-cpp/; fi; \
+    # EXTRACT FLAT, THEN MIRROR INTO build/bin. The bundle IS flat, and its two
+    # consumers disagree about where the binaries live:
+    #
+    #   studio setup.sh              expects a source-tree shape, build/bin/
+    #   unsloth_zoo check_llama_cpp  searches ONLY the folder ROOT on Linux
+    #                                (search_dirs = [llama_cpp_folder]; build/bin is
+    #                                consulted on Windows and nowhere else)
+    #
+    # ADR 0018 extracted into build/bin/ for the first and left the root holding two
+    # marker files. That satisfied the installer and broke the exporter: on 2026-09-04 a
+    # GGUF export found no llama-quantize at the root, concluded llama.cpp was missing,
+    # and installed its OWN prebuilt — which resolved to the CPU bundle and was laid over
+    # the root, leaving the image with two llama.cpp installs and a 24-byte
+    # llama-quantize stub. Inference kept using build/bin and stayed on the GPU, which is
+    # why the downgrade stayed invisible until an export was attempted, long after every
+    # build assertion and QA cell had passed.
+    #
+    # Root is now the real install, matching the bundle's own shape, so the exporter finds
+    # it and never reinstalls. build/bin is populated by HARDLINK — same inodes, so no
+    # second copy of a 350 MB backend — and setup.sh's expected shape is intact.
+    #
+    # WHY HARDLINKS ARE SAFE HERE, given they cannot cross a filesystem:
+    #
+    #  1. Both ends are inside /opt/llama-cpp, created and linked in THIS single RUN
+    #     layer. There is no mount boundary between a directory and its own child, so
+    #     EXDEV is not reachable at build time.
+    #
+    #  2. $WORKSPACE — which IS a volume on many instances — never receives these files.
+    #     The boot sync (36-sync-workspace.sh) copies /opt/workspace-internal with
+    #     `cp -ru`, and the llama.cpp entry there is a SYMLINK to /opt/llama-cpp, not a
+    #     copy of it. `cp -ru` preserves symlinks rather than dereferencing them, so the
+    #     volume gets a 14-byte link and the binaries stay in the image. Verified on a
+    #     live instance 2026-09-04:
+    #         /workspace/unsloth/llama.cpp -> /opt/llama-cpp
+    #     So no hardlink is ever copied ACROSS the image/volume boundary, and mounting a
+    #     volume at $WORKSPACE cannot split the linked pair or duplicate the 350 MB.
+    #
+    #  3. `find -exec` does NOT propagate the exit status of the command it runs — a
+    #     failing `ln` would leave find returning 0 and the build continuing. That is why
+    #     the build/bin assertions below are separate and explicit: they are what turns a
+    #     silently-missing mirror into a failed build.
+    #  4. `cp -al`, not `find -type f -exec ln`. The first attempt used the latter and
+    #     the build failed on `llama-server does not execute`: the binaries carry
+    #     RUNPATH=$ORIGIN, so they resolve libraries NEXT TO THEMSELVES, and `-type f`
+    #     silently skipped the five versioned .so SYMLINKS (libggml.so.0 ->
+    #     libggml.so.0.22.0 and friends). The mirror had 56 regular files and none of the
+    #     links, so ldd reported five `not found` and the binary would not start from
+    #     build/bin. `cp -al` hardlinks regular files AND recreates symlinks as symlinks,
+    #     which is what $ORIGIN resolution needs. The bundle ships its own `build/`, so
+    #     that entry is excluded rather than recursed into.
+    mkdir -p /opt/llama-cpp/build/bin && \
+    find /opt/llama-cpp -maxdepth 1 -mindepth 1 ! -name build \
+        -exec cp -al -t /opt/llama-cpp/build/bin/ {} + && \
+    # THE CUDA BUNDLE IS BINARIES ONLY — no convert_hf_to_gguf.py, no gguf-py (verified
+    # against the real artifact: zero .py files). check_llama_cpp requires a quantizer AND
+    # a converter, so with the bundle alone it can never pass, whatever the layout, and the
+    # exporter reinstalls every time. That is what actually happened on 2026-09-04: the
+    # reinstall resolved to the -cpu bundle (which DOES carry the converter) and laid it
+    # over our tree.
+    #
+    # So take the converter from the SAME source tag the binaries were built from, rather
+    # than letting the studio fetch a whole second bundle to get it. Pure Python, no build,
+    # and pinned to ${LLAMA_CPP_VERSION} so the two halves cannot drift apart.
+    _src="https://raw.githubusercontent.com/unslothai/llama.cpp/${LLAMA_CPP_VERSION}" && \
+    wget -qO /opt/llama-cpp/convert_hf_to_gguf.py "${_src}/convert_hf_to_gguf.py" && \
+    # The converter is NOT self-contained. At b10715-mix-86bd2d3 upstream refactored it
+    # into a 307-line CLI wrapper over a sibling `conversion/` package (89 modules, one
+    # per architecture family), so the script alone imports nothing and GGUF export dies
+    # with `ModuleNotFoundError: No module named 'conversion'`. Both subtrees come from
+    # the SAME tarball as the converter, so all three halves are pinned together.
+    #
+    # `conversion` is imported unqualified, so it must be a SIBLING of the script: Python
+    # puts the script's own directory on sys.path, and the studio runs the converter from
+    # this folder (unsloth_zoo writes its patched copy in beside it). gguf-py is different
+    # - the script inserts that one itself, relative to __file__.
+    wget -qO /tmp/llama-src.tar.gz \
+        "https://codeload.github.com/unslothai/llama.cpp/tar.gz/refs/tags/${LLAMA_CPP_VERSION}" && \
+    for _sub in gguf-py conversion; do \
+        mkdir -p "/opt/llama-cpp/${_sub}" && \
+        python3 -c "\
+import sys,tarfile;\
+p,d,v=sys.argv[1],sys.argv[2],sys.argv[3];\
+t=tarfile.open(p);\
+ms=[m for m in t.getmembers() if '/'+d+'/' in m.name];\
+sys.exit('no '+d+' in source tag '+v) if not ms else None;\
+root=ms[0].name.split('/'+d+'/')[0]+'/'+d+'/';\
+[setattr(m,'name',m.name[len(root):]) for m in ms];\
+t.extractall('/opt/llama-cpp/'+d, members=[m for m in ms if m.name], filter='data')\
+" /tmp/llama-src.tar.gz "${_sub}" "${LLAMA_CPP_VERSION}" || exit 1; \
     done && \
+    rm -f /tmp/llama-src.tar.gz && \
+    # BOTH layouts must hold. Asserted separately so a regression names which consumer it
+    # broke, rather than failing on a generic "llama-server missing".
+    test -x /opt/llama-cpp/llama-quantize || \
+        { echo "FATAL: ${package_name} leaves no llama-quantize at the ROOT — check_llama_cpp would reinstall over it (ADR 0036)"; exit 1; } && \
+    test -f /opt/llama-cpp/convert_hf_to_gguf.py || \
+        { echo "FATAL: convert_hf_to_gguf.py did not land from source tag ${LLAMA_CPP_VERSION} — GGUF export would reinstall llama.cpp"; exit 1; } && \
+    test -f /opt/llama-cpp/gguf-py/gguf/__init__.py || \
+        { echo "FATAL: gguf-py did not land from source tag ${LLAMA_CPP_VERSION} — the converter cannot import gguf"; exit 1; } && \
+    test -f /opt/llama-cpp/conversion/__init__.py || \
+        { echo "FATAL: conversion/ did not land from source tag ${LLAMA_CPP_VERSION} — the converter imports it at module scope and GGUF export dies with ModuleNotFoundError (L089)"; exit 1; } && \
+    # PRESENCE IS NOT IMPORTABILITY — but the assertion that proves it CANNOT live here.
+    # The converter's closure reaches `transformers` (through `conversion/`), which arrives
+    # with unsloth in a LATER stage, so running it at this point fails on an environment
+    # that is merely unfinished rather than broken. Asserting here would either red a
+    # healthy build or, if weakened to make it pass, prove nothing. It runs in the unsloth
+    # stage instead, once the venv the exporter uses is complete (L089, ADR 0036).
+    test -x /opt/llama-cpp/llama-server || \
+        { echo "FATAL: ${package_name} contains no llama-server at the root"; exit 1; } && \
     test -x /opt/llama-cpp/build/bin/llama-server || \
-        { echo "FATAL: bundle ${package_name} contains no build/bin/llama-server"; exit 1; } && \
+        { echo "FATAL: build/bin mirror lacks llama-server — studio setup.sh will not find it"; exit 1; } && \
+    # PRESENCE IS NOT ENOUGH, and this is the assertion the first attempt was missing.
+    # RUNPATH=$ORIGIN means each copy resolves libraries beside itself, so a mirror can be
+    # complete in filenames and still not start. Run BOTH; --version is the cheapest call
+    # that forces the full link closure.
+    /opt/llama-cpp/llama-server --version >/dev/null || \
+        { echo "FATAL: root llama-server does not execute — link closure incomplete"; exit 1; } && \
+    /opt/llama-cpp/build/bin/llama-server --version >/dev/null || \
+        { echo "FATAL: mirrored llama-server does not execute — the mirror is missing libraries it resolves via RUNPATH=\$ORIGIN"; exit 1; } && \
+    test -f /opt/llama-cpp/libggml-cuda.so || \
+        { echo "FATAL: ${package_name} ships no CUDA backend"; exit 1; } && \
     test -f /opt/llama-cpp/build/bin/libggml-cuda.so || \
-        { echo "FATAL: bundle ${package_name} ships no CUDA backend"; exit 1; } && \
+        { echo "FATAL: build/bin mirror lacks libggml-cuda.so"; exit 1; } && \
     # MIT requires the notice to accompany binary redistribution. The bundle carries it
     # in THIRD_PARTY_LICENSES.txt (there is no separate LICENSE file), so assert the
     # notice we actually ship rather than trusting a future bundle to keep it.
@@ -107,7 +220,9 @@ tarfile.open(src).extractall(dest, filter='data')" \
     # Fingerprint the verified binary so the post-setup check can prove the tree was
     # REUSED rather than replaced. The marker file alone cannot: `unsloth studio setup`
     # writes an identically-named marker on its own prebuilt path.
-    sha256sum /opt/llama-cpp/build/bin/llama-server > /opt/llama-cpp.server.sha256
+    # Fingerprint the ROOT binary: it is the authoritative install now, and the
+    # build/bin mirror is a hardlink of the same inode, so this covers both.
+    sha256sum /opt/llama-cpp/llama-server > /opt/llama-cpp.server.sha256
 
 # Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
 # everything into our existing venv (avoids a duplicate torch install), then
@@ -126,6 +241,16 @@ RUN \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
     # Symlink studio venv → /venv/main so setup.sh finds an existing venv
     ln -sf /venv/main /opt/workspace-internal/unsloth/studio/unsloth_studio && \
+    # EXECUTE the vendored converter, now that the venv the exporter resolves python
+    # through is complete. `--help` is enough: argparse returns 0 only after every
+    # module-scope import has resolved, which is the whole closure — gguf and conversion
+    # from the pinned source tag, torch from the base, and transformers, which `conversion/`
+    # imports and which arrives with unsloth on the line above. That last dependency is why
+    # this cannot sit in the llama.cpp stage: there the failure would be an unfinished
+    # environment, not a broken one. `test -f` on the files is what let a converter that
+    # could not import ship green, pass QA and fail at export on a rented GPU (L089, ADR 0036).
+    /venv/main/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
+        { echo "FATAL: convert_hf_to_gguf.py does not execute under /venv/main — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
     # Patch install_python_stack.py to use cu128 torch backend instead of auto-detection
     find /venv/main/lib -name 'install_python_stack.py' -path '*/studio/*' \
         -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
