@@ -234,7 +234,7 @@ if [[ -f "$VLLM_LOG" ]]; then
     echo "  vllm-omni log: ${log_size}B"
 fi
 
-check_log_errors "vllm-omni" "$VLLM_LOG" "torch\.distributed|CUDAGraph|deprecat"
+check_log_errors "vllm-omni" "$VLLM_LOG" "torch\.distributed|CUDAGraph|deprecat|is part of .*InitKwargs.* but not documented|__vast_contract_no_such_model__"
 check_log_errors "ray" "$RAY_LOG"
 
 # ── Port exposure check ─────────────────────────────────────────────

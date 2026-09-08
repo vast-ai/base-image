@@ -1451,6 +1451,35 @@ are blanked first.
 The fix is always the same — move the prose ABOVE the `if:` key, where it is a real
 comment. Note that the same `#` under a `run:` key IS a shell comment and is fine; this
 rule is scoped to `if:` for that reason.
+### A suite does not fail on its own probe's artifact — **GATED (L093)**
+
+A `*.d` suite that greps its engine log for `ERROR`/`CRITICAL` must exclude the sentinel
+its own sibling test deliberately provokes.
+
+Every engine suite ships a `contract_check.py` defining
+`NO_SUCH_MODEL = "__vast_contract_no_such_model__"` and posts it to
+`/v1/chat/completions` on purpose: `check_unknown_model` asserts a nonexistent model is
+REFUSED rather than quietly substituted (ADR 0031). The engine logging that request at
+ERROR level is the assertion **succeeding**. The `10-<engine>-serving.sh` in the same
+directory then scans the same log and `fail_later`s on it.
+
+It is not a first-pass problem, which is why it survived in four images at once.
+Discovery order runs `10-` before `12-`, so on a cold boot the sentinel is not in the log
+yet. It bites on the **second** run — `runner.sh --manual` over SSH, which is what the
+qa-fix loop does on a held instance — where run *N*'s probe fails run *N+1*, and the
+failure names a model nobody asked for.
+
+Boundary — L093 fires only where both halves are present, and only on the call whose
+label matches the suite stem (`vllm.d` → `check_log_errors "vllm"`). A sidecar scan
+(`check_log_errors "ray"`) sees a process the probe never reaches and is not asked to
+carry the exclusion. A suite that defines the sentinel but has **no** label-matching call
+is itself a finding: the convention the rule reads has broken and the engine log can no
+longer be identified.
+
+The exclusion must be the sentinel string itself, not a broad pattern — a loose
+`.*model.*not found` would hide the real substitution defect ADR 0031 exists to catch.
+Excusing upstream log *noise* is a separate judgement that stays outside L093 (see
+ADR 0039).
 
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 

@@ -197,7 +197,7 @@ if [[ -f "$SGLANG_LOG" ]]; then
     echo "  sglang log: ${log_size}B"
 fi
 
-check_log_errors "sglang" "$SGLANG_LOG" "deprecat"
+check_log_errors "sglang" "$SGLANG_LOG" "deprecat|__vast_contract_no_such_model__"
 
 # ── Port exposure check ──────────────────────────────────────────────
 

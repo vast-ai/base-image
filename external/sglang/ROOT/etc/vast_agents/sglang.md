@@ -39,8 +39,21 @@ supervisorctl restart sglang model-ui
   JSON flags use the file **`/etc/sglang-args.conf`** instead (its contents are also
   appended).
 - **`AUTO_PARALLEL`** (default `true`, alias `USE_ALL_GPUS`) — adds
-  `--tensor-parallel-size $GPU_COUNT` automatically, unless you already set a
-  `parallel-size` flag yourself in `SGLANG_ARGS`.
+  `--tensor-parallel-size $GPU_COUNT` automatically, unless you already pinned a
+  tensor/data/pipeline parallel size in `SGLANG_ARGS`. Both spellings count
+  (`--tp-size` and `--tensor-parallel-size`).
+- **Two args are REWRITTEN before launch**, so what you set is not verbatim what
+  `sglang serve` receives — check `/var/log/sglang.log` for the real command line
+  before concluding a flag was ignored:
+  - `--enable-expert-parallel` is *vLLM's* spelling and does nothing here. It is
+    removed and replaced with `--ep-size N`, where **N is the effective
+    tensor-parallel size** — what you pinned, else `$GPU_COUNT` when the
+    automatic arg supplied it, else 1 (sglang's own default) in which case no
+    `--ep-size` is added at all. sglang computes
+    `moe_tp_size = tp_size / ep_size`, so an ep that does not divide the tp fails
+    the model load with an arithmetic error naming neither flag. An explicit
+    `--ep-size` of your own is never touched.
+  - The auto tensor-parallel arg above.
 
 ### Companion services
 

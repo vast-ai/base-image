@@ -26,12 +26,14 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 |----------|---------|-------------|
 | `SGLANG_MODEL` | (none) | Model to serve at startup (required) |
 | `SGLANG_ARGS` | (none) | Arguments passed to `sglang serve` (see also `/etc/sglang-args.conf` below) |
-| `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` to `SGLANG_ARGS` |
+| `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT`, unless you pin a tensor/data/pipeline parallel size yourself (either spelling: `--tp-size` or `--tensor-parallel-size`) |
 | `APT_PACKAGES` | (none) | Space-separated list of apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
 
-### Complex Arguments
+### Expert parallelism
+`--enable-expert-parallel` in `SGLANG_ARGS` is vLLM's spelling and is inert on sglang, which wants a sized `--ep-size N`. The launcher translates it: the portable flag is removed and `--ep-size N` added, where **N is the effective tensor-parallel size** — the value you pinned, or `$GPU_COUNT` when the launcher supplied the TP itself. sglang derives `moe_tp_size = tp_size / ep_size`, so an `--ep-size` that does not divide the TP fails the model load. Pass `--ep-size` yourself and it is left exactly as written. If nothing sets a tensor-parallel size at all (`AUTO_PARALLEL=false`, or a `--dp-size`/`--pp-size` pin suppressing the automatic one), sglang runs at tp=1, there is nothing to spread experts across, and no `--ep-size` is added. Every one of these branches is announced in `/var/log/sglang.log`.
 
+### Complex Arguments
 For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/sglang-args.conf`. The contents of this file are appended to `$SGLANG_ARGS` when launching SGLang.
 
 Example template on start:

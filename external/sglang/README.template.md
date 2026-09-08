@@ -45,6 +45,7 @@ Set the `SGLANG_MODEL` environment variable with your desired model:
 **Optional configuration:**
 - `SGLANG_ARGS`: Additional arguments to pass to the sglang serve command
 - `AUTO_PARALLEL`: Set to `true` (default) to automatically use all available GPUs with tensor parallelism
+- Passing `--enable-expert-parallel` (vLLM's spelling) in `SGLANG_ARGS` is translated to sglang's `--ep-size N`, sized to match the tensor-parallel size in use
 
 > **Template Customization:** Templates can't be changed directly, but you can easily make your own version! Just click **edit**, make your changes, and save it as your own template. You'll find it in your **"My Templates"** section later. [Full guide here](https://docs.vast.ai/templates)
 
@@ -166,7 +167,7 @@ For simpler setups, use these environment variables:
 |----------|---------|-------------|
 | `SGLANG_MODEL` | (none) | Model to serve (e.g., `meta-llama/Llama-3.1-8B-Instruct`) |
 | `SGLANG_ARGS` | (none) | Arguments passed to `sglang serve` |
-| `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT` |
+| `AUTO_PARALLEL` | `true` | Automatically add `--tensor-parallel-size $GPU_COUNT`, unless you pin a parallel size yourself |
 | `APT_PACKAGES` | (none) | Space-separated apt packages to install on first boot |
 | `PIP_PACKAGES` | (none) | Space-separated Python packages to install on first boot |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |

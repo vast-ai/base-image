@@ -4133,3 +4133,93 @@ def test_mut_L095_putting_the_prose_back_inside_the_if_fires(tmp_path, wf):
     assert done and out != lines, f"{wf}: could not build the mutation"
     (work / ".github/workflows" / wf).write_text("".join(out))
     assert _codes(work, "L095"), f"{wf}: prose moved back inside did not fire"
+# ---- L093: a suite must not fail on the error its own sibling test provokes ----
+#
+# THE real defect, found 2026-09-07 reviewing PR 275. Every engine suite's
+# contract_check.py posts NO_SUCH_MODEL to /v1/chat/completions ON PURPOSE —
+# check_unknown_model asserts a nonexistent model is refused rather than quietly
+# substituted, so the engine logging that request at ERROR is the assertion
+# SUCCEEDING. The serving test in the same directory then greps the same log for
+# ERROR/CRITICAL and reds the instance.
+#
+# It hid because discovery order runs 10-<engine>-serving.sh BEFORE
+# 12-<engine>-contract.sh: on a cold boot the sentinel is not in the log yet. It
+# bites on the second run — `runner.sh --manual` over SSH, which is what the
+# qa-fix loop does on a held instance — where run N's probe fails run N+1.
+
+_SENTINEL = "__vast_contract_no_such_model__"
+
+
+def _probe_suite(tmp_path, scan_line, *, suite="engine.d", sentinel=_SENTINEL):
+    d = tmp_path / "ROOT/opt/instance-tools/tests" / suite
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "contract_check.py").write_text(f'NO_SUCH_MODEL = "{sentinel}"\n')
+    f = d / "10-engine-serving.sh"
+    f.write_text("#!/bin/bash\n" + scan_line)
+    f.chmod(0o755)
+    return tmp_path
+
+
+def test_L093_a_scan_that_does_not_excuse_its_own_probe_fires(tmp_path):
+    repo = _probe_suite(tmp_path, 'check_log_errors "engine" "$ENGINE_LOG" "deprecat"\n')
+    assert _codes(repo, "L093")
+
+
+def test_L093_excusing_the_sentinel_is_clean(tmp_path):
+    repo = _probe_suite(
+        tmp_path,
+        f'check_log_errors "engine" "$ENGINE_LOG" "deprecat|{_SENTINEL}"\n')
+    assert not _codes(repo, "L093")
+
+
+def test_L093_a_sidecar_log_is_not_asked_to_carry_the_exclusion(tmp_path):
+    """`check_log_errors "ray" "$RAY_LOG"` scans a process the probe never reaches.
+    Demanding the sentinel there would be a meaningless edit, and a rule that asked
+    for it would teach people to paste exclusions into scans that do not need them."""
+    repo = _probe_suite(
+        tmp_path,
+        f'check_log_errors "engine" "$ENGINE_LOG" "{_SENTINEL}"\n'
+        'check_log_errors "ray" "$RAY_LOG"\n')
+    assert not _codes(repo, "L093")
+
+
+def test_L093_a_suite_with_no_probe_is_out_of_scope(tmp_path):
+    """The rule is about a suite failing on ITS OWN artifact. A suite that provokes
+    nothing has no artifact to excuse, and its bare scan must stay clean."""
+    d = tmp_path / "ROOT/opt/instance-tools/tests/engine.d"
+    d.mkdir(parents=True)
+    f = d / "10-engine-serving.sh"
+    f.write_text('#!/bin/bash\ncheck_log_errors "engine" "$ENGINE_LOG" "deprecat"\n')
+    f.chmod(0o755)
+    assert not _codes(tmp_path, "L093")
+
+
+def test_L093_a_renamed_label_cannot_silently_disable_the_rule(tmp_path):
+    """The engine log is identified by the label matching the suite stem. If that
+    convention breaks the rule goes blind, so losing the anchor is itself a finding
+    rather than a quiet pass."""
+    repo = _probe_suite(tmp_path, 'check_log_errors "server" "$ENGINE_LOG" "deprecat"\n')
+    assert _codes(repo, "L093")
+
+
+@pytest.mark.parametrize("suite,script,logvar", [
+    ("external/vllm", "10-vllm-serving.sh", "vllm"),
+    ("external/sglang", "10-sglang-serving.sh", "sglang"),
+    ("external/vllm-omni", "10-vllm-omni-serving.sh", "vllm-omni"),
+    ("derivatives/llama-cpp", "10-llama-serving.sh", "llama"),
+])
+def test_mut_L093_stripping_the_sentinel_from_a_real_suite_fires(tmp_path, suite, script, logvar):
+    """Mutation against the REAL shipped trees, all four of them. Three were latent
+    when this rule was written — only vllm had been patched, by hand, in PR 275."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    d = suite.split("/")
+    src = repo / d[0] / d[1] / "ROOT/opt/instance-tools/tests"
+    work = tmp_path / "repo"
+    shutil.copytree(src, work / "ROOT/opt/instance-tools/tests")
+    assert not _codes(work, "L093"), "the copy must start clean"
+
+    t = next((work / "ROOT/opt/instance-tools/tests").rglob(script))
+    t.write_text(t.read_text().replace(f"|{_SENTINEL}", ""))
+    hits = _codes(work, "L093")
+    assert hits, f"{suite} scan stripped of the sentinel did not fire"
+    assert script in hits[0].path
