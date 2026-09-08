@@ -70,7 +70,7 @@ supervisorctl tail -f voicebox
 cd base-image/derivatives/pytorch/derivatives/voicebox
 
 docker buildx build \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-09-01 \
+    --build-arg PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-09-08 \
     --build-arg VOICEBOX_REF=v0.3.1 \
     -t yournamespace/voicebox .
 ```
@@ -79,7 +79,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-09-01` | PyTorch mini base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-09-08` | PyTorch mini base image |
 | `VOICEBOX_REF` | (required) | Git commit, tag, or branch to build from |
 
 ## Building with GitHub Actions

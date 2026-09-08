@@ -77,7 +77,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-09-01` | PyTorch mini base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-09-08` | PyTorch mini base image |
 | `WAN2GP_REPO` | `https://github.com/deepbeepmeep/Wan2GP` | Upstream Wan2GP repository |
 | `WAN2GP_REF` | | Git ref (commit/branch/tag) to build |
 

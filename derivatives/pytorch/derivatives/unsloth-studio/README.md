@@ -78,7 +78,7 @@ The following patches are applied at build time:
 cd base-image/derivatives/pytorch/derivatives/unsloth-studio
 
 docker buildx build \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-01 \
+    --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08 \
     -t yournamespace/unsloth-studio .
 ```
 
@@ -86,7 +86,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-01` | PyTorch mini base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08` | PyTorch mini base image |
 
 ## Licenses
 
