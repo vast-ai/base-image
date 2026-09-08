@@ -83,7 +83,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py310-2026-04-15` | PyTorch mini base image (Python 3.10) |
+| `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py310-2026-09-08` | PyTorch mini base image (Python 3.10) |
 | `FLUXGYM_REPO` | `https://github.com/cocktailpeanut/fluxgym` | Upstream FluxGym repo |
 | `FLUXGYM_REF` | | Git ref (commit/branch) to build |
 | `SD_SCRIPTS_REPO` | `https://github.com/kohya-ss/sd-scripts` | Upstream Kohya sd-scripts repo |

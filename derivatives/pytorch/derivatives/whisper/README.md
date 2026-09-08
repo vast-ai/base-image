@@ -86,7 +86,7 @@ docker buildx build \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-04-15` | PyTorch mini base image |
+| `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-09-08` | PyTorch mini base image |
 | `WHISPER_REPO` | `https://github.com/jhj0517/Whisper-WebUI` | Upstream repo |
 | `WHISPER_REF` | | Git ref (release tag e.g. `v1.0.8`) to build |
 
