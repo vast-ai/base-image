@@ -12,6 +12,11 @@ $GPU_COUNT, which is correct only when we supplied the tp ourselves — with a
 template-pinned `--tensor-parallel-size 2` on an 8-GPU host it produced ep=8 against
 tp=2 and reintroduced the same crash from the other side.
 
+The launcher therefore translates the portable flag ONLY when it chose the tp itself,
+and declines with a message otherwise. That is the property most of this table pins:
+an --ep-size we invented against a tp we did not choose can only be the crash above,
+so the operator-pinned cases must emit nothing rather than emit a good guess.
+
 Neither direction is reachable by a deploy test on a convenient box: with tp
 unpinned, ep == GPU_COUNT == tp and every arrangement looks identical. Only a table
 separates them, and the block is pure string assembly, so a table is enough — no
@@ -146,17 +151,20 @@ def test_other_args_are_left_alone():
         "--mem-fraction-static 0.9 --tensor-parallel-size 4 --ep-size 4"
 
 
-def test_ep_follows_a_pinned_tp_not_the_gpu_count():
-    """THE regression. Sizing ep from $GPU_COUNT is right only when we supplied the
-    tp. Here the template pinned tp=2 on an 8-GPU host: ep=8 gives moe_tp_size=0.25
-    and the load dies with the same message the translation exists to prevent."""
+def test_a_pinned_tp_declines_the_translation_rather_than_guessing():
+    """THE case that broke PR 275. Sizing ep from $GPU_COUNT here gives ep=8 against
+    tp=2 — moe_tp_size 0.25, the crash the translation exists to prevent. We do not
+    guess a better number either: the portable flag exists because N must equal the
+    instance GPU count, and a template that pins its own tp already knows its shape
+    and can write --ep-size directly."""
     assert run("--tensor-parallel-size 2 --enable-expert-parallel", gpu_count="8") == \
-        "--tensor-parallel-size 2 --ep-size 2"
+        "--tensor-parallel-size 2"
+    assert "add an explicit --ep-size" in \
+        says("--tensor-parallel-size 2 --enable-expert-parallel", "8")
 
 
-def test_ep_follows_a_pinned_short_tp_too():
-    assert run("--tp-size 2 --enable-expert-parallel", gpu_count="8") == \
-        "--tp-size 2 --ep-size 2"
+def test_a_pinned_short_tp_declines_too():
+    assert run("--tp-size 2 --enable-expert-parallel", gpu_count="8") == "--tp-size 2"
 
 
 def test_an_explicit_ep_size_is_the_users_own_and_is_kept():
@@ -198,10 +206,9 @@ def test_no_ep_when_the_long_dp_spelling_suppressed_the_tp():
         "--data-parallel-size 2"
 
 
-def test_ep_is_sized_from_the_pin_not_the_host_when_auto_parallel_is_off():
-    """AUTO_PARALLEL=false disclaims our guess, not the user's own pin."""
+def test_a_pin_declines_with_auto_parallel_off_as_well():
     assert run("--tp-size 2 --enable-expert-parallel", gpu_count="8",
-               auto_parallel="false") == "--tp-size 2 --ep-size 2"
+               auto_parallel="false") == "--tp-size 2"
 
 
 def test_an_empty_gpu_count_cannot_produce_a_dangling_ep_size():
@@ -246,9 +253,12 @@ def test_a_tp_pinned_in_the_conf_file_is_seen(tmp_path):
     """THE bypass. With the conf invisible, this emitted `--tensor-parallel-size 8
     --ep-size 8 --tp-size 2`: both tp spellings share one argparse dest, the conf's
     value wins at tp=2, and ep=8 against tp=2 makes moe_tp_size 0 — the crash the
-    translation exists to prevent, arriving through the other documented channel."""
+    translation exists to prevent, arriving through the other documented channel.
+    The conf is a pin like any other, so it declines."""
     assert run("--enable-expert-parallel", gpu_count="8",
-               conf="--tp-size 2", tmp=tmp_path) == "--ep-size 2 --tp-size 2"
+               conf="--tp-size 2", tmp=tmp_path) == "--tp-size 2"
+    assert "add an explicit --ep-size" in \
+        says("--enable-expert-parallel", "8", conf="--tp-size 2", tmp=tmp_path)
 
 
 def test_a_tp_pinned_in_the_conf_file_suppresses_the_automatic_one(tmp_path):
@@ -281,12 +291,13 @@ def test_a_missing_conf_file_changes_nothing():
 
 # ── abbreviations and negations ──────────────────────────────────────
 
-def test_an_abbreviated_tp_pin_is_not_silently_overridden():
+def test_an_abbreviated_tp_pin_is_recognised_as_a_pin():
     """argparse resolves `--tensor-parallel 2` to the tp dest. Seeing only the full
     spellings meant appending our own $GPU_COUNT-sized tp after it, so the operator's
-    2 silently became 8 — the same two-values-for-one-setting defect in a new coat."""
+    2 silently became 8 — the same two-values-for-one-setting defect in a new coat.
+    Recognition is all that is needed: the value is never read."""
     assert run("--tensor-parallel 2 --enable-expert-parallel", gpu_count="8") == \
-        "--tensor-parallel 2 --ep-size 2"
+        "--tensor-parallel 2"
 
 
 def test_an_abbreviated_ep_pin_is_kept():
