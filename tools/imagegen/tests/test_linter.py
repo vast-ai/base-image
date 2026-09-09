@@ -3957,3 +3957,66 @@ def test_unsloth_npm_workaround_scans_the_venv_unsloth_lives_in(name, venv):
     m = re.search(r"find (/venv/[a-z]+)/lib -type d -path '\*/studio/frontend'", code)
     assert m, "no frontend lookup found"
     assert m.group(1) == venv, f"{name} scans {m.group(1)} but installs unsloth into {venv}"
+
+
+# ---- L094: a declared in-image copyleft licence path must resolve ----
+
+
+def _licenses_md(tmp_path, body, overlay="ROOT", licence_file=None):
+    root = tmp_path / "img" / overlay
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "LICENSES.md").write_text(body)
+    if licence_file:
+        f = root / licence_file
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("GNU AFFERO GENERAL PUBLIC LICENSE\n")
+    return tmp_path
+
+
+_AGPL_ENTRY = """## Some App
+
+- **License:** AGPL-3.0
+- **License file in image:** `/licenses/AGPL-3.0.txt`
+"""
+
+
+def test_L094_a_declared_path_that_exists_is_clean(tmp_path):
+    repo = _licenses_md(tmp_path, _AGPL_ENTRY, licence_file="licenses/AGPL-3.0.txt")
+    assert not _codes(repo, "L094")
+
+
+def test_mut_L094_declared_path_missing_from_the_overlay(tmp_path):
+    """THE defect. The image ships copyleft code and tells the reader the licence is at
+    /licenses/AGPL-3.0.txt, and it is not there. Worse than saying nothing, because the
+    obligation looks discharged."""
+    repo = _licenses_md(tmp_path, _AGPL_ENTRY)          # no licence file written
+    assert _codes(repo, "L094")
+
+
+def test_mut_L094_copyleft_entry_declaring_no_path_at_all(tmp_path):
+    body = "## Some App\n\n- **License:** GPL-3.0\n"
+    assert _codes(_licenses_md(tmp_path, body), "L094")
+
+
+def test_L094_permissive_entries_are_out_of_scope(tmp_path):
+    """MIT and Apache carry no conveyance obligation of this kind; sweeping them in
+    would red the baseline for no compliance gain."""
+    body = "## Some App\n\n- **License:** MIT\n"
+    assert not _codes(_licenses_md(tmp_path, body), "L094")
+
+
+def test_L094_runtime_clone_paths_are_deliberately_not_checked(tmp_path):
+    """`/opt/workspace-internal/<app>/LICENSE` and `$WORKSPACE/<app>/LICENSE` exist only
+    after the upstream clone. A static check there would be guessing, so they are out of
+    scope BY DECLARATION rather than by accident — 11 of the repo's copyleft entries use
+    such paths and every one of them would otherwise be a false positive."""
+    for p in ("/opt/workspace-internal/ComfyUI/LICENSE", "$WORKSPACE/fluxgym/LICENSE"):
+        body = f"## Some App\n\n- **License:** AGPL-3.0\n- **License file in image:** `{p}`\n"
+        assert not _codes(_licenses_md(tmp_path, body), "L094"), p
+
+
+def test_L094_real_repo_copyleft_entries_are_all_declared_and_present():
+    """The baseline: every copyleft entry across the tree names a path, and every
+    image-provided one exists."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert not _codes(repo, "L094")
