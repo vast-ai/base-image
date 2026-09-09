@@ -3919,3 +3919,41 @@ def test_L092_wget_is_not_in_scope(tmp_path):
     that does not exist."""
     df = 'FROM scratch\nRUN wget -O /tmp/x https://example.invalid/x\n'
     assert "L092" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+# ---- the unsloth npm lockfile workaround is conditional, and scoped to the right venv ----
+
+
+_UNSLOTH_IMAGES = ["unsloth-studio", "aio-studio"]
+
+
+@pytest.mark.parametrize("name", _UNSLOTH_IMAGES)
+def test_unsloth_npm_workaround_is_conditional_on_the_missing_lockfile(name):
+    """unsloth 2026.9.3 shipped studio/frontend with no package-lock.json, so npm
+    re-resolved and hit an ERESOLVE that had been latent since 2026-07-28, killing
+    `unsloth studio setup` at its npm step.
+
+    The workaround must stay CONDITIONAL on the lockfile being absent. Made
+    unconditional it would install a dependency tree upstream never tested, forever,
+    for what is most likely a one-release packaging slip — and nobody would notice it
+    had stopped being needed."""
+    _, img = _real(name)
+    code = L.code_text(L.parse(img.text))
+    assert "npm_config_legacy_peer_deps" in code, "no npm workaround present"
+    assert re.search(r"!\s*-f\s+\"?\$\{_uns_fe\}/package-lock\.json", code), \
+        "the workaround is not guarded by the missing-lockfile test"
+
+
+@pytest.mark.parametrize("name,venv", [("unsloth-studio", "/venv/main"),
+                                       ("aio-studio", "/venv/unsloth")])
+def test_unsloth_npm_workaround_scans_the_venv_unsloth_lives_in(name, venv):
+    """The two images install unsloth into DIFFERENT venvs, the same split that made
+    the GGUF converter assertion wrong once already (L089). Scanning the wrong venv
+    finds no frontend, takes the else branch, and leaves the build failing exactly as
+    it does today — a silent no-op rather than a loud error, which is why it is pinned
+    here rather than left to review."""
+    _, img = _real(name)
+    code = L.code_text(L.parse(img.text))
+    m = re.search(r"find (/venv/[a-z]+)/lib -type d -path '\*/studio/frontend'", code)
+    assert m, "no frontend lookup found"
+    assert m.group(1) == venv, f"{name} scans {m.group(1)} but installs unsloth into {venv}"
