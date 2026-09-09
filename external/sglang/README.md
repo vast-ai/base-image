@@ -31,7 +31,19 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 | `PIP_PACKAGES` | (none) | Space-separated list of Python packages to install on first boot |
 
 ### Expert parallelism
-`--enable-expert-parallel` in `SGLANG_ARGS` is vLLM's spelling and is inert on sglang, which wants a sized `--ep-size N`. The launcher translates it: the portable flag is removed and `--ep-size N` added, where **N is the effective tensor-parallel size** — the value you pinned, or `$GPU_COUNT` when the launcher supplied the TP itself. sglang derives `moe_tp_size = tp_size / ep_size`, so an `--ep-size` that does not divide the TP fails the model load. Pass `--ep-size` yourself and it is left exactly as written. If nothing sets a tensor-parallel size at all (`AUTO_PARALLEL=false`, or a `--dp-size`/`--pp-size` pin suppressing the automatic one), sglang runs at tp=1, there is nothing to spread experts across, and no `--ep-size` is added. Every one of these branches is announced in `/var/log/sglang.log`.
+`--enable-expert-parallel` in `SGLANG_ARGS` is vLLM's spelling. sglang parses its argv
+strictly, so passing it through is not a harmless no-op — argparse exits with
+`unrecognized arguments` and the server never starts. The launcher translates it: the
+portable flag is removed and sglang's own `--ep-size N` added, where **N is the
+effective tensor-parallel size** — the value you pinned, or `$GPU_COUNT` when the
+launcher supplied the TP itself. sglang derives `moe_tp_size = tp_size / ep_size`, so
+an `--ep-size` that does not divide the TP fails the model load. Pass `--ep-size`
+yourself and it is left exactly as written. If nothing sets a tensor-parallel size at
+all (`AUTO_PARALLEL=false`, or a `--data-parallel-size` pin suppressing the automatic
+one), sglang runs at tp=1, there is nothing to spread experts across, and no
+`--ep-size` is added. An attached false value (`--enable-expert-parallel=False`) is
+read as "not requested". Every one of these branches is announced in
+`/var/log/sglang.log`, and flags in `/etc/sglang-args.conf` are covered by all of it.
 
 ### Complex Arguments
 For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/sglang-args.conf`. The contents of this file are appended to `$SGLANG_ARGS` when launching SGLang.

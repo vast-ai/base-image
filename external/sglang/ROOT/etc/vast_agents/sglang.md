@@ -45,7 +45,9 @@ supervisorctl restart sglang model-ui
 - **Two args are REWRITTEN before launch**, so what you set is not verbatim what
   `sglang serve` receives — check `/var/log/sglang.log` for the real command line
   before concluding a flag was ignored:
-  - `--enable-expert-parallel` is *vLLM's* spelling and does nothing here. It is
+  - `--enable-expert-parallel` is *vLLM's* spelling. sglang parses argv strictly, so
+    passing it through would exit 2 with `unrecognized arguments` and the server
+    would never start. It is
     removed and replaced with `--ep-size N`, where **N is the effective
     tensor-parallel size** — what you pinned, else `$GPU_COUNT` when the
     automatic arg supplied it, else 1 (sglang's own default) in which case no
@@ -54,6 +56,10 @@ supervisorctl restart sglang model-ui
     the model load with an arithmetic error naming neither flag. An explicit
     `--ep-size` of your own is never touched.
   - The auto tensor-parallel arg above.
+
+  Both rewrites read **`/etc/sglang-args.conf` as well as `SGLANG_ARGS`**, and the
+  conf file still wins on a duplicate flag, so a `--tp-size` you put there is what
+  the `--ep-size` is sized from.
 
 ### Companion services
 

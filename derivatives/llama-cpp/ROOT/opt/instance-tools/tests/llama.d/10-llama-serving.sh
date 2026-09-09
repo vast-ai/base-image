@@ -215,7 +215,7 @@ if [[ -f "$LLAMA_LOG" ]]; then
     echo "  llama log: ${log_size}B"
 fi
 
-check_log_errors "llama" "$LLAMA_LOG" "deprecat|__vast_contract_no_such_model__"
+check_log_errors "llama" "$LLAMA_LOG" "deprecat"
 
 # ── Port exposure check ──────────────────────────────────────────────
 

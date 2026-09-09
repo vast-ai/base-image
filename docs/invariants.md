@@ -1454,32 +1454,50 @@ rule is scoped to `if:` for that reason.
 ### A suite does not fail on its own probe's artifact — **GATED (L093)**
 
 A `*.d` suite that greps its engine log for `ERROR`/`CRITICAL` must exclude the sentinel
-its own sibling test deliberately provokes.
+its own sibling test deliberately provokes — **on the engines that actually refuse**.
 
 Every engine suite ships a `contract_check.py` defining
 `NO_SUCH_MODEL = "__vast_contract_no_such_model__"` and posts it to
 `/v1/chat/completions` on purpose: `check_unknown_model` asserts a nonexistent model is
-REFUSED rather than quietly substituted (ADR 0031). The engine logging that request at
-ERROR level is the assertion **succeeding**. The `10-<engine>-serving.sh` in the same
-directory then scans the same log and `fail_later`s on it.
+REFUSED rather than quietly substituted (ADR 0031). On an engine that refuses, the
+refusal it logs is the assertion **succeeding**. The `10-<engine>-serving.sh` in the
+same directory then scans that log and `fail_later`s on it.
 
-It is not a first-pass problem, which is why it survived in four images at once.
-Discovery order runs `10-` before `12-`, so on a cold boot the sentinel is not in the log
-yet. It bites on the **second** run — `runner.sh --manual` over SSH, which is what the
-qa-fix loop does on a held instance — where run *N*'s probe fails run *N+1*, and the
-failure names a model nobody asked for.
+It is not a first-pass problem, which is why it survived. Discovery order runs `10-`
+before `12-`, so on a cold boot the sentinel is not in the log yet. It bites on the
+**second** run — `runner.sh --manual` over SSH, which is what the qa-fix loop does on a
+held instance — where run *N*'s probe fails run *N+1*, and the failure names a model
+nobody asked for. Reported 2026-09-02 from a live vLLM instance; no log excerpt was
+captured, so the symptom is on the record and the emitting line is not.
 
-Boundary — L093 fires only where both halves are present, and only on the call whose
-label matches the suite stem (`vllm.d` → `check_log_errors "vllm"`). A sidecar scan
-(`check_log_errors "ray"`) sees a process the probe never reaches and is not asked to
-carry the exclusion. A suite that defines the sentinel but has **no** label-matching call
-is itself a finding: the convention the rule reads has broken and the engine log can no
-longer be identified.
+**Scope is the half that was got wrong first.** The rule initially demanded the
+exclusion from all four engine suites — contradicting the measured table above, which
+records SGLang and llama.cpp answering this probe **200** and serving whatever they
+loaded. They never refuse, never log, and have nothing to excuse; an ERROR-severity
+rule demanding a no-op paste is the habit that makes a log scan worthless. Both declare
+`error-unknown-model` in `ENGINE["deviations"]`, and L093 reads that same declaration.
+Because deviations are self-expiring, the day an engine starts refusing its entry
+becomes a violation, the entry goes, and **the rule arms itself**.
 
-The exclusion must be the sentinel string itself, not a broad pattern — a loose
+In scope: `vllm`, `vllm-omni` (the latter by declaration — its `deviations` is `{}`,
+inherited from the copy it was made from, and unmeasured). Out: `sglang`, `llama-cpp`.
+
+Boundary — only the call whose label matches the suite stem (`vllm.d` →
+`check_log_errors "vllm"`); a sidecar scan (`check_log_errors "ray"`) sees a process
+the probe never reaches. And only a REAL exclusion counts: `check_log_errors` reads
+`$3` and nothing else, so the sentinel must be an alternative of that one quoted
+argument — a fourth argument, a splice without the `|`, or the string elsewhere on the
+line is decorative and is reported. A suite in scope with no label-matching call is
+itself a finding.
+
+The exclusion must be the sentinel string, not a broad pattern — a loose
 `.*model.*not found` would hide the real substitution defect ADR 0031 exists to catch.
-Excusing upstream log *noise* is a separate judgement that stays outside L093 (see
-ADR 0039).
+Excusing upstream log *noise* is a separate judgement outside L093.
+
+**Not closed by this rule:** llama.cpp's malformed-body probe is the same shape —
+`check_malformed_body` runs every time and llama.cpp answers **500** (see the table
+above) — but a malformed body carries no sentinel to exclude, so it is left open
+pending a log excerpt from a live instance rather than fixed blind. See ADR 0039.
 
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 
