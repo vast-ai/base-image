@@ -1257,7 +1257,7 @@ which tests what *does* ship, rate-limited and unable to prove anything.
   result. The control here is the build notification plus the human who reads it —
   stated plainly because the wiring could be mistaken for an automated block.
 
-### Copyleft licence compliance (proposed)
+### Copyleft licence compliance — **(a) GATED (L094); (b) NOT ENFORCEABLE**
 
 An image that ships GPL-/AGPL-licensed code must (a) convey the licence **text** in
 the image (a LICENSE at a known path, vendored to `/licenses/` if the package does
@@ -1274,6 +1274,30 @@ each copyleft entry (a) the stated in-image licence path resolves and (b) a
 Applies to GPL-3.0 too (e.g. ComfyUI), not only AGPL. Reference implementation of
 the obligations themselves: the `fix/agpl-license-compliance` change (unsloth-studio,
 aio-studio, a1111, sd-forge, oobabooga).
+
+**Obligation (a) is gated by L094.** A copyleft entry must name a
+`**License file in image:**`, and a path the image provides through its own `ROOT`
+overlay must exist. A declaration is a CLAIM: if the file is absent, the image conveys
+copyleft code while pointing at a licence that is not there, which is worse than silence
+because the obligation looks discharged. Paths inside an upstream clone
+(`$WORKSPACE/...`, `/opt/workspace-internal/...`, `/opt/blender-*`) are deliberately out
+of scope — they exist only after a build, and 11 of the repo's copyleft entries use them,
+so checking them statically would be guessing, not gating.
+
+**Obligation (b) is NOT statically checkable, and is recorded here rather than
+half-enforced.** The rule would be "a `Modifications:` note exists whenever the Dockerfile
+patches that app's tree", and the association cannot be made reliably: patches are applied
+AFTER a `cd` into the app directory, so the app's name never appears on the `sed -i` line.
+Measured while attempting it — a token-matching prototype scored `sd-forge` as patching
+nothing, while its Dockerfile demonstrably comments out `launch_utils.verify_version()`.
+That is a FALSE NEGATIVE on a compliance rule, the dangerous direction, and a rule in that
+state would pass everything forever while looking like enforcement (the failure L092 was
+written to avoid). Making it sound needs RUN-scoped `cd` tracking, i.e. parsing shell
+control flow, which is a different order of complexity.
+
+Until then (b) is a REVIEW obligation, not a gated one: when a change patches a copyleft
+upstream, the `Modifications:` note is the author's job and the reviewer's check. Anyone
+tempted to trust the linter here should read this paragraph first.
 
 ### Portal "not ready" interstitial is CDN-safe (200 for Cloudflare only) — **enforced by portal-aio tests (ADR 0017)**
 
