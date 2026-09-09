@@ -12,10 +12,12 @@ $GPU_COUNT, which is correct only when we supplied the tp ourselves — with a
 template-pinned `--tensor-parallel-size 2` on an 8-GPU host it produced ep=8 against
 tp=2 and reintroduced the same crash from the other side.
 
-The launcher therefore translates the portable flag ONLY when it chose the tp itself,
-and declines with a message otherwise. That is the property most of this table pins:
-an --ep-size we invented against a tp we did not choose can only be the crash above,
-so the operator-pinned cases must emit nothing rather than emit a good guess.
+Asking for the flag is enough: the launcher ALWAYS emits a size, because silently
+dropping it hands the operator the load failure above with nothing pointing at the
+cause. The size is the EFFECTIVE tp — pinned value, else $GPU_COUNT when the automatic
+arg supplied it, else sglang's own default of 1. ep == tp always divides, which is what
+makes "always emit" safe; sizing from $GPU_COUNT against a pinned smaller tp is the
+crash above arriving from the other side, and that is what most of this table pins.
 
 Neither direction is reachable by a deploy test on a convenient box: with tp
 unpinned, ep == GPU_COUNT == tp and every arrangement looks identical. Only a table
@@ -151,20 +153,20 @@ def test_other_args_are_left_alone():
         "--mem-fraction-static 0.9 --tensor-parallel-size 4 --ep-size 4"
 
 
-def test_a_pinned_tp_declines_the_translation_rather_than_guessing():
+def test_ep_follows_a_pinned_tp_not_the_host_gpu_count():
     """THE case that broke PR 275. Sizing ep from $GPU_COUNT here gives ep=8 against
-    tp=2 — moe_tp_size 0.25, the crash the translation exists to prevent. We do not
-    guess a better number either: the portable flag exists because N must equal the
-    instance GPU count, and a template that pins its own tp already knows its shape
-    and can write --ep-size directly."""
+    tp=2 — moe_tp_size 0.25, the crash the translation exists to prevent. The operator
+    asked for expert parallelism, so they get it; it is the SIZE that has to follow
+    their pin rather than the host."""
     assert run("--tensor-parallel-size 2 --enable-expert-parallel", gpu_count="8") == \
-        "--tensor-parallel-size 2"
-    assert "add an explicit --ep-size" in \
+        "--tensor-parallel-size 2 --ep-size 2"
+    assert "matching the tensor-parallel size in effect" in \
         says("--tensor-parallel-size 2 --enable-expert-parallel", "8")
 
 
-def test_a_pinned_short_tp_declines_too():
-    assert run("--tp-size 2 --enable-expert-parallel", gpu_count="8") == "--tp-size 2"
+def test_ep_follows_a_pinned_short_tp_too():
+    assert run("--tp-size 2 --enable-expert-parallel", gpu_count="8") == \
+        "--tp-size 2 --ep-size 2"
 
 
 def test_an_explicit_ep_size_is_the_users_own_and_is_kept():
@@ -190,25 +192,26 @@ def test_the_negated_vllm_flag_is_not_treated_as_a_request():
     assert "--ep-size" not in run("--no-enable-expert-parallel", gpu_count="4")
 
 
-def test_no_ep_when_nothing_set_the_tp():
-    """AUTO_PARALLEL=false means NOTHING emits a tensor-parallel size, so sglang runs
-    at its own default of 1. Sizing ep from $GPU_COUNT here would give ep=4 against
-    tp=1 — moe_tp_size 0.25, the original crash with different numbers. At tp=1 there
-    is nothing to spread experts across and the honest output is no flag at all."""
-    assert run("--enable-expert-parallel", gpu_count="4", auto_parallel="false") == ""
-    assert "nothing to spread" in says("--enable-expert-parallel", "4", "false")
+def test_ep_is_one_when_nothing_set_the_tp():
+    """AUTO_PARALLEL=false means NOTHING emits a tensor-parallel size, so sglang runs at
+    its own default of 1. Sizing ep from $GPU_COUNT here would give ep=4 against tp=1 —
+    moe_tp_size 0.25, the original crash with different numbers. ep=1 is the only value
+    that divides, and it is emitted rather than omitted so the log says what happened."""
+    assert run("--enable-expert-parallel", gpu_count="4", auto_parallel="false") == \
+        "--ep-size 1"
 
 
-def test_no_ep_when_the_long_dp_spelling_suppressed_the_tp():
-    """Same hole by a different route: --data-parallel-size suppresses the automatic
-    tp, so tp is again sglang's default of 1 while $GPU_COUNT is 8."""
+def test_ep_is_one_when_the_long_dp_spelling_suppressed_the_tp():
+    """Same route, different flag: --data-parallel-size suppresses the automatic tp, so
+    tp is again sglang's default of 1 while $GPU_COUNT is 8. ep must follow the 1."""
     assert run("--data-parallel-size 2 --enable-expert-parallel", gpu_count="8") == \
-        "--data-parallel-size 2"
+        "--data-parallel-size 2 --ep-size 1"
 
 
-def test_a_pin_declines_with_auto_parallel_off_as_well():
+def test_ep_follows_the_pin_with_auto_parallel_off_as_well():
+    """AUTO_PARALLEL=false disclaims our guess at the tp, not the operator's own pin."""
     assert run("--tp-size 2 --enable-expert-parallel", gpu_count="8",
-               auto_parallel="false") == "--tp-size 2"
+               auto_parallel="false") == "--tp-size 2 --ep-size 2"
 
 
 def test_an_empty_gpu_count_cannot_produce_a_dangling_ep_size():
@@ -256,9 +259,7 @@ def test_a_tp_pinned_in_the_conf_file_is_seen(tmp_path):
     translation exists to prevent, arriving through the other documented channel.
     The conf is a pin like any other, so it declines."""
     assert run("--enable-expert-parallel", gpu_count="8",
-               conf="--tp-size 2", tmp=tmp_path) == "--tp-size 2"
-    assert "add an explicit --ep-size" in \
-        says("--enable-expert-parallel", "8", conf="--tp-size 2", tmp=tmp_path)
+               conf="--tp-size 2", tmp=tmp_path) == "--ep-size 2 --tp-size 2"
 
 
 def test_a_tp_pinned_in_the_conf_file_suppresses_the_automatic_one(tmp_path):
@@ -291,13 +292,12 @@ def test_a_missing_conf_file_changes_nothing():
 
 # ── abbreviations and negations ──────────────────────────────────────
 
-def test_an_abbreviated_tp_pin_is_recognised_as_a_pin():
+def test_an_abbreviated_tp_pin_is_recognised_and_its_value_used():
     """argparse resolves `--tensor-parallel 2` to the tp dest. Seeing only the full
     spellings meant appending our own $GPU_COUNT-sized tp after it, so the operator's
-    2 silently became 8 — the same two-values-for-one-setting defect in a new coat.
-    Recognition is all that is needed: the value is never read."""
+    2 silently became 8 — the same two-values-for-one-setting defect in a new coat."""
     assert run("--tensor-parallel 2 --enable-expert-parallel", gpu_count="8") == \
-        "--tensor-parallel 2"
+        "--tensor-parallel 2 --ep-size 2"
 
 
 def test_an_abbreviated_ep_pin_is_kept():
