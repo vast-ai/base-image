@@ -108,6 +108,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
     ("L095", ERROR, "A workflow `if:` written as a block scalar must not contain a `#` comment line. In a folded (`>-`) or literal (`|`) block scalar, `#` does NOT start a comment — YAML folds the whole line into the string, so the text lands INSIDE the GitHub expression and the workflow fails to parse. Measured 2026-09-02 to 2026-09-09: `abba35d` (PR #274) added a 9-line rationale under `if: >-` in the merge-manifests job of all four engine builds, and every engine build died for a week. The failure gives almost nothing to work with: parsing happens before any job is created, so the run shows `conclusion: failure` with `jobs: []`, no step log names the cause, and `workflow_dispatch` is refused outright with `HTTP 422 ... Unexpected symbol: '#'`. It is silent as well as opaque — `notify-slack` is itself a job in the run, so it never executes and no alert fires; the scheduled rebuilds simply stopped, security rebuilds included, and nothing said so. Detected by parsing the workflow and reading the RESOLVED `if:` value, not by matching indentation, so every block-scalar form is covered at once. A `#` inside a quoted string is legal in an expression (`contains(msg, '#skip')`) and is not reported: quoted spans are blanked before the check. The fix is always the same — move the prose ABOVE the `if:` key, where it is a real comment"),
     ("L094", ERROR, "A copyleft entry in LICENSES.md must declare an in-image licence path, and a path the IMAGE itself provides must actually exist. GPL \u00a74 / AGPL \u00a74 require the licence text to accompany the program, and this repo conveys it by declaring `**License file in image:** `/path``. A declaration is a CLAIM: if the file is not there, the image ships copyleft code while telling the reader where to find a licence that does not exist, which is worse than silence because it looks discharged. Checked for paths the image provides through its own ROOT overlay (e.g. `/licenses/AGPL-3.0.txt` <- `ROOT/licenses/AGPL-3.0.txt`). Paths inside an upstream clone or a versioned install directory are NOT checked: they exist only after the build has cloned or unpacked the app, so a static check would be guessing rather than gating (the excluded prefixes are listed in the check's own docstring). Scoped to entries whose declared licence matches AGPL or GPL-2/3 - permissive entries carry no conveyance obligation. L094 covers only obligation (a) of the copyleft invariant; obligation (b), a `Modifications:` note whenever the Dockerfile patches that app, is NOT statically checkable and is documented as such rather than half-enforced (ADR 0012 territory, docs/invariants.md)"),
+    ("L093", ERROR, "A suite that greps its engine log for ERROR/CRITICAL must exclude the sentinel its OWN sibling test deliberately provokes — but only where the engine actually refuses. Every engine suite ships a `contract_check.py` defining `NO_SUCH_MODEL = \"__vast_contract_no_such_model__\"` and posts it to /v1/chat/completions on purpose: check_unknown_model asserts a nonexistent model is REFUSED rather than quietly substituted (ADR 0031). On an engine that refuses, the refusal it logs is the assertion SUCCEEDING, and the serving test in the same directory then greps that log and fails the instance. It is not a first-pass problem, which is why it survived: discovery order runs `10-<engine>-serving.sh` before `12-<engine>-contract.sh`, so on a cold boot the sentinel is not in the log yet. It bites on the SECOND run — `runner.sh --manual` over SSH, which is exactly what the qa-fix loop does on a held instance — where run N's probe fails run N+1 and the reported failure names a model nobody asked for. Reported 2026-09-02 from a live vLLM instance serving Qwen3.8-Flash-Next. SCOPE IS LOAD-BEARING and was got wrong first: this rule initially demanded the exclusion from all four engine suites, but docs/invariants.md already records SGLang and llama.cpp answering the probe HTTP 200 and serving whatever they loaded — no refusal, no log line, nothing to excuse, and a demanded no-op paste is the habit that makes a log scan worthless. Both declare `error-unknown-model` in `ENGINE[\"deviations\"]`, so the rule reads that same declaration and skips them. Those deviations are self-expiring, so the day an engine starts refusing, the entry becomes a violation, it goes, and this rule arms itself with no one remembering to. Scoped further to the call whose label matches the suite stem — a sidecar log (`check_log_errors \"ray\"`) never sees the probe. The exclusion must be an ALTERNATIVE of the single quoted third argument: check_log_errors reads only $3, so a sentinel in a fourth argument, spliced without its `|`, or sitting elsewhere on the line is decorative and is reported as such. A suite in scope with no label-matching call is also a finding: the convention the check reads has broken and the engine log is no longer identifiable"),
     ("L092", ERROR, "A `curl` that writes a file must fail on an HTTP error. Without `-f`/`--fail`, curl writes the ERROR BODY to the target and exits 0, so a 404 or 504 page becomes the artifact and the build carries on. Measured 2026-09-07: GitHub's release CDN returned 504s during a base build and `curl -L -o /tmp/miniforge3.sh` saved the HTML, which `bash` then executed - 7 of 25 configs died with `miniforge3.sh: line 1: `<html><body><h1>504 Gateway Timeout` and `line 4: Hello: command not found`, a shell-syntax error several lines from the real cause that names nothing useful. `wget` is NOT in scope and is not the same defect: it exits 8 on a server error, so a `set -e` build already stops there. Scoped to curl invocations that write a file (`-o`/`-O`), because a curl whose output is piped or captured is read by something that can judge it. `-f` counts inside a cluster (`-LsSf`), which is this repo's house style. Detected after blanking quoted strings and bare URLs, so a `-f` inside `conda-forge` cannot satisfy the check - that false positive is real and cost a wrong first answer here"),
     ("L091", ERROR, "An image that installs AI Toolkit must pin its UI's PUBLIC listener to loopback at build time, and fail the build if it cannot. Upstream binds every interface: on the current tree `ui/cron/fileServer.ts` ends in `server.listen(publicPort)` with no host argument, which is 0.0.0.0 - note the same file already pins its INTERNAL Next.js upstream with `--hostname 127.0.0.1`, so only the public half is exposed. On the older shape the UI is `next start --port 8675`, equally wide. Everything behind Caddy binds loopback; a service that binds a public interface inside the container is reachable however the platform maps ports. The runtime control cannot see this: `base/28-inadvertent-exposure` scans listeners, and every app in these images ships `autostart=false`, so during a QA gate nothing is listening and the scan inspects an empty set. That makes the build the only place it can be caught. The launch shape must be handled by DETECTION, not assumption, and an unrecognised third shape must be a FATAL rather than a pass: BOTH images resolve the upstream ref in CI (each workflow resolves HEAD and passes `<APP>_REF`), so neither is anchored to a known shape and either can meet either one on any given day. The `ARG <APP>_REF=` default in each Dockerfile is a local-build fallback CI never uses, and is stale enough to name a DIFFERENT launch shape — reading the shape from the tree is the only reliable move, and a silent no-op patch would ship the wide bind"),
     ("L090", ERROR, "An image that installs Forge must make OpenCV HEADLESS in the requirements FILE, and prove it. The GUI wheel bundles Qt: `opencv-python==5.0.0.93` ships 29 Qt/xcb entries including a `cv2/qt/` plugin tree, the headless wheel of the same version ships none (measured against both wheels). In a container with no X server that tree aborts the process - `Could not load the Qt platform plugin \"xcb\"` then `Aborted` - killing whichever Forge subprocess touched cv2 while Forge itself survives, so supervisord reports RUNNING and nothing else notices. The variants disagree about whether they even declare it (classic pins `opencv-python==4.8.1.78`, neo `==5.0.0.93`, lllyasviel and reForge name no opencv at all and take it transitively), so BOTH paths must be covered. Swapping the installed package alone is WRONG and reintroduces the bug at every boot: `launch_utils.requirements_met()` resolves each pinned name through `importlib.metadata.version()`, so an uninstalled `opencv-python` raises, the check returns False, and Forge reinstalls the WHOLE requirements file - non-headless opencv included - on every container start. Rewrite the pin in the file (`opencv-python==X` to `opencv-python-headless==X`, same version) so nothing GUI is ever fetched and the boot-time check stays satisfied, then sweep any transitively-installed non-headless build. Presence is not proof: assert on the ARTIFACT by importing cv2 and failing if a `qt` directory sits beside it (ADR 0037)"),
@@ -3460,6 +3461,104 @@ def check_copyleft_licence_path_resolves(repo: Path) -> Iterable[Finding]:
                               f"would convey copyleft code while pointing at a licence that "
                               f"is not there")
 
+# L093 — a test suite must not fail on the error its own sibling test provokes.
+# The sentinel is defined by contract_check.py and posted to the engine on purpose;
+# the engine REFUSING it is the assertion succeeding, and the refusal is what gets
+# logged. An engine that does not refuse logs nothing, so it has nothing to excuse —
+# and each suite already declares which it is, in ENGINE["deviations"].
+_NO_SUCH_MODEL_DEF = re.compile(r'^NO_SUCH_MODEL\s*=\s*["\']([^"\']+)["\']', re.M)
+_LOG_SCAN_CALL = re.compile(r'check_log_errors\s+"([^"]+)"\s+"([^"]+)"\s*(.*)$')
+# `"error-unknown-model":` as a key of the deviations dict. A suite that declares this
+# has MEASURED that its engine answers the probe 200 and serves normally.
+_DECLARES_UNKNOWN_MODEL_DEVIATION = re.compile(
+    r'"deviations"\s*:\s*\{.*?"error-unknown-model"\s*:', re.S)
+
+
+def _contract_probe_suites(repo: Path):
+    """(suite_dir, engine_label, sentinel) for every *.d suite whose probe actually
+    provokes an engine-side error.
+
+    A suite is in scope only when its contract_check.py defines the sentinel AND does
+    NOT declare the `error-unknown-model` deviation. That deviation is the suite's own
+    measured statement that the engine answers HTTP 200 and serves whatever it loaded
+    (docs/invariants.md: SGLang and llama.cpp both do). No refusal means no log line
+    means nothing to exclude, and demanding the string anyway would be a no-op paste.
+
+    Reading the same declaration the suite asserts against is what stops the two
+    drifting: the deviations are self-expiring, so the day an engine starts refusing,
+    the deviation becomes a violation, the entry goes, and this rule arms itself.
+
+    The engine label is the suite stem: `vllm.d` -> `vllm`, `vllm-omni.d` ->
+    `vllm-omni`. That is the string the suite passes to check_log_errors for its own
+    engine, and it is what separates the engine log from a sidecar's.
+    """
+    roots = [repo / "ROOT"]
+    roots += sorted((repo / "derivatives").rglob("ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").rglob("ROOT/opt/instance-tools/tests"))
+    seen = set()
+    for root in roots:
+        tests = root if root.name == "tests" else root / "opt/instance-tools/tests"
+        if not tests.is_dir() or tests in seen:
+            continue
+        seen.add(tests)
+        for sub in sorted(tests.iterdir()):
+            if not sub.is_dir() or not sub.name.endswith(".d"):
+                continue
+            cc = sub / "contract_check.py"
+            if not cc.is_file():
+                continue
+            text = cc.read_text(encoding="utf-8", errors="replace")
+            m = _NO_SUCH_MODEL_DEF.search(text)
+            if not m:
+                continue
+            if _DECLARES_UNKNOWN_MODEL_DEVIATION.search(text):
+                continue               # measured: this engine does not refuse
+            yield sub, sub.name[:-2], m.group(1)
+
+
+def check_probe_artifact_is_excluded_from_its_own_log_scan(repo: Path) -> Iterable[Finding]:
+    """L093 — the engine-log scan must exclude the sibling contract probe's sentinel."""
+    for sub, engine, sentinel in _contract_probe_suites(repo):
+        matched_any = False
+        for sh in sorted(sub.glob("*.sh")):
+            try:
+                body = sh.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for lineno, raw in enumerate(body.splitlines(), 1):
+                m = _LOG_SCAN_CALL.search(_strip_comment(raw))
+                if not m or m.group(1) != engine:
+                    continue           # a sidecar log never sees the probe
+                matched_any = True
+                exclude = m.group(3).strip()
+                # The exclusion is the THIRD argument. A sentinel that lands in a
+                # fourth argument, or anywhere else on the line, is decorative:
+                # check_log_errors reads only $3.
+                if not (exclude.startswith('"') and exclude.endswith('"')
+                        and exclude.count('"') == 2):
+                    yield Finding("L093", ERROR, "-", f"{sh.relative_to(repo)}:{lineno}",
+                                  f"the {engine} log scan must pass its exclusions as ONE "
+                                  f"quoted third argument — check_log_errors reads only $3, "
+                                  f"so anything after it is silently dropped (L093)")
+                    continue
+                alts = [a for a in exclude[1:-1].split("|") if a]
+                if sentinel in alts:
+                    continue
+                extra = (" — it appears on the line but not as an alternative of $3, "
+                         "so the ERE never matches it") if sentinel in exclude else ""
+                yield Finding("L093", ERROR, "-", f"{sh.relative_to(repo)}:{lineno}",
+                              f"this scans the {engine} log for ERROR/CRITICAL but does not "
+                              f"exclude {sentinel}{extra}, which {sub.name}/contract_check.py "
+                              f"posts to the engine ON PURPOSE — a re-run of the suite fails "
+                              f"on its own probe from the previous run (L093)")
+        if not matched_any:
+            yield Finding("L093", ERROR, "-", str(sub.relative_to(repo)),
+                          f"this suite defines the {sentinel} probe and does not declare the "
+                          f"error-unknown-model deviation, but has no "
+                          f"`check_log_errors \"{engine}\" ...` call — the engine log can no "
+                          f"longer be identified, so the probe-artifact exclusion is "
+                          f"unenforceable here (L093)")
+
 
 
 # L095 — a `#` inside a block-scalar `if:` is not a comment, it is part of the
@@ -3526,7 +3625,8 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_upstream_cuda_label_comes_from_the_artifact,
     check_a_test_ships_the_sibling_it_reaches_for,
     check_copyleft_licence_path_resolves,
-    check_workflow_if_has_no_folded_comment]
+    check_workflow_if_has_no_folded_comment,
+    check_probe_artifact_is_excluded_from_its_own_log_scan]
 
 
 def lint_repo(repo: Path) -> list[Finding]:
