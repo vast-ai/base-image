@@ -4020,3 +4020,116 @@ def test_L094_real_repo_copyleft_entries_are_all_declared_and_present():
     image-provided one exists."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     assert not _codes(repo, "L094")
+
+
+# ---- L095: a `#` inside a block-scalar `if:` is not a comment ----
+#
+# THE real defect, 2026-09-02 to 2026-09-09. `abba35d` (PR #274) added a 9-line
+# rationale under `if: >-` in the merge-manifests job of all four engine builds. In a
+# folded block scalar `#` does not start a comment — YAML folds the line into the
+# string — so the prose landed inside the GitHub expression and every engine build
+# died at parse time for a week.
+#
+# The failure teaches nothing on its own: parsing precedes job creation, so the run is
+# `conclusion: failure` with `jobs: []`, no step log names a cause, and
+# workflow_dispatch is refused with HTTP 422. It is also silent — notify-slack is a job
+# in the same run, so it never fires. Scheduled rebuilds simply stopped.
+
+def _wf(tmp_path, body, name="build-x.yml"):
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(body)
+    return tmp_path
+
+
+_COMMENTED_IF = """\
+name: X
+on: workflow_dispatch
+jobs:
+  promote:
+    if: >-
+      !cancelled()
+      && needs.qa.result == 'success'
+      # GATING as of 2026-09-02: this prose is folded INTO the expression.
+      && needs.qa-serverless.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+"""
+
+
+def test_L095_a_comment_inside_a_folded_if_fires(tmp_path):
+    assert _codes(_wf(tmp_path, _COMMENTED_IF), "L095")
+
+
+def test_L095_the_same_prose_above_the_key_is_clean(tmp_path):
+    """The fix is always the same: move it above `if:`, where it really is a comment."""
+    body = _COMMENTED_IF.replace(
+        "    if: >-\n      !cancelled()\n      && needs.qa.result == 'success'\n"
+        "      # GATING as of 2026-09-02: this prose is folded INTO the expression.\n",
+        "    # GATING as of 2026-09-02: this prose is folded INTO the expression.\n"
+        "    if: >-\n      !cancelled()\n      && needs.qa.result == 'success'\n")
+    assert not _codes(_wf(tmp_path, body), "L095")
+
+
+def test_L095_a_literal_block_scalar_is_caught_too(tmp_path):
+    """`|` folds nothing but still keeps the `#` inside the string."""
+    assert _codes(_wf(tmp_path, _COMMENTED_IF.replace("if: >-", "if: |")), "L095")
+
+
+def test_L095_a_hash_inside_a_quoted_string_is_legal(tmp_path):
+    """`contains(msg, '#skip')` is a valid expression. Quoted spans are blanked before
+    the check so a rule meant to catch prose cannot red a legitimate literal."""
+    body = """\
+name: X
+on: workflow_dispatch
+jobs:
+  promote:
+    if: >-
+      !cancelled()
+      && contains(github.event.head_commit.message, '#skip') == false
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+"""
+    assert not _codes(_wf(tmp_path, body), "L095")
+
+
+def test_L095_a_plain_single_line_if_is_untouched(tmp_path):
+    body = _COMMENTED_IF.replace(
+        "    if: >-\n      !cancelled()\n      && needs.qa.result == 'success'\n"
+        "      # GATING as of 2026-09-02: this prose is folded INTO the expression.\n"
+        "      && needs.qa-serverless.result == 'success'\n",
+        "    if: ${{ !cancelled() }}\n")
+    assert not _codes(_wf(tmp_path, body), "L095")
+
+
+@pytest.mark.parametrize("wf", ["build-comfyui.yml", "build-llama-cpp.yml",
+                                "build-sglang.yml", "build-vllm.yml"])
+def test_mut_L095_putting_the_prose_back_inside_the_if_fires(tmp_path, wf):
+    """Mutation against the REAL workflows — all four that were broken. Moves the
+    comment block back under the `if:` key, which is exactly the edit that took the
+    build pipeline down."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "repo"
+    (work / ".github/workflows").mkdir(parents=True)
+    src = (repo / ".github/workflows" / wf).read_text()
+    (work / ".github/workflows" / wf).write_text(src)
+    assert not _codes(work, "L095"), f"{wf} must start clean"
+
+    lines = src.splitlines(keepends=True)
+    out, done = [], False
+    for n, l in enumerate(lines):
+        if not done and re.match(r"^\s*if:\s*>-?\s*$", l):
+            # drop a preceding comment run back INTO the block
+            back = []
+            while out and out[-1].lstrip().startswith("#"):
+                back.insert(0, out.pop())
+            out.append(l)
+            out += ["      " + b.strip() + "\n" for b in back]
+            done = True
+            continue
+        out.append(l)
+    assert done and out != lines, f"{wf}: could not build the mutation"
+    (work / ".github/workflows" / wf).write_text("".join(out))
+    assert _codes(work, "L095"), f"{wf}: prose moved back inside did not fire"
