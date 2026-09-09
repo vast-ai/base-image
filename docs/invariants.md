@@ -1425,6 +1425,33 @@ Two further rules, both themselves tested:
   linter). `qa-summary`'s copy is the actual flip/hold arbiter; emptying it makes
   a self-skipped GPU suite classify as a pass.
 
+### A workflow `if:` block scalar carries no `#` comment — **GATED (L095)**
+
+In a folded (`>-`) or literal (`|`) block scalar, `#` does **not** start a comment. YAML
+folds the line into the string, so prose written under an `if:` key lands *inside* the
+GitHub expression and the workflow stops parsing.
+
+Measured 2026-09-02 to 2026-09-09. `abba35d` (PR #274) added a nine-line rationale under
+`if: >-` in the `merge-manifests` job of all four engine builds. **Every engine image
+build was dead for a week** — no scheduled rebuilds, security rebuilds included, and no
+`workflow_dispatch` possible.
+
+The failure mode is why it lasted that long. Parsing happens before any job is created,
+so the run reports `conclusion: failure` with `jobs: []`: there is no failing step, and
+no step log naming a cause. A dispatch is refused by the API with
+`HTTP 422 ... Unexpected symbol: '#'`, which is the only place the real reason appears.
+It is silent as well as opaque — `notify-slack` is itself a job in the run, so it never
+executed and no alert fired. The pipeline did not break loudly; it stopped.
+
+L095 parses each workflow and reads the RESOLVED `if:` value rather than matching
+indentation, so every block-scalar form is covered at once. A `#` inside a quoted string
+is legal in an expression (`contains(msg, '#skip')`) and is not reported: quoted spans
+are blanked first.
+
+The fix is always the same — move the prose ABOVE the `if:` key, where it is a real
+comment. Note that the same `#` under a `run:` key IS a shell comment and is fine; this
+rule is scoped to `if:` for that reason.
+
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 
 Without `-f`/`--fail`, curl writes the ERROR BODY to the target and exits 0. The build then
