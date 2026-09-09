@@ -47,19 +47,17 @@ supervisorctl restart sglang model-ui
   before concluding a flag was ignored:
   - `--enable-expert-parallel` is *vLLM's* spelling. sglang parses argv strictly, so
     passing it through would exit 2 with `unrecognized arguments` and the server would
-    never start. It is removed, and `--ep-size $GPU_COUNT` added in its place **only
-    when the automatic `--tensor-parallel-size $GPU_COUNT` above was also added**.
-    If you pinned a parallel size yourself, or `AUTO_PARALLEL` is off, the flag is
-    dropped and NOTHING replaces it — add an explicit `--ep-size N` next to your pin.
-    sglang computes `moe_tp_size = tp_size / ep_size`, so an ep that does not divide
-    the tp fails the model load with an arithmetic error naming neither flag; the
-    launcher declines to guess rather than produce it. Your own `--ep-size` is never
-    touched.
+    never start. It is removed and replaced with `--ep-size N`. **Setting the flag is
+    enough — a size is always emitted.** N is the tensor-parallel size actually in
+    effect: what you pinned, else `$GPU_COUNT` when the automatic arg supplied it, else
+    1. sglang computes `moe_tp_size = tp_size / ep_size`, so an ep that does not divide
+    the tp fails the model load with an arithmetic error naming neither flag; `ep == tp`
+    always divides. Your own `--ep-size` is never touched.
   - The auto tensor-parallel arg above.
 
   Both rewrites read **`/etc/sglang-args.conf` as well as `SGLANG_ARGS`**, so a
-  `--tp-size` you put there counts as a pin. The conf is still appended last and still
-  wins on a duplicate flag.
+  `--tp-size` you put there is what the `--ep-size` is sized from. The conf is still
+  appended last and still wins on a duplicate flag.
 
 ### Companion services
 

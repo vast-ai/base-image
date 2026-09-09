@@ -65,9 +65,26 @@ if [[ $_all_args =~ parallel-size ]] ||
    [[ $_all_args =~ (^|[[:space:]])--(tp|tp-size|tensor-parallel)[[:space:]=] ]]; then
     _operator_pinned_parallelism=yes
 fi
+# The pinned VALUE, when there is one. --ep-size has to be a number, and the only
+# correct number is whatever tp ends up being, so a boolean is not enough here.
+_pinned_tp=""
+if [[ $_all_args =~ (^|[[:space:]])--(tp|tp-size|tensor-parallel|tensor-parallel-size)[[:space:]=]+([0-9]+) ]]; then
+    _pinned_tp="${BASH_REMATCH[3]}"
+fi
 
 if [[ "${AUTO_PARALLEL,,}" = "true" && -z "$_operator_pinned_parallelism" ]]; then
     AUTO_PARALLEL_ARGS="--tensor-parallel-size $GPU_COUNT"
+fi
+
+# The tensor-parallel size sglang will ACTUALLY run with. Not $GPU_COUNT: that is
+# only the answer when we supplied the arg ourselves. If the operator pinned one it is
+# theirs, and if nothing sets it at all sglang's own default of 1 applies.
+if [[ -n "$_pinned_tp" ]]; then
+    _effective_tp="$_pinned_tp"
+elif [[ -n "$AUTO_PARALLEL_ARGS" ]]; then
+    _effective_tp="$GPU_COUNT"
+else
+    _effective_tp=1
 fi
 
 # Expert parallelism is spelled --ep-size N here. --enable-expert-parallel is vLLM's
@@ -78,20 +95,15 @@ fi
 #   (moe_intermediate_size=640 / moe_tp_size=4) % weight_block_size_n=128 != 0
 # because moe_tp_size is tp_size/ep_size and ep_size defaulted to 1.
 #
-# We translate ONLY when we chose the tensor-parallel size ourselves, and we size N to
-# match it. That is the whole point of the portable flag: N must equal the instance GPU
-# count, which is why it cannot be written into a static template arg string. A
-# template that pins its own tp already knows its shape and can write --ep-size
-# directly.
+# ASKING FOR IT IS ENOUGH. If the flag is set we always emit a size, because the
+# operator asked for expert parallelism and silently dropping it hands them the load
+# failure above with nothing pointing at the cause.
 #
-# Declining in every other case is the deliberate part. sglang derives
+# N is the EFFECTIVE tp, and that is the only safe choice: sglang derives
 # moe_tp_size = tp_size/ep_size, so an ep that does not divide the tp fails the load
-# with an arithmetic error naming neither flag — and an ep we invented against a tp we
-# did not choose is exactly how that happens (tp=2 pinned, ep=$GPU_COUNT=8, moe_tp_size
-# 0.25). Guessing here can only produce that failure; saying so cannot.
-#
-# Every branch SAYS what it did. This is the one place a flag the operator wrote does
-# not reach sglang verbatim, and /var/log/sglang.log is where they will look.
+# with an arithmetic error naming neither flag. ep == tp always divides. Sizing from
+# $GPU_COUNT instead would break the moment the operator pinned a smaller tp — tp=2
+# with ep=8 is moe_tp_size 0.25, the same crash from the other side.
 EP_ARGS=""
 if [[ $_all_args =~ (^|[[:space:]])--enable-expert-parallel ]]; then
     # Strip the flag AND an attached value from BOTH sources. vLLM renders this as a
@@ -110,15 +122,11 @@ if [[ $_all_args =~ (^|[[:space:]])--enable-expert-parallel ]]; then
         echo "sglang: dropped --enable-expert-parallel — a false value was attached, so expert parallelism was NOT requested"
     elif [[ $_all_args =~ (^|[[:space:]])--(ep|ep-size|expert-parallel|expert-parallel-size)[[:space:]=] ]]; then
         echo "sglang: dropped --enable-expert-parallel (vLLM spelling); keeping the expert-parallel size you set yourself"
-    elif [[ -n "$_operator_pinned_parallelism" ]]; then
-        echo "sglang: dropped --enable-expert-parallel (vLLM spelling) — you pinned the parallel size yourself, so add an explicit --ep-size N. It must divide your tensor-parallel size or the model will not load."
-    elif [[ -z "$AUTO_PARALLEL_ARGS" ]]; then
-        echo "sglang: dropped --enable-expert-parallel — AUTO_PARALLEL is off, so nothing sets a tensor-parallel size and there is nothing to spread experts across"
-    elif [[ $GPU_COUNT =~ ^[0-9]+$ ]] && (( GPU_COUNT > 1 )); then
-        EP_ARGS="--ep-size $GPU_COUNT"
-        echo "sglang: translated --enable-expert-parallel (vLLM spelling) to --ep-size $GPU_COUNT"
+    elif [[ $_effective_tp =~ ^[0-9]+$ ]] && (( _effective_tp >= 1 )); then
+        EP_ARGS="--ep-size ${_effective_tp}"
+        echo "sglang: translated --enable-expert-parallel (vLLM spelling) to --ep-size ${_effective_tp} (matching the tensor-parallel size in effect)"
     else
-        echo "sglang: dropped --enable-expert-parallel — tensor-parallel size is ${GPU_COUNT:-unset}, so expert parallelism has nothing to spread across"
+        echo "sglang: could not translate --enable-expert-parallel — the tensor-parallel size is ${_effective_tp:-unset}, which is not a number; passing nothing rather than an --ep-size that cannot be right"
     fi
 fi
 

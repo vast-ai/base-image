@@ -35,22 +35,20 @@ Pre-built images are available on [DockerHub](https://hub.docker.com/repository/
 strictly, so passing it through is not a harmless no-op — argparse exits with
 `unrecognized arguments` and the server never starts.
 
-The launcher translates it **when it is also choosing the tensor-parallel size for
-you**: the portable flag is removed and sglang's own `--ep-size $GPU_COUNT` added to
-match the `--tensor-parallel-size $GPU_COUNT` it adds. That is the case the flag exists
-for — N has to equal the instance GPU count, which is exactly what a static template
-arg string cannot know.
+The launcher translates it: the portable flag is removed and sglang's own `--ep-size N`
+added. **Setting the flag is enough — a size is always emitted.** N is the
+tensor-parallel size actually in effect: the value you pinned, `$GPU_COUNT` when the
+launcher supplied the TP itself, or 1 when nothing sets one (`AUTO_PARALLEL=false`, or a
+`--data-parallel-size` pin suppressing the automatic one).
 
-**If you pin a parallel size yourself** (either spelling, in `SGLANG_ARGS` or
-`/etc/sglang-args.conf`), or turn `AUTO_PARALLEL` off, the flag is dropped and nothing
-is added in its place — add an explicit `--ep-size N` alongside your pin. This is
-deliberate: sglang derives `moe_tp_size = tp_size / ep_size`, so an `--ep-size` that
-does not divide your tensor-parallel size fails the model load with an arithmetic error
-naming neither flag, and a size we invented against a TP we did not choose can only
-produce that. An `--ep-size` of your own is always left exactly as written, and an
-attached false value (`--enable-expert-parallel=False`) is read as "not requested".
+That matching matters: sglang derives `moe_tp_size = tp_size / ep_size`, so an
+`--ep-size` that does not divide your tensor-parallel size fails the model load with an
+arithmetic error naming neither flag. `ep == tp` always divides.
 
-Whichever branch applies is announced in `/var/log/sglang.log`.
+An `--ep-size` of your own is never touched, and an attached false value
+(`--enable-expert-parallel=False`) is read as "not requested". Flags in
+`/etc/sglang-args.conf` are covered by all of this, and whichever branch applies is
+announced in `/var/log/sglang.log`.
 
 ### Complex Arguments
 For arguments that are difficult to pass via environment variables (JSON strings, special characters, etc.), write them to `/etc/sglang-args.conf`. The contents of this file are appended to `$SGLANG_ARGS` when launching SGLang.
