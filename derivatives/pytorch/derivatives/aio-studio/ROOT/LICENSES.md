@@ -66,6 +66,14 @@ as the canonical source for the license text.
   (frontend and related tooling under `studio/`) is separately licensed under
   AGPL-3.0.
 
+  While upstream ships `studio/frontend/` WITHOUT a `package-lock.json` (2026.9.3
+  does not; 2026.9.2 did), the build sets `npm_config_legacy_peer_deps` for that
+  install only. This is a resolver setting, not a change to the AGPL work: no file
+  under `studio/` is altered, and the versions declared in the frontend's own
+  `package.json` are installed exactly as pinned. Recorded for transparency about
+  how the conveyed frontend was built. It applies only while the lockfile is absent
+  and lapses when upstream restores one.
+
 ## Whisper WebUI
 
 - **License:** Apache-2.0

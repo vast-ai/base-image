@@ -265,6 +265,30 @@ RUN \
     # so the assertions below fail the build rather than shipping a CPU-only binary.
     export UNSLOTH_LOCAL_LLAMA_CPP_DIR=/opt/llama-cpp && \
     export SKIP_STUDIO_BASE=1 && \
+    # CONDITIONAL npm workaround, and the condition is the whole point: it applies only
+    # while the studio frontend ships WITHOUT its lockfile, so it retires itself the day
+    # upstream puts one back. A permanent `legacy-peer-deps` would silently install a
+    # dependency tree upstream never tested, forever, for a slip that is probably one
+    # release long.
+    #
+    # unsloth 2026.9.3 shipped studio/frontend/ with no package-lock.json; 2026.9.2 had
+    # one, and the pins in package.json are byte-identical between them. With the lock,
+    # npm replays the recorded tree. Without it, npm re-resolves and hits a conflict that
+    # has been latent since 2026-07-28: @assistant-ui/core@0.1.17 peer-requires BOTH
+    # tap@^0.5.10 and store@^0.2.9, and the newest matching store@0.2.22 peer-requires
+    # tap@^0.9.0, against a project pinning tap@0.5.10 — ERESOLVE, and `unsloth studio
+    # setup` dies at its npm step.
+    #
+    # npm_config_* is scoped to THIS build step and never written to an .npmrc, so the
+    # shipped image's npm behaves normally. Both outcomes are logged: the day the notice
+    # stops appearing is the day this block can go.
+    _uns_fe="$(find /venv/main/lib -type d -path '*/studio/frontend' -print -quit 2>/dev/null || true)" && \
+    if [[ -n "${_uns_fe}" && ! -f "${_uns_fe}/package-lock.json" ]]; then \
+        echo "NOTICE: ${_uns_fe} ships no package-lock.json (unsloth ${UNSLOTH_VERSION:-latest}) — enabling legacy-peer-deps for this build only"; \
+        export npm_config_legacy_peer_deps=true; \
+    else \
+        echo "unsloth frontend lockfile present (or frontend not found at the expected path) — no npm workaround applied"; \
+    fi && \
     unsloth studio setup && \
     # PROVE the reuse branch fired — do not infer it. Two independent facts: the
     # canonical install path resolves to our tree, AND the binary is byte-identical to
