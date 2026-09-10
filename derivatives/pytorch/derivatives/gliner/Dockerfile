@@ -13,27 +13,37 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 # Copy Supervisor configuration, startup scripts and the vendored server
 COPY ./ROOT /
 
+# Required or we will not build. The image tag is DERIVED from this version, so an
+# unpinned install would publish a tag that does not describe its own contents.
+ARG GLINER2_VERSION
+
 RUN \
     set -euo pipefail && \
+    [[ -n "${GLINER2_VERSION}" ]] || { echo "Must specify GLINER2_VERSION" && exit 1; } && \
     . /venv/main/bin/activate && \
-    # Record pre-install PyTorch version
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's torch ecosystem.
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # gliner2's [local] extra carries torch, transformers, safetensors and peft.
     # Without it the library installs with no runtime at all and can load no model
     # -- the plain "gliner2" package moved those out of the default install in
     # 2.0.0. The base image is the source of truth for torch, so the assertion
     # below catches any attempt by the extra to move it.
+    #
+    # NOTE: this install DOWNGRADES huggingface-hub (1.30.0 -> 0.36.2 against the
+    # 2026-09-08 base), because transformers 4.57.6 caps it below 1.0. That is
+    # upstream's constraint, not a choice here, and the torch assertion does not
+    # cover it. GLiNER is the only consumer in this image, so nothing else depends
+    # on the newer hub API -- but it is stated rather than left to be discovered.
     uv pip install --no-cache-dir \
-        'gliner2[local]>=2.0.0' \
+        "gliner2[local]==${GLINER2_VERSION}" \
         protobuf \
         sentencepiece \
         'fastapi>=0.100.0' \
         'uvicorn>=0.23.0' \
         'pydantic>=2.0.0' && \
-    # Verify PyTorch version unchanged
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN \

@@ -1,0 +1,53 @@
+# GLiNER QA template (ADR 0005 live-GPU QA gate).
+#
+# Mirrors the production launch path — runtype jupyter, Instance Portal, the API
+# fronted on 8000 — because the point is to exercise what a customer gets.
+#
+# GLINER_API_KEY is set here deliberately. The server leaves the API unauthenticated
+# when it is unset, so a gate that omitted it would never exercise the auth path and
+# a regression that dropped the 401 would promote green.
+name: "GLiNER QA — entity extraction serving smoke"
+image: vastai/gliner
+tag: latest                       # CI overrides with the staging tag
+private: true
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8000:8000"                   # GLiNER API (Caddy front; the server binds 18000)
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  GLINER_API_KEY: "gliner-qa-key"
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:GLiNER API|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  # Required-pass gate (ADR 0019). The GPU trio self-skips when nvidia-smi or libcuda
+  # never came up, so without naming them a GPU-less draw would report the suite green
+  # and promote an image whose entire purpose is GPU inference.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries gliner.d/10-gliner-serving"
+# QA gate floors (ADR 0005): smallest viable box that still exercises the real path.
+extra_filters:
+  compute_cap:
+    gte: 750                      # DeBERTa-v3 encoder; no SASS floor above Turing
+  cuda_max_good:
+    gte: 12.9                     # matches the cu128 torch in the base
+  # gliner2.5-base is ~774MB of F32 weights and uses under 1.2GB of VRAM in practice.
+  # The floor is headroom for the CUDA context, not model size.
+  gpu_ram:
+    gte: 8192
+  reliability2:
+    gte: 0.95                     # excludes the flaky tail; see templates/base-qa
+  inet_down:
+    gte: 500                      # Mbps — bounds the image pull inside the launch window
+  direct_port_count:
+    gte: 64                       # see templates/base-qa for the measurement
+  disk_space:
+    gte: 40                       # L058: must match recommended_disk_space or the rent fails late
+recommended_disk_space: 40.0      # pytorch base + gliner2 deps + downloaded weights

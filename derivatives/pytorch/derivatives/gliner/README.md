@@ -40,10 +40,20 @@ The FastAPI server is therefore vendored in this directory at `ROOT/opt/workspac
 | `WORKSPACE` | `/workspace` | Directory the server is synced to |
 | `GLINER_MODEL` | `fastino/gliner2.5-base-v1` | HuggingFace checkpoint to serve |
 | `GLINER_API_KEY` | *(unset)* | Bearer token. **If unset the API is unauthenticated** |
-| `GLINER_HOST` | `0.0.0.0` | Bind address |
-| `GLINER_PORT` | `8000` | Bind port |
+| `GLINER_HOST` | `127.0.0.1` | Bind address. Loopback by default — Caddy fronts it |
+| `GLINER_PORT` | `18000` | Bind port. The portal maps external `8000` to it |
 
 Set `HF_TOKEN` if HuggingFace rate-limits anonymous weight downloads.
+
+The server binds loopback and is reached through Caddy on `8000`, like every other
+service in these images. Do not point `GLINER_HOST` at `0.0.0.0` — that publishes the
+extraction endpoint directly, bypassing the proxy, and the instance test asserts
+against it.
+
+### Weights
+
+Weights are **not baked into the image**; they are downloaded on first boot, so the
+first start is slower than a restart and needs working HuggingFace egress.
 
 ## API
 
@@ -88,6 +98,19 @@ curl -X POST http://<IP>:<PORT>/extract \
 }
 ```
 
+## QA
+
+`templates/gliner-qa/` is the live-GPU gate template, exercised by `build-gliner.yml`.
+`ROOT/opt/instance-tools/tests/gliner.d/10-gliner-serving.sh` asserts the service is
+up, `/health` reports a **GPU** (not a silent CPU fallback), `/extract` returns real
+entities, a wrong bearer token gets a 401, and the listener is on loopback.
+
 ## Notes
 
-The DeBERTa-v3 encoder has no SDPA implementation in transformers, so the model runs with eager attention. This is expected and logged at startup as a `RuntimeWarning`; it is not an error.
+The DeBERTa-v3 encoder has no SDPA implementation in transformers, so the model runs
+with eager attention. This is expected and logged at startup as a `RuntimeWarning`; it
+is not an error.
+
+The dependency install downgrades `huggingface-hub` from the base image's version,
+because `transformers` caps it below 1.0. GLiNER is the only consumer in this image.
+The Dockerfile's assertion covers the torch ecosystem, not this.

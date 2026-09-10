@@ -4,8 +4,8 @@ GLiNER2 FastAPI Server - entity extraction API with Bearer token authentication.
 Environment Variables:
     GLINER_API_KEY: API key for authentication (unsecured if unset)
     GLINER_MODEL:   Model to use (default: fastino/gliner2.5-base-v1)
-    GLINER_HOST:    Bind address (default: 0.0.0.0)
-    GLINER_PORT:    Bind port (default: 8000)
+    GLINER_HOST:    Bind address (default: 127.0.0.1 -- Caddy fronts it)
+    GLINER_PORT:    Bind port (default: 18000 -- portal maps 8000 to it)
 """
 
 import os
@@ -23,8 +23,8 @@ from pydantic import BaseModel
 # Configuration
 MODEL_NAME = os.environ.get("GLINER_MODEL", "fastino/gliner2.5-base-v1")
 API_KEY = os.environ.get("GLINER_API_KEY")
-HOST = os.environ.get("GLINER_HOST", "0.0.0.0")
-PORT = int(os.environ.get("GLINER_PORT", "8000"))
+HOST = os.environ.get("GLINER_HOST", "127.0.0.1")
+PORT = int(os.environ.get("GLINER_PORT", "18000"))
 
 app = FastAPI(
     title="GLiNER2 API",
