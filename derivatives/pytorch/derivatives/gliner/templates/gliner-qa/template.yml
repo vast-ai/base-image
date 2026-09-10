@@ -1,0 +1,88 @@
+# GLiNER2 QA template — zero-shot extraction smoke.
+#
+# Modelled on llama-cpp-qa, which is the closest shape in the tree: one supervisor
+# service fronting one HTTP API, no provisioning payload, no serverless backend.
+#
+# NOT wired into a live-GPU gate. `_gating_template_dirs()` defines "gating" as
+# "some workflow hands this dir to qa-gate.yml as template_dir:", and no workflow
+# does — there is no build-gliner.yml at all. So L057/L059/L072 do not apply here.
+# INSTANCE_TEST_REQUIRE_PASS is still declared below, so that wiring a gate later is
+# a workflow edit rather than a silently-uncovered promotion.
+name: "GLiNER2 QA — zero-shot extraction smoke"
+image: vastai/gliner
+tag: latest                       # override with the tag actually under test
+private: true                     # disposable QA template, never public
+readme_visible: false
+onstart: entrypoint.sh
+runtype: jupyter                  # production launch mode, as siblings use
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+  - "8000:8000"                   # GLiNER API (Caddy front; server binds 18000)
+  # Deliberately NO "3000:3000". L073 requires the serverless worker port only for a
+  # gate that sets SERVERLESS=true, and this image bakes no pyworker BACKEND — there
+  # is no OpenAI-compatible engine here for the worker to proxy to. Mapping it would
+  # publish a port nothing binds.
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: "/"
+  DATA_DIRECTORY: "/workspace/"
+  # LOAD-BEARING, in the same way llama.cpp's is. gliner.sh sources
+  #   . "${utils}/exit_portal.sh" "GLiNER API"
+  # which greps /etc/portal.yaml for that term and, on no match, writes a skip marker,
+  # sleeps 6 and exits 0 — and under `autorestart=unexpected` + `exitcodes=0`
+  # supervisord treats that as intentional, so the service is gone for the life of the
+  # instance and the portal renders it as "not configured" rather than failed. The
+  # entry name must therefore contain "GLiNER API" (the grep is case-insensitive).
+  #
+  # Path is /docs, not /: server.py mounts FastAPI's Swagger UI there, so the portal
+  # button lands on a page that actually renders. GET / returns a JSON health body.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:GLiNER API|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  # Pin the bind explicitly rather than inheriting server.py's defaults, which are
+  # HOST=0.0.0.0 and PORT=8000 (`os.environ.get` in server.py). Both defaults are
+  # wrong for a published instance: 0.0.0.0:8000 would bind the API PUBLICLY, in
+  # front of Caddy instead of behind it, and GLINER_API_KEY is optional — an unset
+  # key disables auth entirely (`API_KEY = os.environ.get("GLINER_API_KEY")`). The
+  # combination is an unauthenticated extraction endpoint on the open internet.
+  # Loopback + Caddy is what makes OPEN_BUTTON_TOKEN the actual front door.
+  GLINER_HOST: "127.0.0.1"
+  GLINER_PORT: "18000"
+  # The 2.5 checkpoint this image was validated against. AutoExtractor dispatches on
+  # the checkpoint's config: 2.5 -> BoundaryExtractor, 2.0 -> SpanExtractor.
+  GLINER_MODEL: "fastino/gliner2.5-base-v1"
+  # Deliberately NOT set here: GLINER_API_KEY. A committed key is a published key,
+  # and this file is what a production template gets copied from. The loopback bind
+  # above means the only public path is through Caddy; set a real key at launch if
+  # the API is to be reached any other way.
+  #
+  # Only the GPU trio, which is all this image can honestly require: it ships no
+  # gliner.d/ suite, so there is no app-level assertion to name. That is exactly the
+  # hole L072 describes — a gate certifying that the rented box has a working GPU
+  # while asserting nothing about the app the image exists to ship — and L072 does
+  # not fire because it is scoped to images that DO ship an own suite. Writing a
+  # gliner.d/ suite is the outstanding work; this comment is the marker for it.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+extra_filters:
+  compute_cap:
+    gte: 750                      # sm_75, matching llama-cpp — deberta-v3 needs nothing newer
+  cuda_max_good:
+    gte: 12.9                     # matches the cuda-12.9 base this image is built on
+  # Generous relative to the measured cost: a gliner2.5-base forward pass measured
+  # 1.184 GB allocated on this box. The floor is headroom for the CUDA runtime and
+  # the encoder rather than the weights, and keeps the offer pool wide.
+  gpu_ram:
+    gte: 8192
+  reliability2:
+    gte: 0.95
+  inet_down:
+    gte: 500                      # Mbps — bounds the image pull inside the launch window
+  direct_port_count:
+    gte: 64                       # see templates/base-qa for the measurement
+  disk_space:
+    gte: 24                       # L058: must be >= recommended_disk_space or the rent fails late
+recommended_disk_space: 24.0
