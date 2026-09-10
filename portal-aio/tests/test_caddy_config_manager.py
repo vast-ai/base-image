@@ -16,6 +16,7 @@ module is put on sys.path below so it imports without installation.
 """
 
 import os
+import pathlib
 import re
 import sys
 
@@ -245,3 +246,54 @@ def test_regenerated_cache_is_well_formed(tmp_path, monkeypatch):
     doc = _yaml.safe_load(p.read_text())
     assert isinstance(doc, dict)
     assert set(doc["applications"]) == {"Instance Portal", "App UI"}
+
+
+# ---- the admin API is off by default (measured incident, 2026-09-10) ----
+
+
+def _render_with(monkeypatch, **env):
+    """A minimal Caddyfile, with the caller's environment applied."""
+    monkeypatch.setenv("ENABLE_AUTH", "false")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    cfg = {"Tensorboard": {"external_port": 6006, "internal_port": 16006,
+                           "hostname": "localhost", "open_path": "/", "name": "Tensorboard"}}
+    caddyfile, _u, _pw, _tok = ccm.generate_caddyfile(cfg)
+    return caddyfile
+
+
+def test_admin_api_is_off_by_default(monkeypatch):
+    """THE incident. Caddy's admin API listens on 127.0.0.1:2019 by default,
+    unauthenticated, and accepts POST /stop. Nothing in portal-aio uses it — there is no
+    `caddy reload` anywhere, config changes land by restarting the supervisor unit — so it
+    is pure surface.
+
+    Measured on a live instance: Pinokio, which bundles its own caddy, polled GET /config/
+    for three minutes and then POSTed /stop. Caddy exited 0 and supervisor did NOT restart
+    it, because `autorestart=unexpected` + `exitcodes=0` treats a clean exit as expected.
+    That policy is correct — it is what lets exit_serverless.sh stop units in serverless
+    mode — which is precisely why the admin socket must not be able to trigger it. Any
+    process in the container could take the portal's front door down, permanently."""
+    assert re.search(r"^\s*admin off\s*$", _render_with(monkeypatch), re.M), \
+        "the global block must disable caddy's admin API"
+
+
+def test_admin_api_can_be_restored_without_a_rebuild(monkeypatch):
+    """Backing this out must not require a new image: CADDY_ENABLE_ADMIN=true returns
+    caddy to its default, the same escape-hatch shape as CADDY_ENABLE_COMPRESSION."""
+    out = _render_with(monkeypatch, CADDY_ENABLE_ADMIN="true")
+    assert not re.search(r"^\s*admin off\s*$", out, re.M)
+
+
+def test_admin_off_shares_the_global_block_with_servers(monkeypatch):
+    """Both directives live in the same global block; adding one must not displace the
+    other. Asserted WITHOUT enabling HTTPS: that path waits on a real TLS certificate and
+    gives up after five attempts, so a test that switched it on would be slow, flaky and
+    testing the cert wait rather than this. The template placeholder is checked at source
+    level instead, which is the thing that would actually be lost."""
+    out = _render_with(monkeypatch)
+    assert re.search(r"^\s*admin off\s*$", out, re.M)
+    src = pathlib.Path(ccm.__file__).read_text()
+    assert "{admin_block}" in src and "{servers_block}" in src, \
+        "the global block must still emit both placeholders"
