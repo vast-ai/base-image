@@ -283,12 +283,27 @@ def generate_caddyfile(config):
 
     # Configurable options
     enable_compression = os.environ.get('CADDY_ENABLE_COMPRESSION', 'true').lower() == 'true'
+    # Caddy's admin API listens on 127.0.0.1:2019 by DEFAULT, unauthenticated, and it
+    # accepts POST /stop. Nothing in portal-aio uses it — there is no `caddy reload`
+    # anywhere, config changes land by restarting the supervisor unit — so it is pure
+    # surface. Measured 2026-09-10: Pinokio, which bundles its own caddy, polled
+    # GET /config/ for three minutes and then POSTed /stop; caddy exited 0 and supervisor
+    # did NOT restart it, because `autorestart=unexpected` + `exitcodes=0` treats a clean
+    # exit as expected. That policy is right — it is what lets exit_serverless.sh stop
+    # units in serverless mode — which is exactly why the admin socket must not be able to
+    # trigger it. Any process in the container could take the portal's front door down.
+    #
+    # CADDY_ENABLE_ADMIN=true restores it without a rebuild, for anyone who genuinely
+    # wants to drive caddy over its API.
+    enable_admin = os.environ.get('CADDY_ENABLE_ADMIN', 'false').lower() == 'true'
     flush_interval = os.environ.get('CADDY_FLUSH_INTERVAL', '-1')  # -1 = immediate (good for SSE)
 
     if enable_https:
         servers_block = 'servers {\n    listener_wrappers {\n        http_redirect\n        tls\n    }\n}'
     else:
         servers_block = ''
+
+    admin_block = '' if enable_admin else 'admin off'
 
     # Escape passwords for use in CEL expression strings (backtick-delimited).
     # Backslashes and double-quotes must be escaped for CEL string literals.
@@ -347,6 +362,7 @@ def generate_caddyfile(config):
 
     caddyfile = fr'''
     {{
+        {admin_block}
         {servers_block}
     }}
 
