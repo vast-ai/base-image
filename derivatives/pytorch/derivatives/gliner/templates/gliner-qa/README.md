@@ -37,13 +37,23 @@ curl -s -X POST localhost:18000/extract \
 Every requested label comes back as a key; a label that matched nothing is an empty
 list, not a missing key. `threshold` (default `0.3`) trades recall for precision.
 
-## Coverage gap
+## What the gate asserts
 
-`INSTANCE_TEST_REQUIRE_PASS` names only the GPU trio, because this image ships no
-`gliner.d/` instance-test suite. The gate therefore asserts that the rented box has a
-working GPU and nothing about GLiNER itself. L072 does not fire — it is scoped to
-images that ship an own suite — but the gap is real, and writing that suite is the
-outstanding work before this template is worth wiring into `qa-gate.yml`.
+`INSTANCE_TEST_REQUIRE_PASS` names the GPU trio plus this image's own suite,
+`gliner.d/10-gliner-serving`. The trio alone would certify only that the rented box
+has a working GPU and nothing about GLiNER itself — the L072 gap. The GLiNER suite
+closes it by asserting the things a green `docker build` cannot see:
+
+- the `gliner` supervisor service is running and port 18000 is listening
+- `/health` reports `"gpu_available":true` — the server answers correctly on CPU, so
+  a silent CPU fallback otherwise looks identical to success (ADR 0016)
+- `/extract` returns real entities rather than a 200 with an empty map, which is what
+  a model that never downloaded produces
+- a wrong bearer token gets a 401, so a regression that drops auth cannot promote green
+- the listener is on loopback, not public, so the API stays behind Caddy
+
+Naming them in `INSTANCE_TEST_REQUIRE_PASS` is load-bearing: the trio self-skips when
+nvidia-smi or libcuda never came up, and a skip reads as green (ADR 0019).
 
 ## Publishing
 

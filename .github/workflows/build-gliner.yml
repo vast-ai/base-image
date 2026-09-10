@@ -1,49 +1,40 @@
-# Build GLiNER2 image - works on main repo and forks (manual dispatch only).
+# Build GLiNER image - works on main repo (scheduled + manual) and forks (manual)
 # Required repository secrets:
 #   DOCKERHUB_USERNAME
 #   DOCKERHUB_TOKEN
 #   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
 #   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
 # Optional: SLACK_WEBHOOK_URL
+# Note: Build matrix will need periodic updates as new Pytorch images become available
 #
-# NO RELEASE DETECTION, and no `schedule:`. Every sibling build workflow polls an
-# upstream git repo it clones -- build-whisper.yml watches jhj0517/Whisper-WebUI for
-# new release tags. GLiNER2 has no such repo to watch: Fastino publishes a pip
-# library and HuggingFace weights, no server and no Docker image, so the Dockerfile
-# clones nothing and the FastAPI server is vendored in ROOT/opt/workspace-internal/.
-# The PyPI version IS the pin, which is why the Dockerfile carries
-# `ARG GLINER2_VERSION=2.0.0` where its siblings carry a git ref. A cron here would
-# rebuild a byte-identical pinned version twice a day and notify Slack about it, so
-# the version is a dispatch input instead -- the human bumping the pin is the trigger.
+# Release detection: PyPI (gliner2), NOT a GitHub repository. Every sibling image
+# watches an upstream repo for release tags; GLiNER has none to watch. Fastino ships
+# the library to PyPI and the weights to HuggingFace, and publishes no server, no
+# Dockerfile and no image. So the version that identifies a build is the pip package
+# version, and check-pypi-release is the right resolver.
 #
-# Multi-arch strategy: each (base_image, arch) pair builds natively on the matching
-# runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and pushes an
-# arch-suffixed tag to the STAGING namespace. A per-base_image merge job then uses
-# crane to assemble the multi-arch index at the PRODUCTION tag. No QEMU emulation.
-# Verified 2026-09-10: the pinned base publishes both linux/amd64 and linux/arm64,
-# so neither matrix leg is building against a manifest that does not exist.
+# The MODEL is deliberately not part of the trigger. Weights are downloaded at first
+# boot and selected per-instance via GLINER_MODEL, so a new checkpoint on HuggingFace
+# does not change this image and must not rebuild it.
 #
-# NOT WIRED TO qa-gate.yml, deliberately, and this is the outstanding work on this
-# image rather than a settled decision. `_gating_template_dirs()` defines a gating
-# template as one some workflow hands to qa-gate.yml as `template_dir:` -- so adding
-# such a job here is what would make templates/gliner-qa/ gating and pull L057/L059/
-# L072 into force. The blocker is that this image ships no
-# ROOT/opt/instance-tools/tests/gliner.d/ suite, so the only tests a gate could
-# require are the GPU trio every image inherits from base. That is precisely the hole
-# L072 describes -- a gate certifying the RENTED BOX has a working GPU while
-# asserting nothing about the extraction API the image exists to ship. L072 does not
-# fire only because it is scoped to images that DO ship an own suite. Write gliner.d/
-# first; wiring the gate afterwards is a small edit to this file.
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the
+# matching runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and
+# pushes an arch-suffixed tag to the STAGING namespace. A per-base_image
+# merge job then uses crane to assemble the multi-arch index at the
+# PRODUCTION tag. No QEMU emulation.
 
-name: Build GLiNER2 Image
+name: Build GLiNER Image
 
 on:
+  schedule:
+    # Run every 12 hours
+    - cron: '0 4,16 * * *'
+
   workflow_dispatch:
     inputs:
       GLINER2_VERSION:
-        description: "gliner2 PyPI version (installed as gliner2[local]==<version>)"
-        required: true
-        default: "2.0.0"
+        description: "gliner2 PyPI version - leave empty for latest"
+        required: false
       DOCKERHUB_REPO:
         description: "Push to namespace/<repo>"
         required: true
@@ -54,13 +45,15 @@ on:
 
 env:
   DEFAULT_DOCKERHUB_REPO: "gliner"
+  # 12 hours
+  RELEASE_AGE_THRESHOLD: 43200
 
 jobs:
   preflight:
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
-      gliner2-version: ${{ steps.resolve-version.outputs.version }}
+      gliner2-version: ${{ steps.release-check.outputs.resolved-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,35 +74,28 @@ jobs:
             echo "::notice::Skipping - missing secrets: ${missing[*]}"
           fi
 
-      # Falls back to the Dockerfile's own ARG default rather than a second literal
-      # copy of the version, so the pin has exactly one home. A dispatch always
-      # supplies the input (it is `required: true`), so this is the belt to that
-      # braces -- it keeps a `gh workflow run` with an emptied field from building
-      # `gliner2[local]==` and failing deep inside the RUN layer.
-      - name: Resolve gliner2 version
-        id: resolve-version
-        run: |
-          VERSION="${{ inputs.GLINER2_VERSION }}"
-          if [ -z "$VERSION" ]; then
-            VERSION=$(sed -n 's/^ARG GLINER2_VERSION=\(.*\)$/\1/p' \
-              derivatives/pytorch/derivatives/gliner/Dockerfile)
-            echo "::notice::No version supplied; using Dockerfile default: $VERSION"
-          fi
-          if [ -z "$VERSION" ]; then
-            echo "::error::Could not resolve a gliner2 version"
-            exit 1
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building gliner2 $VERSION"
+      # version-pattern excludes pre-releases explicitly rather than relying on the
+      # default: gliner2 published 1.3.x betas alongside stable 1.2.x, so a resolver
+      # that admitted them could select a pre-release as "latest".
+      - name: Check PyPI release
+        id: release-check
+        uses: ./.github/actions/check-pypi-release
+        with:
+          package: gliner2
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ github.event_name }}
+          manual-version: ${{ inputs.GLINER2_VERSION }}
+          version-pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+          include-prereleases: "false"
 
-      - name: Build decision
+      - name: Determine if build should run
         id: decision
         run: |
-          if [[ "${{ steps.secrets.outputs.available }}" == "true" ]]; then
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
+            echo "Building gliner2 ${{ steps.release-check.outputs.resolved-version }}"
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
-            echo "::notice::Build skipped - required secrets are not configured"
           fi
 
   build:
@@ -125,6 +111,9 @@ jobs:
       matrix:
         base_image:
           - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08
+        # Both arches are built: every dependency this image adds on top of the base
+        # (transformers, tokenizers, sentencepiece, protobuf, peft, safetensors)
+        # publishes aarch64 wheels, and torch comes from the base rather than pip.
         arch:
           - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
           - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
@@ -149,24 +138,19 @@ jobs:
             exit 1
           fi
 
-          GLINER2_VERSION="${{ needs.preflight.outputs.gliner2-version }}"
-
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [ -z "$IMAGE_TAG_BASE" ]; then
-            IMAGE_TAG_BASE="${GLINER2_VERSION}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+            IMAGE_TAG_BASE="${{ needs.preflight.outputs.gliner2-version }}"
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
-          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
 
           echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
 
-      # PYTORCH_BASE is passed explicitly even though the Dockerfile defaults it to
-      # this same value: the matrix is the source of truth in CI, and leaving the
-      # Dockerfile default to apply would silently decouple the tag (which is derived
-      # from matrix.base_image above) from the layer actually built underneath it.
       - name: Build and push arch image to staging
         uses: ./.github/actions/build-arch-image
         with:
@@ -179,15 +163,40 @@ jobs:
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  # `workflow_dispatch` is the only trigger here, so unlike the sibling builds --
-  # where a scheduled run resolves this to '' and publishes unattended -- this
-  # expression always resolves to 'production'. That is the intent: nothing has ever
-  # been published under this repo name, so the first index to appear there should be
-  # one a human approved. On a fork with no such environment configured GitHub
-  # creates it with no reviewers and the job proceeds, so this does not block testing.
-  merge-manifests:
+  # Live-GPU QA gate (ADR 0005). A green `docker build` cannot see this image's
+  # primary failure modes: the weights are fetched at FIRST BOOT rather than baked, and
+  # the server falls back to CPU and still answers correctly when torch cannot see a
+  # device -- so both "the model never downloaded" and "it is serving on CPU" look
+  # identical to a successful build.
+  qa:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'gliner' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.gliner2-version }}-cuda-12.9-py312-amd64
+      template_dir: derivatives/pytorch/derivatives/gliner/templates/gliner-qa
+      label: base-image-qa-gliner
+      log_paths: "/var/log/portal/gliner.log"
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries gliner.d/10-gliner-serving"
+      retries: 2
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  merge-manifests:
+    # `qa` is in `needs` to ORDER it ahead of the production approval prompt. It is
+    # absent from the `if` so it cannot BLOCK yet -- ADR 0006's advisory ramp, matching
+    # how unsloth-studio introduced its gate. `!cancelled()` is what makes that true:
+    # a job named in `needs` blocks BY DEFAULT, so the result that MUST still block is
+    # named explicitly. Promote by adding `needs.qa.result == 'success'` to this `if`
+    # after two consecutive green runs.
+    needs: [preflight, build, qa]
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -207,16 +216,15 @@ jobs:
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
           PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
 
-          GLINER2_VERSION="${{ needs.preflight.outputs.gliner2-version }}"
-
           IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
           if [ -z "$IMAGE_TAG_BASE" ]; then
-            IMAGE_TAG_BASE="${GLINER2_VERSION}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+            IMAGE_TAG_BASE="${{ needs.preflight.outputs.gliner2-version }}"
           fi
 
           DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
-          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
-          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          IMAGE_TAG="${IMAGE_TAG_BASE}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
 
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
           echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
@@ -229,6 +237,7 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          arches: amd64,arm64
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -277,7 +286,7 @@ jobs:
     uses: ./.github/workflows/notify-slack.yml
     with:
       build-result: ${{ needs.merge-manifests.result }}
-      image-name: "GLiNER2"
+      image-name: "GLiNER"
       image-ref: ${{ needs.preflight.outputs.gliner2-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}
       trigger: ${{ github.event_name }}
