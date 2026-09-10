@@ -13,27 +13,32 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 # Copy Supervisor configuration, startup scripts and the vendored server
 COPY ./ROOT /
 
+# Siblings pin the app to a git ref they clone; this one has nothing to clone, so
+# the PyPI version is the equivalent pin. Defaulted rather than required because
+# there is no build workflow to supply it -- a bare ARG would make the directory
+# unbuildable by hand. 2.0.0 is the version validated against the 2.5 checkpoints.
+ARG GLINER2_VERSION=2.0.0
+
 RUN \
     set -euo pipefail && \
     . /venv/main/bin/activate && \
-    # Record pre-install PyTorch version
-    torch_version_pre="$(python -c 'import torch; print (torch.__version__)')" && \
+    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
+    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     # gliner2's [local] extra carries torch, transformers, safetensors and peft.
     # Without it the library installs with no runtime at all and can load no model
     # -- the plain "gliner2" package moved those out of the default install in
     # 2.0.0. The base image is the source of truth for torch, so the assertion
     # below catches any attempt by the extra to move it.
     uv pip install --no-cache-dir \
-        'gliner2[local]>=2.0.0' \
+        "gliner2[local]==${GLINER2_VERSION}" \
         protobuf \
         sentencepiece \
         'fastapi>=0.100.0' \
         'uvicorn>=0.23.0' \
         'pydantic>=2.0.0' && \
-    # Verify PyTorch version unchanged
-    torch_version_post="$(python -c 'import torch; print (torch.__version__)')" && \
-    [[ $torch_version_pre = $torch_version_post ]] || \
-        { echo "PyTorch version mismatch (wanted ${torch_version_pre} but got ${torch_version_post})"; exit 1; }
+    # Verify torch ecosystem unchanged.
+    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # Defend against environment clashes when syncing to volume
 RUN \
