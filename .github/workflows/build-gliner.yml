@@ -1,0 +1,286 @@
+# Build GLiNER2 image - works on main repo and forks (manual dispatch only).
+# Required repository secrets:
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#   DOCKERHUB_NAMESPACE          - production namespace (final multi-arch index lives here)
+#   DOCKERHUB_NAMESPACE_STAGING  - staging namespace (per-arch build artifacts live here)
+# Optional: SLACK_WEBHOOK_URL
+#
+# NO RELEASE DETECTION, and no `schedule:`. Every sibling build workflow polls an
+# upstream git repo it clones -- build-whisper.yml watches jhj0517/Whisper-WebUI for
+# new release tags. GLiNER2 has no such repo to watch: Fastino publishes a pip
+# library and HuggingFace weights, no server and no Docker image, so the Dockerfile
+# clones nothing and the FastAPI server is vendored in ROOT/opt/workspace-internal/.
+# The PyPI version IS the pin, which is why the Dockerfile carries
+# `ARG GLINER2_VERSION=2.0.0` where its siblings carry a git ref. A cron here would
+# rebuild a byte-identical pinned version twice a day and notify Slack about it, so
+# the version is a dispatch input instead -- the human bumping the pin is the trigger.
+#
+# Multi-arch strategy: each (base_image, arch) pair builds natively on the matching
+# runner (ubuntu-latest for amd64, ubuntu-24.04-arm for arm64) and pushes an
+# arch-suffixed tag to the STAGING namespace. A per-base_image merge job then uses
+# crane to assemble the multi-arch index at the PRODUCTION tag. No QEMU emulation.
+# Verified 2026-09-10: the pinned base publishes both linux/amd64 and linux/arm64,
+# so neither matrix leg is building against a manifest that does not exist.
+#
+# NOT WIRED TO qa-gate.yml, deliberately, and this is the outstanding work on this
+# image rather than a settled decision. `_gating_template_dirs()` defines a gating
+# template as one some workflow hands to qa-gate.yml as `template_dir:` -- so adding
+# such a job here is what would make templates/gliner-qa/ gating and pull L057/L059/
+# L072 into force. The blocker is that this image ships no
+# ROOT/opt/instance-tools/tests/gliner.d/ suite, so the only tests a gate could
+# require are the GPU trio every image inherits from base. That is precisely the hole
+# L072 describes -- a gate certifying the RENTED BOX has a working GPU while
+# asserting nothing about the extraction API the image exists to ship. L072 does not
+# fire only because it is scoped to images that DO ship an own suite. Write gliner.d/
+# first; wiring the gate afterwards is a small edit to this file.
+
+name: Build GLiNER2 Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      GLINER2_VERSION:
+        description: "gliner2 PyPI version (installed as gliner2[local]==<version>)"
+        required: true
+        default: "2.0.0"
+      DOCKERHUB_REPO:
+        description: "Push to namespace/<repo>"
+        required: true
+        default: "gliner"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (Auto default)"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "gliner"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      gliner2-version: ${{ steps.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "Required secrets configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
+          fi
+
+      # Falls back to the Dockerfile's own ARG default rather than a second literal
+      # copy of the version, so the pin has exactly one home. A dispatch always
+      # supplies the input (it is `required: true`), so this is the belt to that
+      # braces -- it keeps a `gh workflow run` with an emptied field from building
+      # `gliner2[local]==` and failing deep inside the RUN layer.
+      - name: Resolve gliner2 version
+        id: resolve-version
+        run: |
+          VERSION="${{ inputs.GLINER2_VERSION }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(sed -n 's/^ARG GLINER2_VERSION=\(.*\)$/\1/p' \
+              derivatives/pytorch/derivatives/gliner/Dockerfile)
+            echo "::notice::No version supplied; using Dockerfile default: $VERSION"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not resolve a gliner2 version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building gliner2 $VERSION"
+
+      - name: Build decision
+        id: decision
+        run: |
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "::notice::Build skipped - required secrets are not configured"
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ${{ matrix.arch.runs_on }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+          - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+          PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
+
+          if [ -z "$CUDA_VERSION" ] || [ -z "$PYTHON_VERSION" ]; then
+            echo "::error::Failed to parse base image: $PYTORCH_BASE"
+            exit 1
+          fi
+
+          GLINER2_VERSION="${{ needs.preflight.outputs.gliner2-version }}"
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            IMAGE_TAG_BASE="${GLINER2_VERSION}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+
+          echo "Derived staging tag base: $STAGING_TAG_BASE (arch=${{ matrix.arch.suffix }})"
+
+      # PYTORCH_BASE is passed explicitly even though the Dockerfile defaults it to
+      # this same value: the matrix is the source of truth in CI, and leaving the
+      # Dockerfile default to apply would silently decouple the tag (which is derived
+      # from matrix.base_image above) from the layer actually built underneath it.
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: derivatives/pytorch/derivatives/gliner
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            PYTORCH_BASE=${{ matrix.base_image }}
+            GLINER2_VERSION=${{ needs.preflight.outputs.gliner2-version }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # `workflow_dispatch` is the only trigger here, so unlike the sibling builds --
+  # where a scheduled run resolves this to '' and publishes unattended -- this
+  # expression always resolves to 'production'. That is the intent: nothing has ever
+  # been published under this repo name, so the first index to appear there should be
+  # one a human approved. On a fork with no such environment configured GitHub
+  # creates it with no reviewers and the job proceeds, so this does not block testing.
+  merge-manifests:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          PYTORCH_BASE="${{ matrix.base_image }}"
+          TAG="${PYTORCH_BASE##*:}"
+          CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
+          PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
+
+          GLINER2_VERSION="${{ needs.preflight.outputs.gliner2-version }}"
+
+          IMAGE_TAG_BASE="${{ inputs.CUSTOM_IMAGE_TAG }}"
+          if [ -z "$IMAGE_TAG_BASE" ]; then
+            IMAGE_TAG_BASE="${GLINER2_VERSION}-cuda-${CUDA_VERSION}-${PYTHON_VERSION}"
+          fi
+
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG_BASE}"
+
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+
+          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload manifest tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build, merge-manifests]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "Found tags: $TAGS"
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, merge-manifests, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: ${{ needs.merge-manifests.result }}
+      image-name: "GLiNER2"
+      image-ref: ${{ needs.preflight.outputs.gliner2-version }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
