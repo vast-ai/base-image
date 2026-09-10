@@ -78,12 +78,18 @@ jobs:
               "TB": {"external_port": 6006, "internal_port": 16006,
                      "hostname": "localhost", "open_path": "/", "name": "TB"},
           }
-          header = "{\n\tadmin off\n\tauto_https off\n}\n"
+          # NO prepended global block. The generator emits its own now (it carries
+          # `admin off`), and a Caddyfile may hold only one keyless block — a second
+          # one fails with "server block without any key is global configuration, and
+          # if used, it must be first". This header used to supply `admin off` and
+          # `auto_https off` because the generator's global block was empty; supplying
+          # it here also meant the gate validated a file we do not ship. Validating the
+          # generator's output verbatim is both correct and more faithful.
           for auth in ("true", "false"):
               import os
               os.environ["ENABLE_AUTH"] = auth
               cf, *_ = m.generate_caddyfile(apps)
-              open(f"/tmp/gen-{auth}.caddy", "w").write(header + cf)
+              open(f"/tmp/gen-{auth}.caddy", "w").write(cf)
               print(f"generated ENABLE_AUTH={auth}")
           PY
           caddy validate --adapter caddyfile --config /tmp/gen-true.caddy
