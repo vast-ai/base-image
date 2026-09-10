@@ -23,8 +23,17 @@ name: Build Llama.cpp Image
 
 on:
   schedule:
-    # Run weekly on Monday
-    - cron: '0 0 * * 1'
+    # Every 12 hours, matching the four engine images. This was WEEKLY, which was
+    # inherited from the ai-dock era and never revisited when ADR 0033 swapped the
+    # source: unslothai/llama.cpp publishes every one to three days (eight releases in
+    # the eleven days to 2026-09-08), so a Monday-only build picked up roughly one
+    # release in four to eight, and the tree sat on b10698 while upstream reached
+    # b10840.
+    #
+    # RELEASE_AGE_THRESHOLD below MUST track this cron. It is the window in which a
+    # release counts as new: set it shorter than the interval and genuine releases are
+    # skipped between runs, longer and the same release is rebuilt on consecutive runs.
+    - cron: '0 0,12 * * *'
 
   workflow_dispatch:
     inputs:
@@ -41,8 +50,8 @@ on:
 
 env:
   DEFAULT_DOCKERHUB_REPO: "llama-cpp"
-  # 7 days
-  RELEASE_AGE_THRESHOLD: 604800
+  # 12 hours — must equal the cron interval above; see the note there.
+  RELEASE_AGE_THRESHOLD: 43200
 
 jobs:
   preflight:
