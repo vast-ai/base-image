@@ -72,7 +72,7 @@ def cmd_new(args) -> int:
             return 2
         from . import basetag
         try:
-            base_tag = basetag.resolve(torch=args.torch, cuda=args.cuda, py=args.py,
+            base_tag = basetag.resolve(torch=args.torch, cuda=args.cuda, py=args.py, wheel=args.wheel,
                                        mini=(args.variant == "mini"))
         except (RuntimeError, LookupError) as e:
             print(f"error: base resolve failed: {e}", file=sys.stderr)
@@ -103,7 +103,7 @@ def cmd_new(args) -> int:
 def cmd_resolve_base(args) -> int:
     from . import basetag
     try:
-        print(basetag.resolve(torch=args.torch, cuda=args.cuda, py=args.py,
+        print(basetag.resolve(torch=args.torch, cuda=args.cuda, py=args.py, wheel=args.wheel,
                               mini=(args.variant == "mini")))
     except (RuntimeError, LookupError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -138,6 +138,8 @@ def main(argv=None) -> int:
                      help="resolve+pin PYTORCH_BASE from DockerHub instead of CHANGEME (pytorch-nested; ADR 0013)")
     new.add_argument("--torch", help="torch version for --resolve-base (e.g. 2.10.0)")
     new.add_argument("--cuda", help="cuda toolkit for --resolve-base (e.g. 12.9)")
+    new.add_argument("--wheel", help="torch cuda-wheel for --resolve-base (e.g. 130); required "
+                                     "when one toolkit publishes several (L096)")
     new.add_argument("--py", default="312", help="python for --resolve-base (default 312)")
     new.add_argument("--variant", default="mini", choices=["mini", "full"],
                      help="base variant for --resolve-base (default mini)")
@@ -146,6 +148,8 @@ def main(argv=None) -> int:
     rb = sub.add_parser("resolve-base", help="print the newest-dated vastai/pytorch tag for a (torch,cuda,py) tuple (ADR 0013)")
     rb.add_argument("--torch", required=True, help="torch version, e.g. 2.10.0")
     rb.add_argument("--cuda", required=True, help="cuda toolkit, e.g. 12.9")
+    rb.add_argument("--wheel", help="torch cuda-wheel, e.g. 130 — required when one toolkit "
+                                    "publishes several (L096)")
     rb.add_argument("--py", default="312", help="python (default 312)")
     rb.add_argument("--variant", default="mini", choices=["mini", "full"], help="base variant (default mini)")
     rb.set_defaults(func=cmd_resolve_base)

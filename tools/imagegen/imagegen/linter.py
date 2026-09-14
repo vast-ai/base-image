@@ -10,6 +10,7 @@ NOT silently suppressed (tested by test_no_stale_exceptions).
 """
 from __future__ import annotations
 import ast
+import json
 import os
 import datetime
 import re
@@ -17,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .discover import Image
+from . import basetag
+from .discover import Image, discover
 from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve, parse_ref
 
 _DOCKER_HUB = (None, "docker.io", "index.docker.io", "registry-1.docker.io")
@@ -107,6 +109,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
     ("L095", ERROR, "A workflow `if:` written as a block scalar must not contain a `#` comment line. In a folded (`>-`) or literal (`|`) block scalar, `#` does NOT start a comment — YAML folds the whole line into the string, so the text lands INSIDE the GitHub expression and the workflow fails to parse. Measured 2026-09-02 to 2026-09-09: `abba35d` (PR #274) added a 9-line rationale under `if: >-` in the merge-manifests job of all four engine builds, and every engine build died for a week. The failure gives almost nothing to work with: parsing happens before any job is created, so the run shows `conclusion: failure` with `jobs: []`, no step log names the cause, and `workflow_dispatch` is refused outright with `HTTP 422 ... Unexpected symbol: '#'`. It is silent as well as opaque — `notify-slack` is itself a job in the run, so it never executes and no alert fires; the scheduled rebuilds simply stopped, security rebuilds included, and nothing said so. Detected by parsing the workflow and reading the RESOLVED `if:` value, not by matching indentation, so every block-scalar form is covered at once. A `#` inside a quoted string is legal in an expression (`contains(msg, '#skip')`) and is not reported: quoted spans are blanked before the check. The fix is always the same — move the prose ABOVE the `if:` key, where it is a real comment"),
+    ("L096", ERROR, "A pinned `vastai/pytorch` base tag resolves to ONE tag regardless of registry listing order. `select_latest` keys on (torch, toolkit, py, variant) and IGNORES the torch cuda-wheel field, while configs/pytorch.json publishes two wheels under one toolkit (cu130 and cu132 both at cuda-13.2-mini, for torch 2.13.0 and 2.14.0). Both tags match one tuple, the tie falls to `max(..., key=date)` over DockerHub order, and `imagegen bump` re-resolves from that same tuple — so a routine bump can silently swap the torch CUDA build under a stack of compiled kernels (sgl-kernel, flashinfer jit-cache, tilelang) with L005 seeing a concrete pin either way. Checked by re-resolving each pin against candidates synthesised from configs/pytorch.json in BOTH orders and requiring the same wheel back (ADR 0013)"),
     ("L094", ERROR, "A copyleft entry in LICENSES.md must declare an in-image licence path, and a path the IMAGE itself provides must actually exist. GPL \u00a74 / AGPL \u00a74 require the licence text to accompany the program, and this repo conveys it by declaring `**License file in image:** `/path``. A declaration is a CLAIM: if the file is not there, the image ships copyleft code while telling the reader where to find a licence that does not exist, which is worse than silence because it looks discharged. Checked for paths the image provides through its own ROOT overlay (e.g. `/licenses/AGPL-3.0.txt` <- `ROOT/licenses/AGPL-3.0.txt`). Paths inside an upstream clone or a versioned install directory are NOT checked: they exist only after the build has cloned or unpacked the app, so a static check would be guessing rather than gating (the excluded prefixes are listed in the check's own docstring). Scoped to entries whose declared licence matches AGPL or GPL-2/3 - permissive entries carry no conveyance obligation. L094 covers only obligation (a) of the copyleft invariant; obligation (b), a `Modifications:` note whenever the Dockerfile patches that app, is NOT statically checkable and is documented as such rather than half-enforced (ADR 0012 territory, docs/invariants.md)"),
     ("L093", ERROR, "A suite that greps its engine log for ERROR/CRITICAL must exclude the sentinel its OWN sibling test deliberately provokes — but only where the engine actually refuses. Every engine suite ships a `contract_check.py` defining `NO_SUCH_MODEL = \"__vast_contract_no_such_model__\"` and posts it to /v1/chat/completions on purpose: check_unknown_model asserts a nonexistent model is REFUSED rather than quietly substituted (ADR 0031). On an engine that refuses, the refusal it logs is the assertion SUCCEEDING, and the serving test in the same directory then greps that log and fails the instance. It is not a first-pass problem, which is why it survived: discovery order runs `10-<engine>-serving.sh` before `12-<engine>-contract.sh`, so on a cold boot the sentinel is not in the log yet. It bites on the SECOND run — `runner.sh --manual` over SSH, which is exactly what the qa-fix loop does on a held instance — where run N's probe fails run N+1 and the reported failure names a model nobody asked for. Reported 2026-09-02 from a live vLLM instance serving Qwen3.8-Flash-Next. SCOPE IS LOAD-BEARING and was got wrong first: this rule initially demanded the exclusion from all four engine suites, but docs/invariants.md already records SGLang and llama.cpp answering the probe HTTP 200 and serving whatever they loaded — no refusal, no log line, nothing to excuse, and a demanded no-op paste is the habit that makes a log scan worthless. Both declare `error-unknown-model` in `ENGINE[\"deviations\"]`, so the rule reads that same declaration and skips them. Those deviations are self-expiring, so the day an engine starts refusing, the entry becomes a violation, it goes, and this rule arms itself with no one remembering to. Scoped further to the call whose label matches the suite stem — a sidecar log (`check_log_errors \"ray\"`) never sees the probe. The exclusion must be an ALTERNATIVE of the single quoted third argument: check_log_errors reads only $3, so a sentinel in a fourth argument, spliced without its `|`, or sitting elsewhere on the line is decorative and is reported as such. A suite in scope with no label-matching call is also a finding: the convention the check reads has broken and the engine log is no longer identifiable"),
     ("L092", ERROR, "A `curl` that writes a file must fail on an HTTP error. Without `-f`/`--fail`, curl writes the ERROR BODY to the target and exits 0, so a 404 or 504 page becomes the artifact and the build carries on. Measured 2026-09-07: GitHub's release CDN returned 504s during a base build and `curl -L -o /tmp/miniforge3.sh` saved the HTML, which `bash` then executed - 7 of 25 configs died with `miniforge3.sh: line 1: `<html><body><h1>504 Gateway Timeout` and `line 4: Hello: command not found`, a shell-syntax error several lines from the real cause that names nothing useful. `wget` is NOT in scope and is not the same defect: it exits 8 on a server error, so a `set -e` build already stops there. Scoped to curl invocations that write a file (`-o`/`-O`), because a curl whose output is piped or captured is read by something that can judge it. `-f` counts inside a cluster (`-LsSf`), which is this repo's house style. Detected after blanking quoted strings and bare URLs, so a `-f` inside `conda-forge` cannot satisfy the check - that false positive is real and cost a wrong first answer here"),
@@ -3616,6 +3619,84 @@ def check_workflow_if_has_no_folded_comment(repo: Path) -> Iterable[Finding]:
                           f"above the `if:` key. Near: ...{frag.strip()}... (L095)")
 
 
+def _mini_rows(repo: Path) -> list[dict]:
+    """The `mini` rows of configs/pytorch.json ([] if unreadable — an absent config is not this
+    check's finding to make)."""
+    cfg = repo / "configs" / "pytorch.json"
+    if not cfg.is_file():
+        return []
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    rows = data.get("mini")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def check_base_pin_resolves_to_one_wheel(repo: Path) -> Iterable[Finding]:
+    """L096 — a pinned vastai/pytorch base must be uniquely re-resolvable.
+
+    `basetag.select_latest` keys on (torch, toolkit, py, variant) and does NOT look at the
+    torch cuda-wheel field the tag carries. configs/pytorch.json publishes two wheels under a
+    single toolkit — cu130 and cu132 both at `cuda-13.2-mini` — so for torch 2.13.0 and 2.14.0
+    two published tags match one tuple on the same date. `max(cands, key=date)` then breaks the
+    tie on whatever order DockerHub listed them in, and `imagegen bump` re-resolves from that
+    same tuple, so a routine bump can move a pin from cu132 to cu130 or back. L005 sees a
+    concrete pin either way, and nothing else looks — while underneath sit compiled kernels
+    built against one specific torch CUDA build.
+
+    The assertion is order-independence, not uniqueness in the config: publishing two wheels
+    under one toolkit is deliberate and fine. What must hold is that a PIN re-resolves to its
+    OWN wheel however the registry happens to list its siblings. Only `-mini` tags are in
+    scope; the full variant's tag grammar carries no `-cuNNN-` field and `parse_tag` rejects it.
+    """
+    rows = _mini_rows(repo)
+    if not rows:
+        return
+    imgs = [i for i in discover(repo) if i.cls == "pytorch-nested"]
+    for img in imgs:
+        surfaces = [img.dir / "Dockerfile",
+                    repo / ".github" / "workflows" / f"build-{img.name}.yml"]
+        for path in surfaces:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for raw in sorted(set(re.findall(r"vastai/pytorch:([^\s\"',]+)", text))):
+                bt = basetag.parse_tag(raw)
+                if bt is None or not bt.mini:
+                    continue          # CHANGEME, a digest, or a full-variant tag
+                # Every wheel the config publishes for this pin's (torch, toolkit, py).
+                wheels = sorted({
+                    str(r.get("backend", ""))[2:]
+                    for r in rows
+                    if str(r.get("torch")) == bt.torch
+                    and str(r.get("mini_base_tag", "")) == f"cuda-{bt.cuda}-mini"
+                    and bt.py in [str(v) for v in (r.get("python_versions") or [])]
+                    and str(r.get("backend", "")).startswith("cu")
+                })
+                if len(wheels) < 2:
+                    continue          # one wheel under this toolkit — the tuple is unambiguous
+                cands = [f"{bt.torch}-cu{w}-cuda-{bt.cuda}-mini-py{bt.py}-{bt.date}"
+                         for w in wheels]
+                got = set()
+                for order in (cands, list(reversed(cands))):
+                    try:
+                        got.add(basetag.select_latest(
+                            order, torch=bt.torch, cuda=bt.cuda, py=bt.py, mini=bt.mini).wheel)
+                    except LookupError:
+                        got.add("")
+                if got != {bt.wheel}:
+                    yield Finding("L096", ERROR, img.name, str(path.relative_to(repo)),
+                        f"base pin {raw} is not uniquely re-resolvable: configs/pytorch.json "
+                        f"publishes wheels {', '.join('cu' + w for w in wheels)} under "
+                        f"cuda-{bt.cuda}-mini at torch {bt.torch}, and `select_latest` ignores "
+                        f"the wheel field, so re-resolving this tuple returns "
+                        f"{sorted('cu' + w for w in got if w)} depending on registry listing "
+                        f"order. `imagegen bump` re-resolves from this tuple, so it can swap the "
+                        f"torch CUDA build under compiled kernels. Teach the resolver the wheel "
+                        f"field (ADR 0013)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
@@ -3626,7 +3707,8 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_a_test_ships_the_sibling_it_reaches_for,
     check_copyleft_licence_path_resolves,
     check_workflow_if_has_no_folded_comment,
-    check_probe_artifact_is_excluded_from_its_own_log_scan]
+    check_probe_artifact_is_excluded_from_its_own_log_scan,
+    check_base_pin_resolves_to_one_wheel]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

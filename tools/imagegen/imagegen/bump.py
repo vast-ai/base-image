@@ -1,5 +1,5 @@
 """`imagegen bump <name>` — re-resolve a pytorch-nested image's pinned base to the newest
-dated tag for its OWN `(torch, cuda, py, variant)` tuple, updating both the Dockerfile `ARG`
+dated tag for its OWN `(torch, cuda, py, variant, wheel)` tuple, updating both the Dockerfile `ARG`
 default and every matching CI `base_image` matrix entry (an image may pin several — e.g. a
 cuda-12.9 and a cuda-13.2 row; each re-resolves to its own newest date, torch/cuda unchanged).
 
@@ -36,7 +36,12 @@ def bump(name: str, *, repo: Path | None = None, fetch=basetag.fetch_tags, log=p
         bt = basetag.parse_tag(old)     # unparseable (e.g. CHANGEME) -> leave untouched
         if not bt:
             return None
-        return basetag.select_latest(tags, torch=bt.torch, cuda=bt.cuda, py=bt.py, mini=bt.mini).raw
+        # wheel=bt.wheel is the ROUND TRIP: a bump floats the date and nothing else. One
+        # toolkit can carry two torch cuda-wheel builds (cu130 and cu132 both at
+        # cuda-13.2-mini), so re-resolving without it could return the sibling wheel and
+        # swap the torch CUDA build under kernels compiled against this one (L096).
+        return basetag.select_latest(tags, torch=bt.torch, cuda=bt.cuda, py=bt.py,
+                                     mini=bt.mini, wheel=bt.wheel).raw
 
     changed = 0
     for path in (img.dir / "Dockerfile", repo / ".github/workflows" / f"build-{name}.yml"):

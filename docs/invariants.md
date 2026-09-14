@@ -179,6 +179,37 @@ build-arg (the CI multi-cuda pattern) is skipped — its concrete tag lives in t
 scaffold's `CHANGEME` is L040's surface, not L005's. Pins are produced/refreshed by the DockerHub
 resolver (`imagegen resolve-base` / `new --resolve-base` / `bump`, ADR 0013).
 
+### A base pin resolves to ONE tag, listing order notwithstanding — **GATED (L096)**
+
+A concrete pin is not the same thing as an unambiguous one. `basetag.select_latest` keyed on
+`(torch, toolkit, py, variant)` and **ignored the torch cuda-wheel field the tag carries**,
+while `configs/pytorch.json` publishes two wheels under a single toolkit — `cu130` and `cu132`
+both at `cuda-13.2-mini`, for torch 2.13.0 and 2.14.0. Both published tags therefore matched
+one tuple on the same date, `max(cands, key=date)` broke the tie on whatever order DockerHub
+listed them in, and `imagegen bump` re-resolved from that same tuple. A routine bump could
+swap the torch CUDA build underneath kernels compiled against the old one (`sgl-kernel`,
+flashinfer's jit-cache, tilelang) — with L005 seeing a concrete pin either way and nothing
+else looking.
+
+Measured, not theorised: the same two-tag list resolves to `cu130` or `cu132` purely by input
+order.
+
+> The wheel is part of a base's identity, not a detail of its toolkit. `select_latest` and
+> `resolve` take it; `bump` passes the pin's own wheel back in, so **a bump floats the date
+> and nothing else**. Where the wheel is omitted and the remaining coordinates still admit
+> more than one, resolution **raises** rather than picking — silence is the failure mode.
+
+**L096** asserts the property rather than the implementation: for every `vastai/pytorch` pin
+in a pytorch-nested image's Dockerfile or its `build-<name>.yml`, candidates are synthesised
+from `configs/pytorch.json` and re-resolved in **both orders**, and the pin must get its own
+wheel back. That keeps biting if the wheel is ever dropped from the key again. Publishing two
+wheels under one toolkit is deliberate and is *not* the violation — order-dependence is.
+
+Scope: `-mini` tags only. The full variant's grammar carries no `-cuNNN-` field for
+`parse_tag` to read, so there is no wheel to be ambiguous about. No image pinned an ambiguous
+tuple when this landed — the two affected tuples are torch 2.13.0 and 2.14.0, which nothing
+used yet — so this is a gate placed ahead of the first image to need it, not a cleanup.
+
 ### No credential-shaped secret in a public ADR — **GATED (L060)**
 
 `base-image` is public, and `docs/adr/**` is world-readable. An ADR records the

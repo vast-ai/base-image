@@ -699,6 +699,68 @@ def test_mut_llama_cuda_substring_backdoor_does_not_hide():
     assert "L056" in errs(mut, repo)
 
 
+# ---------------------------------------------------------------------------
+# L096 — a pinned vastai/pytorch base must re-resolve to its OWN torch cuda-wheel
+# ---------------------------------------------------------------------------
+
+def _l096_repo(tmp_path: Path, pin: str) -> Path:
+    """A minimal repo carrying the REAL configs/pytorch.json and one pytorch-nested pin."""
+    real = find_repo_root(Path(__file__).resolve().parent)
+    repo = tmp_path / "repo"
+    (repo / "external").mkdir(parents=True)
+    (repo / "configs").mkdir(parents=True)
+    shutil.copy(real / "configs" / "pytorch.json", repo / "configs" / "pytorch.json")
+    d = repo / "derivatives" / "pytorch" / "derivatives" / "victim"
+    d.mkdir(parents=True)
+    (d / "Dockerfile").write_text(
+        f"ARG PYTORCH_BASE=vastai/pytorch:{pin}\nFROM ${{PYTORCH_BASE}}\n")
+    return repo
+
+
+# The two tuples configs/pytorch.json publishes under one toolkit with two wheels.
+_L096_AMBIGUOUS = [
+    "2.13.0-cu130-cuda-13.2-mini-py312-2026-09-08",
+    "2.13.0-cu132-cuda-13.2-mini-py312-2026-09-08",
+    "2.14.0-cu130-cuda-13.2-mini-py312-2026-09-08",
+    "2.14.0-cu132-cuda-13.2-mini-py312-2026-09-08",
+]
+
+
+@pytest.mark.parametrize("pin", _L096_AMBIGUOUS)
+def test_mut_L096_an_ambiguous_tuple_fires(tmp_path, pin):
+    """MUTATION: pin a real image at a (torch, toolkit, py, variant) tuple that
+    configs/pytorch.json satisfies with TWO torch cuda-wheels. `select_latest` ignores the
+    wheel field, so the tuple re-resolves differently depending on registry listing order
+    and `imagegen bump` can swap the torch CUDA build under compiled kernels."""
+    repo = _l096_repo(tmp_path, pin)
+    hits = _codes(repo, "L096")
+    assert hits, f"ambiguous pin {pin} did not fire L096"
+    assert "not uniquely re-resolvable" in hits[0].msg
+
+
+@pytest.mark.parametrize("pin", [
+    "2.10.0-cu130-cuda-13.2-mini-py312-2026-09-08",   # one wheel at this toolkit
+    "2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08",
+    "2.7.1-cu128-cuda-12.9-mini-py310-2026-09-08",
+    "2.9.1-cu128-cuda-12.9-mini-py312-2026-09-08",
+])
+def test_L096_an_unambiguous_tuple_is_clean(tmp_path, pin):
+    """Every shape the repo actually pins today resolves to exactly one wheel."""
+    assert not _codes(_l096_repo(tmp_path, pin), "L096")
+
+
+@pytest.mark.parametrize("pin", ["CHANGEME", "2.13.0-cuda-13.0.3-py312-24.04-2026-09-08"])
+def test_L096_unparseable_and_full_variant_tags_are_out_of_scope(tmp_path, pin):
+    """CHANGEME is L040's surface; the full variant's grammar carries no `-cuNNN-` field at
+    all, so there is no wheel to be ambiguous about and `parse_tag` rejects it."""
+    assert not _codes(_l096_repo(tmp_path, pin), "L096")
+
+
+def test_L096_the_real_repo_is_clean():
+    """The baseline: nothing shipped today pins an ambiguous tuple."""
+    assert not _codes(find_repo_root(Path(__file__).resolve().parent), "L096")
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))

@@ -3,8 +3,9 @@
 The tag grammar is fixed:
     <torch>-cu<wheel>-cuda-<toolkit>-[mini-]py<py>-<YYYY-MM-DD>
 Only **index** tags (no `-amd64`/`-arm64` suffix) are considered — that is what `FROM`
-resolves. Resolution keys on `(torch, cuda-toolkit, py, variant)` — the deliberate, safe
-choice — and floats only the **date**, picking the newest. The pure parse/select functions
+resolves. Resolution keys on `(torch, cuda-toolkit, py, variant, wheel)` and floats only the **date**,
+picking the newest. The wheel is part of that key because one toolkit can carry two torch
+cuda-wheel builds; omitting it where it matters raises rather than guesses (L096). The pure parse/select functions
 are offline and unit-tested; only `fetch_tags()` touches the network. Every failure path is
 loud (raises) so a caller never silently pins an older/wrong base.
 """
@@ -45,18 +46,42 @@ def parse_tag(tag: str) -> BaseTag | None:
                    mini=bool(m["mini"]), py=m["py"], date=m["date"])
 
 
-def select_latest(tags, *, torch: str, cuda: str, py: str, mini: bool = True) -> BaseTag:
-    """Pure: newest-dated index tag in `tags` matching the tuple. Raises LookupError if none."""
+def select_latest(tags, *, torch: str, cuda: str, py: str, mini: bool = True,
+                  wheel: str | None = None) -> BaseTag:
+    """Pure: newest-dated index tag in `tags` matching the tuple. Raises LookupError if none.
+
+    `wheel` is the torch cuda-wheel build the tag carries ("130" in `-cu130-`). It is part of
+    the identity of a base, NOT a detail of the toolkit: `configs/pytorch.json` publishes two
+    wheels under one toolkit (cu130 and cu132 both at `cuda-13.2-mini`), so
+    (torch, cuda, py, variant) alone can match two different published images. Leaving the
+    choice to `max(..., key=date)` hands it to whatever order the registry listed them in,
+    and `bump` re-resolving from the same tuple could then swap the torch CUDA build under a
+    stack of kernels compiled against the old one.
+
+    So: when `wheel` is given it is matched; when it is omitted and the remaining coordinates
+    still admit more than one wheel, this RAISES rather than picking. Silence is the failure
+    mode this argument exists to remove (gated by L096).
+    """
     tags = list(tags)
     cands = [
         bt for t in tags
         if (bt := parse_tag(t)) and bt.torch == torch and bt.cuda == cuda
         and bt.py == py and bt.mini == mini
+        and (wheel is None or bt.wheel == wheel)
     ]
     if not cands:
         raise LookupError(
             f"no {REPO} index tag matches torch={torch} cuda={cuda} py={py} "
-            f"variant={'mini' if mini else 'full'} (checked {len(tags)} tags)"
+            f"variant={'mini' if mini else 'full'}"
+            f"{f' wheel=cu{wheel}' if wheel else ''} (checked {len(tags)} tags)"
+        )
+    seen = sorted({b.wheel for b in cands})
+    if wheel is None and len(seen) > 1:
+        raise LookupError(
+            f"ambiguous base: torch={torch} cuda={cuda} py={py} "
+            f"variant={'mini' if mini else 'full'} matches {len(seen)} torch cuda-wheels "
+            f"({', '.join('cu' + w for w in seen)}). Pass wheel= to choose — resolving this "
+            f"silently would let the pick fall to registry listing order (ADR 0013, L096)"
         )
     return max(cands, key=lambda b: b.date)   # ISO date -> lexical max == newest
 
@@ -81,7 +106,7 @@ def fetch_tags(repo: str = REPO, *, page_size: int = 100, max_pages: int = 30) -
 
 
 def resolve(*, torch: str, cuda: str, py: str = "312", mini: bool = True,
-            repo: str = REPO, fetch=fetch_tags) -> str:
+            wheel: str | None = None, repo: str = REPO, fetch=fetch_tags) -> str:
     """Newest-dated concrete `repo:<tag>` for the tuple. `fetch` is injectable for offline tests."""
-    bt = select_latest(fetch(repo), torch=torch, cuda=cuda, py=py, mini=mini)
+    bt = select_latest(fetch(repo), torch=torch, cuda=cuda, py=py, mini=mini, wheel=wheel)
     return f"{repo}:{bt.raw}"

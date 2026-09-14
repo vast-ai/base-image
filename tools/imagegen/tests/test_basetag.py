@@ -104,6 +104,62 @@ def test_bump_leaves_unparseable_pin_untouched(tmp_path):
     assert "CHANGEME" in (repo / "derivatives/pytorch/derivatives/myimg/Dockerfile").read_text()
 
 
+# ---------------------------------------------------------------------------
+# One toolkit, two torch cuda-wheels: the wheel is part of the resolution key (L096)
+# ---------------------------------------------------------------------------
+
+_TWO_WHEELS = [
+    "2.13.0-cu130-cuda-13.2-mini-py312-2026-09-08",
+    "2.13.0-cu132-cuda-13.2-mini-py312-2026-09-08",
+]
+
+
+def test_select_latest_without_a_wheel_raises_when_two_match():
+    """The defect this guards: (torch, cuda, py, variant) alone matched both published
+    wheels on the same date, so `max(..., key=date)` picked by registry listing order."""
+    for order in (_TWO_WHEELS, list(reversed(_TWO_WHEELS))):
+        try:
+            basetag.select_latest(order, torch="2.13.0", cuda="13.2", py="312")
+        except LookupError as e:
+            assert "ambiguous base" in str(e) and "cu130" in str(e) and "cu132" in str(e)
+        else:
+            raise AssertionError("an ambiguous tuple resolved silently")
+
+
+def test_select_latest_with_a_wheel_is_order_independent():
+    for want in ("130", "132"):
+        got = {basetag.select_latest(order, torch="2.13.0", cuda="13.2", py="312",
+                                     wheel=want).wheel
+               for order in (_TWO_WHEELS, list(reversed(_TWO_WHEELS)))}
+        assert got == {want}, f"cu{want} resolved to {got} depending on listing order"
+
+
+def test_select_latest_one_wheel_still_needs_no_wheel_argument():
+    """Every tuple the repo pins today has a single wheel; omitting it must keep working."""
+    tags = ["2.10.0-cu128-cuda-12.9-mini-py312-2026-08-01",
+            "2.10.0-cu128-cuda-12.9-mini-py312-2026-06-15"]
+    assert basetag.select_latest(tags, torch="2.10.0", cuda="12.9", py="312").date == "2026-08-01"
+
+
+def test_bump_round_trips_the_wheel(tmp_path):
+    """REGRESSION: a bump floats the DATE and nothing else. Re-resolving without the wheel
+    could return the sibling build and swap the torch CUDA wheel under compiled kernels."""
+    def fetch_two_wheels(_repo=None):
+        return [
+            "2.13.0-cu130-cuda-13.2-mini-py312-2026-09-08",
+            "2.13.0-cu130-cuda-13.2-mini-py312-2026-09-20",   # newer, same wheel
+            "2.13.0-cu132-cuda-13.2-mini-py312-2026-09-20",   # newer, SIBLING wheel
+        ]
+    df = ("ARG PYTORCH_BASE=vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py312-2026-09-08\n"
+          "FROM ${PYTORCH_BASE}\n")
+    repo = _fake_pytorch_image(tmp_path, "myimg", df, "no pins here\n")
+    assert bumpmod.bump("myimg", repo=repo, fetch=fetch_two_wheels, log=lambda *a: None) == 0
+    out = (repo / "derivatives/pytorch/derivatives/myimg/Dockerfile").read_text()
+    assert "cu130-cuda-13.2-mini-py312-2026-09-20" in out, "date did not advance"
+    assert "cu132" not in out, "bump swapped the torch cuda-wheel build"
+
+
+
 if __name__ == "__main__":
     from _stdlib_runner import run
     raise SystemExit(run(globals()))
