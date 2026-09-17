@@ -83,6 +83,7 @@ Open the Wan2GP UI, select a model, enter a prompt, and start generating.
 | `WORKSPACE` | `/workspace` | Workspace directory |
 | `WAN2GP_PORT` | `7860` | Gradio server port |
 | `WAN2GP_ARGS` | (none) | Extra CLI args appended to `python wgp.py` |
+| `CADDY_HEADER_UP_LOCALHOST` | `$WAN2GP_PORT` | Ports for which Caddy sends a `localhost` Host and Origin (`true` = all). Wan2GP rejects requests whose Origin differs from its Host, so the Wan2GP port is added at boot if missing; other entries are kept |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
 ---

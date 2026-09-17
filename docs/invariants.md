@@ -103,6 +103,10 @@ real `docker build` + smoke test is the correctness gate.**
 - torch ecosystem *actually* unchanged after install (guard presence ≠ success).
 - CPU smoke-tests pass (presence checkable; success runtime-only).
 - PORTAL_CONFIG ports match the port the app actually binds.
+- An app that rejects a request whose Origin differs from its own Host (Wan2GP since
+  its upstream v13) works behind Caddy only if its port is in
+  `CADDY_HEADER_UP_LOCALHOST` (ADR 0042). Whether an app checks Origin is upstream
+  runtime behaviour; only a WebSocket/POST through Caddy with a browser Origin shows it.
 - Tag commit-hash-vs-version date suffix (depends on the runtime-resolved ref).
 - `base_image_source` build-context *content*.
 - single shared `/venv/main` assumption (false for aio-studio by design).
@@ -1792,3 +1796,18 @@ oobabooga). The `new-image` skill + generator encode them.
   value the user typed, and `/etc/environment` is the user's file by the same ADR. The
   residue is therefore left as environment, which is what it now is (ADR 0038).
 
+
+### An image whose app checks Origin puts its port in `CADDY_HEADER_UP_LOCALHOST` — ADR 0042, **enforced by test_wan2gp_env_sh.py**
+
+Caddy forwards `Host: {upstream_hostport}` and the browser's own `Origin`. An app that
+requires `Origin == scheme://Host` therefore rejects every WebSocket and POST from a
+real browser. Wan2GP does this since its upstream v13, and its UI loops on "Connection
+to server lost" while its generation requests fail with 403.
+
+The image adds its port at boot (`vast_boot.d/05-wan2gp-env.sh`), keeping whatever the
+template already listed. `true` means every port, so it is never appended to: that would
+turn it into a one-entry list and remove the rewrite from every other app. The stage
+parses the variable the same way `caddy_config_manager.py` does, and the test pins both.
+
+Not a linter rule: whether an upstream app checks Origin is runtime behaviour that a
+static check cannot see.
