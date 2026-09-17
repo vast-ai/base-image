@@ -1804,8 +1804,9 @@ requires `Origin == scheme://Host` therefore rejects every WebSocket and POST fr
 real browser. Wan2GP does this since its upstream v13, and its UI loops on "Connection
 to server lost" while its generation requests fail with 403.
 
-The image adds its port at boot (`vast_boot.d/05-wan2gp-env.sh`), keeping whatever the
-template already listed. `true` means every port, so it is never appended to: that would
+Each image that bundles Wan2GP (wan2gp on 7860, aio-studio on 17861) adds that port at
+boot (`vast_boot.d/05-wan2gp-env.sh`), keeping whatever the template already listed. The
+list holds the INTERNAL port, and the stage's default must equal the launcher's. `true` means every port, so it is never appended to: that would
 turn it into a one-entry list and remove the rewrite from every other app. The stage
 parses the variable the same way `caddy_config_manager.py` does, and the test pins both.
 

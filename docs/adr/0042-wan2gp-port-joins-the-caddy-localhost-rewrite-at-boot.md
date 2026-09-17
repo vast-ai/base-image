@@ -1,10 +1,10 @@
 # ADR 0042 — Wan2GP adds its port to Caddy's localhost rewrite at boot
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-09-17: extended to aio-studio)
 - **Date:** 2026-09-17
 - **Decision owner:** Rob Ballantyne
 - **Related:** ADR 0017 (portal behaviour behind a CDN tunnel)
-- **Enforced by:** `tools/imagegen/tests/test_wan2gp_env_sh.py`
+- **Enforced by:** `tools/imagegen/tests/test_wan2gp_env_sh.py` (both images)
 
 ## Context
 
@@ -141,7 +141,9 @@ through the proxy at all.
 
 - Upstream Wan2GP honours forwarded headers from a trusted proxy, or drops the check.
   Delete the stage.
-- A second image needs the same rewrite. Build option 4 and move Wan2GP onto it.
+- A second image needs the same rewrite. Build option 4 and move Wan2GP onto it. (This
+  condition was met by aio-studio; see the amendment below for why the stage was copied
+  instead.)
 - The portal adopts a same-origin-only Origin translation as its default for every port.
   This stage then becomes redundant and should be deleted, together with the per-template
   `CADDY_HEADER_UP_LOCALHOST` entries.
@@ -150,3 +152,31 @@ through the proxy at all.
 - Caddy's handling of `CADDY_HEADER_UP_LOCALHOST` changes, for example if the rewrite
   stops setting Origin. The test's generator assertion fails first. Otherwise fall back
   to option 5.
+
+## Amendment (2026-09-17) — aio-studio ships the same stage
+
+aio-studio bundles Wan2GP too. Today it pins a pre-v13 commit, so it is not affected
+yet. The first bump past v13 would break it in the same way, so the stage was added in
+advance: `derivatives/pytorch/derivatives/aio-studio/ROOT/etc/vast_boot.d/05-wan2gp-env.sh`.
+
+- **Port.** aio-studio launches Wan2GP on `${WAN2GP_PORT:-17861}`, not 7860, so the copy's
+  default is 17861. The rewrite list holds the INTERNAL port (the third field of a
+  `PORTAL_CONFIG` entry), which is the port the app listens on. The template already
+  routes `localhost:7861:17861:/:Wan2GP`.
+- **Latent defect found on the way.** The image's own default `PORTAL_CONFIG`, used only
+  when a template sets none, had `localhost:7861:7861:/:Wan2GP`. It has done so since the
+  image was added, while the launcher always used 17861. With equal external and internal
+  ports, the generator does not proxy that entry at all, and nothing listens on 7861, so
+  Wan2GP was unreachable under the image default. The entry now reads
+  `7861:17861`, and the READMEs' internal-port and `WAN2GP_PORT` rows now say 17861. The
+  aio-studio route test checks only that a `Wan2GP` label exists, which is why this
+  passed QA.
+- **Reversal condition met, and deliberately not acted on yet.** "A second image needs
+  the same rewrite" was the trigger for option 4, the generic portal mechanism. The owner
+  chose to copy the stage now and track option 4 as portal backlog, where it is
+  specified as a same-origin-only rewrite rather than a per-port declaration. The
+  accepted cost is two copies of the same bash.
+- **What keeps the copies honest.** The test runs every row against both images. It
+  asserts the copies differ only in the default port, that each default equals the
+  port the image's launcher uses, and that any image-default `PORTAL_CONFIG` entry for
+  Wan2GP routes to that port.
