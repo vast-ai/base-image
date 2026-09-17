@@ -176,7 +176,7 @@ Need specific models or software installed automatically? Set the `PROVISIONING_
 | `AI_TOOLKIT_START_CMD` | `npm run start` | AI Toolkit start command |
 | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-4B` | ACE Step language model path |
 | `WAN2GP_PORT` | `17861` | Wan2GP server port (internal) |
-| `CADDY_HEADER_UP_LOCALHOST` | `$WAN2GP_PORT` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). Wan2GP rejects requests whose Origin differs from its Host, so the Wan2GP port is added at boot if missing; other entries are kept |
+| `CADDY_HEADER_UP_LOCALHOST` | `$WAN2GP_PORT,3000` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). Wan2GP and the ACE Step UI reject requests whose Origin differs from their Host, so their ports are added at boot if missing (`05-caddy-localhost-ports.sh`); other entries are kept |
 | `WHISPER_UI_ARGS` | `--whisper_type whisper --server_port 7862` | Whisper WebUI startup arguments |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 

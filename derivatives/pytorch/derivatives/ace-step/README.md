@@ -38,6 +38,7 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Directory for ACE-Step installation and outputs |
 | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-4B` | Language model path for music generation |
+| `CADDY_HEADER_UP_LOCALHOST` | `3000` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). The ACE Step UI port is added at boot if missing (`05-caddy-localhost-ports.sh`); other entries are kept |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
 ### Port Reference

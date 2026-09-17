@@ -1,10 +1,12 @@
 # ADR 0042 — Wan2GP adds its port to Caddy's localhost rewrite at boot
 
-- **Status:** Accepted (amended 2026-09-17: extended to aio-studio)
+- **Status:** Accepted (amended 2026-09-17: extended to aio-studio). Mechanism superseded by
+  ADR 0043: the per-app `05-wan2gp-env.sh` is now the generic `05-caddy-localhost-ports.sh`.
+  The diagnosis, rejected alternatives and consequences here still apply.
 - **Date:** 2026-09-17
 - **Decision owner:** Rob Ballantyne
 - **Related:** ADR 0017 (portal behaviour behind a CDN tunnel)
-- **Enforced by:** `tools/imagegen/tests/test_wan2gp_env_sh.py` (both images)
+- **Enforced by:** `tools/imagegen/tests/test_caddy_localhost_ports_sh.py` (since ADR 0043)
 
 ## Context
 
