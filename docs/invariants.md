@@ -1803,8 +1803,9 @@ Caddy forwards `Host: {upstream_hostport}` (always `localhost:<port>`) and the b
 own `Origin`. An app that requires `Origin == scheme://Host` therefore rejects every
 WebSocket and POST from a real browser. Wan2GP does this since its upstream v13: its UI
 loops on "Connection to server lost" and its generation requests fail with 403. The
-ACE Step UI, a Vite dev server, has needed the same rewrite, which its templates carried
-until now.
+ACE Step UI has needed the same rewrite, which its templates carried until now: Vite
+proxies its API to a Node backend whose CORS callback accepts only a `localhost` Origin
+(while `NODE_ENV` is `development`, the default).
 
 The rule, as a convention the image owns (not the template):
 
@@ -1822,4 +1823,8 @@ The rule, as a convention the image owns (not the template):
 
 Not a linter rule: whether an upstream app checks Origin is runtime behaviour that a
 static check cannot see. The test does fail if an image ships the stage without being
-covered, if the body drifts, or if a declared port stops matching the image.
+covered, if the body drifts, or if a declared port stops matching the image, and
+`imagegen-tests.yml` runs it on PRs touching derivative boot stages, launchers and
+Dockerfiles. NOT gated: a new upstream origin check. No QA cell sends a WebSocket or
+POST through Caddy with a browser Origin, which is how aio-studio `2026-09-15` shipped
+with a broken Wan2GP.

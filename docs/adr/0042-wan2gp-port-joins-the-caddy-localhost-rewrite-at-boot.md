@@ -123,11 +123,16 @@ through the proxy at all.
   was between a broken app and an app without that check. What remains:
   - Requests from other sites are still stopped by the portal. Its auth cookie is
     `SameSite=lax`, and bearer and token auth are not ambient.
-  - Other apps on the SAME instance are not stopped. Cookies are not scoped by port, and
-    `SameSite` ignores the port, so a page served by another app on the instance (for
-    example an HTML file opened through Jupyter) is same-site and carries the portal
-    cookie. Wan2GP's origin check was the only thing that would have refused it, and
-    this decision accepts losing that check.
+  - Pages on the same host address are not stopped. Cookies are not scoped by port, and
+    `SameSite` ignores the port, so a page served on any other port of the same address
+    is same-site and carries the portal cookie. That includes another app on the
+    instance (for example an HTML file opened through Jupyter). On direct `IP:port`
+    access it also includes other instances on the same Vast host. Wan2GP's origin
+    check was the only thing that would have refused such a page, and this decision
+    accepts losing that check. The cookie already reached those pages before this
+    change; what is new is that Wan2GP no longer refuses them. Separate
+    `trycloudflare.com` hostnames are cross-site, because that domain is on the Public
+    Suffix List.
   - If a user enables Wan2GP's own `--auth`, its session cookie is `SameSite=strict`.
     That cookie has the same port limitation.
   - A rewrite that translates only same-origin requests would keep the check meaningful.

@@ -2,7 +2,7 @@
 
 # Ports whose app needs Caddy's localhost rewrite (ADR 0043).
 # ACE Step UI: the vite frontend port, fixed in ace-step-ui's vite.config.ts
-# (asserted in the Dockerfile).
+# (asserted in the Dockerfile). Its backend accepts only a localhost Origin.
 caddy_localhost_ports=(3000)
 
 # ---- shared body: identical in every image (ADR 0043) ----

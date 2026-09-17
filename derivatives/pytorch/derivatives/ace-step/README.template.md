@@ -141,7 +141,7 @@ Your authentication token is available as `OPEN_BUTTON_TOKEN` in your instance e
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Workspace directory for ACE-Step and outputs |
 | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-4B` | Language model path for generation |
-| `CADDY_HEADER_UP_LOCALHOST` | `3000` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). The ACE Step UI port is added at boot if missing (`05-caddy-localhost-ports.sh`); other entries are kept |
+| `CADDY_HEADER_UP_LOCALHOST` | `3000` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). The ACE Step UI's backend accepts only a `localhost` Origin, so the UI port is added at boot if missing (`05-caddy-localhost-ports.sh`); other entries are kept |
 | `PROVISIONING_SCRIPT` | (none) | URL to an optional setup script to run on first boot |
 
 ### **Recommended GPU Memory**

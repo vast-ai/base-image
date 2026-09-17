@@ -17,12 +17,19 @@ requires `Origin == scheme://Host` works behind the portal only with this rewrit
 
 Three facts made a per-app stage the wrong unit:
 
-- **More than one app needs it.** The ACE Step UI (port 3000, the Vite dev server from
-  upstream `ace-step-ui`) has needed the rewrite since before ADR 0042. Nothing in this
-  repo supplied it. The launch templates for the standalone ace-step image and for
-  aio-studio each set `CADDY_HEADER_UP_LOCALHOST: '3000'`. A template built from either
-  image without that line silently loses it. The exact Vite check it satisfies was not
-  reproduced for this ADR.
+- **More than one app needs it.** The ACE Step UI (port 3000, upstream `ace-step-ui`'s
+  Vite dev server) has needed the rewrite since before ADR 0042. Nothing in this repo
+  supplied it. The launch templates for the standalone ace-step image and for aio-studio
+  each set `CADDY_HEADER_UP_LOCALHOST: '3000'`. A template built from either image
+  without that line silently loses it.
+
+  The check is not Vite's. Vite proxies `/api` and the other backend paths to the Node
+  backend on 3001 with `changeOrigin`, which rewrites Host but not Origin. The backend's
+  `cors` origin callback then accepts only an Origin containing `localhost` or
+  `127.0.0.1` (or a LAN address), and only while `NODE_ENV` is `development`, which is
+  its default. Under any other `NODE_ENV` it requires an exact match with `FRONTEND_URL`,
+  and this rewrite would not satisfy it. Read from the upstream source; not reproduced
+  on an instance.
 - **aio-studio runs both apps.** Under ADR 0042 it would carry two stages doing one job.
 - **aio-studio was already broken.** CI resolves Wan2GP's latest commit regardless of
   the Dockerfile default, so the `2026-09-15` and `latest` promotions carry Wan2GP's
@@ -81,7 +88,9 @@ For each declared port, the body behaves as the ADR 0042 stage did:
 ## Binding conditions
 
 1. **The body is identical in every image,** and every image that ships the stage is
-   covered by the test. A change to the body is a change to all of them.
+   covered by the test. A change to the body is a change to all of them. The test must
+   run on the PR that makes such a change: `imagegen-tests.yml` triggers on derivative
+   boot stages, launcher scripts and Dockerfiles for this reason.
 2. **Each declared port is the port the image actually serves.** For Wan2GP that is the
    launcher's `${WAN2GP_PORT:-N}` default. The ACE Step UI's port is hardcoded upstream
    in `vite.config.ts` (`port: 3000`); `FRONTEND_PORT` in its `start.sh` is only echoed.
@@ -101,6 +110,25 @@ For each declared port, the body behaves as the ADR 0042 stage did:
   not cover.
 - The upstream ACE Step UI binds `0.0.0.0` in `vite.config.ts`. That is unrelated to
   this decision and is not addressed here.
+- For the ACE Step UI the rewrite gives up very little. The backend's substring test
+  already accepts an Origin such as `http://localhost.example.com`.
+- **Evidence, stated precisely.** The live fix was first proven by setting the variable
+  by hand. CI then built and a live instance confirmed the ADR 0042 per-app stage. The
+  generic stage in this ADR has the same logic and is unit-tested against the real
+  files, but it had not been built or booted in any image when this ADR was written.
+  Each image needs a build and one boot showing the merged value in `/etc/environment`
+  before its promotion is trusted.
+- **Where the value can still be lost.** `$WORKSPACE/.env` is sourced after the stage,
+  both at boot and by `caddy.sh`, so a `CADDY_HEADER_UP_LOCALHOST` line there replaces
+  the merged value outright. That file is the user's, and is not rewritten.
+- **The generator that parses the value is not always the one the test reads.** First
+  boot replaces the portal with its latest release (ADR 0015), so a later portal that
+  parses the variable differently runs under images whose stage is already baked. The
+  test fails on the PR that changes the parser in this repo; the portal release that
+  follows must keep accepting what shipped images write.
+- **The build assertion is a tripwire, not a proof.** It matches a `port: 3000,` line
+  anywhere in `vite.config.ts`, and Vite without `strictPort` moves to another port if
+  3000 is taken. It catches the likely upstream change, not every one.
 
 ## What would reverse this
 
