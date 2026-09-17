@@ -145,7 +145,7 @@ Your authentication token is available as `OPEN_BUTTON_TOKEN` in your instance e
 | Instance Portal | 1111 | 11111 |
 | ComfyUI | 8188 | 18188 |
 | SD Forge | 7860 | 17860 |
-| Wan2GP | 7861 | 7861 |
+| Wan2GP | 7861 | 17861 |
 | AI Toolkit | 18675 | 8675 |
 | ACE Step | 13000 | 3000 |
 | Unsloth Studio | 8888 | 18888 |
@@ -175,7 +175,8 @@ Need specific models or software installed automatically? Set the `PROVISIONING_
 | `UNSLOTH_STUDIO_ARGS` | `--host 127.0.0.1 --port 18888` | Unsloth Studio startup arguments |
 | `AI_TOOLKIT_START_CMD` | `npm run start` | AI Toolkit start command |
 | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-4B` | ACE Step language model path |
-| `WAN2GP_PORT` | `7861` | Wan2GP server port |
+| `WAN2GP_PORT` | `17861` | Wan2GP server port (internal) |
+| `CADDY_HEADER_UP_LOCALHOST` | `$WAN2GP_PORT,3000` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). Wan2GP and the ACE Step UI's backend refuse browser requests unless the Origin is `localhost`, so their ports are added at boot if missing (`05-caddy-localhost-ports.sh`); other entries are kept |
 | `WHISPER_UI_ARGS` | `--whisper_type whisper --server_port 7862` | Whisper WebUI startup arguments |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 

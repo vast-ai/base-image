@@ -37,7 +37,7 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 | Desktop (KDE + [Blender](https://www.blender.org/)) | GPU-accelerated remote desktop via WebRTC | 16100 | `desktop` |
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Node-based image/video generation | 18188 | `comfyui` |
 | [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) | Stable Diffusion WebUI (classic) | 17860 | `forge` |
-| [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | Video generation (Wan 2.x) | 7861 | `wan2gp` |
+| [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | Video generation (Wan 2.x) | 17861 | `wan2gp` |
 | [ACE Step 1.5](https://github.com/ace-step/ACE-Step-1.5) | AI music generation | 3000 | `ace-step` |
 | [Voicebox](https://github.com/jamiepine/voicebox) | Text-to-speech synthesis | 17493 | `voicebox` |
 | [Whisper WebUI](https://github.com/jhj0517/Whisper-WebUI) | Speech-to-text transcription | 7862 | `whisper-webui` |
@@ -94,7 +94,8 @@ This means you can fine-tune a model and immediately serve it for inference — 
 | `UNSLOTH_STUDIO_ARGS` | `--host 127.0.0.1 --port 18888` | Unsloth Studio startup arguments |
 | `AI_TOOLKIT_START_CMD` | `npm run start` | AI Toolkit start command |
 | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-4B` | ACE Step language model path |
-| `WAN2GP_PORT` | `7861` | Wan2GP server port |
+| `WAN2GP_PORT` | `17861` | Wan2GP server port (internal) |
+| `CADDY_HEADER_UP_LOCALHOST` | `$WAN2GP_PORT,3000` | Internal ports for which Caddy sends a `localhost` Host and Origin (`true` = all). Wan2GP and the ACE Step UI's backend refuse browser requests unless the Origin is `localhost`, so their ports are added at boot if missing (`05-caddy-localhost-ports.sh`); other entries are kept |
 | `WHISPER_UI_ARGS` | `--whisper_type whisper --server_port 7862` | Whisper WebUI startup arguments |
 | `SUPERVISOR_AUTOSTART` | (none) | Comma-separated services to auto-start on boot |
 | `DISPLAY_SIZEW` | `1920` | Desktop resolution width |
@@ -112,7 +113,7 @@ This means you can fine-tune a model and immediately serve it for inference — 
 | VNC | 5900 | 5900 |
 | ComfyUI | 8188 | 18188 |
 | SD Forge | 7860 | 17860 |
-| Wan2GP | 7861 | 7861 |
+| Wan2GP | 7861 | 17861 |
 | AI Toolkit | 18675 | 8675 |
 | ACE Step | 13000 | 3000 |
 | Unsloth Studio | 8888 | 18888 |

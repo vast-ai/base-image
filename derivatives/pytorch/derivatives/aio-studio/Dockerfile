@@ -642,6 +642,9 @@ RUN \
     git clone "${ACE_STEP_UI_REPO}" ace-step-ui && \
     cd ace-step-ui && \
     git checkout "${ACE_STEP_UI_REF}" && \
+    # The frontend port is fixed in vite.config.ts, not configurable, and
+    # 05-caddy-localhost-ports.sh and PORTAL_CONFIG both assume 3000 (ADR 0043).
+    { grep -qE '^[[:space:]]*port:[[:space:]]*3000,' vite.config.ts || { echo "ERROR: ace-step-ui vite.config.ts no longer serves on port 3000; update 05-caddy-localhost-ports.sh and PORTAL_CONFIG" >&2; exit 1; }; } && \
     npm install && \
     cd server && \
     npm install && \
