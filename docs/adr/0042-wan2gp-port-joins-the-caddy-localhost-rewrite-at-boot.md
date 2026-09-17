@@ -155,9 +155,14 @@ through the proxy at all.
 
 ## Amendment (2026-09-17) — aio-studio ships the same stage
 
-aio-studio bundles Wan2GP too. Today it pins a pre-v13 commit, so it is not affected
-yet. The first bump past v13 would break it in the same way, so the stage was added in
-advance: `derivatives/pytorch/derivatives/aio-studio/ROOT/etc/vast_boot.d/05-wan2gp-env.sh`.
+aio-studio bundles Wan2GP too, and is already affected. Its Dockerfile's
+`WAN2GP_REF=8675eab` is only a local-build default. CI resolves Wan2GP's latest commit
+and passes it in, the same as the standalone image. The scheduled build of 2026-09-15
+resolved `d710430`, which contains the origin check. That build passed QA and was
+promoted as `2026-09-15` and `latest`. Wan2GP is `autostart=false` in this image and
+the QA route test does not start it, so nothing exercised it. The `2026-09-07` tag
+predates the check (`362c346`). The same stage is therefore added here:
+`derivatives/pytorch/derivatives/aio-studio/ROOT/etc/vast_boot.d/05-wan2gp-env.sh`.
 
 - **Port.** aio-studio launches Wan2GP on `${WAN2GP_PORT:-17861}`, not 7860, so the copy's
   default is 17861. The rewrite list holds the INTERNAL port (the third field of a
