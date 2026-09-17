@@ -115,11 +115,21 @@ through the proxy at all.
 
 - Deepy's WebSocket and Gradio's POSTs work through the portal again, with the image
   building upstream HEAD as before.
-- Wan2GP's own cross-site check is overridden, automatically and for every user.
-  Behind Caddy that check could never pass, and cross-site protection still comes from
-  the portal: its auth cookie is `SameSite=lax`, and bearer and token auth are not
-  ambient. If a user enables Wan2GP's own `--auth`, its session cookie is
-  `SameSite=strict`, so that protection holds as well.
+- Wan2GP's own cross-site check is overridden, automatically and for every user. The
+  rewrite is unconditional, so a genuine cross-origin request is also presented to the
+  app as same-origin. Behind Caddy the check could never pass, so the practical choice
+  was between a broken app and an app without that check. What remains:
+  - Requests from other sites are still stopped by the portal. Its auth cookie is
+    `SameSite=lax`, and bearer and token auth are not ambient.
+  - Other apps on the SAME instance are not stopped. Cookies are not scoped by port, and
+    `SameSite` ignores the port, so a page served by another app on the instance (for
+    example an HTML file opened through Jupyter) is same-site and carries the portal
+    cookie. Wan2GP's origin check was the only thing that would have refused it, and
+    this decision accepts losing that check.
+  - If a user enables Wan2GP's own `--auth`, its session cookie is `SameSite=strict`.
+    That cookie has the same port limitation.
+  - A rewrite that translates only same-origin requests would keep the check meaningful.
+    It is a portal-wide change and is tracked for the portal as a follow-up.
 - The value is written to `/etc/environment` on first boot only. After that the user's
   edits win, but changing `WAN2GP_PORT` in `/etc/environment` after first boot does not
   update the list. The README documents the variable.
@@ -132,6 +142,11 @@ through the proxy at all.
 - Upstream Wan2GP honours forwarded headers from a trusted proxy, or drops the check.
   Delete the stage.
 - A second image needs the same rewrite. Build option 4 and move Wan2GP onto it.
+- The portal adopts a same-origin-only Origin translation as its default for every port.
+  This stage then becomes redundant and should be deleted, together with the per-template
+  `CADDY_HEADER_UP_LOCALHOST` entries.
+- Note on the premise: Caddy already sends `Host: localhost:<port>`, because it proxies
+  to `localhost`. The variable's effective change is therefore the Origin rewrite alone.
 - Caddy's handling of `CADDY_HEADER_UP_LOCALHOST` changes, for example if the rewrite
   stops setting Origin. The test's generator assertion fails first. Otherwise fall back
   to option 5.
