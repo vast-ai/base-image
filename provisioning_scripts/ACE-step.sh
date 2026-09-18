@@ -12,20 +12,21 @@ cd ACE-Step
 # torchaudio >= 2.9 and torchcodec do not pin torch, so an unpinned companion
 # resolves to the newest release and breaks against an older torch. Pin them
 # from derivatives/pytorch/torch-companions.json (copied here: this script runs
-# standalone). ACE-Step needs torchaudio, which ends at 2.11.0.
-if [[ -n "${TORCH_VERSION:-}" ]]; then
-    case "$TORCH_VERSION" in
-        2.7.1)  companions="torchvision==0.22.1 torchaudio==2.7.1 torchcodec==0.5" ;;
-        2.8.0)  companions="torchvision==0.23.0 torchaudio==2.8.0 torchcodec==0.7.0" ;;
-        2.9.1)  companions="torchvision==0.24.1 torchaudio==2.9.1 torchcodec==0.9.1" ;;
-        2.10.0) companions="torchvision==0.25.0 torchaudio==2.10.0 torchcodec==0.10.0" ;;
-        2.11.0) companions="torchvision==0.26.0 torchaudio==2.11.0 torchcodec==0.11.0" ;;
-        *) echo "TORCH_VERSION=${TORCH_VERSION} unsupported; use 2.7.1, 2.8.0, 2.9.1, 2.10.0 or 2.11.0, or leave unset for latest" >&2; exit 1 ;;
-    esac
-    uv pip install torch=="$TORCH_VERSION" $companions --torch-backend "${TORCH_BACKEND:-cu128}"
-else
-    uv pip install torch torchaudio torchvision torchcodec --torch-backend "${TORCH_BACKEND:-cu128}"
+# standalone). ACE-Step needs torchaudio, which ends at 2.11.0, so that is the
+# default rather than "latest". torchcodec is amd64_only below 2.11.0.
+TORCH_VERSION=${TORCH_VERSION:-2.11.0}
+case "$TORCH_VERSION" in
+    2.7.1)  companions="torchvision==0.22.1 torchaudio==2.7.1";  torchcodec="torchcodec==0.5" ;;
+    2.8.0)  companions="torchvision==0.23.0 torchaudio==2.8.0";  torchcodec="torchcodec==0.7.0" ;;
+    2.9.1)  companions="torchvision==0.24.1 torchaudio==2.9.1";  torchcodec="torchcodec==0.9.1" ;;
+    2.10.0) companions="torchvision==0.25.0 torchaudio==2.10.0"; torchcodec="torchcodec==0.10.0" ;;
+    2.11.0) companions="torchvision==0.26.0 torchaudio==2.11.0"; torchcodec="torchcodec==0.11.0" ;;
+    *) echo "TORCH_VERSION=${TORCH_VERSION} unsupported; use 2.7.1, 2.8.0, 2.9.1, 2.10.0 or 2.11.0 (default)" >&2; exit 1 ;;
+esac
+if [[ "$(uname -m)" == "aarch64" && "$TORCH_VERSION" != "2.11.0" ]]; then
+    torchcodec=""
 fi
+uv pip install torch=="$TORCH_VERSION" $companions $torchcodec --torch-backend "${TORCH_BACKEND:-cu128}"
 uv pip install -r requirements.txt gradio'<6' peft'<0.18' --torch-backend "${TORCH_BACKEND:-cu128}"
 uv pip install -e .
 
