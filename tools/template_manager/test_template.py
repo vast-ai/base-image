@@ -175,6 +175,15 @@ VRAM_CEILING_MULTIPLIER = 3.0  # bound the VRAM search at N x the declared floor
                                # tier (RTX 3090/4090) to widen a thin market, while
                                # still excluding the 40/80GB datacenter cards. This
                                # band is the cost control now the price filter is gone.
+PROBE_TIMEOUT_NO_PROVISIONING = 300   # seconds to wait for the test server when the
+                               # template declares no PROVISIONING_SCRIPT. The server
+                               # binds during boot, so nothing here takes minutes:
+                               # measured on a healthy QA cell 2026-09-18, it answered
+                               # 0.36s after the instance reported running. Before this,
+                               # such a template inherited prov + headroom = 4200s, a
+                               # window sized for a provisioning phase it never runs --
+                               # and the deadline is per ATTEMPT, so a cell drawing bad
+                               # hosts burned over an hour on each before trying another.
 NETWORK_PROBE_TIMEOUT = 60     # seconds of nothing-but-connection-timeouts before an
                                # instance is judged to have broken host networking.
                                # Connection *refused* does NOT count against this window —
@@ -1101,6 +1110,25 @@ def _is_connection_refused(exc):
     return getattr(reason, "errno", None) in (errno.ECONNREFUSED, errno.ECONNRESET)
 
 
+def compute_probe_timeout(instance_timeouts, declares_provisioning):
+    """How long to wait for the test server once the host has proved reachable.
+
+    Sized by the work the TEMPLATE declares, not by a default that assumes the maximum.
+    A template with a PROVISIONING_SCRIPT runs it to completion before the test server
+    binds, so it gets that whole window (PROV_TIMEOUT, which it may raise itself, plus
+    headroom). A template without one is only waiting for the boot sequence, which is
+    seconds: measured 2026-09-18 on a healthy QA cell, the server answered 0.36s after
+    the instance reported running.
+
+    Sizing the second case like the first is what left a serverless QA cell waiting
+    4200s for a server that was never coming -- per attempt, on a rented GPU.
+    """
+    if declares_provisioning:
+        prov = instance_timeouts.get("PROV_TIMEOUT", 3600)
+        return prov + TIMEOUT_HEADROOM
+    return PROBE_TIMEOUT_NO_PROVISIONING
+
+
 def probe_test_server(test_url, auth_token=None,
                       connectivity_timeout=NETWORK_PROBE_TIMEOUT,
                       server_timeout=NETWORK_PROBE_TIMEOUT, log=None):
@@ -1505,11 +1533,13 @@ def main():
     )
     min_timeout = prov + derivative + TIMEOUT_HEADROOM
 
-    # The test results server only binds its port after provisioning
-    # finishes (boot runs 75-provisioning-manifest.sh before
-    # 85-instance-test.sh), so the connectivity probe must tolerate the
-    # full provisioning window once it has confirmed the host is reachable.
-    server_probe_timeout = prov + TIMEOUT_HEADROOM
+    # The test results server only binds its port after provisioning finishes (boot
+    # runs 75-provisioning-manifest.sh before 85-instance-test.sh), so where a template
+    # PROVISIONS, the probe must tolerate that whole window once the host is reachable.
+    # Where it does not, that window is inherited rather than earned -- see
+    # compute_probe_timeout.
+    server_probe_timeout = compute_probe_timeout(
+        instance_timeouts, declares_provisioning=bool(env.get("PROVISIONING_SCRIPT")))
 
     if args.timeout < min_timeout:
         # Always lift a too-short timeout — keeping it (even when set explicitly)
