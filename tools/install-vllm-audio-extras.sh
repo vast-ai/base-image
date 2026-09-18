@@ -22,7 +22,23 @@
 # ran `pip install` would not notice.
 set -euo pipefail
 
-PY="${PY:-python3}"
+# NOT python3: these images put /opt/sys-venv/shim on PATH, so `python3` is the shim
+# interpreter and knows nothing about vLLM -- the first build of this script died on
+# `PackageNotFoundError: No package metadata was found for vllm`. vLLM is installed in
+# the upstream image's system python, and /venv/main (which the `vllm` launcher's
+# shebang points at, and which carries system-site-packages) can see it. Install into
+# the same interpreter the engine runs under, or the packages land somewhere it never
+# looks.
+PY="${PY:-/venv/main/bin/python}"
+if [[ ! -x "${PY}" ]]; then
+    PY="$(command -v python3)"
+fi
+
+if ! "$PY" -c "import importlib.metadata as m; m.distribution('vllm')" >/dev/null 2>&1; then
+    echo "ERROR: ${PY} cannot see vLLM's metadata, so the audio extra cannot be read" >&2
+    echo "       from it. This must run with the interpreter the engine uses." >&2
+    exit 1
+fi
 
 reqs="$("$PY" - <<'PYEOF'
 import importlib.metadata as md
@@ -45,7 +61,7 @@ fi
 
 echo "Installing vLLM audio extra: ${reqs}"
 # shellcheck disable=SC2086  # reqs is a requirement list, word splitting is intended
-uv pip install --system --no-cache-dir ${reqs}
+uv pip install --python "$PY" --no-cache-dir ${reqs}
 
 "$PY" - <<'PYEOF'
 import importlib
