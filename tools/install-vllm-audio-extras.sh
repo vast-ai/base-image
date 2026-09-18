@@ -29,7 +29,8 @@ set -euo pipefail
 # shebang points at, and which carries system-site-packages) can see it. Install into
 # the same interpreter the engine runs under, or the packages land somewhere it never
 # looks.
-PY="${PY:-/venv/main/bin/python}"
+ENGINE_PY="${ENGINE_PY:-/venv/main/bin/python}"
+PY="${PY:-${ENGINE_PY}}"
 if [[ ! -x "${PY}" ]]; then
     PY="$(command -v python3)"
 fi
