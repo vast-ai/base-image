@@ -4281,3 +4281,78 @@ def test_L093_the_declared_non_refusing_engines_are_really_out_of_scope(suite):
     repo = find_repo_root(Path(__file__).resolve().parent)
     d = suite.split("/")
     assert not _codes(repo / d[0] / d[1], "L093")
+
+
+# ---- L096: a vLLM-derived image ships the engine's audio extra ----
+#
+# THE real defect, measured 2026-09-18 on a live v0.29.0 instance. vLLM registers
+# /v1/audio/transcriptions and /v1/audio/translations whatever is installed, but keeps
+# the decoding behind an optional extra (upstream PR #8063: librosa pulls soxr, which is
+# LGPL). The upstream image never installs it, so every audio request returned 400
+# "Invalid or unsupported audio file" and the serverless worker in front of it reported
+# "No successful responses from benchmark" — an endpoint with zero capacity whose error
+# names the engine rather than the missing package.
+#
+# Two halves, because they fail differently and the second is silent per-format: with
+# soundfile present but `av` missing, wav/mp3/ogg/flac returned 200 while m4a/webm
+# returned 400, against an image that looks fixed.
+
+_VLLM_DF = """\
+ARG VLLM_BASE=vllm/vllm-openai:v0.29.0
+FROM ${VLLM_BASE} AS vllm_build
+COPY --from=base_image_source tools/install-vllm-audio-extras.sh /tmp/i.sh
+RUN /tmp/i.sh
+"""
+
+
+def _vllm_image(tmp_path, dockerfile=_VLLM_DF, script=None):
+    """A minimal vLLM-derived image tree, with the installer the rule reads."""
+    d = tmp_path / "external/vllm"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "Dockerfile").write_text(dockerfile)
+    tools = tmp_path / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    if script is None:
+        script = ('reqs=$(python3 -c "import importlib.metadata as m; '
+                  'm.distribution(\'vllm\').metadata.get_all(\'Requires-Dist\')")\n'
+                  'uv pip install --system $reqs\n'
+                  'python3 -c "import importlib; importlib.import_module(n)"\n')
+    (tools / "install-vllm-audio-extras.sh").write_text(script)
+    return tmp_path
+
+
+def test_L096_a_vllm_image_without_the_installer_fires(tmp_path):
+    """The shipped defect: FROM a vLLM image, audio routes registered, extra absent."""
+    df = _VLLM_DF.split("COPY")[0]
+    assert _codes(_vllm_image(tmp_path, dockerfile=df), "L096")
+
+
+def test_L096_a_hardcoded_package_list_fires(tmp_path):
+    """The extra's members changed between v0.13 and v0.28, so a pinned list is wrong
+    for some tag this same Dockerfile builds — and looks fixed while being broken."""
+    script = 'uv pip install --system av scipy soundfile soxr\npython3 -c "import av"\n'
+    assert _codes(_vllm_image(tmp_path, script=script), "L096")
+
+
+def test_L096_installing_without_importing_fires(tmp_path):
+    """Installing is not resolving (the lesson L056 records for llama.cpp's CUDA
+    backend): an unimportable wheel leaves the routes failing exactly as before."""
+    script = ('reqs=$(python3 -c "m.distribution(\'vllm\').metadata.get_all'
+              '(\'Requires-Dist\')")\nuv pip install --system $reqs\n')
+    assert _codes(_vllm_image(tmp_path, script=script), "L096")
+
+
+def test_L096_a_non_vllm_external_image_is_out_of_scope(tmp_path):
+    """SGLang carries soundfile and torchaudio as core deps and llama.cpp decodes in
+    C++ — demanding this of them would be a no-op paste."""
+    d = tmp_path / "external/sglang"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "Dockerfile").write_text("ARG SGLANG_BASE=lmsysorg/sglang:v0.5.8\n"
+                                  "FROM ${SGLANG_BASE}\n")
+    assert not _codes(tmp_path, "L096")
+
+
+def test_L096_the_tree_is_clean(tmp_path):
+    """The baseline: every vLLM-derived image in the repo runs the installer."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert not _codes(repo, "L096")
