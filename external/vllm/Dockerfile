@@ -62,6 +62,18 @@ RUN \
     set -euo pipefail && \
     uv pip install --system --no-cache-dir ray[default]
 
+# vLLM keeps audio decoding behind an optional extra and the upstream image does not
+# install it, so /v1/audio/transcriptions and /v1/audio/translations -- routes vLLM
+# registers regardless -- answer 400 for every request. The installer reads the extra
+# from the engine's own metadata (its members differ by vLLM version) and then imports
+# every package, because installing is not resolving. See the script for the detail.
+COPY --from=base_image_source tools/install-vllm-audio-extras.sh /tmp/install-vllm-audio-extras.sh
+RUN \
+    set -euo pipefail && \
+    chmod +x /tmp/install-vllm-audio-extras.sh && \
+    /tmp/install-vllm-audio-extras.sh && \
+    rm /tmp/install-vllm-audio-extras.sh
+
 # Fix vllm shebang so it runs through the venv Python, allowing users to
 # install/upgrade dependencies (e.g. transformers) into /venv/main and have
 # vllm pick them up.  Also enables volume sync of the environment.

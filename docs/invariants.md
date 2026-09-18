@@ -1828,3 +1828,93 @@ covered, if the body drifts, or if a declared port stops matching the image, and
 Dockerfiles. NOT gated: a new upstream origin check. No QA cell sends a WebSocket or
 POST through Caddy with a browser Origin, which is how aio-studio `2026-09-15` shipped
 with a broken Wan2GP.
+
+### A vLLM-derived image ships the engine's audio extra — **GATED (L096)**
+
+vLLM registers `/v1/audio/transcriptions` (>= v0.7.3) and `/v1/audio/translations`
+(>= v0.9.2) whatever is installed, but keeps the DECODING behind an optional `audio`
+extra — upstream PR #8063, prompted by issue #8030: librosa pulls `soxr`, which is
+LGPL, and that blocked installs at licence-strict sites. The upstream `vllm/vllm-openai`
+image has never installed it (zero hits for librosa/soundfile/soxr in vLLM's own
+Dockerfile at v0.13.0 or v0.29.0), so this is upstream behaviour, not a regression.
+
+Measured 2026-09-18 on a live v0.29.0 instance built from `vastai/vllm`: a 16 kHz PCM
+WAV posted straight to the engine returned `400 {"message":"Invalid or unsupported audio
+file."}`, with `ImportError('Please install vllm[audio] for audio support')` in the
+engine log and nowhere else. The serverless worker in front of it reported `No successful
+responses from benchmark` and never became ready — an endpoint with zero capacity whose
+error names the engine rather than the missing package.
+
+Two properties are gated, because they fail differently:
+
+- **The list comes from the engine's own metadata**, never a hardcoded set. One
+  Dockerfile builds many engine tags and the extra's members changed under it: v0.13 is
+  `librosa + soundfile + mistral_common[audio]`, v0.28+ is `av + scipy + soundfile +
+  soxr + mistral_common[audio]`, and the decode path changed with them (`librosa.load`,
+  then soundfile → torchcodec → PyAV). Pinning the current list leaves an older tag
+  without librosa: still broken, while looking fixed.
+- **Every member is imported after installing.** Installing is not resolving — the
+  lesson L056 records for llama.cpp's CUDA backend. The realistic failure is a PARTIAL
+  install, and it is silent per-format: measured with `soundfile` present and `av`
+  missing, wav/mp3/ogg/flac returned 200 while m4a/webm returned 400. The serverless
+  worker accepts all nine formats the OpenAI spec lists, so three of them fail against
+  an image that looks fixed.
+
+Scoped to the vLLM-derived images (`external/vllm`, `external/vllm-omni`) because the
+extra is vLLM's. The other two engines have the same route and different shapes, and
+demanding this of them would be a no-op paste:
+
+- **SGLang** carries `soundfile` and `torchaudio` as CORE dependencies — nothing to
+  install. Its blocker is the engine VERSION: `/v1/audio/transcriptions` landed in
+  v0.5.10 and `external/sglang` pins v0.5.8, so the route 404s rather than 400s. It
+  implements no `/v1/audio/translations` in any version.
+- **llama.cpp** decodes in C++ via vendored miniaudio — no Python dependency at all.
+  `llama-server` has served `/v1/audio/transcriptions` since b8784 (the image's b11027
+  has it), but only for an audio-capable mtmd model with an audio `--mmproj`, not
+  Whisper GGUF.
+
+NOT gated: that an audio request actually returns 200. That needs an ASR model on a
+rented GPU, and the QA templates run a tiny chat model — a runtime check there could not
+distinguish a missing package from a model that does not transcribe.
+
+### A probe deadline is sized by declared work — **enforced by executed tests (tests/test_probe_timeout.py)**
+
+`probe_test_server` waits in two tiers: nothing but connection timeouts means the host is
+black-holing packets and it is abandoned after `NETWORK_PROBE_TIMEOUT` (60s); a
+connection REFUSED proves the host is reachable and only the test server is missing, so
+the wait extends to the provisioning-aware deadline. That two-tier shape is right and is
+unchanged.
+
+What was wrong is the second number. It was `PROV_TIMEOUT (3600) + TIMEOUT_HEADROOM
+(600)` unconditionally — and neither QA template declares `PROVISIONING_SCRIPT` or
+`PROV_TIMEOUT`, so 3600 was the DEFAULT for a provisioning phase that cell never runs.
+Reported 2026-09-18 on a vLLM serverless cell sitting at 4200s against a test server that
+was never coming. The deadline is per ATTEMPT, so a cell drawing bad hosts burns over an
+hour on each before it can try another, on a rented GPU, while the run still looks alive.
+
+Measured in the same workflow run (35347701559), on the cell that was healthy: `Instance
+51435903 running` at 13:15:43.67 and the results server answering at 13:15:44.03 —
+**0.36s**, because boot binds it before the client ever polls. `PROBE_TIMEOUT_NO_PROVISIONING`
+is 300s, which is three orders of magnitude of headroom over the measurement.
+
+`compute_probe_timeout` now sizes the wait from what the TEMPLATE declares:
+
+- **`PROVISIONING_SCRIPT` declared** → `PROV_TIMEOUT + TIMEOUT_HEADROOM`, unchanged. The
+  boot sequence runs provisioning to completion before `85-instance-test.sh` starts the
+  server, so that window is earned, and a template that needs longer raises `PROV_TIMEOUT`
+  itself.
+- **Not declared** → `PROBE_TIMEOUT_NO_PROVISIONING`. Only the boot sequence is being
+  waited for.
+
+No image in this repo bakes `PROVISIONING_SCRIPT` into its Dockerfile (checked across
+`external/`, `derivatives/` and the root Dockerfiles), so the template env is the whole
+authority on whether provisioning runs. If one ever does, it must also declare
+`PROV_TIMEOUT` on its QA template, or this will size its probe as if it provisions in
+zero time.
+
+NOT a linter rule: this is tooling arithmetic rather than a property of an image or a
+workflow, which is what `imagegen lint` reads. It is codified the way the
+promotion-headline invariant is — an executed test, run by `imagegen-tests.yml` on any
+change under `tools/template_manager/`. Each half is mutation-checked: reverting to the
+inherited 4200, widening the short window back to 4200, and cutting the earned
+provisioning window each turn the suite red.
