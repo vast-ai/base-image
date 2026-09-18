@@ -21,7 +21,7 @@ TORCH_BACKEND=${TORCH_BACKEND:-cu128}
 cd "$APP_DIR"
 git checkout "$APP_REF"
 
-uv pip install torch=="${TORCH_VERSION}" torchaudio --torch-backend "$TORCH_BACKEND"
+uv pip install torch=="${TORCH_VERSION}" torchaudio=="${TORCH_VERSION}" --torch-backend "$TORCH_BACKEND"
 
 uv pip install -r requirements.txt -r backend/requirements-backend.txt
 

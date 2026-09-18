@@ -31,7 +31,7 @@ sed -i \
   -e '/^\[\[tool\.uv\.index\]\]/,+4d' \
   pyproject.toml
 
-uv pip install torch==${TORCH_VERSION} torchaudio --torch-backend "$TORCH_BACKEND"
+uv pip install torch=="${TORCH_VERSION}" torchaudio=="${TORCH_VERSION}" --torch-backend "$TORCH_BACKEND"
 
 uv pip install -e .
 
