@@ -24,10 +24,16 @@
 # cannot pass against a diffusion model and would have to move to a second cell rather
 # than be deleted.
 #
-# NO SERVERLESS CELL, unlike vllm-qa. This image has no serverless wiring at all — no
-# BACKEND, no MODEL_LOG, no EXPOSE 3000, no pyworker — so there is nothing to turn on
-# and port 3000 is deliberately NOT mapped here. If omni gains serverless support, the
-# 3000 mapping and a qa-serverless cell come with it.
+# SERVERLESS CELL SINCE ADR 0044. The image now carries the same wiring as vllm —
+# BACKEND, MODEL_LOAD_LOG_MSG, EXPOSE 3000 — so this template maps 3000 and
+# build-vllm-omni.yml runs a qa-serverless cell over it, exactly as vllm-qa does.
+#
+# That cell proves the WIRING, on this same tiny text model: the worker boots under
+# SERVERLESS=true, BACKEND selects the right adapter, MODEL_LOAD_LOG_MSG matches what
+# this engine actually logs, :3000 listens, and a benchmark score is reached. It proves
+# NOTHING about omni modality — /v1/audio/speech and /v1/images/generations need an
+# ~24 GB omni model, which is the same reason this template is text-only, and ADR 0044
+# scopes that out deliberately rather than by omission.
 #
 # Mirrors the production launch path:
 # runtype: jupyter, OPEN_BUTTON/JUPYTER env, the vLLM serving path. QA-only deltas
@@ -62,6 +68,13 @@ ports:
   - "8080:8080"                   # Jupyter
   - "8000:8000"                   # vLLM-Omni API
   - "8265:8265"                   # Ray Dashboard (ray.sh gates on this portal entry)
+  # MANDATORY for the serverless cell, not decorative: the platform injects
+  # VAST_TCP_PORT_<n> only for ports a template MAPS, and the pyworker SDK does an
+  # unguarded os.environ[f"VAST_TCP_PORT_{WORKER_PORT}"] during Backend construction.
+  # Unmapped, that is a KeyError before the worker binds anything -- measured live on
+  # the first serverless cell ever run. Harmless on the standard cell, where nothing
+  # binds 3000 and base/28 scans listeners rather than mappings. Gated by L073.
+  - "3000:3000"                   # serverless worker (pyworker)
 env:
   OPEN_BUTTON_PORT: "1111"
   OPEN_BUTTON_TOKEN: "1"
