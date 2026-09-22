@@ -2465,10 +2465,15 @@ def _tpl_with_ports(img, ports):
 
 
 def test_L073_serverless_gate_without_the_worker_port_fires(tmp_path):
-    """THE mutation, and it is the defect as measured. The platform injects
-    VAST_TCP_PORT_<n> only for MAPPED ports, and the SDK looks it up unguarded:
-    with 3000 unmapped the worker died `KeyError: 'VAST_TCP_PORT_3000'` inside
-    Metrics(), before binding the port or running a benchmark."""
+    """THE mutation, and it is the defect as measured: with 3000 unmapped the worker
+    died `KeyError: 'VAST_TCP_PORT_3000'` inside Metrics(), before binding the port or
+    running a benchmark, because the SDK looks that variable up unguarded.
+
+    The REASON originally recorded here -- that the platform maps only what a template
+    maps -- was corrected 2026-09-22: an EXPOSEd port is mapped too, and the measurement
+    predates the EXPOSE by six hours on the same day. The requirement is unchanged and
+    now rests on something narrower and true: a template must not DEPEND on the image's
+    EXPOSE, which the image can drop without any template noticing."""
     img = make(tmp_path)
     _tpl_with_ports(img, ["1111:1111", "8080:8080"])
     _wire_serverless_gate(tmp_path, "img/templates/qa")
@@ -4799,3 +4804,148 @@ def test_L097_a_runtime_template_dir_is_named_not_guessed(tmp_path):
     warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
     assert warns and "runtime" in warns[0].msg
     assert not [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
+# ---- L098: a serverless image owns its engine's log path ----
+#
+# THE defect, measured 2026-09-21 on the first serverless cell vllm-omni ever ran. The
+# worker's log path comes from another repo, hardcoded per backend; the image's comes
+# from its supervisor program name via logging.sh's
+# `${logpath:-/var/log/portal/${PROC_NAME}.log}`. vllm-omni runs BACKEND=vllm under a
+# program called `vllm-omni`, so the worker tailed /var/log/portal/vllm.log -- a file
+# that image never writes. It bound :3000 and never benchmarked, 1800s, three hosts.
+#
+# The others match by coincidence, not contract, and llama-cpp shows how thin it is:
+# image, directory and tag are all `llama-cpp` while the program is `llama`.
+
+def _serverless_image(tmp_path, backend="vllm", model_log="/var/log/portal/vllm.log",
+                      programs=("vllm", "ray")):
+    d = tmp_path / "external/x"
+    (d / "ROOT/etc/supervisor/conf.d").mkdir(parents=True, exist_ok=True)
+    df = "FROM scratch\nENV BACKEND=%s\n" % backend
+    if model_log:
+        df += "ENV MODEL_LOG=%s\n" % model_log
+    (d / "Dockerfile").write_text(df)
+    for p in programs:
+        (d / f"ROOT/etc/supervisor/conf.d/{p}.conf").write_text(f"[program:{p}]\n")
+    return L.Image(name="x", cls="external", dir=d, dockerfile=d / "Dockerfile",
+                   text=df, root=d / "ROOT")
+
+
+def _l098(img, repo):
+    return [f for f in L.check_serverless_image_bakes_model_log(img, repo)
+            if f.code == "L098"]
+
+
+def test_L098_a_serverless_image_without_model_log_fires(tmp_path):
+    assert _l098(_serverless_image(tmp_path, model_log=None), tmp_path)
+
+
+def test_L098_a_matching_model_log_is_clean(tmp_path):
+    assert not _l098(_serverless_image(tmp_path), tmp_path)
+
+
+def test_L098_a_log_naming_another_images_program_fires(tmp_path):
+    """THE vllm-omni defect: BACKEND=vllm under a program named something else."""
+    img = _serverless_image(tmp_path, model_log="/var/log/portal/vllm.log",
+                            programs=("vllm-omni", "ray"))
+    found = _l098(img, tmp_path)
+    assert found and "not this image's engine log" in found[0].msg
+
+
+def test_L098_a_sidecars_log_fires(tmp_path):
+    """ray carries no model-loaded line, so pointing the worker at it is the same
+    defect wearing a valid-looking path."""
+    assert _l098(_serverless_image(tmp_path, model_log="/var/log/portal/ray.log"),
+                 tmp_path)
+
+
+def test_L098_a_decoy_program_is_not_an_acceptable_target(tmp_path):
+    """The check must name the ENGINE's log, not 'some program of this image'. The
+    first version accepted any non-infra program, so on a multi-program image a wrong
+    value passed silently -- which is the failure mode the rule exists to remove."""
+    img = _serverless_image(tmp_path, model_log="/var/log/portal/decoy.log",
+                            programs=("vllm", "decoy", "ray"))
+    assert _l098(img, tmp_path), "a second app program made any value acceptable"
+
+
+def test_L098_two_engine_programs_fail_closed(tmp_path):
+    """With two non-infra programs, which emits the load line is a property of the
+    launch scripts, not the confs. Accepting either would bless the wrong one, so the
+    check refuses and says why."""
+    img = _serverless_image(tmp_path, model_log="/var/log/portal/vllm.log",
+                            programs=("vllm", "second-app", "ray"))
+    found = _l098(img, tmp_path)
+    assert found and "cannot be decided here" in found[0].msg
+
+
+def test_L098_an_image_with_no_backend_is_out_of_scope(tmp_path):
+    """Only a serverless image reads MODEL_LOG at all."""
+    img = _serverless_image(tmp_path, backend="", model_log=None)
+    img = L.Image(name="x", cls="external", dir=img.dir, dockerfile=img.dockerfile,
+                  text="FROM scratch\n", root=img.root)
+    assert not _l098(img, tmp_path)
+
+
+@pytest.mark.parametrize("backend", ["comfyui-json", "ace", "wan"])
+def test_L098_a_backend_whose_worker_hardcodes_the_path_is_out_of_scope(tmp_path, backend):
+    """Scope is what the WORKER does, not whether a BACKEND is baked. Upstream only
+    workers/openai/core.py reads the env; comfyui-json, ace and wan assign a module
+    constant straight into WorkerConfig.
+
+    Requiring it there would be worse than silence: the rule would demand the value be
+    updated on a program rename, the lint would go green, and the worker would go on
+    tailing the old file -- the rule certifying the exact break it exists to catch.
+    And in comfyui MODEL_LOG is already taken: its own provisioning scripts default it
+    to comfyui.log, so baking it moves model-download and provisioning-error output
+    into another file on ON-DEMAND launches too."""
+    img = _serverless_image(tmp_path, backend=backend, model_log=None,
+                            programs=("api-wrapper", "comfyui"))
+    assert not _l098(img, tmp_path)
+
+
+def test_L098_comfyui_does_not_bake_model_log():
+    """The tree side of the exemption above, against the real image. comfyui's
+    Dockerfile says in as many words that the worker 'hardcodes its own MODEL_LOG', and
+    for one revision this repo baked one anyway, four lines below that comment."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    img = next(i for i in discover(repo) if i.name == "comfyui")
+    assert not L._baked_env(img, "MODEL_LOG"), (
+        "comfyui bakes MODEL_LOG: its worker never reads it, and the name is already "
+        "used by the image's own provisioning scripts with a different default"
+    )
+
+
+def test_L098_the_real_images_are_clean():
+    """The baseline: every image whose worker reads MODEL_LOG names the program it
+    actually runs."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    seen = []
+    for img in discover(repo):
+        if L._baked_env(img, "BACKEND") not in L._MODEL_LOG_BACKENDS:
+            continue
+        seen.append(img.name)
+        assert not _l098(img, repo), f"{img.name}"
+    assert sorted(seen) == ["llama-cpp", "sglang", "vllm", "vllm-omni"], seen
+
+
+@pytest.mark.parametrize("name", ["vllm", "sglang", "llama-cpp", "vllm-omni"])
+def test_mut_L098_a_real_image_losing_its_model_log_fires(name):
+    """The protocol's mutation, on the REAL tree rather than a fabricated Dockerfile.
+    The synthetic tests pass against an image this repo does not build; this one fails
+    if the rule stops biting the images it is actually there for."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    img = next(i for i in discover(repo) if i.name == name)
+    mut = replace(img, text=re.sub(r"(?m)^ENV MODEL_LOG=.*\n", "", img.text))
+    found = _l098(mut, repo)
+    assert found and "no MODEL_LOG" in found[0].msg
+
+
+@pytest.mark.parametrize("name", ["vllm", "sglang", "llama-cpp", "vllm-omni"])
+def test_mut_L098_a_real_image_pointing_at_the_wrong_file_fires(name):
+    """The vllm-omni defect reproduced on each real image: a plausible path that the
+    image never writes. Catching the EMPTY case is not enough -- the measured failure
+    was a value that was present and wrong."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    img = next(i for i in discover(repo) if i.name == name)
+    mut = replace(img, text=re.sub(r"(?m)^ENV MODEL_LOG=.*$",
+                                   "ENV MODEL_LOG=/var/log/portal/engine.log", img.text))
+    assert _l098(mut, repo), f"{name} accepted a log path it never writes"

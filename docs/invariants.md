@@ -2020,3 +2020,83 @@ report printed nowhere under the invocation the docs prescribe and every evidenc
 is quoted from. The silent drop had moved from the check into the presentation layer.
 `tools/imagegen/tests/test_cli_lint_summary.py` pins the count, its accuracy and the
 `--warn` hint; restoring the original ordering turns it red.
+### A serverless image owns its engine's log path — **GATED (L098)**
+
+The worker that reads `MODEL_LOG` lives in another repo and hardcodes a filename per
+backend (`workers/vllm` → `vllm.log`, `workers/sglang` → `sglang.log`, `workers/llama` →
+`llama.log`, `workers/comfyui-json` → `api-wrapper.log`). The path an image actually
+writes is derived from its supervisor program name:
+`ROOT/opt/supervisor-scripts/utils/logging.sh` writes
+`${logpath:-/var/log/portal/${PROC_NAME}.log}` and supervisord sets `PROC_NAME` to
+`%(program_name)s`. Nothing connected the two, so every serverless image worked by a
+coincidence of naming across a repo boundary.
+
+Measured where the coincidence ran out (2026-09-21): vllm-omni runs `BACKEND=vllm` under
+a program named `vllm-omni`, so the worker tailed `/var/log/portal/vllm.log`, a file that
+image never writes. It started, bound :3000, and never benchmarked — 1800s, on three
+consecutive hosts, with every static check clean and the failure reported as an engine
+problem rather than a missing file.
+
+How thin the coincidence is elsewhere: **llama-cpp's image, directory and tag are all
+`llama-cpp` while its supervisor program is `llama`** — the only reason it matches. A
+rename for clarity would break serverless silently.
+
+**Scope is what the WORKER does, not whether a `BACKEND` is baked.** Upstream, only
+`workers/openai/core.py` consults the environment —
+`model_log_file=os.environ.get("MODEL_LOG", defaults.model_log_file)` — and
+`workers/{vllm,sglang,llama}` are the `EngineDefaults` feeding it. `workers/comfyui-json`,
+`workers/ace` and `workers/wan` are standalone: they assign a module constant straight
+into `WorkerConfig` and never read the environment at all. So `BACKEND` baked and
+`MODEL_LOG` read are different sets, and the difference is comfyui.
+
+Requiring it there would be worse than not requiring it, in two ways:
+
+- **It would certify the break it exists to catch.** Rename comfyui's `api-wrapper`
+  program, dutifully update `MODEL_LOG` to match as the rule demands, lint green — and
+  the worker goes on tailing `/var/log/portal/api-wrapper.log`, because it never reads
+  the variable. The rule would turn an unguarded rename into a blessed one.
+- **`MODEL_LOG` is not a free name in that image.** comfyui's own provisioning scripts
+  already use it with a different meaning and a different default —
+  `MODEL_LOG="${MODEL_LOG:-/var/log/portal/comfyui.log}"` in the serverless scripts, plus
+  the error traps in roughly ten on-demand ones — and the provisioner runs them with
+  `os.environ`. Baking it would move every model-download line and every
+  `[ERROR] Provisioning Script failed at line N` into another file, on **on-demand**
+  launches too, and in every customer script forked from our starter template. No QA cell
+  sets `PROVISIONING_SCRIPT`, so CI could not see it.
+
+For the images in scope, the value must name that image's **single** engine program. The
+rule fails CLOSED on ambiguity: with two non-infra programs, which one emits the load line
+is a property of the launch scripts rather than the confs, so the check refuses instead of
+accepting either. Every image in scope has exactly one today; infrastructure programs
+(ray, model-ui and the like) are excluded so the value names the engine, not a sidecar.
+The values are identical to what the defaults resolve to today, so the change is inert for
+these three — it converts a coincidence into a contract.
+
+NOT gated: that the worker still READS `MODEL_LOG`. If the upstream worker stopped
+honouring the variable, the bake would become silently inert again, and only a serverless
+QA cell would notice — on a rented GPU. The mirror case is equally ungated: because the
+bake now WINS over the upstream default, a future fix to `EngineDefaults` can no longer
+reach these images.
+
+### `EXPOSE` maps a port — correcting L073's stated reason
+
+L073's original text said the platform injects `VAST_TCP_PORT_<n>` **only** for ports a
+template maps. That is false: an EXPOSEd port is mapped too — ATTRIBUTED, not measured here
+(platform owner, 2026-09-22). What would measure it: a serverless launch with no
+3000 entry in the template, showing `VAST_TCP_PORT_3000` present in the instance
+env. The rule's REQUIREMENT does not rest on it either way, which is why the
+correction was recorded rather than waited on. The measurement behind the original claim is real but predates the
+mechanism it was used to deny — the `KeyError: 'VAST_TCP_PORT_3000'` was recorded at
+12:30 on 2026-08-24 (`0b31803`) and `EXPOSE 3000` first entered the engine images at
+18:29 the same day (`2fea0c9`), so at the moment of that KeyError there was nothing
+exposed to map.
+
+What is unchanged: the SDK's lookup is unguarded
+(`os.environ[f"VAST_TCP_PORT_{WORKER_PORT}"]`), so a missing mapping is a KeyError during
+Backend construction, before the worker binds a port. L073 therefore stands on a narrower
+footing — a serverless QA template maps the port explicitly so it does not DEPEND on the
+image continuing to EXPOSE it, and so a reader of the template can see it.
+
+Also recorded, because it was raised as a security concern and is not one: Vast's port
+declarations exist so that many instances can share one address, not as a security
+boundary. A process binding `0.0.0.0` on a rented box is reachable regardless.

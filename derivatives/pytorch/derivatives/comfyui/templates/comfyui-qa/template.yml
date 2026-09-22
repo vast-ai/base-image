@@ -28,8 +28,8 @@ ports:
   - "8288:8288"                   # API Wrapper
   - "8384:8384"                   # Syncthing
   # The serverless worker's port, MANDATORY for the serverless cells rather than
-  # decorative. The platform injects VAST_TCP_PORT_<n> only for ports a template MAPS,
-  # and the pyworker SDK looks up exactly that with no guard —
+  # decorative. An EXPOSE in the image maps it too, but a template must not DEPEND on
+  # that. The pyworker SDK looks the mapping up with no guard —
   #     worker_port = os.environ[f"VAST_TCP_PORT_{os.environ['WORKER_PORT']}"]
   # (vastai/serverless/server/lib/metrics.py) — so an unmapped 3000 is a KeyError inside
   # Metrics() during Backend construction, before the worker binds anything or runs a

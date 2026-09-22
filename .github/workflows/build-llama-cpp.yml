@@ -370,9 +370,9 @@ jobs:
 
   # Serverless cell (ADR 0031 decision 3). The ONLY product difference from the
   # standard cell is SERVERLESS=true — BACKEND, MODEL_NAME and MODEL_LOG are all
-  # deliberately absent, because the image bakes BACKEND=llama and pyworker's core.py
-  # resolves the benchmark model from LLAMA_MODEL and the log path from its own
-  # EngineDefaults. Passing them would test our values instead of the image's.
+  # deliberately absent, because the image bakes BACKEND=llama and MODEL_LOG (L098)
+  # and pyworker's core.py resolves the benchmark model from LLAMA_MODEL. Passing
+  # them would test our values instead of the image's.
   #
   # INSTANCE_TEST_REQUIRE_PASS is not a product difference: no customer template
   # carries it. It is how the gate asserts, and this mode has more tests that must

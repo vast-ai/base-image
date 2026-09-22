@@ -416,9 +416,10 @@ jobs:
       # exercising it. If it fails, the benchmark raises and 20-serverless-pyworker
       # reds on a missing score — loudly, which is what we want.
       #
-      # MODEL_LOG is GONE for the same reason: the worker's EngineDefaults already
-      # carry this engine's log path, and passing it tested our value rather than the
-      # image's.
+      # MODEL_LOG is GONE for the same reason, and the reason got stronger: the IMAGE
+      # bakes it now (L098) rather than leaning on the worker's EngineDefaults, so
+      # passing it here would test our value instead of the image's -- and the image's
+      # is the one a customer gets.
       #
       # INSTANCE_TEST_REQUIRE_PASS stays, and is NOT a product difference. No customer
       # template carries it — it is how the gate asserts, and the serverless cell has

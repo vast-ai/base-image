@@ -68,12 +68,14 @@ ports:
   - "8080:8080"                   # Jupyter
   - "8000:8000"                   # vLLM-Omni API
   - "8265:8265"                   # Ray Dashboard (ray.sh gates on this portal entry)
-  # MANDATORY for the serverless cell, not decorative: the platform injects
-  # VAST_TCP_PORT_<n> only for ports a template MAPS, and the pyworker SDK does an
-  # unguarded os.environ[f"VAST_TCP_PORT_{WORKER_PORT}"] during Backend construction.
-  # Unmapped, that is a KeyError before the worker binds anything -- measured live on
-  # the first serverless cell ever run. Harmless on the standard cell, where nothing
-  # binds 3000 and base/28 scans listeners rather than mappings. Gated by L073.
+  # MANDATORY for the serverless cell, not decorative. The pyworker SDK does an
+  # unguarded os.environ[f"VAST_TCP_PORT_{WORKER_PORT}"] during Backend construction, so
+  # the port has to be mapped from somewhere or that is a KeyError before the worker
+  # binds anything -- measured live on the first serverless cell ever run, when nothing
+  # EXPOSEd 3000 yet. The image's EXPOSE would map it today, and this entry says the
+  # template does not DEPEND on that: an image can drop an EXPOSE without any template
+  # noticing. Harmless on the standard cell, where nothing binds 3000 and base/28 scans
+  # listeners rather than mappings. Gated by L073.
   - "3000:3000"                   # serverless worker (pyworker)
 env:
   OPEN_BUTTON_PORT: "1111"
