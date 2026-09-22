@@ -4421,7 +4421,7 @@ def test_L097_another_images_suite_fires_even_though_it_exists(tmp_path):
 
 
 def test_L097_an_unquoted_value_is_read(tmp_path):
-    """Values may be quoted, bare or a block scalar; only quoted ones were read."""
+    """Values may be quoted or bare; only quoted ones were read."""
     d = tmp_path / ".github/workflows"
     d.mkdir(parents=True, exist_ok=True)
     (d / "build-x.yml").write_text(
@@ -4466,3 +4466,137 @@ def test_L097_the_tree_is_clean():
     """The baseline: every name every workflow requires is a file that ships."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     assert not _codes(repo, "L097")
+
+
+def _wf(tmp_path, body, name="build-x.yml"):
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text("name: X\non: workflow_dispatch\njobs:\n" + body)
+    return tmp_path
+
+
+def _image_shipping(tmp_path, image="external/x", suite="x.d", files=("10-x-serving.sh",)):
+    """An image whose suite ships `files` and a base suite with the GPU test."""
+    t = tmp_path / image / "ROOT/opt/instance-tools/tests"
+    (t / suite).mkdir(parents=True, exist_ok=True)
+    for f in files:
+        (t / suite / f).write_text("#!/bin/bash\n")
+    (t / "base").mkdir(parents=True, exist_ok=True)
+    (t / "base" / "60-gpu-cuda.sh").write_text("#!/bin/bash\n")
+    return tmp_path
+
+
+# The four YAML shapes the first implementation read wrongly. Each was a SILENT pass --
+# no error, no warning -- which is the failure mode the rule's own text condemns. They
+# are parametrized together because they share one cause: a hand-rolled reader only ever
+# covers the shapes its author thought of, and these four are ordinary YAML.
+#
+# Every case puts a name that SHIPS first and the missing one SECOND. That ordering is
+# the test, not decoration: with the missing name first, a reader that consumed a single
+# line still fired and the test still passed. Reversing it is what makes a truncating
+# reader detectable.
+@pytest.mark.parametrize("shape,body", [
+    ("flow mapping", "  qa:\n    with: { template_dir: external/x/templates/x-qa, "
+                     'require_tests: "base/60-gpu-cuda x.d/99-not-here" }\n'),
+    ("blank line above the key",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n\n"
+     "      require_tests: >-\n        base/60-gpu-cuda\n        x.d/99-not-here\n"),
+    ("blank line inside the folded value",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+     "      require_tests: >-\n        base/60-gpu-cuda\n\n        x.d/99-not-here\n"),
+    ("no trailing newline",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+     "      require_tests: >-\n        base/60-gpu-cuda\n        x.d/99-not-here"),
+    ("literal block scalar",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+     "      require_tests: |\n        base/60-gpu-cuda x.d/99-not-here\n"),
+    ("single-quoted", "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+                      "      require_tests: 'base/60-gpu-cuda x.d/99-not-here'\n"),
+])
+def test_L097_every_scalar_style_is_read(tmp_path, shape, body):
+    """A folded list whose SECOND half holds the deleted test must still be caught: that
+    is the vllm-omni case this rule was built for, and the shape a truncating reader
+    passes silently."""
+    repo = _image_shipping(_wf(tmp_path, body))
+    errs = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
+    assert errs, f"{shape}: read nothing, so the missing test passed silently"
+    assert any("99-not-here" in f.msg for f in errs), (
+        f"{shape}: fired, but not about the name that is missing - the value was "
+        f"truncated before it")
+
+
+def test_L097_a_name_must_match_the_file_exactly(tmp_path):
+    """runner.sh compares with `==`, so a prefix that satisfied a startswith() check
+    here still fails on a rented GPU with 'missing from this image' -- the exact cost
+    this rule exists to avoid."""
+    repo = _wf_requiring(tmp_path, "x.d/20-serverless", "x.d",
+                         ["20-serverless-pyworker.sh"])
+    assert _codes(repo, "L097")
+
+
+def test_L097_a_repo_root_template_is_scoped_by_the_image_it_declares(tmp_path):
+    """`templates/pytorch-qa` sits at the repo root and gates a DIFFERENT image, which
+    its template.yml states outright (`image: vastai/pytorch`). Deriving it from the
+    directory stem instead guessed, and only in `derivatives/<stem>`/`external/<stem>`
+    -- so any repo-root template for one of the 16 images under
+    `derivatives/pytorch/derivatives/` resolved to nothing and its own tests were
+    reported missing."""
+    repo = _wf(tmp_path, "  qa:\n    with:\n      template_dir: templates/comfyui-qa\n"
+                         "      require_tests: comfyui.d/10-comfyui-serving\n")
+    tpl = repo / "templates/comfyui-qa"
+    tpl.mkdir(parents=True)
+    (tpl / "template.yml").write_text("image: vastai/comfyui\n")
+    nested = repo / "derivatives/pytorch/derivatives/comfyui"
+    (nested).mkdir(parents=True)
+    (nested / "Dockerfile").write_text("FROM x\n")
+    (repo / "external").mkdir(exist_ok=True)
+    _image_shipping(repo, image="derivatives/pytorch/derivatives/comfyui",
+                    suite="comfyui.d", files=("10-comfyui-serving.sh",))
+    assert not _codes(repo, "L097"), (
+        "a nested image's own test was reported missing because the template was "
+        "mapped by stem instead of by the image it declares")
+
+
+def test_L097_each_job_is_scoped_to_its_own_image(tmp_path):
+    """Two cells in one workflow build different images. Reading the file as text
+    pooled every template_dir and every require-set in it, so a name valid for one cell
+    satisfied the other -- the rule said SCOPED TO THE IMAGE while scoping to the file."""
+    repo = _wf(tmp_path,
+               "  qa-x:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+               "      require_tests: x.d/10-x-serving\n"
+               "  qa-y:\n    with:\n      template_dir: external/y/templates/y-qa\n"
+               "      require_tests: x.d/10-x-serving\n")
+    _image_shipping(repo, image="external/x", suite="x.d")
+    _image_shipping(repo, image="external/y", suite="y.d", files=("10-y-serving.sh",))
+    errs = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
+    assert errs, "the y cell requires x's suite, which y does not ship"
+    assert all("qa-y" in f.msg for f in errs), (
+        f"the x cell is correct and must not fire: {[f.msg for f in errs]}")
+
+
+def test_L097_an_input_declaration_is_not_a_value(tmp_path):
+    """qa-gate.yml DESCRIBES require_tests in a `description: >-` under
+    on.workflow_call.inputs. A text scan reads that prose as a value, so a test name in
+    a doc example becomes a false error. Reading `jobs.<id>.with` cannot see it."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "qa-gate.yml").write_text(
+        "name: QA\non:\n  workflow_call:\n    inputs:\n      require_tests:\n"
+        "        description: >-\n"
+        "          Space-separated names, for example base/60-gpu-cuda or\n"
+        "          x.d/99-not-here, that must be PRESENT and PASSED.\n"
+        "        required: false\n        type: string\n"
+        "jobs:\n  qa:\n    runs-on: ubuntu-latest\n")
+    _image_shipping(tmp_path)
+    assert not _codes(tmp_path, "L097"), "prose in an input description was read as a value"
+
+
+def test_L097_a_runtime_template_dir_is_named_not_guessed(tmp_path):
+    """If the template is chosen at runtime the image cannot be known, and guessing it
+    would judge the names against the wrong suite set. Say so instead."""
+    repo = _wf(tmp_path, "  qa:\n    with:\n"
+                         "      template_dir: ${{ matrix.template_dir }}\n"
+                         "      require_tests: x.d/99-not-here\n")
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "runtime" in warns[0].msg
+    assert not [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
