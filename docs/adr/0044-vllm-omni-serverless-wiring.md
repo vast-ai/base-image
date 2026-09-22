@@ -63,18 +63,28 @@ Take option A.
 1. `external/vllm-omni/Dockerfile` gains the serverless block, identical in shape to
    `external/vllm`: `ENV BACKEND=vllm`, `ENV MODEL_LOAD_LOG_MSG="Application startup
    complete."`, `EXPOSE 3000`.
-2. `BACKEND=vllm` rather than a new adapter. vLLM-Omni IS vLLM — its launcher runs the
+2. `MODEL_LOG=/var/log/portal/vllm-omni.log` is baked too, and it is the one thing
+   `BACKEND=vllm` does NOT carry over. `workers/vllm`'s EngineDefaults tail
+   `/var/log/portal/vllm.log`, named for the supervisor program — which here is
+   `vllm-omni`, so that file never exists. Measured on the first run of this cell: the
+   worker bound :3000, reported `MODEL_LOG:` empty and `Using worker backend: vllm`, the
+   engine logged `Application startup complete.` to `vllm-omni.log`, and the worker never
+   saw it — no benchmark in 1800s, on three hosts in a row. The other engine images pass
+   on a coincidence of naming between their program and the worker's expected filename;
+   this one cannot, which makes explicit what was always true: the image is the layer
+   that knows where its engine logs.
+3. `BACKEND=vllm` rather than a new adapter. vLLM-Omni IS vLLM — its launcher runs the
    same `vllm serve` and reads the same `VLLM_MODEL`/`VLLM_ARGS`, so `workers/vllm`'s
    engine defaults apply unchanged. A new adapter would be a second copy of the same
    values, free to drift.
-3. `vllm-omni.d/` gains `20-serverless-pyworker.sh`, copied from `vllm.d/` unchanged:
+4. `vllm-omni.d/` gains `20-serverless-pyworker.sh`, copied from `vllm.d/` unchanged:
    the file contains nothing engine-specific, and its `is_serverless` guard keeps it
    dormant on the existing on-demand cell (L067).
-4. The QA template maps 3000 and its header note is corrected, since it currently states
+5. The QA template maps 3000 and its header note is corrected, since it currently states
    the opposite as a deliberate decision.
-5. `build-vllm-omni.yml` gains a `qa-serverless` job mirroring vLLM's, with
+6. `build-vllm-omni.yml` gains a `qa-serverless` job mirroring vLLM's, with
    `vllm-omni.d/*` test names and this image's log paths.
-6. The cell is ORDERED ahead of the promotion approval and does NOT block it — ADR 0006
+7. The cell is ORDERED ahead of the promotion approval and does NOT block it — ADR 0006
    condition 2's ramp, which every other engine went through. It becomes gating after
    two consecutive green runs whose greens are checked for vacuity
    (`base/85-serverless-services` and `vllm-omni.d/20-serverless-pyworker` both PASSED,
@@ -97,9 +107,17 @@ Take option A.
   unproven routes at all — by hand first, per the binding condition above.
 - One more live-GPU cell per omni build, on the same offer pool and model as the existing
   one, so the added cost is one instance rather than a new class of instance.
-- If vLLM-Omni's startup log line ever diverges from stock vLLM, this cell is what
-  catches it. That is the single most likely defect in this change and the cheapest cell
-  catches it, which is the argument for option A over option C.
+- **The cheap cell earned itself on its first run.** It was built to catch a wrong
+  `MODEL_LOAD_LOG_MSG`; what it actually caught was a wrong log PATH, a failure mode
+  nobody had listed. The log line turned out to be identical to stock vLLM's — the
+  engine printed it — and the worker was reading a file that does not exist on this
+  image. Option C would have shipped that silently: serverless would have been wired,
+  advertised, and dead.
+- **Open question this raises beyond omni.** vllm, sglang and llama all rely on their
+  supervisor program name matching a filename hardcoded in another repo, and none bakes
+  `MODEL_LOG`. They work today by coincidence, not by contract. Making the image own it
+  everywhere is a separate change against three working images, so it is recorded here
+  rather than smuggled in.
 - **A missing invariant surfaced while building this and is now gated (L097).** The
   serverless cell declares its required tests in the WORKFLOW, because the template is
   shared with the on-demand cell that must not require them — and L057/L059/L072 all

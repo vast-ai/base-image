@@ -90,6 +90,20 @@ RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
 ENV BACKEND=vllm
 ENV MODEL_LOAD_LOG_MSG="Application startup complete."
 
+# MODEL_LOG must be baked HERE, and this is the one place BACKEND=vllm does not carry
+# over. workers/vllm's EngineDefaults tail /var/log/portal/vllm.log -- named for the
+# supervisor program, which on this image is `vllm-omni`, so that file never exists and
+# the worker tails nothing. MEASURED on the first serverless cell ever run here: the
+# worker started, bound :3000, logged `MODEL_LOG:` empty and `Using worker backend:
+# vllm`, the engine logged `Application startup complete.` to vllm-omni.log, and the
+# worker never saw it -- no benchmark for 1800s, on three hosts in a row.
+#
+# The other engine images get away with the default by a coincidence of naming: their
+# program and the worker's expected filename happen to match. This one cannot, which
+# makes explicit what was always true -- the image is the layer that knows where its
+# engine logs, exactly as it is for MODEL_LOAD_LOG_MSG above.
+ENV MODEL_LOG=/var/log/portal/vllm-omni.log
+
 # Reserve the serverless worker port (WORKER_PORT default 3000). EXPOSE makes Vast map
 # it, so VAST_TCP_PORT_3000 is set for the worker's self-report with NO template port
 # entry. Unbound and harmless on-demand -- the worker binds 3000 only under
