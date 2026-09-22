@@ -3007,8 +3007,13 @@ def test_L078_a_fully_pinned_image_and_template_is_clean(tmp_path):
 
 
 def test_L078_the_real_engine_images_pin_the_worker_address():
-    """Round-trip on the REAL images: all three OpenAI-core engines must be clean,
-    which is the assertion that would have failed before the llama.sh fix."""
+    """Round-trip on the REAL images: every OpenAI-core engine must be clean, which is
+    the assertion that would have failed before the llama.sh fix.
+
+    vllm-omni joined this list when ADR 0044 gave it serverless wiring -- baking
+    BACKEND is what puts an image in this rule's scope, so the list is a coverage
+    assertion: a new serverless engine image that forgets to pin its worker address
+    fails here rather than passing unnoticed."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     seen = []
     for img in discover(repo):
@@ -3017,7 +3022,7 @@ def test_L078_the_real_engine_images_pin_the_worker_address():
         seen.append(img.name)
         bad = [f.msg for f in lint_image(img, repo) if f.code == "L078"]
         assert not bad, f"{img.name}: {bad}"
-    assert sorted(seen) == ["llama-cpp", "sglang", "vllm"], seen
+    assert sorted(seen) == ["llama-cpp", "sglang", "vllm", "vllm-omni"], seen
 
 
 # ---- L079: a serverless QA cell must not be able to reach the production autoscaler ----
@@ -4356,3 +4361,108 @@ def test_L096_the_tree_is_clean(tmp_path):
     """The baseline: every vLLM-derived image in the repo runs the installer."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     assert not _codes(repo, "L096")
+
+
+# ---- L097: a workflow cannot require a test the tree does not ship ----
+#
+# L057/L059/L072 read the TEMPLATE's env.INSTANCE_TEST_REQUIRE_PASS. A serverless cell
+# declares its required set in the WORKFLOW instead -- the template is shared with the
+# on-demand cell, which must not require serverless tests -- so the one place those
+# requirements are written was the one place nothing checked them.
+#
+# Found while wiring vllm-omni's serverless cell (ADR 0044): deleting the required test
+# file left the workflow requiring it and every static check clean. The gate would still
+# fail, on a rented GPU after a full build, reporting a missing test rather than a
+# missing file that was visible in the repo throughout. Same shape as L088.
+
+def _wf_requiring(tmp_path, names, suite=None, files=()):
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build-x.yml").write_text(
+        "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        f'      template_dir: external/x/templates/x-qa\n'
+        f'      require_tests: "{names}"\n')
+    if suite:
+        s = tmp_path / "external/x/ROOT/opt/instance-tools/tests" / suite
+        s.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            (s / f).write_text("#!/bin/bash\n")
+    return tmp_path
+
+
+def test_L097_a_required_test_with_no_file_fires(tmp_path):
+    repo = _wf_requiring(tmp_path, "x.d/20-serverless-pyworker", "x.d", ["10-x-serving.sh"])
+    assert _codes(repo, "L097")
+
+
+def test_L097_a_required_test_that_ships_is_clean(tmp_path):
+    repo = _wf_requiring(tmp_path, "x.d/20-serverless-pyworker", "x.d",
+                         ["20-serverless-pyworker.sh"])
+    assert not _codes(repo, "L097")
+
+
+def test_L097_a_suite_the_image_does_not_have_fires(tmp_path):
+    """Names the suite rather than the file, because it is a different mistake: a
+    workflow copied between images and left naming the suite it came from. THE REAL
+    CASE, per L088: vllm-omni's gate was first assembled by copying vllm.d's files."""
+    repo = _wf_requiring(tmp_path, "ghost.d/10-ghost", "x.d", ["10-x-serving.sh"])
+    found = _codes(repo, "L097")
+    assert found and "ships no `ghost.d/` suite" in found[0].msg
+
+
+def test_L097_another_images_suite_fires_even_though_it_exists(tmp_path):
+    """The blind spot a first draft of this rule had: matching any suite ANYWHERE in
+    the tree passes the exact copy-paste the rule exists to catch."""
+    repo = _wf_requiring(tmp_path, "other.d/10-other", "x.d", ["10-x-serving.sh"])
+    other = tmp_path / "external/other/ROOT/opt/instance-tools/tests/other.d"
+    other.mkdir(parents=True, exist_ok=True)
+    (other / "10-other.sh").write_text("#!/bin/bash\n")
+    assert _codes(repo, "L097")
+
+
+def test_L097_an_unquoted_value_is_read(tmp_path):
+    """Values may be quoted, bare or a block scalar; only quoted ones were read."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build-x.yml").write_text(
+        "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        "      template_dir: external/x/templates/x-qa\n"
+        "      require_tests: x.d/99-not-here\n")
+    s = tmp_path / "external/x/ROOT/opt/instance-tools/tests/x.d"
+    s.mkdir(parents=True, exist_ok=True)
+    (s / "10-x-serving.sh").write_text("#!/bin/bash\n")
+    assert _codes(tmp_path, "L097")
+
+
+def test_L097_a_runtime_expression_is_named_not_dropped(tmp_path):
+    """`${{ matrix.require_tests }}` cannot be read statically. Saying so is the
+    difference between a known gap and a rule that quietly covers less than it says."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build-x.yml").write_text(
+        "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        "      template_dir: external/x/templates/x-qa\n"
+        "      require_tests: ${{ matrix.require_tests }}\n")
+    warns = [f for f in L.lint_repo(tmp_path) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "runtime expression" in warns[0].msg
+
+
+def test_L097_reads_the_env_form_too(tmp_path):
+    """A serverless cell injects the set through extra_env, not require_tests."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build-x.yml").write_text(
+        "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        "      extra_env: |\n"
+        "        SERVERLESS=true\n"
+        "        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers x.d/20-serverless-pyworker\n")
+    s = tmp_path / "external/x/ROOT/opt/instance-tools/tests/x.d"
+    s.mkdir(parents=True, exist_ok=True)
+    (s / "10-x-serving.sh").write_text("#!/bin/bash\n")
+    assert _codes(tmp_path, "L097")
+
+
+def test_L097_the_tree_is_clean():
+    """The baseline: every name every workflow requires is a file that ships."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert not _codes(repo, "L097")
