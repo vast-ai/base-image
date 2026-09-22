@@ -106,6 +106,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
+    ("L097", ERROR, "Every test a WORKFLOW requires -- in a qa-gate caller's `require_tests`, or in the `INSTANCE_TEST_REQUIRE_PASS` it injects through `extra_env` -- names a test file the image THAT WORKFLOW BUILDS will actually have. L057, L059 and L072 read the TEMPLATE's `env.INSTANCE_TEST_REQUIRE_PASS` and cannot see these: a serverless cell declares its required set in the workflow, because the template is shared with the on-demand cell that must not require serverless tests. So the one place the serverless requirements are written was the one place nothing checked them. A name with no file cannot pass, so the gate fails -- but it fails on a RENTED GPU after a full image build, reporting a missing test rather than a missing FILE, and the fact is visible in the repo the whole time (ADR 0001: static checks are the fast gate). Same shape as L088 one level up. Found while wiring vllm-omni's serverless cell (ADR 0044) -- deleting `vllm-omni.d/20-serverless-pyworker.sh` left the workflow requiring it and every static check clean. SCOPED TO THE IMAGE, not the tree: the workflow is tied to its image through `template_dir`, so a workflow copied between images and left naming the suite it came from is caught -- which is exactly how vllm-omni's gate was first assembled (L088's story), and a first draft of this rule that matched any suite anywhere missed it. Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no pytorch.d of its own, correctly. A value built at runtime (`${{ matrix.require_tests }}`) cannot be read here and is reported as a WARN naming itself, rather than dropped silently -- the failure mode L087 condemns"),
     ("L096", ERROR, "An image built FROM a vLLM upstream image (`vllm/vllm-openai`, `vllm/vllm-omni`) MUST install vLLM's optional `audio` extra AND prove it imports, by running `tools/install-vllm-audio-extras.sh`. vLLM registers `/v1/audio/transcriptions` (>= v0.7.3) and `/v1/audio/translations` (>= v0.9.2) whatever is installed, but keeps the DECODING behind an extra — upstream PR #8063, prompted by issue #8030: librosa pulls soxr, which is LGPL, and that blocked installs at licence-strict sites. The upstream image has never installed it (zero hits for librosa/soundfile/soxr in vLLM's own Dockerfile at v0.13.0 or v0.29.0), so the route exists and answers 400 `Invalid or unsupported audio file` for EVERY request, with `ImportError('Please install vllm[audio] for audio support')` visible only in the engine log. Measured 2026-09-18 on a live v0.29.0 instance: a 16 kHz PCM WAV posted straight to the engine returned 400, and the serverless worker fronting it reported `No successful responses from benchmark` — an endpoint with zero capacity whose error names the engine, not the missing package. The list must be READ FROM METADATA, never hardcoded: this one Dockerfile builds many engine tags and the extra's members changed under it (v0.13 is librosa + soundfile + mistral_common[audio]; v0.28+ is av + scipy + soundfile + soxr + mistral_common[audio]), so pinning the current list leaves an older tag without librosa — still broken, while looking fixed. Installing is also not resolving, the lesson L056 records for llama.cpp's CUDA backend: the script imports every member, because a wheel that unpacks but cannot load leaves the route failing in exactly the way the install was meant to prevent. Partial installs are the realistic failure and they are SILENT per-format: with soundfile present but `av` missing, wav/mp3/ogg/flac return 200 while m4a/webm return 400 — and the worker accepts all nine formats the OpenAI spec lists, so three of them fail against an image that looks fixed. Scoped to the vLLM-derived images because the extra is vLLM's: SGLang carries soundfile and torchaudio as CORE dependencies (nothing to install), and llama.cpp decodes in C++ via vendored miniaudio (no Python dependency at all) — three engines, three different shapes, and demanding this of the other two would be a no-op paste"),
     ("L095", ERROR, "A workflow `if:` written as a block scalar must not contain a `#` comment line. In a folded (`>-`) or literal (`|`) block scalar, `#` does NOT start a comment — YAML folds the whole line into the string, so the text lands INSIDE the GitHub expression and the workflow fails to parse. Measured 2026-09-02 to 2026-09-09: `abba35d` (PR #274) added a 9-line rationale under `if: >-` in the merge-manifests job of all four engine builds, and every engine build died for a week. The failure gives almost nothing to work with: parsing happens before any job is created, so the run shows `conclusion: failure` with `jobs: []`, no step log names the cause, and `workflow_dispatch` is refused outright with `HTTP 422 ... Unexpected symbol: '#'`. It is silent as well as opaque — `notify-slack` is itself a job in the run, so it never executes and no alert fires; the scheduled rebuilds simply stopped, security rebuilds included, and nothing said so. Detected by parsing the workflow and reading the RESOLVED `if:` value, not by matching indentation, so every block-scalar form is covered at once. A `#` inside a quoted string is legal in an expression (`contains(msg, '#skip')`) and is not reported: quoted spans are blanked before the check. The fix is always the same — move the prose ABOVE the `if:` key, where it is a real comment"),
     ("L094", ERROR, "A copyleft entry in LICENSES.md must declare an in-image licence path, and a path the IMAGE itself provides must actually exist. GPL \u00a74 / AGPL \u00a74 require the licence text to accompany the program, and this repo conveys it by declaring `**License file in image:** `/path``. A declaration is a CLAIM: if the file is not there, the image ships copyleft code while telling the reader where to find a licence that does not exist, which is worse than silence because it looks discharged. Checked for paths the image provides through its own ROOT overlay (e.g. `/licenses/AGPL-3.0.txt` <- `ROOT/licenses/AGPL-3.0.txt`). Paths inside an upstream clone or a versioned install directory are NOT checked: they exist only after the build has cloned or unpacked the app, so a static check would be guessing rather than gating (the excluded prefixes are listed in the check's own docstring). Scoped to entries whose declared licence matches AGPL or GPL-2/3 - permissive entries carry no conveyance obligation. L094 covers only obligation (a) of the copyleft invariant; obligation (b), a `Modifications:` note whenever the Dockerfile patches that app, is NOT statically checkable and is documented as such rather than half-enforced (ADR 0012 territory, docs/invariants.md)"),
@@ -3658,6 +3659,86 @@ def check_vllm_audio_extra_is_installed(repo: Path) -> Iterable[Finding]:
                           "failing exactly as before (L096)")
 
 
+
+# L097 — a workflow cannot require a test the image it builds does not ship.
+# Values may be quoted, bare, or a block scalar, so the value is taken to end of line and
+# any quotes stripped rather than required. A `${{ ... }}` value is built at runtime and
+# is honestly out of reach; it is reported as unreadable rather than silently dropped.
+_WF_REQUIRE = re.compile(r"require_tests:\s*(?P<v>[^\n]+)")
+_WF_REQUIRE_ENV = re.compile(r"INSTANCE_TEST_REQUIRE_PASS=(?P<v>[^\n]+)")
+_WF_TEMPLATE_DIR = re.compile(r"template_dir:\s*[\"']?(?P<v>[^\s\"']+)")
+_TEST_NAME = re.compile(r"\b((?:base|[A-Za-z0-9._-]+\.d)/[0-9]+[A-Za-z0-9._-]*)\b")
+
+
+def _suite_dirs(root: Path) -> dict[str, Path]:
+    """The test suites one image ships, by directory name."""
+    out: dict[str, Path] = {}
+    for tests in sorted(root.glob("ROOT*/opt/instance-tools/tests")):
+        for suite in sorted(tests.iterdir()):
+            if suite.is_dir():
+                out.setdefault(suite.name, suite)
+    return out
+
+
+def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
+    """L097 — every test a workflow requires ships in the image that workflow builds."""
+    base_suites = _suite_dirs(repo)                     # base's own overlay
+
+    for wf in sorted(repo.glob(".github/workflows/*.yml")):
+        try:
+            text = wf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        rel = f".github/workflows/{wf.name}"
+
+        # An image is claimed by the template_dir the workflow boots, so a copied
+        # workflow is judged against the image it actually builds rather than against
+        # whichever suite happens to exist somewhere in the tree.
+        images = {repo / m.group("v").split("/templates/")[0]
+                  for m in _WF_TEMPLATE_DIR.finditer(text)
+                  if "/templates/" in m.group("v")}
+        suites = dict(base_suites)
+        for img in images:
+            # Suites are INHERITED through the image chain, not only shipped in an
+            # image's own overlay: every class carries base's, and a pytorch-nested
+            # image carries pytorch's too. aio-studio requires `pytorch.d/05-venv-
+            # manifest` and ships no pytorch.d of its own, which is correct and was
+            # this check's first false positive.
+            df = img / "Dockerfile"
+            if df.exists() and "vastai/pytorch" in df.read_text(errors="replace"):
+                suites.update(_suite_dirs(repo / "derivatives/pytorch"))
+            suites.update(_suite_dirs(img))
+
+        names: set[str] = set()
+        for pat in (_WF_REQUIRE, _WF_REQUIRE_ENV):
+            for m in pat.finditer(text):
+                value = m.group("v").strip().strip("\"'")
+                if "${{" in value:
+                    yield Finding("L097", WARN, "-", rel,
+                                  f"requires tests from a runtime expression "
+                                  f"(`{value[:40]}...`), which this check cannot read - "
+                                  f"the names in it are ungated (L097)")
+                    continue
+                names.update(_TEST_NAME.findall(value))
+
+        for name in sorted(names):
+            suite_name, _, stem = name.partition("/")
+            suite = suites.get(suite_name)
+            if suite is None:
+                owned = ", ".join(sorted(n for n in suites if n != "base")) or "none"
+                yield Finding("L097", ERROR, "-", rel,
+                              f"requires `{name}`, but the image this workflow builds "
+                              f"ships no `{suite_name}/` suite (it ships: {owned}) - a "
+                              f"workflow copied between images names the suite it came "
+                              f"from (L097)")
+                continue
+            if not any(f.name.startswith(stem) for f in suite.iterdir()):
+                yield Finding("L097", ERROR, "-", rel,
+                              f"requires `{name}`, which is not a file in "
+                              f"{suite.relative_to(repo)} - the gate would fail on a "
+                              f"rented GPU over something visible here (L097)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
@@ -3669,7 +3750,8 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_copyleft_licence_path_resolves,
     check_workflow_if_has_no_folded_comment,
     check_probe_artifact_is_excluded_from_its_own_log_scan,
-    check_vllm_audio_extra_is_installed]
+    check_vllm_audio_extra_is_installed,
+    check_workflow_required_tests_exist]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

@@ -73,6 +73,43 @@ RUN \
 # vllm pick them up.  Also enables volume sync of the environment.
 RUN sed -i '1s|#!/usr/bin/python3|#!/venv/main/bin/python|' /usr/local/bin/vllm
 
+# Serverless (autoscaler) PyWorker defaults, overridable by the launch template
+# (docker -e / template env: wins over image ENV). No-op on-demand: pyworker.sh runs the
+# worker only when SERVERLESS=true (ADR 0038).
+#
+# BACKEND=vllm, not an omni-specific adapter: vLLM-Omni IS vLLM. vllm-omni.sh runs the
+# same `vllm serve` and reads the same VLLM_MODEL/VLLM_ARGS, so workers/vllm's engine
+# defaults apply unchanged. A separate adapter would be a second copy of the same values,
+# free to drift from the one this image's behaviour actually matches (ADR 0044).
+#
+# MODEL_LOAD_LOG_MSG is the log line the worker waits on to mark the model loaded. It can
+# change between engine versions, and the image is the only layer version-locked to the
+# engine build, so the image owns it. Whether omni's line matches stock vLLM's is the
+# most likely defect in this wiring, which is why the serverless QA cell exists: a wrong
+# value here means the worker never becomes ready, silently.
+ENV BACKEND=vllm
+ENV MODEL_LOAD_LOG_MSG="Application startup complete."
+
+# MODEL_LOG must be baked HERE, and this is the one place BACKEND=vllm does not carry
+# over. workers/vllm's EngineDefaults tail /var/log/portal/vllm.log -- named for the
+# supervisor program, which on this image is `vllm-omni`, so that file never exists and
+# the worker tails nothing. MEASURED on the first serverless cell ever run here: the
+# worker started, bound :3000, logged `MODEL_LOG:` empty and `Using worker backend:
+# vllm`, the engine logged `Application startup complete.` to vllm-omni.log, and the
+# worker never saw it -- no benchmark for 1800s, on three hosts in a row.
+#
+# The other engine images get away with the default by a coincidence of naming: their
+# program and the worker's expected filename happen to match. This one cannot, which
+# makes explicit what was always true -- the image is the layer that knows where its
+# engine logs, exactly as it is for MODEL_LOAD_LOG_MSG above.
+ENV MODEL_LOG=/var/log/portal/vllm-omni.log
+
+# Reserve the serverless worker port (WORKER_PORT default 3000). EXPOSE makes Vast map
+# it, so VAST_TCP_PORT_3000 is set for the worker's self-report with NO template port
+# entry. Unbound and harmless on-demand -- the worker binds 3000 only under
+# SERVERLESS=true -- so the port is reserved, not occupied.
+EXPOSE 3000
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 
