@@ -411,27 +411,34 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   merge-manifests:
-    # `qa` is BOTH ordered and blocking here. No `!cancelled()`: this workflow has no
-    # advisory cell to keep alive, so the default "skip if a needed job failed" is the
-    # behaviour we want, and the explicit result check states it rather than relying on
-    # it. A red QA cell therefore leaves merge-manifests SKIPPED, which is not
-    # 'success', which the notify headline below reports as not-promoted.
-    # qa-serverless is in `needs` to ORDER it, and absent from the `if` so it cannot
-    # BLOCK -- ADR 0006 condition 2's ramp, which every other engine went through and
-    # which ADR 0044 applies here rather than skipping. Without the dependency this job
-    # becomes eligible the moment `qa` finishes, so the production approval prompt could
-    # appear while the serverless cell is still running: a human approving before its
-    # evidence exists, which is the one thing the gate is for.
+    # ORDERING vs BLOCKING are two different things, and this job needs them to differ.
     #
-    # It is ADVISORY on a NEW cell for a reason. Nothing has ever run this image
-    # serverless, so the first reds are as likely to be this wiring's own teething as a
-    # real regression, and the wiring is strictly additive: before it, serverless did
-    # not work here at all. Promote it to blocking -- move it into the `if` below, as
-    # build-vllm.yml did -- after two consecutive green runs whose greens have been
-    # checked for VACUITY: `base/85-serverless-services` and
-    # `vllm-omni.d/20-serverless-pyworker` both PASSED, not skipped.
+    # `qa` blocks: it is named in the `if` below, so a red on-demand cell stops the
+    # promotion. `qa-serverless` is in `needs` only to ORDER it ahead of the production
+    # approval prompt, so a human never approves before its evidence exists -- ADR 0006
+    # condition 2's ramp, which every other engine went through and ADR 0044 applies
+    # here. It becomes blocking, by gaining a clause below, after two consecutive greens
+    # checked for vacuity.
+    #
+    # `!cancelled()` is what makes that true. An `if:` with no status function leaves
+    # GitHub's implicit success() on EVERY entry in `needs`, so without it a red
+    # qa-serverless SKIPS this job -- blocking, silently, while the comment and the ADR
+    # both say advisory. That is exactly what shipped in the first draft of this file.
+    # Switching the implicit check off means the results that must still block have to
+    # be named explicitly, which is what the two clauses below are.
+    #
+    # Why advisory is right while it lasts: nothing consumes omni serverless yet, so a
+    # true red costs nobody today, while a FALSE red withholds the next upstream release
+    # -- security rebuilds included -- from the on-demand customers who do use this
+    # image. The cell's verdict also depends on vast-ai/pyworker@main, fetched unpinned
+    # at every boot, so someone else's commit can turn it red. That asymmetry reverses
+    # once omni serverless is in real use, and the ramp is what crosses over.
     needs: [preflight, build, qa, qa-serverless]
-    if: needs.preflight.outputs.should-run == 'true' && needs.qa.result == 'success'
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.should-run == 'true'
+      && needs.build.result == 'success'
+      && needs.qa.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -524,7 +531,7 @@ jobs:
       # render "promoted" is keyed on merge-manifests — the promoting job — taking the
       # negative branch first, so a cancelled or skipped run cannot fall through to the
       # success text. This repo has been bitten four times by the other shape.
-      headline: ${{ (needs.build.result != 'success' && 'vLLM-Omni build failed') || (needs.qa.result == 'failure' && 'vLLM-Omni QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM-Omni promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM-Omni NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'vLLM-Omni promoted — live-GPU QA passed') || '' }}
+      headline: ${{ (needs.build.result != 'success' && 'vLLM-Omni build failed') || (needs.qa.result == 'failure' && 'vLLM-Omni QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM-Omni promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM-Omni NOT promoted — promotion did not run') || (needs.qa-serverless.result == 'failure' && 'vLLM-Omni promoted — SERVERLESS QA FAILED (advisory cell; the image was still published)') || (needs.qa.outputs.gated == 'true' && 'vLLM-Omni promoted — live-GPU QA passed') || '' }}
       image-name: "vLLM-Omni"
       image-ref: ${{ needs.preflight.outputs.vllm-omni-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

@@ -84,7 +84,16 @@ Take option A.
    the opposite as a deliberate decision.
 6. `build-vllm-omni.yml` gains a `qa-serverless` job mirroring vLLM's, with
    `vllm-omni.d/*` test names and this image's log paths.
-7. The cell is ORDERED ahead of the promotion approval and does NOT block it — ADR 0006
+7. The cell is ORDERED ahead of the promotion approval and does NOT block it, which
+   requires `!cancelled()` on `merge-manifests` and the blocking results named
+   explicitly. An `if:` with no status function leaves GitHub's implicit `success()` on
+   every `needs` entry, so the first implementation of this decision did the OPPOSITE of
+   what this paragraph says: a red serverless cell would have skipped the promotion
+   silently, on a twice-daily schedule, withholding upstream releases and security
+   rebuilds from on-demand customers. Caught by adversarial review before approval,
+   because a GREEN run behaves identically under both wirings and could never have
+   shown it. A `qa-serverless` arm was added to the notify headline at the same time:
+   an advisory cell that fails without naming itself is not advisory, it is ignored — ADR 0006
    condition 2's ramp, which every other engine went through. It becomes gating after
    two consecutive green runs whose greens are checked for vacuity
    (`base/85-serverless-services` and `vllm-omni.d/20-serverless-pyworker` both PASSED,

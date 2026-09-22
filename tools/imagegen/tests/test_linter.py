@@ -4380,6 +4380,7 @@ def _wf_requiring(tmp_path, names, suite=None, files=()):
     d.mkdir(parents=True, exist_ok=True)
     (d / "build-x.yml").write_text(
         "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        f'      template_dir: external/x/templates/x-qa\n'
         f'      require_tests: "{names}"\n')
     if suite:
         s = tmp_path / "external/x/ROOT/opt/instance-tools/tests" / suite
@@ -4400,12 +4401,50 @@ def test_L097_a_required_test_that_ships_is_clean(tmp_path):
     assert not _codes(repo, "L097")
 
 
-def test_L097_a_suite_that_does_not_exist_at_all_fires(tmp_path):
-    """Names the suite rather than the file, because that is a different mistake:
-    a copied workflow pointing at another image's suite."""
+def test_L097_a_suite_the_image_does_not_have_fires(tmp_path):
+    """Names the suite rather than the file, because it is a different mistake: a
+    workflow copied between images and left naming the suite it came from. THE REAL
+    CASE, per L088: vllm-omni's gate was first assembled by copying vllm.d's files."""
     repo = _wf_requiring(tmp_path, "ghost.d/10-ghost", "x.d", ["10-x-serving.sh"])
     found = _codes(repo, "L097")
-    assert found and "no `ghost.d/` test suite" in found[0].msg
+    assert found and "ships no `ghost.d/` suite" in found[0].msg
+
+
+def test_L097_another_images_suite_fires_even_though_it_exists(tmp_path):
+    """The blind spot a first draft of this rule had: matching any suite ANYWHERE in
+    the tree passes the exact copy-paste the rule exists to catch."""
+    repo = _wf_requiring(tmp_path, "other.d/10-other", "x.d", ["10-x-serving.sh"])
+    other = tmp_path / "external/other/ROOT/opt/instance-tools/tests/other.d"
+    other.mkdir(parents=True, exist_ok=True)
+    (other / "10-other.sh").write_text("#!/bin/bash\n")
+    assert _codes(repo, "L097")
+
+
+def test_L097_an_unquoted_value_is_read(tmp_path):
+    """Values may be quoted, bare or a block scalar; only quoted ones were read."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build-x.yml").write_text(
+        "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        "      template_dir: external/x/templates/x-qa\n"
+        "      require_tests: x.d/99-not-here\n")
+    s = tmp_path / "external/x/ROOT/opt/instance-tools/tests/x.d"
+    s.mkdir(parents=True, exist_ok=True)
+    (s / "10-x-serving.sh").write_text("#!/bin/bash\n")
+    assert _codes(tmp_path, "L097")
+
+
+def test_L097_a_runtime_expression_is_named_not_dropped(tmp_path):
+    """`${{ matrix.require_tests }}` cannot be read statically. Saying so is the
+    difference between a known gap and a rule that quietly covers less than it says."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build-x.yml").write_text(
+        "name: X\non: workflow_dispatch\njobs:\n  qa:\n    with:\n"
+        "      template_dir: external/x/templates/x-qa\n"
+        "      require_tests: ${{ matrix.require_tests }}\n")
+    warns = [f for f in L.lint_repo(tmp_path) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "runtime expression" in warns[0].msg
 
 
 def test_L097_reads_the_env_form_too(tmp_path):
