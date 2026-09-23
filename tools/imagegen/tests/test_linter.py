@@ -538,6 +538,65 @@ def test_rules_catalog_matches_emitted_codes():
     assert emitted == catalog, f"drift: emitted-not-cataloged={emitted - catalog}, cataloged-not-emitted={catalog - emitted}"
 
 
+# Pre-existing rules with no name-matching test. Do NOT grow this: a new entry here is
+# a rule shipped without the mutation test CLAUDE.md requires.
+_LEGACY_UNTESTED = {"L022", "L030", "L040", "L051", "L052", "L058"}
+
+
+def test_every_rule_has_a_test():
+    """CLAUDE.md: "No mutation test = the check doesn't count."
+
+    This exists because of a MERGE, not a rule. Two PRs appended test blocks at the same
+    end-of-file anchor; resolving that conflict one-sidedly (`-X ours`/`-X theirs`, or
+    one "accept incoming" click) deletes an entire PR's tests while `imagegen lint --all`
+    stays clean, `docs/lint-rules.md` stays in sync, `test_rules_catalog_matches_emitted_
+    codes` still passes and the whole suite is green. Measured on a trial merge: an
+    ERROR-severity rule shipped with zero tests, including every mutation test that was
+    its only evidence, and nothing in the repo noticed.
+
+    A rule whose code appears in no test name is that state, whatever produced it.
+    """
+    src = Path(__file__).read_text()
+    missing = [code for code, _sev, _txt in L.RULES
+               if code not in _LEGACY_UNTESTED
+               and not re.search(rf"def test_\w*{code}\w*\(", src)]
+    assert not missing, (
+        f"rules with no test: {missing}. If a merge dropped them, restore that block; "
+        f"if the rule is new, it needs a mutation test before it counts."
+    )
+
+
+# The `**GATED (Lxxx)**` sections docs/invariants.md carries today. Most rules have no
+# section, so "every rule is documented" cannot be asserted -- a FLOOR is what catches a
+# lost one. Add a code here when its section lands; remove one only with its rule.
+_GATED_FLOOR = frozenset({
+    "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
+    "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
+    "L092", "L093", "L095", "L096", "L097",
+})
+
+
+def test_every_gated_invariant_names_a_real_rule():
+    """docs/invariants.md is bound to nothing else, and it was the LARGEST hunk in the
+    same merge conflict — 145 lines against 81 — so losing a whole `**GATED (Lxxx)**`
+    section is invisible. Two directions: a section for a code no rule emits is wrong,
+    and so is a section that was there and is gone. An earlier version of this
+    docstring claimed both while asserting only the first, so deleting a whole section
+    -- the merge loss that motivated it -- stayed green."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    documented = set(re.findall(r"\*\*GATED \((L\d+)\)\*\*",
+                                (repo / "docs" / "invariants.md").read_text()))
+    catalog = {code for code, _, _ in L.RULES}
+    assert documented <= catalog, (
+        f"docs/invariants.md documents codes no rule emits: {sorted(documented - catalog)}"
+    )
+    assert documented >= _GATED_FLOOR, (
+        f"docs/invariants.md lost its GATED section for {sorted(_GATED_FLOOR - documented)}"
+        f" -- if a merge dropped it, restore it; if the rule was retired, drop the code"
+        f" from _GATED_FLOOR in the same change"
+    )
+
+
 def test_lint_rules_doc_in_sync():
     """ADR cond #2: docs/lint-rules.md is generated from the linter; fail on drift."""
     repo = find_repo_root(Path(__file__).resolve().parent)
@@ -4421,7 +4480,7 @@ def test_L097_another_images_suite_fires_even_though_it_exists(tmp_path):
 
 
 def test_L097_an_unquoted_value_is_read(tmp_path):
-    """Values may be quoted, bare or a block scalar; only quoted ones were read."""
+    """Values may be quoted or bare; only quoted ones were read."""
     d = tmp_path / ".github/workflows"
     d.mkdir(parents=True, exist_ok=True)
     (d / "build-x.yml").write_text(
@@ -4466,3 +4525,277 @@ def test_L097_the_tree_is_clean():
     """The baseline: every name every workflow requires is a file that ships."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     assert not _codes(repo, "L097")
+
+
+def _wf_l097(tmp_path, body, name="build-x.yml"):
+    """Scoped name on purpose: two other `_wf` helpers already exist at module level
+    (L087's and L095's), they write the body VERBATIM, and this one wraps it. A third
+    `_wf` wins for the whole module and silently rewires theirs."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text("name: X\non: workflow_dispatch\njobs:\n" + body)
+    return tmp_path
+
+
+def _image_shipping(tmp_path, image="external/x", suite="x.d", files=("10-x-serving.sh",)):
+    """An image whose suite ships `files` and a base suite with the GPU test."""
+    t = tmp_path / image / "ROOT/opt/instance-tools/tests"
+    (t / suite).mkdir(parents=True, exist_ok=True)
+    for f in files:
+        (t / suite / f).write_text("#!/bin/bash\n")
+    (t / "base").mkdir(parents=True, exist_ok=True)
+    (t / "base" / "60-gpu-cuda.sh").write_text("#!/bin/bash\n")
+    return tmp_path
+
+
+# Scalar styles. The regex this replaced had ONE defect: `\s*` stopped at a block-scalar
+# indicator, so a folded (`>-`) or literal (`|`) value was captured as the indicator and
+# every name after it was a SILENT pass. The three `>-` cases and the `|` case are that
+# defect; "blank line above the key" and "no trailing newline" only failed because their
+# values are block scalars. The flow-mapping and single-quoted cases were never broken
+# by that regex -- they are regression cases for the parser, not evidence against the
+# regex. (An earlier version of this comment called them "four shapes the first
+# implementation read wrongly"; that was retracted in lint-rules.md and invariants.md
+# and missed here.)
+#
+# Every case puts a name that SHIPS first and the missing one SECOND. That ordering is
+# the test, not decoration: with the missing name first, a reader that consumed a single
+# line still fired and the test still passed. Reversing it is what makes a truncating
+# reader detectable.
+@pytest.mark.parametrize("shape,body", [
+    ("flow mapping", "  qa:\n    with: { template_dir: external/x/templates/x-qa, "
+                     'require_tests: "base/60-gpu-cuda x.d/99-not-here" }\n'),
+    ("blank line above the key",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n\n"
+     "      require_tests: >-\n        base/60-gpu-cuda\n        x.d/99-not-here\n"),
+    ("blank line inside the folded value",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+     "      require_tests: >-\n        base/60-gpu-cuda\n\n        x.d/99-not-here\n"),
+    ("no trailing newline",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+     "      require_tests: >-\n        base/60-gpu-cuda\n        x.d/99-not-here"),
+    ("literal block scalar",
+     "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+     "      require_tests: |\n        base/60-gpu-cuda x.d/99-not-here\n"),
+    ("single-quoted", "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+                      "      require_tests: 'base/60-gpu-cuda x.d/99-not-here'\n"),
+])
+def test_L097_every_scalar_style_is_read(tmp_path, shape, body):
+    """A folded list whose SECOND half holds the deleted test must still be caught: that
+    is the vllm-omni case this rule was built for, and the shape a truncating reader
+    passes silently."""
+    repo = _image_shipping(_wf_l097(tmp_path, body))
+    errs = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
+    assert errs, f"{shape}: read nothing, so the missing test passed silently"
+    assert any("99-not-here" in f.msg for f in errs), (
+        f"{shape}: fired, but not about the name that is missing - the value was "
+        f"truncated before it")
+
+
+def test_L097_a_name_must_match_the_file_exactly(tmp_path):
+    """runner.sh compares with `==`, so a prefix that satisfied a startswith() check
+    here still fails on a rented GPU with 'missing from this image' -- the exact cost
+    this rule exists to avoid."""
+    repo = _wf_requiring(tmp_path, "x.d/20-serverless", "x.d",
+                         ["20-serverless-pyworker.sh"])
+    assert _codes(repo, "L097")
+
+
+def test_L097_a_repo_root_template_is_scoped_by_the_image_it_declares(tmp_path):
+    """`templates/pytorch-qa` sits at the repo root and gates a DIFFERENT image, which
+    its template.yml states outright (`image: vastai/pytorch`). Deriving it from the
+    directory stem instead guessed, and only in `derivatives/<stem>`/`external/<stem>`
+    -- so any repo-root template for one of the 16 images under
+    `derivatives/pytorch/derivatives/` resolved to nothing and its own tests were
+    reported missing."""
+    repo = _wf_l097(tmp_path, "  qa:\n    with:\n      template_dir: templates/comfyui-qa\n"
+                         "      require_tests: comfyui.d/10-comfyui-serving\n")
+    tpl = repo / "templates/comfyui-qa"
+    tpl.mkdir(parents=True)
+    (tpl / "template.yml").write_text("image: vastai/comfyui\n")
+    nested = repo / "derivatives/pytorch/derivatives/comfyui"
+    (nested).mkdir(parents=True)
+    (nested / "Dockerfile").write_text("FROM x\n")
+    (repo / "external").mkdir(exist_ok=True)
+    _image_shipping(repo, image="derivatives/pytorch/derivatives/comfyui",
+                    suite="comfyui.d", files=("10-comfyui-serving.sh",))
+    assert not _codes(repo, "L097"), (
+        "a nested image's own test was reported missing because the template was "
+        "mapped by stem instead of by the image it declares")
+
+
+def test_L097_each_job_is_scoped_to_its_own_image(tmp_path):
+    """Two cells in one workflow build different images. Reading the file as text
+    pooled every template_dir and every require-set in it, so a name valid for one cell
+    satisfied the other -- the rule said SCOPED TO THE IMAGE while scoping to the file."""
+    repo = _wf_l097(tmp_path,
+               "  qa-x:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+               "      require_tests: x.d/10-x-serving\n"
+               "  qa-y:\n    with:\n      template_dir: external/y/templates/y-qa\n"
+               "      require_tests: x.d/10-x-serving\n")
+    _image_shipping(repo, image="external/x", suite="x.d")
+    _image_shipping(repo, image="external/y", suite="y.d", files=("10-y-serving.sh",))
+    errs = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
+    assert errs, "the y cell requires x's suite, which y does not ship"
+    assert all("qa-y" in f.msg for f in errs), (
+        f"the x cell is correct and must not fire: {[f.msg for f in errs]}")
+
+
+def test_L097_an_input_declaration_is_not_a_value(tmp_path):
+    """qa-gate.yml DESCRIBES require_tests in a `description: >-` under
+    on.workflow_call.inputs. A text scan reads that prose as a value, so a test name in
+    a doc example becomes a false error. Reading `jobs.<id>.with` cannot see it."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "qa-gate.yml").write_text(
+        "name: QA\non:\n  workflow_call:\n    inputs:\n      require_tests:\n"
+        "        description: >-\n"
+        "          Space-separated names, for example base/60-gpu-cuda or\n"
+        "          x.d/99-not-here, that must be PRESENT and PASSED.\n"
+        "        required: false\n        type: string\n"
+        "jobs:\n  qa:\n    runs-on: ubuntu-latest\n")
+    _image_shipping(tmp_path)
+    assert not _codes(tmp_path, "L097"), "prose in an input description was read as a value"
+
+
+def test_L097_a_yaml_extension_workflow_is_read(tmp_path):
+    """`.yaml` is as valid as `.yml` to GitHub and this repo has shipped one
+    (build-comfyui.yaml). Globbing `*.yml` gave such a file ZERO coverage silently --
+    and L097 was the only workflow reader in the linter that did it."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        "      require_tests: x.d/99-not-here\n",
+        name="build-x.yaml"))
+    assert _codes(repo, "L097"), "a .yaml workflow was not read at all"
+
+
+def test_L097_an_unparseable_workflow_is_named_not_skipped(tmp_path):
+    """The `continue` used to carry a comment saying malformed YAML was another rule's
+    problem. No rule reports it, so such a file got no coverage from ANY workflow check
+    with nothing said -- a second claim of coverage that did not exist."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "broken.yml").write_text("jobs:\n  qa:\n    if: >-\n      a\n      # b: c\n   bad\n")
+    _image_shipping(tmp_path)
+    warns = [f for f in L.lint_repo(tmp_path)
+             if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "could not be parsed" in warns[0].msg
+
+
+@pytest.mark.parametrize("value", [
+    "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+    "      require_tests:\n        - base/60-gpu-cuda\n        - x.d/99-not-here\n",
+    "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+    "      extra_env:\n        FOO: bar\n",
+])
+def test_L097_a_non_string_declaration_is_named_not_dropped(tmp_path, value):
+    """The `${{ }}` branch is the only sanctioned way to not-read a value. A sequence or
+    a mapping used to be dropped by an isinstance check with no word said, which is the
+    L087 failure mode this rule's own text condemns."""
+    repo = _image_shipping(_wf_l097(tmp_path, value))
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "other than a string" in warns[0].msg
+
+
+def test_L097_a_name_it_cannot_resolve_is_named_not_dropped(tmp_path):
+    """_TEST_NAME requires a digit after the slash; runner.sh imposes no such convention
+    and no rule enforces one. So `x.d/serverless-missing` vanished from the required set
+    silently while runner.sh would still compare it with `==` on the GPU."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        '      require_tests: "base/60-gpu-cuda x.d/serverless-missing"\n'))
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "x.d/serverless-missing" in warns[0].msg
+
+
+# Every token is accounted for. The value used to be SEARCHED for matches, so a token
+# matching neither pattern vanished and a partial match stood in for its token. Each of
+# these passed with no finding, and each fails on the GPU as "missing from this image".
+@pytest.mark.parametrize("token,severity", [
+    ("x/10-x-serving", "ERROR"),          # suite without `.d`: never discovered
+    ("10-x-serving", "ERROR"),            # no suite at all
+    ("xbase/60-gpu-cuda", "ERROR"),       # not `base`
+    ("foo-base/60-gpu-cuda", "ERROR"),    # was read as base/60-gpu-cuda, which exists
+    ("x.d/10-x-serving/extra", "WARN"),   # was truncated to x.d/10-x-serving, which exists
+])
+def test_L097_every_token_is_accounted_for(tmp_path, token, severity):
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        f'      require_tests: "base/60-gpu-cuda, {token}"\n'))
+    hits = [f for f in L.lint_repo(repo) if f.code == "L097" and f"`{token}`" in f.msg]
+    assert hits, f"`{token}` passed with no finding"
+    assert {f.severity for f in hits} == {getattr(L, severity)}, [f.msg for f in hits]
+
+
+def test_L097_the_env_form_is_split_the_same_way(tmp_path):
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        "      extra_env: |\n"
+        "        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda,x/10-x-serving\n"))
+    assert [f for f in _codes(repo, "L097") if "`x/10-x-serving`" in f.msg]
+
+
+def test_L097_an_extra_env_that_is_an_expression_is_named(tmp_path):
+    """`extra_env: ${{ matrix.extra_env }}` can expand to an INSTANCE_TEST_REQUIRE_PASS
+    line this check never sees. It yielded no declaration and no WARN."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        "      extra_env: ${{ matrix.extra_env }}\n"))
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "extra_env" in warns[0].msg
+
+
+def test_L097_an_expression_inside_another_keys_value_is_quiet(tmp_path):
+    """build-comfyui.yml's PROVISIONING_COMFYUI_WORKFLOWS carries `${{ github.sha }}` in
+    its value. That line is `KEY=value` and cannot become a require-set."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        '      extra_env: "PROVISIONING_X=https://h/${{ github.sha }}/w.json"\n'))
+    assert not [f for f in L.lint_repo(repo) if f.code == "L097"]
+
+
+# Real-tree cases. Every test above builds a synthetic repo, so the rule's behaviour on
+# THIS tree was pinned only by "zero ERRORs": skipping every job that has a `strategy:`
+# silently removed promote-pytorch's WARNs and survived the whole suite.
+
+def test_L097_real_tree_catches_the_incident_it_cites(tmp_path):
+    """The case in the rule's own text: delete vllm-omni's serverless pyworker test and
+    the workflow still requires it."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    shutil.copytree(repo / ".github", work / ".github")
+    shutil.copytree(repo / "ROOT/opt/instance-tools/tests",
+                    work / "ROOT/opt/instance-tools/tests")
+    shutil.copytree(repo / "external/vllm-omni", work / "external/vllm-omni")
+    victim = "vllm-omni.d/20-serverless-pyworker"
+    (work / "external/vllm-omni/ROOT/opt/instance-tools/tests" / f"{victim}.sh").unlink()
+    errs = [f for f in L.check_workflow_required_tests_exist(work)
+            if f.severity == L.ERROR and f.path == ".github/workflows/build-vllm-omni.yml"]
+    assert errs and all(victim in f.msg for f in errs), [f.msg for f in errs]
+
+
+def test_L097_real_tree_names_the_matrix_it_cannot_read():
+    """invariants.md's NOT-gated paragraph leans on this WARN: promote-pytorch's
+    `${{ matrix.require_tests }}` must be reported, not skipped."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    warns = [f for f in L.check_workflow_required_tests_exist(repo)
+             if f.severity == L.WARN and f.path == ".github/workflows/promote-pytorch.yml"]
+    assert any("runtime expression" in f.msg and "require_tests" in f.msg for f in warns), \
+        [f.msg for f in warns]
+
+
+def test_L097_a_runtime_template_dir_is_named_not_guessed(tmp_path):
+    """If the template is chosen at runtime the image cannot be known, and guessing it
+    would judge the names against the wrong suite set. Say so instead."""
+    repo = _wf_l097(tmp_path, "  qa:\n    with:\n"
+                         "      template_dir: ${{ matrix.template_dir }}\n"
+                         "      require_tests: x.d/99-not-here\n")
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "runtime" in warns[0].msg
+    assert not [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]

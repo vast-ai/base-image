@@ -27,6 +27,7 @@ def cmd_lint(args) -> int:
     total_err = total_warn = 0
     for img in sorted(images, key=lambda i: (i.cls, i.name)):
         findings = lint_image(img, repo)
+        total_warn += sum(f.severity == WARN for f in findings)
         if not args.warn:
             findings = [f for f in findings if f.severity == ERROR]
         if not findings:
@@ -36,10 +37,10 @@ def cmd_lint(args) -> int:
             mark = "✗" if f.severity == ERROR else "·"
             print(f"  {mark} [{f.code} {f.severity}] {f.path}: {f.msg}")
         total_err += sum(f.severity == ERROR for f in findings)
-        total_warn += sum(f.severity == WARN for f in findings)
 
     # repo-level checks (not tied to a single image) run once per sweep
     repo_findings = lint_repo(repo)
+    total_warn += sum(f.severity == WARN for f in repo_findings)
     if not args.warn:
         repo_findings = [f for f in repo_findings if f.severity == ERROR]
     if repo_findings:
@@ -48,12 +49,17 @@ def cmd_lint(args) -> int:
             mark = "✗" if f.severity == ERROR else "·"
             print(f"  {mark} [{f.code} {f.severity}] {f.path}: {f.msg}")
         total_err += sum(f.severity == ERROR for f in repo_findings)
-        total_warn += sum(f.severity == WARN for f in repo_findings)
 
     n_excepted = len(EXCEPTIONS)
     print(f"\n{'='*60}")
+    # The warning COUNT always shows, even when the warnings themselves are filtered
+    # out: `lint --all` is the invocation the docs prescribe and the one evidence is
+    # quoted from, and a rule that reports "I could not check this" was invisible there
+    # -- the silent drop moved from the check into the presentation.
+    warn_note = (f" | {total_warn} warnings (--warn to list)" if total_warn and not args.warn
+                 else (f" | {total_warn} warnings" if args.warn else ""))
     print(f"{len(images)} images | {total_err} errors"
-          + (f" | {total_warn} warnings" if args.warn else "")
+          + warn_note
           + f" | {n_excepted} documented exceptions suppressed")
     if total_err == 0:
         print("baseline CLEAN ✓ (all gated invariants hold across existing images)")

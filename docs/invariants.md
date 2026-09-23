@@ -1918,3 +1918,105 @@ promotion-headline invariant is — an executed test, run by `imagegen-tests.yml
 change under `tools/template_manager/`. Each half is mutation-checked: reverting to the
 inherited 4200, widening the short window back to 4200, and cutting the earned
 provisioning window each turn the suite red.
+
+### A workflow requires only tests the image it builds ships — **GATED (L097)**
+
+A QA cell declares its required set in TWO places, and they fail differently on purpose:
+`require_tests` on the qa-gate call (the CI-side gate, checked against the verdict
+payload) and `INSTANCE_TEST_REQUIRE_PASS` inside `extra_env` (the runner's own gate,
+inside the instance). L057, L059 and L072 read the TEMPLATE's
+`env.INSTANCE_TEST_REQUIRE_PASS` and can see neither: a serverless cell declares its
+requirements in the WORKFLOW precisely because the template is shared with the on-demand
+cell, which must not require serverless tests. So the one place those requirements are
+written was the one place nothing checked them.
+
+A name with no file cannot pass, so the gate does fail — on a rented GPU, after a full
+image build, reporting a missing TEST rather than a missing FILE that was visible in the
+repo the whole time (ADR 0001: static checks are the fast gate). Found while wiring
+vllm-omni's serverless cell (ADR 0044): deleting `vllm-omni.d/20-serverless-pyworker.sh`
+left the workflow requiring it with every static check clean.
+
+Four properties are gated, each because it has been wrong:
+
+- **The workflow is PARSED, not scanned.** The regex it replaced had exactly ONE defect:
+  `\s*` stops at the block-scalar indicator, so a folded (`>-`) or literal (`|`) value
+  was captured as the literal indicator and every name on the following lines was
+  invisible — a SILENT pass, in the shape these values naturally take, since they run
+  past 150 characters and this repo already writes long values that way (it is why L095
+  exists). A folded list whose **second half** holds the deleted test therefore passed
+  the static gate and failed on the GPU: the exact failure this rule exists to prevent,
+  reproduced by the rule.
+
+  **An earlier version of this section claimed four shapes, and was wrong about two.**
+  A blank line above the key and a file with no trailing newline are the SAME defect —
+  they read correctly unless the value is a block scalar, and the test bodies that
+  "proved" them had set the value to `>-`, so one defect was measured three times. A
+  `with: { require_tests: ... }` flow mapping was never broken by that regex at all; it
+  broke under an intermediate fix that never shipped, and the test written to prove
+  otherwise passes against the regex it accuses. The correction is recorded rather than
+  quietly replaced because the taxonomy is what licenses the next claim: if you do not
+  know what actually broke, you cannot know what is still broken.
+
+  `yaml.safe_load` returns the resolved value, so every SCALAR style is covered at once.
+  **The claim stops at scalars.** Two non-scalar shapes were live counterexamples and
+  are handled explicitly rather than assumed away: a `.yaml` workflow, invisible to a
+  `*.yml` glob (this repo has shipped one, and L097 was the only workflow reader in the
+  linter not testing both suffixes), and a `require_tests`/`extra_env` that is a
+  sequence or mapping, dropped by an `isinstance` check. L095 already took this route
+  for `if:`, and `_serverless_gate_callers` already walked jobs per-job for L073 — the
+  right pattern was in this file through two earlier attempts at this rule.
+- **Scope is per JOB, not per file.** Reading the file as text pooled every
+  `template_dir` and every require-set in it, so in a two-cell workflow a name valid for
+  one cell satisfied the other, and prose inside an input's `description:` was read as a
+  value. `jobs.<id>.with` pairs the template with the names that go with it.
+- **A name must match a filename EXACTLY.** `runner.sh:584` compares with `==`, so a
+  prefix that satisfies a `startswith` check here still fails on the GPU with "missing
+  from this image".
+- **Everything unreadable is NAMED, never dropped.** The value is split into tokens the
+  way both consumers split it (`runner.sh:575` and `qa_verdict.py`'s `parse_required`:
+  commas and whitespace), and EVERY token is accounted for. A workflow that does not
+  parse, a declaration that is not a string, a token shaped like a test but outside the
+  `<suite>/<NN>-<name>` form the resolver understands (`runner.sh` imposes no numeric
+  convention and no rule enforces one), a `${{ }}` value, and an `extra_env` line that is
+  an expression rather than `KEY=value` (`extra_env: ${{ matrix.extra_env }}`) all
+  produce a WARN identifying themselves. A token with no `base/` or `<suite>.d/` prefix
+  is an ERROR, not a WARN: `runner.sh` only discovers those suites, so such a name can
+  never match and the gate is certain to fail. The parse-failure branch previously
+  carried a comment saying malformed YAML was another rule's problem; no rule reports
+  it, so such a file got no coverage from ANY workflow check with nothing said.
+
+  **An earlier version of this bullet already claimed "never dropped", and was wrong.**
+  The value was searched for matches rather than split, so any token matching neither
+  pattern vanished (`x/10-x-serving`, a bare `10-x-serving`), and a partial match stood
+  in for its token: `foo-base/60-gpu-cuda` was read as `base/60-gpu-cuda`, which exists,
+  and passed. Each of those fails on the GPU as "missing from this image". An `extra_env`
+  that was wholly an expression was also silent.
+
+Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested
+one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no `pytorch.d` of its
+own, correctly — that was this check's first false positive. A repo-root template
+(`templates/base-qa`, `templates/pytorch-qa`) gates an image elsewhere in the tree and
+its `template.yml` DECLARES which one (`image: vastai/pytorch`); deriving it from the
+directory stem guessed, and guessed only in `derivatives/<stem>` and `external/<stem>`,
+so a repo-root template for any of the 16 images under `derivatives/pytorch/derivatives/`
+resolved to nothing and that image's own tests were reported missing. Latent — no
+workflow in the tree triggers it today — but the mapping now reads what the template
+states.
+
+**NOT gated: a set built at runtime.** `promote-pytorch.yml` passes
+`${{ matrix.require_tests }}`, resolved per cell from `torch-companions.json` so an image
+that legitimately ships no torchaudio is not required to pass `pytorch.d/30-torchaudio`.
+That value cannot be read statically, and it is reported as a WARN naming itself rather
+than dropped — the failure mode L087 condemns. `pytorch.d/30-torchaudio` is consequently
+the one required name on that gate covered by nothing static. The other names in that
+matrix happen to be repeated in `templates/pytorch-qa/template.yml`, which
+`test_required_test_names.py` checks — but the matrix builds them from a jq literal that
+nothing ties to the template, so that coverage is a coincidence of today's text, not a
+gate.
+
+The WARN must stay VISIBLE, which is a property of the CLI rather than the rule:
+`lint --all` counted warnings after filtering them out, so the "I could not check this"
+report printed nowhere under the invocation the docs prescribe and every evidence paste
+is quoted from. The silent drop had moved from the check into the presentation layer.
+`tools/imagegen/tests/test_cli_lint_summary.py` pins the count, its accuracy and the
+`--warn` hint; restoring the original ordering turns it red.
