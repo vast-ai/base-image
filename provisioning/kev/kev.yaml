@@ -51,6 +51,14 @@ services:
       # bf16 load with the LoRA adapter unmerged. The default (merge) loads the base in fp32 on the GPU first,
       # roughly doubling peak VRAM; unmerged is what lets Kev-4B fit 12 GB and Kev-9B fit 24 GB, at ~30% latency.
       KEV_MERGE: "${KEV_MERGE:-0}"
+    pre_commands:
+      # The first request JIT-compiles the Gated DeltaNet Triton kernels (~25 s on first boot; cached in
+      # ~/.triton afterwards). Send one warm-up request as soon as the server answers, so a user never pays it.
+      - >-
+        ( for i in $(seq 1 360); do curl -sf -o /dev/null http://127.0.0.1:18000/v1/models && break; sleep 5; done;
+        curl -sf -o /dev/null -H 'content-type: application/json'
+        -d '{"model":"kev-latest","state":"warm-up","questions":{"q":{"type":"noul","instructions":"Is this a warm-up request?"}}}'
+        http://127.0.0.1:18000/v1/systemone && echo "kev-api: kernels warmed" ) &
     command: 'python -m kev.serve --run "${KEV_MODEL}" --port 18000'
 
   - name: kev-playground
