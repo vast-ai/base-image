@@ -18,8 +18,8 @@ env:
   JUPYTER_DIR: /
   DATA_DIRECTORY: /workspace/
   PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal|localhost:8384:18384:/:Syncthing|localhost:3000:13000:/:Kev Playground|localhost:7860:17860:/:Kev UI|localhost:8000:18000:/docs:Kev API"
-  PROVISIONING_MANIFEST: "https://raw.githubusercontent.com/vast-ai/base-image/bf535259652fd4c96ebf6f9e38eaaa2aa3926cee/provisioning/kev/kev.yaml"
-  KEV_TEMPLATE_REF: "bf535259652fd4c96ebf6f9e38eaaa2aa3926cee"
+  PROVISIONING_MANIFEST: "https://raw.githubusercontent.com/vast-ai/base-image/986a2c95fc97f5690a88eaaf7e984104f8bd7b5f/provisioning/kev/kev.yaml"
+  KEV_TEMPLATE_REF: "986a2c95fc97f5690a88eaaf7e984104f8bd7b5f"
   KEV_MODEL: "jaredpalmer/kev-4b@485ace8703592fcf405488b262449990824cfed1"
   KEV_MERGE: "0"
 onstart: entrypoint.sh
