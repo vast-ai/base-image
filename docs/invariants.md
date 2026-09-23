@@ -1938,16 +1938,33 @@ left the workflow requiring it with every static check clean.
 
 Three properties are gated, each because it has been wrong:
 
-- **The workflow is PARSED, not scanned.** The first implementation matched lines with a
-  regex and was wrong in four ordinary YAML shapes, every one of them a SILENT pass: a
-  `with: { require_tests: ... }` flow mapping — the style `qa-gate.yml`'s own caller
-  header documents — a blank line above the key, a blank line inside a folded value, and
-  a file with no trailing newline. The first two read nothing at all; the last two read
-  the names before the gap and dropped the rest. A folded list whose second half holds
-  the deleted test therefore passed the static gate and failed on the GPU: the exact
-  failure this rule exists to prevent, reproduced by the rule. `yaml.safe_load` returns
-  the resolved value, so every scalar style is covered at once and there is no fifth
-  shape waiting to be discovered. L095 already took this route for `if:`.
+- **The workflow is PARSED, not scanned.** The regex it replaced had exactly ONE defect:
+  `\s*` stops at the block-scalar indicator, so a folded (`>-`) or literal (`|`) value
+  was captured as the literal indicator and every name on the following lines was
+  invisible — a SILENT pass, in the shape these values naturally take, since they run
+  past 150 characters and this repo already writes long values that way (it is why L095
+  exists). A folded list whose **second half** holds the deleted test therefore passed
+  the static gate and failed on the GPU: the exact failure this rule exists to prevent,
+  reproduced by the rule.
+
+  **An earlier version of this section claimed four shapes, and was wrong about two.**
+  A blank line above the key and a file with no trailing newline are the SAME defect —
+  they read correctly unless the value is a block scalar, and the test bodies that
+  "proved" them had set the value to `>-`, so one defect was measured three times. A
+  `with: { require_tests: ... }` flow mapping was never broken by that regex at all; it
+  broke under an intermediate fix that never shipped, and the test written to prove
+  otherwise passes against the regex it accuses. The correction is recorded rather than
+  quietly replaced because the taxonomy is what licenses the next claim: if you do not
+  know what actually broke, you cannot know what is still broken.
+
+  `yaml.safe_load` returns the resolved value, so every SCALAR style is covered at once.
+  **The claim stops at scalars.** Two non-scalar shapes were live counterexamples and
+  are handled explicitly rather than assumed away: a `.yaml` workflow, invisible to a
+  `*.yml` glob (this repo has shipped one, and L097 was the only workflow reader in the
+  linter not testing both suffixes), and a `require_tests`/`extra_env` that is a
+  sequence or mapping, dropped by an `isinstance` check. L095 already took this route
+  for `if:`, and `_serverless_gate_callers` already walked jobs per-job for L073 — the
+  right pattern was in this file through two earlier attempts at this rule.
 - **Scope is per JOB, not per file.** Reading the file as text pooled every
   `template_dir` and every require-set in it, so in a two-cell workflow a name valid for
   one cell satisfied the other, and prose inside an input's `description:` was read as a
@@ -1955,6 +1972,13 @@ Three properties are gated, each because it has been wrong:
 - **A name must match a filename EXACTLY.** `runner.sh:584` compares with `==`, so a
   prefix that satisfies a `startswith` check here still fails on the GPU with "missing
   from this image".
+- **Everything unreadable is NAMED, never dropped.** A workflow that does not parse, a
+  declaration that is not a string, a required name outside the `<suite>/<NN>-<name>`
+  form the resolver understands (`runner.sh` imposes no numeric convention and no rule
+  enforces one), and a `${{ }}` value all produce a WARN identifying themselves. The
+  parse-failure branch previously carried a comment saying malformed YAML was another
+  rule's problem; no rule reports it, so such a file got no coverage from ANY workflow
+  check with nothing said.
 
 Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested
 one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no `pytorch.d` of its

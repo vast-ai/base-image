@@ -538,6 +538,48 @@ def test_rules_catalog_matches_emitted_codes():
     assert emitted == catalog, f"drift: emitted-not-cataloged={emitted - catalog}, cataloged-not-emitted={catalog - emitted}"
 
 
+# Pre-existing rules with no name-matching test. Do NOT grow this: a new entry here is
+# a rule shipped without the mutation test CLAUDE.md requires.
+_LEGACY_UNTESTED = {"L022", "L030", "L040", "L051", "L052", "L058"}
+
+
+def test_every_rule_has_a_test():
+    """CLAUDE.md: "No mutation test = the check doesn't count."
+
+    This exists because of a MERGE, not a rule. Two PRs appended test blocks at the same
+    end-of-file anchor; resolving that conflict one-sidedly (`-X ours`/`-X theirs`, or
+    one "accept incoming" click) deletes an entire PR's tests while `imagegen lint --all`
+    stays clean, `docs/lint-rules.md` stays in sync, `test_rules_catalog_matches_emitted_
+    codes` still passes and the whole suite is green. Measured on a trial merge: an
+    ERROR-severity rule shipped with zero tests, including every mutation test that was
+    its only evidence, and nothing in the repo noticed.
+
+    A rule whose code appears in no test name is that state, whatever produced it.
+    """
+    src = Path(__file__).read_text()
+    missing = [code for code, _sev, _txt in L.RULES
+               if code not in _LEGACY_UNTESTED
+               and not re.search(rf"def test_\w*{code}\w*\(", src)]
+    assert not missing, (
+        f"rules with no test: {missing}. If a merge dropped them, restore that block; "
+        f"if the rule is new, it needs a mutation test before it counts."
+    )
+
+
+def test_every_gated_invariant_names_a_real_rule():
+    """docs/invariants.md is bound to nothing today, and it was the LARGEST hunk in the
+    same merge conflict — 145 lines against 81 — so losing a whole `**GATED (Lxxx)**`
+    section is invisible. Both directions are checked: a section for a retired code is
+    as wrong as a missing one."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    documented = set(re.findall(r"\*\*GATED \((L\d+)\)\*\*",
+                                (repo / "docs" / "invariants.md").read_text()))
+    catalog = {code for code, _, _ in L.RULES}
+    assert documented <= catalog, (
+        f"docs/invariants.md documents codes no rule emits: {sorted(documented - catalog)}"
+    )
+
+
 def test_lint_rules_doc_in_sync():
     """ADR cond #2: docs/lint-rules.md is generated from the linter; fail on drift."""
     repo = find_repo_root(Path(__file__).resolve().parent)
@@ -4468,7 +4510,10 @@ def test_L097_the_tree_is_clean():
     assert not _codes(repo, "L097")
 
 
-def _wf(tmp_path, body, name="build-x.yml"):
+def _wf_l097(tmp_path, body, name="build-x.yml"):
+    """Scoped name on purpose: two other `_wf` helpers already exist at module level
+    (L087's and L095's), they write the body VERBATIM, and this one wraps it. A third
+    `_wf` wins for the whole module and silently rewires theirs."""
     d = tmp_path / ".github/workflows"
     d.mkdir(parents=True, exist_ok=True)
     (d / name).write_text("name: X\non: workflow_dispatch\njobs:\n" + body)
@@ -4517,7 +4562,7 @@ def test_L097_every_scalar_style_is_read(tmp_path, shape, body):
     """A folded list whose SECOND half holds the deleted test must still be caught: that
     is the vllm-omni case this rule was built for, and the shape a truncating reader
     passes silently."""
-    repo = _image_shipping(_wf(tmp_path, body))
+    repo = _image_shipping(_wf_l097(tmp_path, body))
     errs = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.ERROR]
     assert errs, f"{shape}: read nothing, so the missing test passed silently"
     assert any("99-not-here" in f.msg for f in errs), (
@@ -4541,7 +4586,7 @@ def test_L097_a_repo_root_template_is_scoped_by_the_image_it_declares(tmp_path):
     -- so any repo-root template for one of the 16 images under
     `derivatives/pytorch/derivatives/` resolved to nothing and its own tests were
     reported missing."""
-    repo = _wf(tmp_path, "  qa:\n    with:\n      template_dir: templates/comfyui-qa\n"
+    repo = _wf_l097(tmp_path, "  qa:\n    with:\n      template_dir: templates/comfyui-qa\n"
                          "      require_tests: comfyui.d/10-comfyui-serving\n")
     tpl = repo / "templates/comfyui-qa"
     tpl.mkdir(parents=True)
@@ -4561,7 +4606,7 @@ def test_L097_each_job_is_scoped_to_its_own_image(tmp_path):
     """Two cells in one workflow build different images. Reading the file as text
     pooled every template_dir and every require-set in it, so a name valid for one cell
     satisfied the other -- the rule said SCOPED TO THE IMAGE while scoping to the file."""
-    repo = _wf(tmp_path,
+    repo = _wf_l097(tmp_path,
                "  qa-x:\n    with:\n      template_dir: external/x/templates/x-qa\n"
                "      require_tests: x.d/10-x-serving\n"
                "  qa-y:\n    with:\n      template_dir: external/y/templates/y-qa\n"
@@ -4591,10 +4636,62 @@ def test_L097_an_input_declaration_is_not_a_value(tmp_path):
     assert not _codes(tmp_path, "L097"), "prose in an input description was read as a value"
 
 
+def test_L097_a_yaml_extension_workflow_is_read(tmp_path):
+    """`.yaml` is as valid as `.yml` to GitHub and this repo has shipped one
+    (build-comfyui.yaml). Globbing `*.yml` gave such a file ZERO coverage silently --
+    and L097 was the only workflow reader in the linter that did it."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        "      require_tests: x.d/99-not-here\n",
+        name="build-x.yaml"))
+    assert _codes(repo, "L097"), "a .yaml workflow was not read at all"
+
+
+def test_L097_an_unparseable_workflow_is_named_not_skipped(tmp_path):
+    """The `continue` used to carry a comment saying malformed YAML was another rule's
+    problem. No rule reports it, so such a file got no coverage from ANY workflow check
+    with nothing said -- a second claim of coverage that did not exist."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "broken.yml").write_text("jobs:\n  qa:\n    if: >-\n      a\n      # b: c\n   bad\n")
+    _image_shipping(tmp_path)
+    warns = [f for f in L.lint_repo(tmp_path)
+             if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "could not be parsed" in warns[0].msg
+
+
+@pytest.mark.parametrize("value", [
+    "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+    "      require_tests:\n        - base/60-gpu-cuda\n        - x.d/99-not-here\n",
+    "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+    "      extra_env:\n        FOO: bar\n",
+])
+def test_L097_a_non_string_declaration_is_named_not_dropped(tmp_path, value):
+    """The `${{ }}` branch is the only sanctioned way to not-read a value. A sequence or
+    a mapping used to be dropped by an isinstance check with no word said, which is the
+    L087 failure mode this rule's own text condemns."""
+    repo = _image_shipping(_wf_l097(tmp_path, value))
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "other than a string" in warns[0].msg
+
+
+def test_L097_a_name_it_cannot_resolve_is_named_not_dropped(tmp_path):
+    """_TEST_NAME requires a digit after the slash; runner.sh imposes no such convention
+    and no rule enforces one. So `x.d/serverless-missing` vanished from the required set
+    silently while runner.sh would still compare it with `==` on the GPU."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        '      require_tests: "base/60-gpu-cuda x.d/serverless-missing"\n'))
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "x.d/serverless-missing" in warns[0].msg
+
+
 def test_L097_a_runtime_template_dir_is_named_not_guessed(tmp_path):
     """If the template is chosen at runtime the image cannot be known, and guessing it
     would judge the names against the wrong suite set. Say so instead."""
-    repo = _wf(tmp_path, "  qa:\n    with:\n"
+    repo = _wf_l097(tmp_path, "  qa:\n    with:\n"
                          "      template_dir: ${{ matrix.template_dir }}\n"
                          "      require_tests: x.d/99-not-here\n")
     warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]

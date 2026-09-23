@@ -106,7 +106,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
-    ("L097", ERROR, "Every test a WORKFLOW requires -- in a qa-gate caller's `require_tests`, or in the `INSTANCE_TEST_REQUIRE_PASS` it injects through `extra_env` -- names a test file the image THAT WORKFLOW BUILDS will actually have. L057, L059 and L072 read the TEMPLATE's `env.INSTANCE_TEST_REQUIRE_PASS` and cannot see these: a serverless cell declares its required set in the workflow, because the template is shared with the on-demand cell that must not require serverless tests. So the one place the serverless requirements are written was the one place nothing checked them. A name with no file cannot pass, so the gate fails -- but it fails on a RENTED GPU after a full image build, reporting a missing test rather than a missing FILE, and the fact is visible in the repo the whole time (ADR 0001: static checks are the fast gate). Same shape as L088 one level up. Found while wiring vllm-omni's serverless cell (ADR 0044) -- deleting `vllm-omni.d/20-serverless-pyworker.sh` left the workflow requiring it and every static check clean. SCOPED TO THE IMAGE, not the tree: the workflow is tied to its image through `template_dir`, so a workflow copied between images and left naming the suite it came from is caught -- which is exactly how vllm-omni's gate was first assembled (L088's story), and a first draft of this rule that matched any suite anywhere missed it. Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no pytorch.d of its own, correctly. A value built at runtime (`${{ matrix.require_tests }}`) cannot be read here and is reported as a WARN naming itself, rather than dropped silently -- the failure mode L087 condemns. The workflow is PARSED, not scanned. The first implementation matched lines with a regex and was wrong in four ordinary YAML shapes, each a SILENT pass: a `with: { require_tests: ... }` flow mapping (the style qa-gate's own caller header documents), a blank line above the key, a blank line inside a folded value, and a file with no trailing newline. The first two read nothing; the last two read the names before the gap and dropped the rest -- so a folded list whose second half holds the deleted test passed here and failed on a rented GPU, which is the failure this rule exists to prevent, reproduced by the rule itself. `yaml.safe_load` returns the RESOLVED value, so every scalar style is covered at once and no fifth shape is waiting; L095 took the same route for `if:`. Parsing is also what makes SCOPED TO THE IMAGE true rather than aspirational: reading the file as text pooled every `template_dir` and every require-set in it, so in a two-cell workflow a name valid for one cell satisfied the other, and prose in an input's `description:` was read as a value. `jobs.<id>.with` pairs them per job. A repo-root template (`templates/pytorch-qa`) gates an image elsewhere in the tree and its `template.yml` DECLARES which (`image: vastai/pytorch`); deriving it from the directory stem guessed, and guessed only in `derivatives/<stem>` and `external/<stem>`, so a repo-root template for any of the images under `derivatives/pytorch/derivatives/` resolved to nothing and that image's own tests were reported missing (latent: no workflow in the tree triggered it)"),
+    ("L097", ERROR, "Every test a WORKFLOW requires -- in a qa-gate caller's `require_tests`, or in the `INSTANCE_TEST_REQUIRE_PASS` it injects through `extra_env` -- names a test file the image THAT WORKFLOW BUILDS will actually have. L057, L059 and L072 read the TEMPLATE's `env.INSTANCE_TEST_REQUIRE_PASS` and cannot see these: a serverless cell declares its required set in the workflow, because the template is shared with the on-demand cell that must not require serverless tests. So the one place the serverless requirements are written was the one place nothing checked them. A name with no file cannot pass, so the gate fails -- but it fails on a RENTED GPU after a full image build, reporting a missing test rather than a missing FILE, and the fact is visible in the repo the whole time (ADR 0001: static checks are the fast gate). Same shape as L088 one level up. Found while wiring vllm-omni's serverless cell (ADR 0044) -- deleting `vllm-omni.d/20-serverless-pyworker.sh` left the workflow requiring it and every static check clean. SCOPED TO THE IMAGE, not the tree: the workflow is tied to its image through `template_dir`, so a workflow copied between images and left naming the suite it came from is caught -- which is exactly how vllm-omni's gate was first assembled (L088's story), and a first draft of this rule that matched any suite anywhere missed it. Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no pytorch.d of its own, correctly. A value built at runtime (`${{ matrix.require_tests }}`) cannot be read here and is reported as a WARN naming itself, rather than dropped silently -- the failure mode L087 condemns. The workflow is PARSED, not scanned. The regex it replaced had ONE defect, measured shape by shape rather than asserted: `\\s*` stops at the block-scalar indicator, so a folded (`>-`) or literal (`|`) value was captured as the literal indicator and every name on the following lines was invisible -- a SILENT pass, in the shape these values naturally take, since they run past 150 characters and this repo already writes long values that way (it is why L095 exists). A folded list whose SECOND half held the deleted test passed here and failed on a rented GPU: the failure this rule exists to prevent, reproduced by the rule. An earlier version of THIS text claimed four shapes; a blank line above the key and a missing trailing newline are the same defect (they read correctly unless the value is a block scalar), and a `with: { ... }` flow mapping was never broken by that regex at all -- it broke under an intermediate fix that never shipped. The correction is recorded rather than quietly dropped because knowing what actually broke is what licenses any claim about what is still broken. `yaml.safe_load` returns the RESOLVED value, so every SCALAR style is covered at once -- and the claim stops there: two non-scalar shapes were live counterexamples, a `.yaml` workflow invisible to a `*.yml` glob and a sequence/mapping value dropped by an isinstance check, and both are now read or WARNed rather than assumed away. Anything else this check cannot read is NAMED: an unparseable workflow, a non-string declaration, and a required name outside the `<suite>/<NN>-<name>` form `_TEST_NAME` resolves. L095 took the same route for `if:`. Parsing is also what makes SCOPED TO THE IMAGE true rather than aspirational: reading the file as text pooled every `template_dir` and every require-set in it, so in a two-cell workflow a name valid for one cell satisfied the other, and prose in an input's `description:` was read as a value. `jobs.<id>.with` pairs them per job. A repo-root template (`templates/pytorch-qa`) gates an image elsewhere in the tree and its `template.yml` DECLARES which (`image: vastai/pytorch`); deriving it from the directory stem guessed, and guessed only in `derivatives/<stem>` and `external/<stem>`, so a repo-root template for any of the images under `derivatives/pytorch/derivatives/` resolved to nothing and that image's own tests were reported missing (latent: no workflow in the tree triggered it)"),
     ("L096", ERROR, "An image built FROM a vLLM upstream image (`vllm/vllm-openai`, `vllm/vllm-omni`) MUST install vLLM's optional `audio` extra AND prove it imports, by running `tools/install-vllm-audio-extras.sh`. vLLM registers `/v1/audio/transcriptions` (>= v0.7.3) and `/v1/audio/translations` (>= v0.9.2) whatever is installed, but keeps the DECODING behind an extra — upstream PR #8063, prompted by issue #8030: librosa pulls soxr, which is LGPL, and that blocked installs at licence-strict sites. The upstream image has never installed it (zero hits for librosa/soundfile/soxr in vLLM's own Dockerfile at v0.13.0 or v0.29.0), so the route exists and answers 400 `Invalid or unsupported audio file` for EVERY request, with `ImportError('Please install vllm[audio] for audio support')` visible only in the engine log. Measured 2026-09-18 on a live v0.29.0 instance: a 16 kHz PCM WAV posted straight to the engine returned 400, and the serverless worker fronting it reported `No successful responses from benchmark` — an endpoint with zero capacity whose error names the engine, not the missing package. The list must be READ FROM METADATA, never hardcoded: this one Dockerfile builds many engine tags and the extra's members changed under it (v0.13 is librosa + soundfile + mistral_common[audio]; v0.28+ is av + scipy + soundfile + soxr + mistral_common[audio]), so pinning the current list leaves an older tag without librosa — still broken, while looking fixed. Installing is also not resolving, the lesson L056 records for llama.cpp's CUDA backend: the script imports every member, because a wheel that unpacks but cannot load leaves the route failing in exactly the way the install was meant to prevent. Partial installs are the realistic failure and they are SILENT per-format: with soundfile present but `av` missing, wav/mp3/ogg/flac return 200 while m4a/webm return 400 — and the worker accepts all nine formats the OpenAI spec lists, so three of them fail against an image that looks fixed. Scoped to the vLLM-derived images because the extra is vLLM's: SGLang carries soundfile and torchaudio as CORE dependencies (nothing to install), and llama.cpp decodes in C++ via vendored miniaudio (no Python dependency at all) — three engines, three different shapes, and demanding this of the other two would be a no-op paste"),
     ("L095", ERROR, "A workflow `if:` written as a block scalar must not contain a `#` comment line. In a folded (`>-`) or literal (`|`) block scalar, `#` does NOT start a comment — YAML folds the whole line into the string, so the text lands INSIDE the GitHub expression and the workflow fails to parse. Measured 2026-09-02 to 2026-09-09: `abba35d` (PR #274) added a 9-line rationale under `if: >-` in the merge-manifests job of all four engine builds, and every engine build died for a week. The failure gives almost nothing to work with: parsing happens before any job is created, so the run shows `conclusion: failure` with `jobs: []`, no step log names the cause, and `workflow_dispatch` is refused outright with `HTTP 422 ... Unexpected symbol: '#'`. It is silent as well as opaque — `notify-slack` is itself a job in the run, so it never executes and no alert fires; the scheduled rebuilds simply stopped, security rebuilds included, and nothing said so. Detected by parsing the workflow and reading the RESOLVED `if:` value, not by matching indentation, so every block-scalar form is covered at once. A `#` inside a quoted string is legal in an expression (`contains(msg, '#skip')`) and is not reported: quoted spans are blanked before the check. The fix is always the same — move the prose ABOVE the `if:` key, where it is a real comment"),
     ("L094", ERROR, "A copyleft entry in LICENSES.md must declare an in-image licence path, and a path the IMAGE itself provides must actually exist. GPL \u00a74 / AGPL \u00a74 require the licence text to accompany the program, and this repo conveys it by declaring `**License file in image:** `/path``. A declaration is a CLAIM: if the file is not there, the image ships copyleft code while telling the reader where to find a licence that does not exist, which is worse than silence because it looks discharged. Checked for paths the image provides through its own ROOT overlay (e.g. `/licenses/AGPL-3.0.txt` <- `ROOT/licenses/AGPL-3.0.txt`). Paths inside an upstream clone or a versioned install directory are NOT checked: they exist only after the build has cloned or unpacked the app, so a static check would be guessing rather than gating (the excluded prefixes are listed in the check's own docstring). Scoped to entries whose declared licence matches AGPL or GPL-2/3 - permissive entries carry no conveyance obligation. L094 covers only obligation (a) of the copyleft invariant; obligation (b), a `Modifications:` note whenever the Dockerfile patches that app, is NOT statically checkable and is documented as such rather than half-enforced (ADR 0012 territory, docs/invariants.md)"),
@@ -3662,24 +3662,46 @@ def check_vllm_audio_extra_is_installed(repo: Path) -> Iterable[Finding]:
 
 # L097 — a workflow cannot require a test the image it builds does not ship.
 #
-# The require-set is read by PARSING the workflow, not by matching lines. The first
-# implementation used a regex and was wrong in four ordinary shapes, each a SILENT pass:
-# a `with: { require_tests: ... }` flow mapping (the style qa-gate's own caller header
-# documents), a blank line above the key, a blank line inside a folded value, and a file
-# with no trailing newline. The first two read nothing at all; the last two read the
-# names before the gap and dropped the rest -- so a folded list whose second half holds
-# the deleted test passed here and failed on a rented GPU. That is the failure mode this
-# rule exists to prevent, reproduced by the rule itself.
+# The require-set is read by PARSING the workflow, not by matching lines.
 #
-# yaml.safe_load hands back the RESOLVED value, so every scalar style is covered at once
-# and none of those four shapes can come back. L095 already took this route for `if:`
-# and says so in its own text; all 35 workflows in this repo parse.
+# What the replaced regex (`require_tests:\s*(?P<v>[^\n]+)`) actually got wrong, measured
+# shape by shape rather than asserted: ONE thing. `\s*` stops at the block-scalar
+# indicator, so a folded (`>-`) or literal (`|`) value was captured as the literal `>-`
+# and every name on the following lines was invisible -- a SILENT pass, and the shape
+# these values naturally take, because they run past 150 characters and this repo already
+# writes long values that way (it is why L095 exists). A folded list whose SECOND half
+# held the deleted test therefore passed here and failed on a rented GPU: the failure
+# this rule exists to prevent, reproduced by the rule.
+#
+# Recorded because an earlier version of this comment got it wrong: a blank line above
+# the key and a file with no trailing newline are the SAME defect, not two more -- they
+# read correctly unless the value is a block scalar. And `with: { require_tests: ... }`
+# flow mapping was never broken by that regex at all; it broke under an intermediate fix
+# that is not in this history. Knowing what actually broke is what licenses any claim
+# about what is still broken.
+#
+# yaml.safe_load hands back the RESOLVED value, so every SCALAR style is covered at once
+# -- the claim stops there, deliberately. Two non-scalar shapes were live counterexamples
+# and are handled explicitly rather than assumed away: a `.yaml` workflow (invisible to a
+# `*.yml` glob) and a value that is a sequence or mapping (dropped by an isinstance
+# check). Both are now read or WARNed. L095 already took this route for `if:` and says so
+# in its own text; every workflow in this repo parses.
 #
 # Parsing also gives the scope the rule's name claims. Reading the file as text pooled
 # every `template_dir` and every require-set in it, so in a workflow with two cells a
-# name valid for one satisfied the other. `jobs.<id>.with` pairs them per job.
+# name valid for one satisfied the other, and prose in an input's `description:` was read
+# as a value. `jobs.<id>.with` pairs them per job. `_serverless_gate_callers` above
+# already parses per job for the same reason (L073) -- this is the second such walker in
+# this file, and the right pattern was in it through two earlier attempts at this rule.
 _TEST_NAME = re.compile(r"\b((?:base|[A-Za-z0-9._-]+\.d)/[0-9]+[A-Za-z0-9._-]*)\b")
+# Anything shaped like a test reference, INCLUDING the forms _TEST_NAME cannot resolve.
+# _TEST_NAME requires a digit after the slash; runner.sh imposes no such convention and
+# no rule enforces one, so `x.d/serverless-missing` used to vanish from the required set
+# without a word -- a silent drop inside the rule whose whole subject is silent drops.
+_TEST_REF = re.compile(r"\b((?:base|[A-Za-z0-9._-]+\.d)/[A-Za-z0-9._-]+)\b")
 _REQUIRE_ENV_KEY = "INSTANCE_TEST_REQUIRE_PASS"
+# Sentinel for "this key is present and this check cannot read it".
+_UNREADABLE = object()
 
 
 def _suite_dirs(root: Path) -> dict[str, Path]:
@@ -3715,14 +3737,25 @@ def _require_declarations(w: dict) -> Iterable[tuple[str, str]]:
     differently on purpose, so both are read.
     """
     v = w.get("require_tests")
-    if isinstance(v, str) and v.strip():
-        yield "require_tests", v
+    if isinstance(v, str):
+        if v.strip():
+            yield "require_tests", v
+    elif v is not None:
+        # Present but not a string -- a sequence, a mapping, a number. qa-gate declares
+        # the input `type: string` so GitHub would refuse it there, but this walks jobs
+        # calling ANY reusable workflow, where nothing guarantees that. The `${{ }}`
+        # branch below is the only sanctioned way to not-read a value; everything else
+        # gets named, per the principle this rule quotes from L087.
+        yield "require_tests", _UNREADABLE
+
     env = w.get("extra_env")
     if isinstance(env, str):
         for line in env.splitlines():
             line = line.strip()
             if line.startswith(f"{_REQUIRE_ENV_KEY}="):
                 yield f"extra_env {_REQUIRE_ENV_KEY}", line.split("=", 1)[1]
+    elif env is not None:
+        yield "extra_env", _UNREADABLE
 
 
 def _image_dir_for_template(repo: Path, template_dir: str) -> Path | None:
@@ -3764,12 +3797,28 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
     import yaml  # lazy
     base_suites = _suite_dirs(repo)                     # base's own overlay
 
-    for wf in sorted(repo.glob(".github/workflows/*.yml")):
+    wfdir = repo / ".github" / "workflows"
+    if not wfdir.is_dir():
+        return
+    for wf in sorted(wfdir.iterdir()):
+        # `.yaml` is as valid as `.yml` to GitHub, and this repo has shipped one
+        # (build-comfyui.yaml). Globbing `*.yml` gave such a file ZERO coverage with no
+        # word said -- every other workflow reader in this file already tests both.
+        if wf.suffix not in (".yml", ".yaml") or not wf.is_file():
+            continue
         rel = f".github/workflows/{wf.name}"
         try:
             data = yaml.safe_load(wf.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            continue                       # malformed YAML is L095's problem, not this
+        except Exception as exc:
+            # NOT silence. A workflow this cannot parse gets no coverage from any
+            # workflow rule in this file, so the gap is reported rather than assumed to
+            # be someone else's: in practice PyYAML failing means GitHub fails too, but
+            # "someone else checks it" was not true and should not be written as if it
+            # were.
+            yield Finding("L097", WARN, "-", rel,
+                          f"could not be parsed as YAML ({type(exc).__name__}), so the "
+                          f"tests it requires are ungated here (L097)")
+            continue
 
         for jid, w in _job_with_blocks(data):
             declarations = list(_require_declarations(w))
@@ -3804,6 +3853,12 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
 
             names: set[str] = set()
             for where, value in declarations:
+                if value is _UNREADABLE:
+                    yield Finding("L097", WARN, "-", rel,
+                                  f"job `{jid}` declares `{where}` as something other "
+                                  f"than a string, which this check cannot read - the "
+                                  f"names in it are ungated (L097)")
+                    continue
                 if "${{" in value:
                     yield Finding("L097", WARN, "-", rel,
                                   f"job `{jid}` requires tests from a runtime "
@@ -3811,7 +3866,19 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                                   f"which this check cannot read - the names in it are "
                                   f"ungated (L097)")
                     continue
-                names.update(_TEST_NAME.findall(value))
+                resolvable = set(_TEST_NAME.findall(value))
+                for ref in _TEST_REF.findall(value):
+                    if ref not in resolvable:
+                        # A reference this check cannot turn into a filename. runner.sh
+                        # will still compare it with ==, so it is a real requirement
+                        # being carried ungated; dropping it quietly is the defect this
+                        # rule exists to remove, one level in.
+                        yield Finding("L097", WARN, "-", rel,
+                                      f"job `{jid}` requires `{ref}` in `{where}`, "
+                                      f"which does not match the `<suite>/<NN>-<name>` "
+                                      f"form this check resolves - it is ungated here "
+                                      f"and runner.sh will still require it (L097)")
+                names.update(resolvable)
 
             for name in sorted(names):
                 suite_name, _, stem = name.partition("/")
