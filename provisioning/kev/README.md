@@ -11,11 +11,9 @@ that differ only in the model and the GPU floor.
 
 | Path | What it is |
 |---|---|
-| `kev.yaml` | The manifest: clones Kev and this repo at pinned commits, installs the locked deps, registers three supervisor services, pre-downloads the model |
+| `kev.yaml` | The manifest: clones Kev and this repo at pinned commits, installs the locked deps, registers two supervisor services, pre-downloads the model |
 | `requirements-kev.txt` | Kev server deps for `/venv/main`: exact versions + hashes, no torch (the image's is used) |
-| `requirements-ui.txt` | Deps for the UI's own venv `/venv/kev-ui`: gradio 6.28.0, no torch |
 | `prefetch.py` | Downloads the pinned adapter and the exact base revision it was trained on, during provisioning |
-| `ui/` | The Kev Hugging Face Space, adapted to call the local API instead of loading a second copy of the model |
 | `templates/kev-4b`, `templates/kev-9b` | `template.yml` + marketplace `README.md` (ADR 0011 format) |
 
 ## What runs
@@ -24,10 +22,11 @@ that differ only in the model and the GPU floor.
 |---|---|---|---|
 | Kev API | `127.0.0.1:18000` | `8000`, opens `/docs` | `kev.serve`: `/v1/systemone`, `/v1/models`, plus `/permute` and `/separate` |
 | Kev Playground | `127.0.0.1:13000` | `3000` | Kev's Next.js playground (presets, option-order test, packed vs separate, chess demo); proxies `/kev/*` to the API itself |
-| Kev UI | `127.0.0.1:17860` | `7860` | The adapted Space (Gradio): answer cards with probability bars, option-order check |
 
-Nothing binds a public interface; Caddy's auth fronts all three. The front-ends are HTTP clients of the
-one Kev server and add no GPU memory.
+Nothing binds a public interface; Caddy's auth fronts both. The playground is an HTTP client of the Kev
+server and adds no GPU memory. It starts only after the API has sent one warm-up request (which
+JIT-compiles the Triton kernels; about 25 s on the first boot of a large GPU, longer on a 12 GB card), so a
+user's first request never pays that compile. Until then its portal link does not answer.
 
 ## Pins (nothing follows a moving branch)
 
@@ -36,11 +35,10 @@ one Kev server and add no GPU memory.
 | Base image | template `tag` | `2.8.0-cu128-cuda-12.9-mini-py313-2026-09-08` (Kev needs torch < 2.9; tested on Python 3.13) |
 | This manifest and its files | template `PROVISIONING_MANIFEST` URL + `KEV_TEMPLATE_REF` | the same base-image commit; the manifest refuses to run if the checkout does not match |
 | Kev source | `kev.yaml` | `jaredpalmer/kev@557598fced1dada75dfbf36ed144dce309ac6ceb` |
-| Python deps | `requirements-*.txt` | exact versions + sha256 hashes, installed `--no-deps --require-hashes` |
+| Python deps | `requirements-kev.txt` | exact versions + sha256 hashes, installed `--no-deps --require-hashes` |
 | Model | template `KEV_MODEL` | `jaredpalmer/kev-4b@485ace87…` / `jaredpalmer/kev-9b@2629c06a…`; the base (`Qwen/Qwen3.5-*-Base`) revision comes from the adapter's own metadata |
 | Playground npm deps | Kev's `package-lock.json` at the pinned commit | `npm ci` |
 | Node | the image's nvm LTS | fixed by the dated image tag |
-| UI presets | `ui/presets.py` | vendored from the Space at revision `46ada90f…` |
 
 The manifest asserts torch is still the image's 2.8.0 after the Kev install, so an upstream change that tries
 to replace torch fails provisioning instead of silently shipping a different stack.
@@ -74,17 +72,14 @@ Accuracy against TypeSafe's hosted Jev on the same items (Kev's recorded live-Je
 - One request at a time: the server does not batch across callers. This is an evaluation and development
   template, not a high-throughput deployment.
 - Context: 8,192 tokens for the state plus one question (trained on shorter). Longer requests get HTTP 422.
-- Option order can change an answer; the option-order check in both front-ends measures it.
-- The Gradio UI streams results over server-sent events; Cloudflare quick tunnels are known to buffer those.
-  Use the direct portal link.
+- Option order can change an answer; the playground's option-order test measures it.
 
 ## Changing a pin
 
 1. Bump the value (Kev commit in `kev.yaml`, a lock file, `KEV_MODEL`, or the image `tag`).
-2. For a Kev bump, regenerate `requirements-kev.txt` as its header describes and re-vendor `ui/presets.py`
-   if the Space's presets changed.
+2. For a Kev bump, regenerate `requirements-kev.txt` as its header describes.
 3. Commit, then point both templates' `KEV_TEMPLATE_REF` and `PROVISIONING_MANIFEST` URL at that commit.
-4. Boot each template on a real GPU and check all three portal entries answer through Caddy.
+4. Boot each template on a real GPU and check both portal entries answer through Caddy.
 
 After a squash-merge the branch commit a template points at becomes unreachable once the branch is deleted,
 so published templates must be re-pointed at the resulting `main` commit.

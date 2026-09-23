@@ -1,5 +1,5 @@
 # Kev: open "System One" decision models (typed choice / yes-no / score answers with probabilities, no text
-# generation), served with TypeSafe's /v1/systemone API, plus two browser front-ends. See ADR 0046 and
+# generation), served with TypeSafe's /v1/systemone API, plus Kev's browser playground. See ADR 0046 and
 # provisioning/kev/README.md.
 #
 # Base image: vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py313-<date> (Kev requires torch < 2.9 and is
@@ -9,7 +9,7 @@
 #   KEV_TEMPLATE_REF  base-image commit this manifest, the UI and the lock files are read from (set by the
 #                     template, equal to the commit in its PROVISIONING_MANIFEST URL; checked below)
 #   Kev source        jaredpalmer/kev @ 557598fced1dada75dfbf36ed144dce309ac6ceb
-#   Python deps       requirements-kev.txt / requirements-ui.txt, exact versions + hashes, --no-deps
+#   Python deps       requirements-kev.txt, exact versions + hashes, --no-deps
 #   Model             KEV_MODEL = jaredpalmer/kev-<size>@<revision>; the base revision comes from the
 #                     adapter's own metadata
 #   Playground deps   Kev's package-lock.json at the pinned commit (npm ci)
@@ -18,7 +18,6 @@
 # Services bind 127.0.0.1 only; Caddy (PORTAL_CONFIG) is the only thing listening on the public ports:
 #   Kev API         127.0.0.1:18000  (kev.serve hard-binds 127.0.0.1)  portal 8000, opens /docs
 #   Kev Playground  127.0.0.1:13000  (next start -H 127.0.0.1)          portal 3000
-#   Kev UI          127.0.0.1:17860  (KEV_UI_HOST / KEV_UI_PORT)        portal 7860
 version: 1
 
 on_failure:
@@ -45,15 +44,6 @@ git_repos:
     post_commands:
       - 'test "$(git rev-parse HEAD)" = 557598fced1dada75dfbf36ed144dce309ac6ceb'
 
-# Phase 5 (after the clones, before services are registered): the UI's own venv, built from the image's
-# Python 3.13 (fixed by the dated tag), so neither the interpreter nor a download varies with the date.
-pip_packages:
-  - venv: /venv/kev-ui
-    python: /venv/main/bin/python
-    requirements:
-      - /opt/kev-template/provisioning/kev/requirements-ui.txt
-    args: "--no-deps --require-hashes"
-
 services:
   - name: kev-api
     portal_search_term: "Kev API"
@@ -65,13 +55,17 @@ services:
       # roughly doubling peak VRAM; unmerged is what lets Kev-4B fit 12 GB and Kev-9B fit 24 GB, at ~30% latency.
       KEV_MERGE: "${KEV_MERGE:-0}"
     pre_commands:
-      # The first request JIT-compiles the Gated DeltaNet Triton kernels (~25 s on first boot; cached in
-      # ~/.triton afterwards). Send one warm-up request as soon as the server answers, so a user never pays it.
+      # The first request JIT-compiles the Gated DeltaNet Triton kernels (~25 s on a first boot, longer on
+      # smaller GPUs; cached in ~/.triton afterwards). One warm-up request, covering all three question types,
+      # is sent as soon as the server answers; on success it writes /dev/shm/kev-api-warm, which the playground
+      # waits for, so no user request pays the compile. /dev/shm is emptied on every container restart, so the
+      # marker always belongs to this boot.
+      - 'rm -f /dev/shm/kev-api-warm'
       - >-
-        ( for i in $(seq 1 360); do curl -sf -o /dev/null http://127.0.0.1:18000/v1/models && break; sleep 5; done;
+        ( for i in $(seq 1 720); do curl -sf -o /dev/null http://127.0.0.1:18000/v1/models && break; sleep 5; done;
         curl -sf -o /dev/null -H 'content-type: application/json'
-        -d '{"model":"kev-latest","state":"warm-up","questions":{"q":{"type":"noul","instructions":"Is this a warm-up request?"}}}'
-        http://127.0.0.1:18000/v1/systemone && echo "kev-api: kernels warmed" ) &
+        -d '{"model":"kev-latest","state":"Warm-up request: the order arrived late and damaged.","questions":{"n":{"type":"noul","instructions":"Is this a warm-up request?"},"c":{"type":"choice","instructions":"Which team?","criteria":{"billing":"Charges","shipping":"Delivery"}},"s":{"type":"score","instructions":"How urgent?","criteria":["low","medium","high"]}}}'
+        http://127.0.0.1:18000/v1/systemone && touch /dev/shm/kev-api-warm && echo "kev-api: kernels warmed" ) &
     command: 'python -m kev.serve --run "${KEV_MODEL}" --port 18000'
 
   - name: kev-playground
@@ -82,20 +76,10 @@ services:
       KEV_API: "http://127.0.0.1:18000"
       NEXT_TELEMETRY_DISABLED: "1"
     pre_commands:
+      # Start only once the API has warmed its kernels (see kev-api), so the playground's first request is fast.
+      - 'until [ -f /dev/shm/kev-api-warm ]; do echo "kev-playground: waiting for kev-api to finish warming up"; sleep 5; done'
       - 'source /opt/nvm/nvm.sh'
     command: 'npx --no-install next start -H 127.0.0.1 -p 13000'
-
-  - name: kev-ui
-    portal_search_term: "Kev UI"
-    venv: /venv/kev-ui
-    workdir: /opt/kev-template/provisioning/kev/ui
-    environment:
-      PYTHONPATH: /opt/kev
-      KEV_API: "http://127.0.0.1:18000"
-      KEV_UI_HOST: "127.0.0.1"
-      KEV_UI_PORT: "17860"
-      GRADIO_ANALYTICS_ENABLED: "False"
-    command: 'exec /venv/kev-ui/bin/python app.py'
 
 post_commands:
   # The image's torch must survive every install below.
@@ -105,7 +89,6 @@ post_commands:
   - 'uv pip install --no-cache --python /venv/main/bin/python --no-deps --require-hashes -r /opt/kev-template/provisioning/kev/requirements-kev.txt'
   - *torch_guard
   - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python -c "import fla, kev.serve"'
-  - 'cd /opt/kev-template/provisioning/kev/ui && PYTHONPATH=/opt/kev /venv/kev-ui/bin/python -c "import gradio, httpx, kev.api, presets"'
   - 'bash -c "source /opt/nvm/nvm.sh && cd /opt/kev/playground && npm ci --no-audit --no-fund && KEV_API=http://127.0.0.1:18000 NEXT_TELEMETRY_DISABLED=1 npx --no-install next build"'
   # Last and longest: the pinned adapter and its pinned base model into the HF cache.
   - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python /opt/kev-template/provisioning/kev/prefetch.py'

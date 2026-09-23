@@ -31,9 +31,9 @@ Three question types:
 1. **Rent** a GPU with at least 12 GB of VRAM through the [template link](<<LAUNCH_LINK>>).
 2. Wait for provisioning: it installs Kev and downloads the model (the download is the longest step).
 3. Open the **Instance Portal** and choose:
-   - **Kev Playground**: presets, an option-order test and a packed-vs-separate comparison.
-   - **Kev UI**: paste a document and questions, see a bar per option.
    - **Kev API**: interactive API docs.
+   - **Kev Playground**: presets, your own documents and questions, an option-order test and a packed-vs-separate
+     comparison. It opens once the model has loaded and warmed up.
 
 ### Calling the API
 
@@ -68,7 +68,7 @@ measure on your own data before relying on a probability threshold.
 - **One request at a time.** The server does not batch requests from different callers; this template is for
   evaluation and development rather than high-volume serving.
 - **Context**: up to 8,192 tokens for the document plus one question. Longer requests are rejected.
-- **Option order can matter.** Use the option-order check in either front-end to see how stable an answer is.
+- **Option order can matter.** Use the playground's option-order test to see how stable an answer is.
 - **Memory**: the model loads in bf16 with its adapter unmerged (`KEV_MERGE=0`) so it fits a 12 GB card. On a
   larger card, set `KEV_MERGE=1` for about 30% faster responses.
 - Need a different size? See the **Kev 9B** template.

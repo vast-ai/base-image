@@ -45,11 +45,15 @@ manifests). Kev's own published numbers reproduced exactly on the serving path, 
 - **Front-end: a `/v1/systemone` tab in `tools/model-ui`.** Deferred. It would be reusable for any future
   engine speaking the API, but `model-ui` is baked into four engine images, so changing it is a shared-tool
   change with its own review, and the pytorch image does not include it.
-- **Front-end: Kev's Next.js playground and the Kev Hugging Face Space.** **Chosen, both.** The playground
-  needs no Node install (the base image ships nvm's LTS), `npm ci` + `next build` take seconds, and it
-  proxies API calls itself, so it works behind Caddy unchanged. The Space loads its own copy of the model
-  in-process, which would double VRAM; it is adapted (about 300 lines, rendering unchanged) to call the local
-  API, so neither front-end adds GPU memory.
+- **Front-end: the Kev Hugging Face Space (Gradio), adapted to call the local API.** Built and booted,
+  then dropped at review in favour of the playground alone. It overlaps what the playground shows, and keeping
+  it meant owning an adaptation of about 300 lines (the Space loads its own copy of the model in-process, which
+  would double VRAM), plus a second Python environment and a UI whose results stream over server-sent events,
+  which Cloudflare quick tunnels buffer.
+- **Front-end: Kev's Next.js playground.** **Chosen.** It needs no Node install (the base image ships nvm's
+  LTS), `npm ci` + `next build` take seconds, and it proxies API calls itself, so it works behind Caddy
+  unchanged and adds no GPU memory. It starts only after the API has warmed its Triton kernels: the first
+  request otherwise pays a JIT compile (about 25 s on a large GPU on first boot, longer on a 12 GB card).
 
 ## Decision
 One provisioning manifest (`provisioning/kev/kev.yaml`) on the stock `vastai/pytorch` -mini image, and two
@@ -72,12 +76,12 @@ for 9B) at about 30% more latency.
   would orphan.
 
 ## Consequences
-- Users get an API compatible with TypeSafe's SDKs and two front-ends on a 12 GB (4B) or 24 GB (9B) card.
+- Users get an API compatible with TypeSafe's SDKs and Kev's playground on a 12 GB (4B) or 24 GB (9B) card.
+  The two are the first entries in the instance portal after the portal itself.
 - Pins do not move by themselves: taking a new Kev release, adapter or image is a deliberate bump (see
   `provisioning/kev/README.md`), and a stale pin is the accepted cost of not degrading silently.
 - Kev serves one request at a time, so these are evaluation and development templates, not high-throughput
   deployments.
-- The adapted Space is ours to maintain when Kev's API changes.
 
 ## What would reverse this
 - A released engine (vLLM or SGLang) serving calibrated `/v1/systemone` decisions at comparable accuracy:
