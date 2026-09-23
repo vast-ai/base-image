@@ -2069,8 +2069,15 @@ rule fails CLOSED on ambiguity: with two non-infra programs, which one emits the
 is a property of the launch scripts rather than the confs, so the check refuses instead of
 accepting either. Every image in scope has exactly one today; infrastructure programs
 (ray, model-ui and the like) are excluded so the value names the engine, not a sidecar.
-The values are identical to what the defaults resolve to today, so the change is inert for
-these three — it converts a coincidence into a contract.
+The values are identical to what the defaults resolve to today, so the worker tails the
+same file it did before — it converts a coincidence into a contract. **It is not fully
+inert:** upstream `start_server.sh` truncates `$MODEL_LOG` at worker start when a template
+sets `ROTATE_MODEL_LOG=true` (`[ "$ROTATE_MODEL_LOG" = "true" ] && [ -e "$MODEL_LOG" ]`).
+With `MODEL_LOG` unset in that shell, as it was for these three before the bake, the
+option did nothing; now it acts. On a restart where the engine logs its load line before
+`start_server.sh` reaches that point, the line is truncated away and the worker waits for
+readiness that has already happened — the same hang vllm-omni had. Opt-in, a narrow
+race, and the flag's documented meaning; no template in this repo sets it.
 
 **A template override is gated too.** A template env entry WINS over the baked `ENV`
 (Docker `-e` beats image `ENV`, and `10-prep-env.sh` sources `${WORKSPACE}/.env` after
@@ -2090,9 +2097,11 @@ is visible to a linter:
 - `logging.sh` accepts an explicit path as `$1`, so a launch script can write somewhere
   other than `/var/log/portal/${PROC_NAME}.log` — and L098 would then demand, and pass,
   the wrong value. Nothing gates that.
-- The worker is a git checkout in the PERSISTENT `$WORKSPACE`: `pyworker.sh` clones only
-  if absent, pulls only under `FORCE_UPDATE`, and honours a template-settable
-  `PYWORKER_REF`. A reused volume can therefore run a build predating `MODEL_LOG`
+- The worker is a git checkout in the PERSISTENT `$WORKSPACE`: base `pyworker.sh` only
+  fetches upstream `start_server.sh` (from `main`), and it is `start_server.sh` that
+  clones only if absent, pulls only under `FORCE_UPDATE`, and honours a
+  template-settable `PYWORKER_REF`. The bootstrap floats; the checkout it manages does
+  not. A reused volume can therefore run a build predating `MODEL_LOG`
   support, which hardcodes the path — and benchmarks perfectly well while the image's
   declaration is ignored. **A green benchmark score does not prove the declaration is
   true.**
@@ -2101,9 +2110,15 @@ is visible to a linter:
   is invisible to the static check.
 
 So each engine's `20-serverless-pyworker.sh` asserts that the file `$MODEL_LOG` names
-exists, is non-empty, and contains `$MODEL_LOAD_LOG_MSG`. One assertion closes all four,
-on hardware already rented. Note `base/70-logging.sh` skips in serverless mode, so
-without it nothing checks any log path at runtime there.
+exists, is non-empty, and contains `$MODEL_LOAD_LOG_MSG`, on hardware already rented. That
+closes the ENGINE side — the `$1` override, a runtime-registered program, an inherited
+declaration — because each one leaves the declared file unwritten or without the load
+line. It does **not** close the stale worker: a worker that ignores `MODEL_LOG` passes
+whenever its hardcoded path happens to equal the declared one, and when they differ the
+benchmark-score check fails first. **An earlier version of this paragraph said "one
+assertion closes all four"; there were three bullets, and it closes two.** Note
+`base/70-logging.sh` skips in serverless mode, so without it nothing checks any log path
+at runtime there.
 
 **`MODEL_LOG` is container-wide, not worker-private.** `ROOT/etc/vast_boot.d/10-prep-env.sh`
 dumps the environment into `/etc/environment`, which `45-user-write-bashrc.sh` sources

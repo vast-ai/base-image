@@ -2,8 +2,10 @@
 
 Run: cd tools/imagegen && PYTHONPATH=. python -m pytest -q
 """
+import os
 import re
 import shutil
+import subprocess
 
 import pytest
 from dataclasses import replace
@@ -4986,18 +4988,48 @@ def test_L098_a_template_restating_the_same_value_is_clean(tmp_path):
     ("external/vllm", "vllm.d"), ("external/sglang", "sglang.d"),
     ("derivatives/llama-cpp", "llama.d"), ("external/vllm-omni", "vllm-omni.d"),
 ])
-def test_L098_the_declaration_is_verified_at_runtime(suite, name):
-    """The static rule checks a NAME; these two ends it cannot see are checked on the
+def test_L098_the_declaration_is_verified_at_runtime(suite, name, tmp_path):
+    """The static rule checks a NAME; the engine side it cannot see is checked on the
     rented GPU instead -- that the engine actually wrote the declared file, and that the
-    file carries the load line (so a stale worker ignoring MODEL_LOG cannot score green
-    while the declaration is wrong). base/70-logging.sh skips under serverless, so
-    without this nothing checks any log path at runtime."""
+    file carries the load line. base/70-logging.sh skips under serverless, so without
+    this nothing checks any log path at runtime.
+
+    EXECUTED, not searched for. An earlier version asserted `test_fail` appeared within
+    400 characters before the first "MODEL_LOG names" -- which was in a comment, so the
+    window covered the unrelated score check and the test passed with every failure in
+    the block turned into `echo`. This runs the block itself, per branch."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     body = (repo / suite / "ROOT/opt/instance-tools/tests" / name
             / "20-serverless-pyworker.sh").read_text()
-    assert "MODEL_LOG names" in body, f"{name} does not verify its own MODEL_LOG"
-    assert "MODEL_LOAD_LOG_MSG" in body
-    assert "test_fail" in body.split("MODEL_LOG names")[0][-400:]
+    m = re.search(r'(?ms)^if \[\[ -n "\$\{MODEL_LOG:-\}" \]\]; then$.*?^fi$', body)
+    assert m, f"{name} does not verify its own MODEL_LOG"
+    block = m.group(0)
+    msg = "Application startup complete"
+    good = tmp_path / "good.log"
+    good.write_text(f"loading...\n{msg}\n")
+    other = tmp_path / "other.log"
+    other.write_text("some other program's output\n")
+
+    def run(env):
+        script = 'test_fail() { echo "FAIL: $*"; exit 1; }\n' + block + "\nexit 0\n"
+        return subprocess.run(["bash", "-c", script], env={"PATH": os.environ["PATH"], **env},
+                              capture_output=True, text=True).returncode
+
+    assert run({"MODEL_LOG": str(good), "MODEL_LOAD_LOG_MSG": msg}) == 0, \
+        f"{name}: a healthy engine log was failed"
+    assert run({"MODEL_LOAD_LOG_MSG": msg}) != 0, f"{name}: unset MODEL_LOG passed"
+    assert run({"MODEL_LOG": str(tmp_path / "absent.log"), "MODEL_LOAD_LOG_MSG": msg}) != 0, \
+        f"{name}: a declared log the engine never wrote passed"
+    assert run({"MODEL_LOG": str(other), "MODEL_LOAD_LOG_MSG": msg}) != 0, \
+        f"{name}: a declared log without the load line passed"
+    # The existence check is the ONLY guard when no load message is baked: with one,
+    # a missing file also fails the grep, so the two cases above cannot tell them apart.
+    empty = tmp_path / "empty.log"
+    empty.write_text("")
+    assert run({"MODEL_LOG": str(tmp_path / "absent.log")}) != 0, \
+        f"{name}: with no load message, a declared log the engine never wrote passed"
+    assert run({"MODEL_LOG": str(empty)}) != 0, \
+        f"{name}: with no load message, an empty declared log passed"
 
 
 def test_L098_the_real_images_are_clean():
