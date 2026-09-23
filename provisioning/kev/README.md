@@ -52,6 +52,15 @@ to replace torch fails provisioning instead of silently shipping a different sta
 | Kev-4B | ~18.6 GB (fp32 load + merge on the GPU) | fits 12 GB; accuracy 0.797 vs 0.799 on Kev's transfer-v4; ~30% slower |
 | Kev-9B | ~34 GB | fits 24 GB; identical accuracy; ~30% slower |
 
+Booted from the published templates (same GPU, 2026-09-23):
+
+| Template | VRAM in use | Disk used | Provisioning | First user request |
+|---|---|---|---|---|
+| Kev-4B | 9.6 GB | 11 GB | ~1 min on a fast-download host | 0.8 s (after the automatic warm-up), then ~60 ms |
+| Kev-9B | 16.7 GB | 21 GB | ~1.5 min on a fast-download host | 0.8 s, then ~60 ms |
+
+Provisioning time is dominated by the model download (9 GB / 19 GB) and scales with the host's bandwidth.
+
 Kev's server loads the base in fp32 on the GPU, merges the LoRA adapter, then casts to bf16, so its peak is
 about 4 bytes per parameter. `KEV_MERGE=0` loads bf16 directly with the adapter unmerged. On a card with room
 to spare, set `KEV_MERGE=1` in the template for the faster merged path.
