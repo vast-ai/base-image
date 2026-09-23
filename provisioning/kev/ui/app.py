@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from kev.api import SystemOneRequest, render, with_date_facts   # pydantic-only module; no torch import
 from presets import PRESETS
 
-KEV_API = os.environ.get("KEV_API", "http://127.0.0.1:8009").rstrip("/")
+KEV_API = os.environ.get("KEV_API", "http://127.0.0.1:18000").rstrip("/")
 KEV_API_KEY = os.environ.get("KEV_API_KEY", "")
 HOST = os.environ.get("KEV_UI_HOST", "127.0.0.1")
 PORT = int(os.environ.get("KEV_UI_PORT", "7860"))

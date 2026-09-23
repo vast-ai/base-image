@@ -33,6 +33,10 @@ git_repos:
     post_commands:
       # An unset KEV_TEMPLATE_REF would silently leave the default branch checked out: refuse instead.
       - 'test -n "${KEV_TEMPLATE_REF}" || { echo "KEV_TEMPLATE_REF is not set; the template must pin a base-image commit" >&2; exit 1; }'
+      # A branch name would pass the checkout check below while following a moving target.
+      - 'printf %s "${KEV_TEMPLATE_REF}" | grep -Eqx "[0-9a-f]{40}" || { echo "KEV_TEMPLATE_REF must be a full commit SHA" >&2; exit 1; }'
+      # The manifest itself must come from the same commit as the files it installs.
+      - 'case "${PROVISIONING_MANIFEST}" in */${KEV_TEMPLATE_REF}/provisioning/kev/kev.yaml) ;; *) echo "PROVISIONING_MANIFEST is not read from KEV_TEMPLATE_REF" >&2; exit 1;; esac'
       - 'test "$(git rev-parse HEAD)" = "$(git rev-parse "${KEV_TEMPLATE_REF}^{commit}")" || { echo "checkout does not match KEV_TEMPLATE_REF" >&2; exit 1; }'
   - url: https://github.com/jaredpalmer/kev
     dest: /opt/kev
@@ -40,6 +44,15 @@ git_repos:
     recursive: false
     post_commands:
       - 'test "$(git rev-parse HEAD)" = 557598fced1dada75dfbf36ed144dce309ac6ceb'
+
+# Phase 5 (after the clones, before services are registered): the UI's own venv, built from the image's
+# Python 3.13 (fixed by the dated tag), so neither the interpreter nor a download varies with the date.
+pip_packages:
+  - venv: /venv/kev-ui
+    python: /venv/main/bin/python
+    requirements:
+      - /opt/kev-template/provisioning/kev/requirements-ui.txt
+    args: "--no-deps --require-hashes"
 
 services:
   - name: kev-api
@@ -65,6 +78,7 @@ services:
     portal_search_term: "Kev Playground"
     workdir: /opt/kev/playground
     environment:
+      # Informational: Next bakes the /kev rewrite target at `next build` (post_commands below), which is the value that counts.
       KEV_API: "http://127.0.0.1:18000"
       NEXT_TELEMETRY_DISABLED: "1"
     pre_commands:
@@ -81,7 +95,7 @@ services:
       KEV_UI_HOST: "127.0.0.1"
       KEV_UI_PORT: "17860"
       GRADIO_ANALYTICS_ENABLED: "False"
-    command: 'python app.py'
+    command: 'exec /venv/kev-ui/bin/python app.py'
 
 post_commands:
   # The image's torch must survive every install below.
@@ -91,8 +105,6 @@ post_commands:
   - 'uv pip install --no-cache --python /venv/main/bin/python --no-deps --require-hashes -r /opt/kev-template/provisioning/kev/requirements-kev.txt'
   - *torch_guard
   - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python -c "import fla, kev.serve"'
-  - 'test -x /venv/kev-ui/bin/python || uv venv --python 3.13 /venv/kev-ui'
-  - 'uv pip install --no-cache --python /venv/kev-ui/bin/python --no-deps --require-hashes -r /opt/kev-template/provisioning/kev/requirements-ui.txt'
   - 'cd /opt/kev-template/provisioning/kev/ui && PYTHONPATH=/opt/kev /venv/kev-ui/bin/python -c "import gradio, httpx, kev.api, presets"'
   - 'bash -c "source /opt/nvm/nvm.sh && cd /opt/kev/playground && npm ci --no-audit --no-fund && KEV_API=http://127.0.0.1:18000 NEXT_TELEMETRY_DISABLED=1 npx --no-install next build"'
   # Last and longest: the pinned adapter and its pinned base model into the HF cache.

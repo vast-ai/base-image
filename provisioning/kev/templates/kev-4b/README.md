@@ -37,8 +37,9 @@ Three question types:
 
 ### Calling the API
 
-The API sits behind the instance's authentication. Use the Kev API link from the portal as the base URL and the
-instance's **Open Button token** as the bearer token:
+The API sits behind the instance's authentication. Its base URL is the portal's Kev API link **without** the
+trailing `/docs` (the address and external port that map to 8000). Send the instance's **Open Button token** as
+the bearer token:
 
 ```bash
 curl https://<instance-address>:<kev-api-port>/v1/systemone \
