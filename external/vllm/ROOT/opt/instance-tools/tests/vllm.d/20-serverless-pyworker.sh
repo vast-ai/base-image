@@ -158,4 +158,36 @@ fi
 
 echo "  pyworker: benchmark score ${score} (written $(date -d "@${written}" -u +%FT%TZ), this run)"
 
+# THE DECLARATION IS VERIFIED HERE, NOT JUST STATICALLY (L098).
+#
+# L098 checks that MODEL_LOG names this image's engine program. The two things that must
+# actually agree are the file the ENGINE WRITES and the file the WORKER OPENS, and a
+# static rule can see neither:
+#
+#   * logging.sh accepts an explicit path as $1, so a launch script can write somewhere
+#     other than /var/log/portal/${PROC_NAME}.log and L098 would demand -- and pass --
+#     the wrong value;
+#   * the worker is a git checkout in the PERSISTENT $WORKSPACE (pyworker.sh clones only
+#     if absent, pulls only under FORCE_UPDATE, and honours a template-set PYWORKER_REF),
+#     so a reused volume can run a build that predates MODEL_LOG support and hardcodes
+#     the path. That worker benchmarks fine while the image's declaration is ignored, so
+#     the score above does NOT prove the declaration is true;
+#   * a program registered at runtime, or a child image inheriting BACKEND and MODEL_LOG
+#     through FROM, is invisible to the static check entirely.
+#
+# Asserting the declared file exists and carries the load line closes all four at once,
+# on a GPU that is already rented. base/70-logging.sh skips in serverless mode, so
+# without this nothing checks any log path at runtime here.
+if [[ -n "${MODEL_LOG:-}" ]]; then
+    if [[ ! -s "$MODEL_LOG" ]]; then
+        test_fail "MODEL_LOG names ${MODEL_LOG}, which this image never wrote (present: $(ls /var/log/portal/ 2>/dev/null | tr '\n' ' ')) — the image's declared engine log is wrong, and the worker only scored because it was reading a different file"
+    fi
+    if [[ -n "${MODEL_LOAD_LOG_MSG:-}" ]] && ! grep -qF "$MODEL_LOAD_LOG_MSG" "$MODEL_LOG"; then
+        test_fail "${MODEL_LOG} exists but carries no '${MODEL_LOAD_LOG_MSG}' line — the engine is not the thing writing the file MODEL_LOG names"
+    fi
+    echo "  MODEL_LOG: ${MODEL_LOG} carries the load line"
+else
+    test_fail "MODEL_LOG is unset in a serverless instance of an image that bakes it (L098) — the worker fell back to a filename hardcoded in another repo"
+fi
+
 test_pass "serverless pyworker verified — serving on :3000 and scored ${score} on this run"

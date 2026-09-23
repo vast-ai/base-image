@@ -89,7 +89,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L062", ERROR, "A shipped test that defers a failure MUST report it before every exit that does not fail — `fail_later` (and `http_check`, which calls it internally) only RECORDS a failure; `report_failures` is what turns the record into a failing test. Reaching test_pass or test_skip with one pending prints `FAIL: ...` and then exits 0 (or 77), silently discarding it — the exact skip-as-pass shape the QA gate exists to close. Presence is not enough and neither is textual order: a `report_failures` that runs only inside a conditional does not clear a failure recorded outside it (found while adding the CUDA-libpath check to base/60-gpu-cuda, twice: once for the missing report, once for an early exit that discarded it)"),
     ("L063", ERROR, "No shipped script parses nvidia-smi's human-readable table for the driver's CUDA version — use /opt/instance-tools/bin/cuda-driver-version, which asks the driver via cuDriverGetVersion. Driver branch 610 renamed that field from `CUDA Version:` to `CUDA UMD Version:`, so every scrape returned empty on every 610 host at once; in 05-configure-cuda.sh the empty value aborted AFTER the CUDA ld.so.conf entries had already been deleted, leaving instances with no system CUDA library path (invisible, because torch uses its own bundled libs)"),
     ("L064", ERROR, "No shipped script open-codes the native-libcuda bypass (an `LD_LIBRARY_PATH=<dir>` wrapper around cuda-driver-version, or its own search for libcuda.so.1 to feed one) — call `/opt/instance-tools/bin/cuda-driver-version --native`, which dlopens an absolute path and then confirms from /proc/self/maps which file was actually mapped. LD_LIBRARY_PATH is a search HINT, not a pin: name a directory with no loadable libcuda.so.1 and the loader carries on to the ld.so cache, i.e. to a previous boot's forward-compat library — a probe that fails OPEN to precisely the wrong answer. The same six lines lived in both 05-configure-cuda.sh and base/60-gpu-cuda, so the test agreed with the boot script instead of checking it"),
-    ("L068", ERROR, "No shipped script interpolates a `VAST_TCP_PORT_*` / `VAST_UDP_PORT_*` variable into the PORT position of a listen address without a guard. The platform injects these only when the template maps that port, and an unset one does not fail loudly — it yields a syntactically valid address with an empty port, which the server resolves to its OWN default. Measured: `syncthing.sh` built `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset, persisted `<listenAddress>tcp://0.0.0.0:</listenAddress>` into config.xml on overlayfs, and syncthing bound `[::]:22000` — a port nothing publishes, so direct sync (the entire point of syncthing) silently never worked, and the exposure allowlist keyed `env:VAST_TCP_PORT_72299` could never match the port actually bound. Scoped to the interpolation site, not the variable: reading the var to build a display URL or an `if` test is fine. The blessed idiom is already in the tree — coturn's `-p \"${VAST_UDP_PORT_70000:-3478}\"` (ADR 0028)"),
+    ("L068", ERROR, "No shipped script interpolates a `VAST_TCP_PORT_*` / `VAST_UDP_PORT_*` variable into the PORT position of a listen address without a guard. The platform injects these only for ports the instance actually publishes -- a template mapping OR an image `EXPOSE` (history corrected 2026-09-22 with L073; the earlier wording here said `only when the template maps that port`, which is false and is the same misstatement L073 carried) -- and an unset one does not fail loudly — it yields a syntactically valid address with an empty port, which the server resolves to its OWN default. Measured: `syncthing.sh` built `tcp://0.0.0.0:${VAST_TCP_PORT_72299}` with the var unset, persisted `<listenAddress>tcp://0.0.0.0:</listenAddress>` into config.xml on overlayfs, and syncthing bound `[::]:22000` — a port nothing publishes, so direct sync (the entire point of syncthing) silently never worked, and the exposure allowlist keyed `env:VAST_TCP_PORT_72299` could never match the port actually bound. Scoped to the interpolation site, not the variable: reading the var to build a display URL or an `if` test is fine. The blessed idiom is already in the tree — coturn's `-p \"${VAST_UDP_PORT_70000:-3478}\"` (ADR 0028)"),
     ("L071", ERROR, "In a shipped instance test, every `supervisorctl restart <program>` is followed by a readiness wait, and `wait_for_caddy` is never called bare. Two halves of one defect, both measured on a live QA host. (a) `supervisorctl restart` returns when the WRAPPER clears its `startsecs`, not when the service is usable — measured: restart returned after 5145ms with the port still answering 000, because supervisord times the process, not readiness. An unguarded restart in `26-caddy-auth`'s skip path also leaked a rebinding caddy into `27-caddy-tls`, which runs next. (b) `wait_for_caddy` defaults to port 2019, Caddy's DEFAULT admin endpoint (caddy_config_manager.py emits no `admin` directive, so it is always enabled), while the tests probe :1111 and :6006. It returned success on 2019 with the site ports unbound and the checks recorded `expected 401, got 000` — twice on one machine, on an image the same run proved healthy 12 seconds later, and under ADR 0029 that redraws a cell whose derivative phase can cost tens of minutes. The silent variant is worse: `find_caddy_ports` keys on `ss -tln`, so a caddy that has not finished binding yields NO ports and `26-caddy-auth` takes its `test_skip` exit — a green run asserting nothing about auth. Use `wait_for_caddy_ports` (every port the Caddyfile declares) or pass an explicit port as `27-caddy-tls` already does. A restart on the way OUT of a test is exempt: it has no next probe, and the cross-FILE hazard it used to carry is closed at the other end — 26-caddy-auth and 27-caddy-tls each wait for the ports before enumerating them, so every file guards its own entry instead of trusting its predecessor's exit. Requiring a wait there produced one that provably could not fail, which reads as protection and is worse than none. Scope honestly: this gates that a wait EXISTS and that it names a port, not that the port is the right one (ADR 0029)"),
     ("L070", ERROR, "The readiness budgets in ROOT/opt/instance-tools/tests/lib.sh are env-overridable AND their defaults do not fall below the cost that was actually measured. docs/invariants.md called these \"fixed but NOT gated\" on the grounds that a linter cannot decide whether a number is large enough — true, and a dodge: it cannot decide SUFFICIENCY, but it can decide whether someone has quietly put a budget back below the measured floor. Proven: reverting `HTTP_CHECK_MAX_TIME` to 5 and the portal budget to 30 — the two exact values that failed cells on 2026-08-18 — passed every test in this repo. Floors, each from a measurement recorded in docs/invariants.md: HTTP_CHECK_MAX_TIME 20 (a cost-14 bcrypt verification of one wrong credential measures 4666ms at --cpus=0.12, and Caddy caches only successes), PORTAL_READY_TIMEOUT 120 (the portal cannot bind until caddy_config_manager.py has hashed once per proxied app; observed not serving at 30s and serving 53s later), CADDY_READY_TIMEOUT 120 (a caddy restart measured 43s on a contended host, against a 30s ceiling that only WARNed), SUPERVISOR_READY_TIMEOUT 60 (socket usable at 383ms idle, seconds under contention). Also gated: `http_check` must READ the variable rather than re-hardcode a literal, since a lever nothing uses is not a lever. The budgets stay overridable because the suite ships INSIDE the image — baked, a wrong number can only be corrected by rebuilding and re-promoting every image; behind a variable it is a template edit (ADR 0029)"),
     ("L069", ERROR, "No shipped instance test asserts that a supervisord-managed process is UP by process presence (`pgrep`/`pidof`) unless the supervisord RPC socket has already been reached earlier in the same file. Presence is satisfied the instant supervisord forks; the socket is what every downstream service assertion actually needs, and the gap between the two is real and load-dependent. Measured in the shipped image on an idle 16-core host: `pgrep -f supervisord` succeeded at 1.7ms, `supervisorctl status` only became usable at 383ms. base/10-supervisor.sh sat in exactly that window — `pgrep` gate on one line, socket call on the next — and on a contended QA host it failed `supervisorctl cannot communicate with supervisord (exit 4)` 0.09s into the suite, taking 20-portal and 26-caddy-auth down as collateral and blocking the whole promote batch; the same suite proved the image healthy 53s later. Presence may still be used for IDENTITY (which pid is caddy, so its listeners can be attributed) — it must not be the readiness gate. Exempt: negated assertions (`! pidof caddy` in serverless mode), because absence cannot be waited for and presence is the right instrument for it; and `if pgrep`/`if pidof` branch predicates, which are not assertions. Reach readiness through `wait_for_supervisor`, `assert_service_running` or `service_running`, which go through the socket with a bounded wait (ADR 0029)"),
@@ -2895,8 +2895,12 @@ def check_internal_ticket_ids(repo: Path) -> Iterable[Finding]:
 
 # ---- L068: a listen address built from an unguarded platform port variable ---
 #
-# `VAST_TCP_PORT_<n>` / `VAST_UDP_PORT_<n>` are injected by the platform ONLY when
-# the template maps that port. Interpolating one unguarded into a listen address
+# `VAST_TCP_PORT_<n>` / `VAST_UDP_PORT_<n>` are injected by the platform only for ports
+# the instance publishes -- a template mapping OR an image `EXPOSE`. (This comment used
+# to say "ONLY when the template maps that port". That is false; see L073, corrected
+# 2026-09-22. It does not change this rule: syncthing's 72299 is neither mapped nor
+# EXPOSEd, so the measured failure stands.) Interpolating one unguarded into a listen
+# address
 # does not fail loudly — it produces a syntactically valid address with an empty
 # port, which servers resolve to their OWN default. Measured on a live instance:
 #
@@ -2983,8 +2987,9 @@ def check_unguarded_listen_port(repo: Path) -> Iterable[Finding]:
                 continue
             yield Finding("L068", ERROR, "", rel,
                           f"line {n}: listen address interpolates ${{{var}}} with no "
-                          f"guard — the platform injects it only when the template maps "
-                          f"that port, so when unset this builds an address with an EMPTY "
+                          f"guard — the platform injects it only for ports the instance "
+                          f"publishes (a template mapping or an image EXPOSE), so when "
+                          f"unset this builds an address with an EMPTY "
                           f"port and the server binds its own default instead (measured: "
                           f"syncthing bound [::]:22000). Use ${{{var}:-<default>}}, or "
                           f"guard with [[ -n \"${{{var}}}\" ]] and configure no listener "
@@ -3956,12 +3961,37 @@ _INFRA_PROGRAMS = {"ray", "model-ui", "caddy", "jupyter", "syncthing", "cron",
 # would move every model-download line and every provisioning error into another file,
 # on ON-DEMAND launches too, in every customer script forked from our starter template.
 _MODEL_LOG_BACKENDS = {"vllm", "sglang", "llama", "openai"}
+# Backends whose worker assigns the path as a module constant and never consults the
+# environment, so baking MODEL_LOG is inert at best. `tgi` is here for completeness --
+# its worker uses /workspace/infer.log, not a portal path at all -- because an
+# enumeration that reads as a census has to be one.
+_HARDCODED_LOG_BACKENDS = {"comfyui-json", "ace", "wan", "tgi"}
 
 
 def check_serverless_image_bakes_model_log(img: Image, repo: Path) -> Iterable[Finding]:
     """L098 — an image whose worker reads MODEL_LOG bakes it, naming its engine program."""
-    backend = _baked_env(img, "BACKEND")
+    backend = (_baked_env(img, "BACKEND") or "").strip().lower()
+    if not backend:
+        return
+    if backend in _HARDCODED_LOG_BACKENDS:
+        # Baking here is not merely useless, it is harmful: MODEL_LOG is a container-wide
+        # ENV that reaches /etc/environment and so every provisioning script, and
+        # comfyui's own scripts already use the name with a different default.
+        if _baked_env(img, "MODEL_LOG"):
+            yield Finding("L098", ERROR, img.name, "Dockerfile",
+                          f"bakes MODEL_LOG under BACKEND={backend}, whose worker "
+                          f"hardcodes its log path and never reads the variable - the "
+                          f"bake cannot reach the worker, and the name is already used "
+                          f"by provisioning scripts with a different default (L098)")
+        return
     if backend not in _MODEL_LOG_BACKENDS:
+        # NOT silence. Whether this backend's worker reads MODEL_LOG is a fact about
+        # another repo that this check cannot see, and dropping it quietly is the L087
+        # failure mode L097's text condemns one rule over.
+        yield Finding("L098", WARN, img.name, "Dockerfile",
+                      f"bakes BACKEND={backend}, which is in neither the set of workers "
+                      f"known to read MODEL_LOG nor the set known to hardcode it - "
+                      f"whether this image must bake MODEL_LOG is ungated (L098)")
         return
     model_log = _baked_env(img, "MODEL_LOG")
     programs = set()
@@ -3982,7 +4012,11 @@ def check_serverless_image_bakes_model_log(img: Image, repo: Path) -> Iterable[F
                       f"bakes BACKEND={backend}, whose worker tails MODEL_LOG, but this "
                       f"image defines {len(engines)} non-infra supervisor programs "
                       f"({', '.join(engines) or 'none'}) - which one emits the load line "
-                      f"cannot be decided here, so the value cannot be checked (L098)")
+                      f"cannot be decided here, so the value cannot be checked. If the "
+                      f"engine program is unambiguous to a human, record it with an "
+                      f"EXCEPTIONS[({img.name!r}, 'L098')] entry rather than adding the "
+                      f"other name to _INFRA_PROGRAMS, which would weaken this rule for "
+                      f"every image (L098)")
         return
     expected = f"/var/log/portal/{engines[0]}.log"
 
@@ -4000,6 +4034,26 @@ def check_serverless_image_bakes_model_log(img: Image, repo: Path) -> Iterable[F
                       f"supervisor program is `{engines[0]}`, which writes {expected}, "
                       f"so the worker would tail a file nothing writes: it binds :3000, "
                       f"never sees the load line, and never benchmarks (L098)")
+        return
+
+    # A template env entry WINS over the baked ENV (10-prep-env.sh sources
+    # ${WORKSPACE}/.env after /etc/environment with `set -a`, and Docker -e beats image
+    # ENV), so a template can silently re-open the exact gap the bake closes. The bake
+    # is only a guarantee if nothing quietly overrides it.
+    import yaml  # lazy
+    for tpl in sorted(img.dir.rglob("templates/*/template.yml")):
+        try:
+            env = (yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+                   or {}).get("env") or {}
+        except Exception:
+            continue
+        override = env.get("MODEL_LOG") if isinstance(env, dict) else None
+        if override is not None and str(override) != expected:
+            yield Finding("L098", ERROR, img.name,
+                          str(tpl.relative_to(img.dir)),
+                          f"sets MODEL_LOG={override}, overriding the image's baked "
+                          f"{expected} - a template env entry wins over image ENV, so "
+                          f"this re-opens the gap the bake exists to close (L098)")
 
 
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [

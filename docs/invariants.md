@@ -2072,11 +2072,60 @@ accepting either. Every image in scope has exactly one today; infrastructure pro
 The values are identical to what the defaults resolve to today, so the change is inert for
 these three — it converts a coincidence into a contract.
 
-NOT gated: that the worker still READS `MODEL_LOG`. If the upstream worker stopped
-honouring the variable, the bake would become silently inert again, and only a serverless
-QA cell would notice — on a rented GPU. The mirror case is equally ungated: because the
-bake now WINS over the upstream default, a future fix to `EngineDefaults` can no longer
-reach these images.
+**A template override is gated too.** A template env entry WINS over the baked `ENV`
+(Docker `-e` beats image `ENV`, and `10-prep-env.sh` sources `${WORKSPACE}/.env` after
+`/etc/environment` with `set -a`), so a template naming a different `MODEL_LOG` silently
+re-opens the gap the bake closes. The bake is a guarantee only if nothing quietly
+overrides it; a template restating the SAME value is redundant, not wrong, and passes.
+
+**An unrecognised `BACKEND` is a WARN, not silence.** Whether a given backend's worker
+reads the variable is a fact about another repo that this check cannot see, and a new
+engine is exactly when the question matters. The backend is also matched
+case-insensitively, as L078 already does for the same read.
+
+**The static rule checks a NAME. The two ends are checked on the rented GPU.** What must
+actually agree is the file the engine WRITES and the file the worker OPENS, and neither
+is visible to a linter:
+
+- `logging.sh` accepts an explicit path as `$1`, so a launch script can write somewhere
+  other than `/var/log/portal/${PROC_NAME}.log` — and L098 would then demand, and pass,
+  the wrong value. Nothing gates that.
+- The worker is a git checkout in the PERSISTENT `$WORKSPACE`: `pyworker.sh` clones only
+  if absent, pulls only under `FORCE_UPDATE`, and honours a template-settable
+  `PYWORKER_REF`. A reused volume can therefore run a build predating `MODEL_LOG`
+  support, which hardcodes the path — and benchmarks perfectly well while the image's
+  declaration is ignored. **A green benchmark score does not prove the declaration is
+  true.**
+- A program registered at runtime (the provisioner writes supervisor confs), or a child
+  image inheriting `BACKEND` and `MODEL_LOG` through `FROM` without redeclaring either,
+  is invisible to the static check.
+
+So each engine's `20-serverless-pyworker.sh` asserts that the file `$MODEL_LOG` names
+exists, is non-empty, and contains `$MODEL_LOAD_LOG_MSG`. One assertion closes all four,
+on hardware already rented. Note `base/70-logging.sh` skips in serverless mode, so
+without it nothing checks any log path at runtime there.
+
+**`MODEL_LOG` is container-wide, not worker-private.** `ROOT/etc/vast_boot.d/10-prep-env.sh`
+dumps the environment into `/etc/environment`, which `45-user-write-bashrc.sh` sources
+into every login shell, so the variable reaches every supervisor-launched process and the
+provisioner's `os.environ` — i.e. every provisioning script. Our own published comfyui
+starter template reads `MODEL_LOG="${MODEL_LOG:-/var/log/portal/comfyui.log}"`; a customer
+forking that script onto vllm/sglang/llama-cpp will interleave download output into the
+engine log that `check_log_errors` greps. Narrow, but real, and it lands on on-demand
+launches too.
+
+NOT gated: that the worker still READS `MODEL_LOG` at all. If the upstream worker stopped
+honouring the variable, the bake would become inert again — the runtime assertion above
+would still pass, because it checks the engine's writing, not the worker's reading. The
+mirror case is equally ungated: because the bake now WINS over the upstream default, a
+future fix to `EngineDefaults` can no longer reach these images.
+
+**Rollback, if a baked value is ever wrong.** Promotion on all three engines is gated on
+`needs.qa-serverless.result == 'success'`, so a wrong value fails to promote rather than
+shipping. If one did reach a published tag: set `MODEL_LOG` to the correct path in the
+endpoint's template env — never to the empty string, since
+`os.environ.get("MODEL_LOG", default)` returns `""` and not the default — then revert the
+`ENV` line and re-dispatch that engine's build.
 
 ### `EXPOSE` maps a port — correcting L073's stated reason
 
