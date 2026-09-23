@@ -158,4 +158,42 @@ fi
 
 echo "  pyworker: benchmark score ${score} (written $(date -d "@${written}" -u +%FT%TZ), this run)"
 
+# THE DECLARATION IS CHECKED HERE ON ITS ENGINE SIDE (L098).
+#
+# L098 checks that MODEL_LOG names this image's engine program. Two files must actually
+# agree: the one the ENGINE WRITES and the one the WORKER OPENS. A static rule can see
+# neither, and this block checks only the first:
+#
+#   * logging.sh accepts an explicit path as $1, so a launch script can write somewhere
+#     other than /var/log/portal/${PROC_NAME}.log and L098 would demand -- and pass --
+#     the wrong value;
+#   * a program registered at runtime, or a child image inheriting BACKEND and MODEL_LOG
+#     through FROM, is invisible to the static check entirely.
+#
+# Asserting the declared file exists and carries the load line closes both: if the
+# engine is not writing the file MODEL_LOG names, this fails.
+#
+# It does NOT show the worker read MODEL_LOG. The bootstrap script floats on
+# pyworker@main (above), but the worker checkout it manages lives in the persistent
+# $WORKSPACE: upstream start_server.sh clones only if absent, pulls only under
+# FORCE_UPDATE, and honours a template-set PYWORKER_REF, so a reused volume can run a
+# worker that predates MODEL_LOG support and hardcodes its path. Such a worker passes
+# here whenever its hardcoded path happens to equal the declared one; when they differ
+# it never sees the load line and the score check above fails first. An earlier version
+# of this comment claimed this block closed that case too; it cannot.
+#
+# base/70-logging.sh skips in serverless mode, so without this nothing checks any log
+# path at runtime here.
+if [[ -n "${MODEL_LOG:-}" ]]; then
+    if [[ ! -s "$MODEL_LOG" ]]; then
+        test_fail "MODEL_LOG names ${MODEL_LOG}, which this image never wrote (present: $(ls /var/log/portal/ 2>/dev/null | tr '\n' ' ')) — the image's declared engine log is wrong, and the worker only scored because it was reading a different file"
+    fi
+    if [[ -n "${MODEL_LOAD_LOG_MSG:-}" ]] && ! grep -qF "$MODEL_LOAD_LOG_MSG" "$MODEL_LOG"; then
+        test_fail "${MODEL_LOG} exists but carries no '${MODEL_LOAD_LOG_MSG}' line — the engine is not the thing writing the file MODEL_LOG names"
+    fi
+    echo "  MODEL_LOG: ${MODEL_LOG} carries the load line"
+else
+    test_fail "MODEL_LOG is unset in a serverless instance of an image that bakes it (L098) — the worker fell back to a filename hardcoded in another repo"
+fi
+
 test_pass "serverless pyworker verified — serving on :3000 and scored ${score} on this run"

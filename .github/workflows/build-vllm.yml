@@ -446,9 +446,10 @@ jobs:
       # exercising it. If it fails, the benchmark raises and 20-serverless-pyworker
       # reds on a missing score — loudly, which is what we want.
       #
-      # MODEL_LOG is GONE for the same reason: the worker's EngineDefaults already
-      # carry this engine's log path, and passing it tested our value rather than the
-      # image's.
+      # MODEL_LOG is GONE for the same reason, and the reason got stronger: the IMAGE
+      # bakes it now (L098) rather than leaning on the worker's EngineDefaults, so
+      # passing it here would test our value instead of the image's -- and the image's
+      # is the one a customer gets.
       #
       # INSTANCE_TEST_REQUIRE_PASS stays, and is NOT a product difference. No customer
       # template carries it — it is how the gate asserts, and the serverless cell has
@@ -512,8 +513,11 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   merge-manifests:
-    # qa-serverless is in `needs` to ORDER it, and absent from the `if` so it cannot
-    # BLOCK. Those are two different things and only the first was wired before.
+    # qa-serverless is in `needs` to ORDER it ahead of the approval prompt AND named
+    # in the `if` so it blocks. Those are two different things and only the first was
+    # wired before. (This clause used to say it was absent from the `if` so it could
+    # not block; that stopped being true when the ramp completed below on 2026-09-02,
+    # and the comment contradicted its own next paragraph until 2026-09-23.)
     #
     # Without the dependency, this job becomes eligible the moment `qa` finishes, so
     # the production approval prompt can appear while the serverless cell is still

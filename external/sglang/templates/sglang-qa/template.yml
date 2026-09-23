@@ -29,10 +29,11 @@ ports:
   - "1111:1111"                   # Instance Portal
   - "8080:8080"                   # Jupyter
   - "8000:8000"                   # SGLang API (Caddy front; sglang binds 18000)
-  # Mandatory for the serverless cell, not decorative. The platform injects
-  # VAST_TCP_PORT_<n> only for MAPPED ports, and the pyworker SDK looks that variable
-  # up unguarded in metrics.get_url(); with 3000 unmapped the worker dies with
-  # KeyError before it binds or benchmarks. Measured on vLLM's first serverless cell.
+  # Mandatory for the serverless cell, not decorative. The pyworker SDK looks
+  # VAST_TCP_PORT_<n> up unguarded in metrics.get_url(); with 3000 unmapped the worker
+  # dies with KeyError before it binds or benchmarks. Measured on vLLM's first
+  # serverless cell. The image's EXPOSE 3000 maps it too, but this entry must not be
+  # removed in favour of that: an image can drop an EXPOSE without a template noticing.
   # Gated by L073. Harmless on the standard cells: nothing binds it there, and base/28
   # scans LISTENERS rather than mappings.
   - "3000:3000"                   # serverless worker (pyworker)

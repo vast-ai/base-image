@@ -19,8 +19,9 @@ ports:
   - "1111:1111"                   # Instance Portal
   - "8080:8080"                   # Jupyter
   - "8000:8000"                   # llama.cpp API (Caddy front; llama-server binds 18000)
-  # Mandatory for the serverless cell (L073): the platform injects VAST_TCP_PORT_<n>
-  # only for MAPPED ports, and the pyworker SDK looks that variable up unguarded.
+  # Mandatory for the serverless cell (L073): the pyworker SDK looks VAST_TCP_PORT_<n>
+  # up unguarded. The image's EXPOSE maps it too; this entry is what stops the cell
+  # depending on an EXPOSE the image could drop without any template noticing.
   - "3000:3000"                   # serverless worker (pyworker)
 env:
   OPEN_BUTTON_PORT: "1111"

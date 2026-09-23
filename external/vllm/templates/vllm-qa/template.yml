@@ -34,8 +34,7 @@ ports:
   - "8000:8000"                   # vLLM API
   - "8265:8265"                   # Ray Dashboard (ray.sh gates on this portal entry)
   # The serverless worker's port, MANDATORY for the serverless cell rather than
-  # decorative. The platform injects VAST_TCP_PORT_<n> only for ports a template
-  # MAPS, and the pyworker SDK does an unguarded lookup of exactly that:
+  # decorative. The pyworker SDK does an unguarded lookup of the mapping:
   #
   #     worker_port = os.environ[f"VAST_TCP_PORT_{os.environ['WORKER_PORT']}"]
   #
@@ -43,6 +42,11 @@ ports:
   # in Metrics() during Backend construction — measured live on the first serverless
   # cell ever run: `KeyError: 'VAST_TCP_PORT_3000'`, `PyWorker exited with status 1`,
   # before it bound the port or ran a benchmark.
+  #
+  # CORRECTED 2026-09-22: that KeyError is real but predates `EXPOSE 3000` in this
+  # image by six hours, and an EXPOSEd port IS mapped. So this entry is not the only
+  # mechanism -- it is the template refusing to DEPEND on the image continuing to
+  # EXPOSE the port, which an image can drop without any template noticing.
   #
   # This is L068's defect from the other side of the boundary: L068 gates OUR scripts
   # against interpolating an unset VAST_TCP_PORT_*, and cannot see an upstream SDK

@@ -102,6 +102,20 @@ ENV PATH=${LLAMA_CPP_DIR}:${PATH}
 ENV BACKEND=llama
 ENV MODEL_LOAD_LOG_MSG="model loaded"
 
+# MODEL_LOG is baked rather than left to the worker's default, and the value is this
+# image's own: /var/log/portal/<program>.log, where <program> is the supervisor program
+# that runs the engine (ROOT/opt/supervisor-scripts/utils/logging.sh derives the path
+# from PROC_NAME, which supervisord sets to %(program_name)s).
+#
+# The default resolves to the same file TODAY, by coincidence rather than contract:
+# workers/{engine} in the pyworker repo hardcodes a filename that happens to match this
+# image's program name. vllm-omni is where that ran out -- its program is `vllm-omni`
+# while it runs BACKEND=vllm, so the worker tailed a file the image never writes, bound
+# :3000 and never benchmarked, on three hosts in a row. Renaming a program here would do
+# the same to this image, silently and only under serverless. Baking the value makes the
+# image own the fact it is the only layer that knows (L098).
+ENV MODEL_LOG=/var/log/portal/llama.log
+
 # Reserve the serverless worker port (WORKER_PORT default 3000). EXPOSE makes Vast map
 # it, so VAST_TCP_PORT_3000 is set for the worker's self-report with NO template
 # port entry. Only on these serverless images (not base-inherited); unbound and harmless
