@@ -1936,7 +1936,7 @@ repo the whole time (ADR 0001: static checks are the fast gate). Found while wir
 vllm-omni's serverless cell (ADR 0044): deleting `vllm-omni.d/20-serverless-pyworker.sh`
 left the workflow requiring it with every static check clean.
 
-Three properties are gated, each because it has been wrong:
+Four properties are gated, each because it has been wrong:
 
 - **The workflow is PARSED, not scanned.** The regex it replaced had exactly ONE defect:
   `\s*` stops at the block-scalar indicator, so a folded (`>-`) or literal (`|`) value
@@ -1972,13 +1972,25 @@ Three properties are gated, each because it has been wrong:
 - **A name must match a filename EXACTLY.** `runner.sh:584` compares with `==`, so a
   prefix that satisfies a `startswith` check here still fails on the GPU with "missing
   from this image".
-- **Everything unreadable is NAMED, never dropped.** A workflow that does not parse, a
-  declaration that is not a string, a required name outside the `<suite>/<NN>-<name>`
-  form the resolver understands (`runner.sh` imposes no numeric convention and no rule
-  enforces one), and a `${{ }}` value all produce a WARN identifying themselves. The
-  parse-failure branch previously carried a comment saying malformed YAML was another
-  rule's problem; no rule reports it, so such a file got no coverage from ANY workflow
-  check with nothing said.
+- **Everything unreadable is NAMED, never dropped.** The value is split into tokens the
+  way both consumers split it (`runner.sh:575` and `qa_verdict.py`'s `parse_required`:
+  commas and whitespace), and EVERY token is accounted for. A workflow that does not
+  parse, a declaration that is not a string, a token shaped like a test but outside the
+  `<suite>/<NN>-<name>` form the resolver understands (`runner.sh` imposes no numeric
+  convention and no rule enforces one), a `${{ }}` value, and an `extra_env` line that is
+  an expression rather than `KEY=value` (`extra_env: ${{ matrix.extra_env }}`) all
+  produce a WARN identifying themselves. A token with no `base/` or `<suite>.d/` prefix
+  is an ERROR, not a WARN: `runner.sh` only discovers those suites, so such a name can
+  never match and the gate is certain to fail. The parse-failure branch previously
+  carried a comment saying malformed YAML was another rule's problem; no rule reports
+  it, so such a file got no coverage from ANY workflow check with nothing said.
+
+  **An earlier version of this bullet already claimed "never dropped", and was wrong.**
+  The value was searched for matches rather than split, so any token matching neither
+  pattern vanished (`x/10-x-serving`, a bare `10-x-serving`), and a partial match stood
+  in for its token: `foo-base/60-gpu-cuda` was read as `base/60-gpu-cuda`, which exists,
+  and passed. Each of those fails on the GPU as "missing from this image". An `extra_env`
+  that was wholly an expression was also silent.
 
 Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested
 one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no `pytorch.d` of its
@@ -1996,9 +2008,11 @@ states.
 that legitimately ships no torchaudio is not required to pass `pytorch.d/30-torchaudio`.
 That value cannot be read statically, and it is reported as a WARN naming itself rather
 than dropped — the failure mode L087 condemns. `pytorch.d/30-torchaudio` is consequently
-the one required name on that gate covered by nothing static; the other names in that
-matrix are repeated in `templates/pytorch-qa/template.yml`, which
-`test_required_test_names.py` checks.
+the one required name on that gate covered by nothing static. The other names in that
+matrix happen to be repeated in `templates/pytorch-qa/template.yml`, which
+`test_required_test_names.py` checks — but the matrix builds them from a jq literal that
+nothing ties to the template, so that coverage is a coincidence of today's text, not a
+gate.
 
 The WARN must stay VISIBLE, which is a property of the CLI rather than the rule:
 `lint --all` counted warnings after filtering them out, so the "I could not check this"

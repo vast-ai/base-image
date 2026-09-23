@@ -566,17 +566,34 @@ def test_every_rule_has_a_test():
     )
 
 
+# The `**GATED (Lxxx)**` sections docs/invariants.md carries today. Most rules have no
+# section, so "every rule is documented" cannot be asserted -- a FLOOR is what catches a
+# lost one. Add a code here when its section lands; remove one only with its rule.
+_GATED_FLOOR = frozenset({
+    "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
+    "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
+    "L092", "L093", "L095", "L096", "L097",
+})
+
+
 def test_every_gated_invariant_names_a_real_rule():
-    """docs/invariants.md is bound to nothing today, and it was the LARGEST hunk in the
+    """docs/invariants.md is bound to nothing else, and it was the LARGEST hunk in the
     same merge conflict — 145 lines against 81 — so losing a whole `**GATED (Lxxx)**`
-    section is invisible. Both directions are checked: a section for a retired code is
-    as wrong as a missing one."""
+    section is invisible. Two directions: a section for a code no rule emits is wrong,
+    and so is a section that was there and is gone. An earlier version of this
+    docstring claimed both while asserting only the first, so deleting a whole section
+    -- the merge loss that motivated it -- stayed green."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     documented = set(re.findall(r"\*\*GATED \((L\d+)\)\*\*",
                                 (repo / "docs" / "invariants.md").read_text()))
     catalog = {code for code, _, _ in L.RULES}
     assert documented <= catalog, (
         f"docs/invariants.md documents codes no rule emits: {sorted(documented - catalog)}"
+    )
+    assert documented >= _GATED_FLOOR, (
+        f"docs/invariants.md lost its GATED section for {sorted(_GATED_FLOOR - documented)}"
+        f" -- if a merge dropped it, restore it; if the rule was retired, drop the code"
+        f" from _GATED_FLOOR in the same change"
     )
 
 
@@ -4531,10 +4548,15 @@ def _image_shipping(tmp_path, image="external/x", suite="x.d", files=("10-x-serv
     return tmp_path
 
 
-# The four YAML shapes the first implementation read wrongly. Each was a SILENT pass --
-# no error, no warning -- which is the failure mode the rule's own text condemns. They
-# are parametrized together because they share one cause: a hand-rolled reader only ever
-# covers the shapes its author thought of, and these four are ordinary YAML.
+# Scalar styles. The regex this replaced had ONE defect: `\s*` stopped at a block-scalar
+# indicator, so a folded (`>-`) or literal (`|`) value was captured as the indicator and
+# every name after it was a SILENT pass. The three `>-` cases and the `|` case are that
+# defect; "blank line above the key" and "no trailing newline" only failed because their
+# values are block scalars. The flow-mapping and single-quoted cases were never broken
+# by that regex -- they are regression cases for the parser, not evidence against the
+# regex. (An earlier version of this comment called them "four shapes the first
+# implementation read wrongly"; that was retracted in lint-rules.md and invariants.md
+# and missed here.)
 #
 # Every case puts a name that SHIPS first and the missing one SECOND. That ordering is
 # the test, not decoration: with the missing name first, a reader that consumed a single
@@ -4686,6 +4708,86 @@ def test_L097_a_name_it_cannot_resolve_is_named_not_dropped(tmp_path):
         '      require_tests: "base/60-gpu-cuda x.d/serverless-missing"\n'))
     warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
     assert warns and "x.d/serverless-missing" in warns[0].msg
+
+
+# Every token is accounted for. The value used to be SEARCHED for matches, so a token
+# matching neither pattern vanished and a partial match stood in for its token. Each of
+# these passed with no finding, and each fails on the GPU as "missing from this image".
+@pytest.mark.parametrize("token,severity", [
+    ("x/10-x-serving", "ERROR"),          # suite without `.d`: never discovered
+    ("10-x-serving", "ERROR"),            # no suite at all
+    ("xbase/60-gpu-cuda", "ERROR"),       # not `base`
+    ("foo-base/60-gpu-cuda", "ERROR"),    # was read as base/60-gpu-cuda, which exists
+    ("x.d/10-x-serving/extra", "WARN"),   # was truncated to x.d/10-x-serving, which exists
+])
+def test_L097_every_token_is_accounted_for(tmp_path, token, severity):
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        f'      require_tests: "base/60-gpu-cuda, {token}"\n'))
+    hits = [f for f in L.lint_repo(repo) if f.code == "L097" and f"`{token}`" in f.msg]
+    assert hits, f"`{token}` passed with no finding"
+    assert {f.severity for f in hits} == {getattr(L, severity)}, [f.msg for f in hits]
+
+
+def test_L097_the_env_form_is_split_the_same_way(tmp_path):
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        "      extra_env: |\n"
+        "        INSTANCE_TEST_REQUIRE_PASS=base/60-gpu-cuda,x/10-x-serving\n"))
+    assert [f for f in _codes(repo, "L097") if "`x/10-x-serving`" in f.msg]
+
+
+def test_L097_an_extra_env_that_is_an_expression_is_named(tmp_path):
+    """`extra_env: ${{ matrix.extra_env }}` can expand to an INSTANCE_TEST_REQUIRE_PASS
+    line this check never sees. It yielded no declaration and no WARN."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        "      extra_env: ${{ matrix.extra_env }}\n"))
+    warns = [f for f in L.lint_repo(repo) if f.code == "L097" and f.severity == L.WARN]
+    assert warns and "extra_env" in warns[0].msg
+
+
+def test_L097_an_expression_inside_another_keys_value_is_quiet(tmp_path):
+    """build-comfyui.yml's PROVISIONING_COMFYUI_WORKFLOWS carries `${{ github.sha }}` in
+    its value. That line is `KEY=value` and cannot become a require-set."""
+    repo = _image_shipping(_wf_l097(
+        tmp_path,
+        "  qa:\n    with:\n      template_dir: external/x/templates/x-qa\n"
+        '      extra_env: "PROVISIONING_X=https://h/${{ github.sha }}/w.json"\n'))
+    assert not [f for f in L.lint_repo(repo) if f.code == "L097"]
+
+
+# Real-tree cases. Every test above builds a synthetic repo, so the rule's behaviour on
+# THIS tree was pinned only by "zero ERRORs": skipping every job that has a `strategy:`
+# silently removed promote-pytorch's WARNs and survived the whole suite.
+
+def test_L097_real_tree_catches_the_incident_it_cites(tmp_path):
+    """The case in the rule's own text: delete vllm-omni's serverless pyworker test and
+    the workflow still requires it."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    shutil.copytree(repo / ".github", work / ".github")
+    shutil.copytree(repo / "ROOT/opt/instance-tools/tests",
+                    work / "ROOT/opt/instance-tools/tests")
+    shutil.copytree(repo / "external/vllm-omni", work / "external/vllm-omni")
+    victim = "vllm-omni.d/20-serverless-pyworker"
+    (work / "external/vllm-omni/ROOT/opt/instance-tools/tests" / f"{victim}.sh").unlink()
+    errs = [f for f in L.check_workflow_required_tests_exist(work)
+            if f.severity == L.ERROR and f.path == ".github/workflows/build-vllm-omni.yml"]
+    assert errs and all(victim in f.msg for f in errs), [f.msg for f in errs]
+
+
+def test_L097_real_tree_names_the_matrix_it_cannot_read():
+    """invariants.md's NOT-gated paragraph leans on this WARN: promote-pytorch's
+    `${{ matrix.require_tests }}` must be reported, not skipped."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    warns = [f for f in L.check_workflow_required_tests_exist(repo)
+             if f.severity == L.WARN and f.path == ".github/workflows/promote-pytorch.yml"]
+    assert any("runtime expression" in f.msg and "require_tests" in f.msg for f in warns), \
+        [f.msg for f in warns]
 
 
 def test_L097_a_runtime_template_dir_is_named_not_guessed(tmp_path):
