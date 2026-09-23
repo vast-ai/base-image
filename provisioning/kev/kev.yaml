@@ -1,0 +1,91 @@
+# Kev: open "System One" decision models (typed choice / yes-no / score answers with probabilities, no text
+# generation), served with TypeSafe's /v1/systemone API, plus two browser front-ends. See ADR 0046 and
+# provisioning/kev/README.md.
+#
+# Base image: vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py313-<date> (Kev requires torch < 2.9 and is
+# tested on Python 3.13). The templates pin the dated tag.
+#
+# Everything is pinned; nothing here follows a moving branch:
+#   KEV_TEMPLATE_REF  base-image commit this manifest, the UI and the lock files are read from (set by the
+#                     template, equal to the commit in its PROVISIONING_MANIFEST URL; checked below)
+#   Kev source        jaredpalmer/kev @ 557598fced1dada75dfbf36ed144dce309ac6ceb
+#   Python deps       requirements-kev.txt / requirements-ui.txt, exact versions + hashes, --no-deps
+#   Model             KEV_MODEL = jaredpalmer/kev-<size>@<revision>; the base revision comes from the
+#                     adapter's own metadata
+#   Playground deps   Kev's package-lock.json at the pinned commit (npm ci)
+#   Node              the image's nvm-installed LTS (fixed by the dated image tag)
+#
+# Services bind 127.0.0.1 only; Caddy (PORTAL_CONFIG) is the only thing listening on the public ports:
+#   Kev API         127.0.0.1:18000  (kev.serve hard-binds 127.0.0.1)  portal 8000, opens /docs
+#   Kev Playground  127.0.0.1:13000  (next start -H 127.0.0.1)          portal 3000
+#   Kev UI          127.0.0.1:17860  (KEV_UI_HOST / KEV_UI_PORT)        portal 7860
+version: 1
+
+on_failure:
+  action: continue
+  max_retries: 2
+
+git_repos:
+  - url: https://github.com/vast-ai/base-image
+    dest: /opt/kev-template
+    ref: "${KEV_TEMPLATE_REF}"
+    recursive: false
+    post_commands:
+      # An unset KEV_TEMPLATE_REF would silently leave the default branch checked out: refuse instead.
+      - 'test -n "${KEV_TEMPLATE_REF}" || { echo "KEV_TEMPLATE_REF is not set; the template must pin a base-image commit" >&2; exit 1; }'
+      - 'test "$(git rev-parse HEAD)" = "$(git rev-parse "${KEV_TEMPLATE_REF}^{commit}")" || { echo "checkout does not match KEV_TEMPLATE_REF" >&2; exit 1; }'
+  - url: https://github.com/jaredpalmer/kev
+    dest: /opt/kev
+    ref: 557598fced1dada75dfbf36ed144dce309ac6ceb
+    recursive: false
+    post_commands:
+      - 'test "$(git rev-parse HEAD)" = 557598fced1dada75dfbf36ed144dce309ac6ceb'
+
+services:
+  - name: kev-api
+    portal_search_term: "Kev API"
+    venv: /venv/main
+    workdir: /opt/kev
+    environment:
+      PYTHONPATH: /opt/kev
+      # bf16 load with the LoRA adapter unmerged. The default (merge) loads the base in fp32 on the GPU first,
+      # roughly doubling peak VRAM; unmerged is what lets Kev-4B fit 12 GB and Kev-9B fit 24 GB, at ~30% latency.
+      KEV_MERGE: "${KEV_MERGE:-0}"
+    command: 'python -m kev.serve --run "${KEV_MODEL}" --port 18000'
+
+  - name: kev-playground
+    portal_search_term: "Kev Playground"
+    workdir: /opt/kev/playground
+    environment:
+      KEV_API: "http://127.0.0.1:18000"
+      NEXT_TELEMETRY_DISABLED: "1"
+    pre_commands:
+      - 'source /opt/nvm/nvm.sh'
+    command: 'npx --no-install next start -H 127.0.0.1 -p 13000'
+
+  - name: kev-ui
+    portal_search_term: "Kev UI"
+    venv: /venv/kev-ui
+    workdir: /opt/kev-template/provisioning/kev/ui
+    environment:
+      PYTHONPATH: /opt/kev
+      KEV_API: "http://127.0.0.1:18000"
+      KEV_UI_HOST: "127.0.0.1"
+      KEV_UI_PORT: "17860"
+      GRADIO_ANALYTICS_ENABLED: "False"
+    command: 'python app.py'
+
+post_commands:
+  # The image's torch must survive every install below.
+  - &torch_guard >-
+    /venv/main/bin/python -c "import sys, torch; v = torch.__version__;
+    sys.exit(0 if v.split('+')[0] == '2.8.0' else f'expected the image torch 2.8.0, found {v}')"
+  - 'uv pip install --no-cache --python /venv/main/bin/python --no-deps --require-hashes -r /opt/kev-template/provisioning/kev/requirements-kev.txt'
+  - *torch_guard
+  - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python -c "import fla, kev.serve"'
+  - 'test -x /venv/kev-ui/bin/python || uv venv --python 3.13 /venv/kev-ui'
+  - 'uv pip install --no-cache --python /venv/kev-ui/bin/python --no-deps --require-hashes -r /opt/kev-template/provisioning/kev/requirements-ui.txt'
+  - 'cd /opt/kev-template/provisioning/kev/ui && PYTHONPATH=/opt/kev /venv/kev-ui/bin/python -c "import gradio, httpx, kev.api, presets"'
+  - 'bash -c "source /opt/nvm/nvm.sh && cd /opt/kev/playground && npm ci --no-audit --no-fund && KEV_API=http://127.0.0.1:18000 NEXT_TELEMETRY_DISABLED=1 npx --no-install next build"'
+  # Last and longest: the pinned adapter and its pinned base model into the HF cache.
+  - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python /opt/kev-template/provisioning/kev/prefetch.py'
