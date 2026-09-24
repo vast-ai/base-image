@@ -38,6 +38,11 @@ on:
         required: false
         type: string
         default: ""
+      qa-override-note:
+        description: "ADR 0047: the validate-qa-override action's note. Prefixed to the header (the caller's headline OR the default) so a run on overridden QA floors never reads like a normal one. '' = no prefix"
+        required: false
+        type: string
+        default: ""
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
@@ -66,6 +71,7 @@ jobs:
           IMAGE_TAGS: ${{ inputs.image-tags }}
           STATUS: ${{ inputs.status }}
           HEADLINE: ${{ inputs.headline }}
+          QA_OVERRIDE_NOTE: ${{ inputs.qa-override-note }}
           BUILD_RESULT: ${{ inputs.build-result }}
           IMAGE_NAME: ${{ inputs.image-name }}
         run: |
@@ -89,9 +95,9 @@ jobs:
 
           # Header/fallback text: a caller-supplied headline wins; else the default.
           if [[ -n "$HEADLINE" ]]; then
-            HEADER_TEXT="${STATUS_EMOJI} ${HEADLINE}"
+            HEADER_TEXT="${STATUS_EMOJI} ${QA_OVERRIDE_NOTE}${HEADLINE}"
           else
-            HEADER_TEXT="${STATUS_EMOJI} ${IMAGE_NAME} Image Build ${STATUS_TEXT}"
+            HEADER_TEXT="${STATUS_EMOJI} ${QA_OVERRIDE_NOTE}${IMAGE_NAME} Image Build ${STATUS_TEXT}"
           fi
 
           # CLAMP THE HEADER. Slack's header block is plain_text with a hard 150

@@ -1362,7 +1362,8 @@ def parse_args():
     parser.add_argument("--label", metavar="LABEL",
                         help="Stamp the launched instance with this Vast label so the "
                              "reaper can positively identify QA-owned instances.")
-    parser.add_argument("--max-price", type=float, metavar="PRICE", help="Max $/hr filter")
+    parser.add_argument("--max-price", type=_positive_price, metavar="PRICE",
+                        help="Max $/hr filter (a positive, finite amount)")
     parser.add_argument("--disk", type=float, metavar="GB", help="Override template's recommended_disk")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TEST_TIMEOUT, metavar="SECS",
                         help=f"Max wait for tests to complete (default: {DEFAULT_TEST_TIMEOUT})")
@@ -1430,6 +1431,23 @@ def detect_serverless(template: dict, env_overrides=()) -> bool:
     # default IS the off state, and a separate branch would only assert it twice.
     return False
 
+
+
+def _positive_price(value):
+    """argparse type for --max-price: a positive, finite $/hr amount.
+
+    `type=float` accepted 0 (which then removed the cap), negatives, `nan` and `inf`
+    (ADR 0047). Refusing them here makes a bad ceiling a usage error at the door
+    rather than a search with no price bound.
+    """
+    import math
+    try:
+        price = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}")
+    if not math.isfinite(price) or price <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive, finite $/hr amount: {value!r}")
+    return price
 
 def main():
     global _RAW_MODE
@@ -1582,7 +1600,10 @@ def main():
         }
         if args.gpu:
             filters["gpu_name"] = {"eq": args.gpu}
-        if args.max_price:
+        # `is not None`, not truthiness: 0.0 is falsy, so `if args.max_price:` read
+        # "--max-price 0" as "no cap at all" (ADR 0047). _positive_price now refuses
+        # 0, but the cap must not hinge on a value's truthiness either way.
+        if args.max_price is not None:
             filters["dph_total"] = {"lte": args.max_price}
         # Bound the VRAM search above the declared floor (don't test a small
         # claim on a huge box). Templates with an explicit lte are left alone.

@@ -244,6 +244,20 @@ def test_workflow_scaffold_includes_qa_gate(tmp_path):
         assert "needs.qa.outputs.gated" in wf                             # gated-pass headline
 
 
+def test_workflow_scaffold_offers_the_validated_qa_override(tmp_path):
+    """ADR 0047 is the accepted pattern, so a new image is born with it: the scaffold
+    must pass L100 (the override wired the one way) and L099 (no raw dispatch input
+    reaches qa-gate) with nothing filled in."""
+    _gen_repo(tmp_path)
+    import imagegen.linter as L
+    found = [f for f in list(L.check_qa_override_is_the_pattern(tmp_path))
+             + list(L.check_qa_selection_is_validated(tmp_path)) if f.severity == L.ERROR]
+    assert not found, [f"{f.path}: {f.msg}" for f in found]
+    for name in ("mytool", "myapp", "myext"):
+        wf = (tmp_path / ".github/workflows" / f"build-{name}.yml").read_text()
+        assert "uses: ./.github/actions/validate-qa-override" in wf, name
+
+
 def test_only_the_default_template_is_scaffolded(tmp_path):
     """ADR 0010: one template per image — the launch template at templates/default/ (which the
     QA gate boots). No separate templates/<name>-qa/ is emitted."""

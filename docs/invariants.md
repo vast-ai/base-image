@@ -2142,6 +2142,68 @@ endpoint's template env — never to the empty string, since
 `os.environ.get("MODEL_LOG", default)` returns `""` and not the default — then revert the
 `ENV` line and re-dispatch that engine's build.
 
+### A dispatch narrows QA only through a validated output — **GATED (L099)**
+
+`set_filters` and `max_price` are the two qa-gate inputs that decide what hardware the
+promotion gate rents and at what price. Until PR #270 every value that reached them was
+committed in a workflow and reviewed (a matrix floor, or a literal). A dispatch input is
+typed at run time and reviewed by nobody, so ADR 0047 allows one only through a
+preflight step that validates it:
+
+- **Only with `CUSTOM_IMAGE_TAG`.** A version or nightly tag publishes under the sm_80
+  production floor. `create.py`'s raise-only check stops QA *widening* past the linted
+  floor, but not QA *narrowing* below what production promises, and a mainline tag
+  certified on Blackwell only would still be rented on Ampere.
+- **Only `compute_cap.gte` / `compute_cap.lte`.** The raise-only merge accepts a new key
+  or operator unchecked, so `machine_id` could pin the gate to one host.
+- **A price in (0, `QA_MAX_PRICE_HARD_MAX`].** `0` used to remove the `dph_total` cap
+  (`if args.max_price:`), and a malformed value exited 2, which the redraw loop reads as
+  "no offers".
+- **Visible.** A non-default run writes the override into the step summary and prefixes
+  the Slack headline, so a narrowed pass never reads like a normal one.
+
+The QA cells therefore take `needs.preflight.outputs.qa-*`, never `inputs.*`. L099 fails
+any qa-gate caller whose `set_filters` or `max_price` names a dispatch input directly,
+which is how PR #270 first wired both vLLM cells. `tools/template_manager/tests/
+test_qa_floor_override.py` executes the preflight step itself for each refusal. The
+same bound is enforced for every caller in qa-gate's create step, and by the client
+(`_positive_price`).
+
+**Offers are not searched cheapest-first.** `make_offer_sort_key` ranks by VRAM overshoot,
+then the lowest `compute_cap` at or above the floor, then GPU count, and price is only a
+cap. So raising only the lower bound draws the smallest-VRAM card above it:
+`compute_cap.gte=1000` lands on a consumer sm_120 card before any sm_100 one. An
+override names a RANGE, the same rule as "Name the BRACKET" above.
+
+NOT gated: whether the template a custom tag's users launch it under carries the floor
+QA used. A pass on overridden floors is visible, not tied back to that template. ADR 0047
+records the per-model template class plus a lint rule linking the two as the deferred
+durable fix.
+
+### Every custom-tag QA workflow offers the override, the one way — **GATED (L100)**
+
+ADR 0047's override is the accepted pattern, not a vLLM feature. Every build workflow
+with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input carries it, identically:
+
+- the `QA_SET_FILTERS` and `QA_MAX_PRICE` dispatch inputs;
+- exactly one job running `./.github/actions/validate-qa-override` (the rules and the
+  hard maximum live in that one action), exposing `qa-set-filters`, `qa-max-price` and
+  `qa-override-note`. The job is whichever one the QA cells already `need`: `preflight`
+  on most, `resolve-refs` on aio-studio, `build` on aio-studio-base;
+- every qa-gate cell's `set_filters` carrying that job's `qa-set-filters` (llama.cpp adds
+  it to its committed `cuda_max_good` driver floor) and `max_price` equal to its
+  `qa-max-price`;
+- the Slack notify passing `qa-override-note`, which `notify-slack.yml` prefixes to the
+  header whether or not the caller sets a headline (unsloth-studio does not).
+
+`imagegen new` scaffolds this wiring, and `test_generate.py` asserts a fresh scaffold
+passes L099 and L100 untouched. L100 fails any in-scope workflow missing an arm; it was
+mutated arm by arm on six different real workflows.
+
+Scope: the promotion gates (`promote-base-image`, `promote-pytorch`) have no custom tag
+and only certify mainline tags, where condition 1 refuses every override, so they carry
+none and L100 does not ask them to.
+
 ### `EXPOSE` maps a port — correcting L073's stated reason
 
 L073's original text said the platform injects `VAST_TCP_PORT_<n>` **only** for ports a

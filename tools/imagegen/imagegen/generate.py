@@ -282,6 +282,12 @@ on:
       CUSTOM_IMAGE_TAG:
         description: "Custom tag (auto by default)"
         required: false
+      QA_SET_FILTERS:
+        description: "Custom-tag builds only (ADR 0047). Narrow QA to the GPUs the build has kernels for: compute_cap.gte=N and/or compute_cap.lte=N, space-separated. Give a RANGE - e.g. 'compute_cap.gte=1000 compute_cap.lte=1030' for sm_100-only; a lower bound alone draws the smallest-VRAM card above it"
+        required: false
+      QA_MAX_PRICE:
+        description: "Custom-tag builds only (ADR 0047). QA offer price ceiling in $/hr (default 2.00, hard max 15.00) - raise when the range above only matches expensive cards"
+        required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "@@NAME@@"
@@ -293,9 +299,23 @@ jobs:
     outputs:
       should-run: ${{ steps.decision.outputs.should-run }}
       resolved-ref: ${{ steps.release-check.outputs.resolved-ref }}
+      qa-set-filters: ${{ steps.qa-override.outputs.set-filters }}
+      qa-max-price: ${{ steps.qa-override.outputs.max-price }}
+      qa-override-note: ${{ steps.qa-override.outputs.note }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ADR 0047: validate a dispatch's QA selection override. The QA cells read
+      # this step's outputs, never the raw inputs (L099/L100); see
+      # .github/actions/validate-qa-override for the rules and why.
+      - name: Validate QA selection overrides
+        id: qa-override
+        uses: ./.github/actions/validate-qa-override
+        with:
+          set-filters: ${{ inputs.QA_SET_FILTERS }}
+          max-price: ${{ inputs.QA_MAX_PRICE }}
+          custom-tag: ${{ inputs.CUSTOM_IMAGE_TAG }}
 
       - name: Check for required secrets
         id: secrets
@@ -405,6 +425,10 @@ jobs:
       # >>> FILL: in-instance log files to stream into the run (space-separated), e.g.
       # "/var/log/portal/@@NAME@@.log" — or delete this line. <<<
       log_paths: "CHANGEME"
+      # ADR 0047: the dispatch's validated QA override. Empty filters and qa-gate's
+      # default ceiling on every scheduled run and every ordinary dispatch (L100).
+      set_filters: ${{ needs.preflight.outputs.qa-set-filters }}
+      max_price: ${{ needs.preflight.outputs.qa-max-price }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
@@ -488,6 +512,8 @@ jobs:
     if: always() && needs.preflight.outputs.should-run == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
+      # ADR 0047: names an accepted QA override in the header; empty otherwise (L100).
+      qa-override-note: ${{ needs.preflight.outputs.qa-override-note }}
       build-result: ${{ needs.merge-manifests.result }}
       # Distinct headline per outcome; `needs.qa.outputs.gated` is matrix-safe (all cells
       # share the repo secret, so they agree). A plain pass renders the default success.
