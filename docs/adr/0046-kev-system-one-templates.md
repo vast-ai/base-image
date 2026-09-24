@@ -36,6 +36,15 @@ manifests). Kev's own published numbers reproduced exactly on the serving path, 
 - **Open-Jev** (LoRA + head on Qwen3.5 2B/9B and Qwen3.8-27B). Not evaluated in this round. Its 27B scored
   close to Jev on its own public benchmark subset but needs about 54 GB in bf16, which conflicts with the
   smallest-GPU goal.
+- **JevK5** (Qwen3.5-4B with a merged LoRA, answer-letter logit readout, Apache-2.0). **Deferred, not
+  rejected.** Measured after the Kev templates were built, on JevBench's 231 public items through its own
+  adapter and compared item by item with Jev's published outcomes: JevK5 bf16 200/231 (equal to Jev; hard tier
+  82/111, calibration error 0.065, about 24 ms per decision), its Q8 GGUF on stock llama-server 198/231 in
+  6 GB, against Kev-9B 176/231 and Kev-4B 166/231 as these templates serve them. On Kev's own suites Kev leads
+  modestly; on the third-party ones JevK5 leads. It also runs on the llama.cpp build our llama-cpp image
+  already ships, with a thin `/v1/systemone` layer on top. Deferred because it is days old with a single
+  author, its training data is synthetic decisions in families close to JevBench's hard tier, and adopting it
+  would move this onto a different image; that needs its own design review. Kev ships now.
 - **Kev** (LoRA + pointer head on Qwen3.5 0.8B/4B/9B, Apache-2.0). **Chosen.** Kev-9B trails Jev by 3-8
   points on held-out suites, ties it on support-ticket routing, and is well calibrated; Kev-4B is within a few
   points of Kev-9B. Its large gap is knowledge questions (MMLU-Pro 0.52 vs 0.84), set by the base model.
@@ -87,4 +96,6 @@ for 9B) at about 30% more latency.
 - A released engine (vLLM or SGLang) serving calibrated `/v1/systemone` decisions at comparable accuracy:
   the template would move onto an image we already ship.
 - An open model closing Kev's knowledge-question gap to Jev at a similar size.
+- JevK5 (or a successor) holding its JevBench lead on independent data after a design review: it would
+  replace Kev and could move this onto the llama-cpp image.
 - Kev adding a CPU-side merge to its server, which would remove the need for `KEV_MERGE=0`.
