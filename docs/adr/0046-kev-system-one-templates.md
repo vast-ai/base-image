@@ -75,14 +75,15 @@ under per-process allocation caps, with accuracy unchanged (0.797 vs 0.799 on 65
 for 9B) at about 30% more latency.
 
 ## Binding conditions
-- Everything is pinned: the dated image tag, the Kev commit, hashed lock files installed `--no-deps`, the
-  adapter revision in `KEV_MODEL`, the base revision from the adapter's metadata, Kev's `package-lock.json`,
-  and the base-image commit the manifest is read from (the manifest refuses a checkout that does not match).
+- Everything from outside this repo is pinned: the dated image tag, the Kev commit, hashed lock files
+  installed `--no-deps`, the adapter revision in `KEV_MODEL`, the base revision from the adapter's metadata,
+  and Kev's `package-lock.json`. The manifest and its two files from this repo follow `main` (reviewed
+  changes reach new instances without republishing); before a merge a full commit SHA is used to test. The
+  manifest refuses any other ref, and refuses a manifest URL read from a different ref.
 - The image's torch must survive provisioning: the manifest asserts torch 2.8.0 after installing Kev's deps.
   Kev requires torch < 2.9, which is why the base is a torch 2.8.0 tag.
 - Every service binds 127.0.0.1; Caddy is the only public listener.
-- Published templates point at a commit on `main` (or a tag), never a branch commit that a squash-merge
-  would orphan.
+- Published templates read from `main`, never from another branch.
 
 ## Consequences
 - Users get an API compatible with TypeSafe's SDKs and Kev's playground on a 12 GB (4B) or 24 GB (9B) card.

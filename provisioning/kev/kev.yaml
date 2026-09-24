@@ -5,9 +5,10 @@
 # Base image: vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py313-<date> (Kev requires torch < 2.9 and is
 # tested on Python 3.13). The templates pin the dated tag.
 #
-# Everything is pinned; nothing here follows a moving branch:
-#   KEV_TEMPLATE_REF  base-image commit this manifest, the UI and the lock files are read from (set by the
-#                     template, equal to the commit in its PROVISIONING_MANIFEST URL; checked below)
+# Everything from outside this repo is pinned exactly. This manifest and the two files it reads from this repo
+# follow KEV_TEMPLATE_REF, which is `main` for published templates (reviewed changes reach new instances
+# without republishing) or a full commit SHA before a change is merged:
+#   KEV_TEMPLATE_REF  `main` or a full base-image commit SHA; must match the ref in PROVISIONING_MANIFEST (checked below)
 #   Kev source        jaredpalmer/kev @ 557598fced1dada75dfbf36ed144dce309ac6ceb
 #   Python deps       requirements-kev.txt, exact versions + hashes, --no-deps
 #   Model             KEV_MODEL = jaredpalmer/kev-<size>@<revision>; the base revision comes from the
@@ -25,24 +26,24 @@ on_failure:
   max_retries: 2
 
 git_repos:
-  - url: https://github.com/vast-ai/base-image
-    dest: /opt/kev-template
-    ref: "${KEV_TEMPLATE_REF}"
-    recursive: false
-    post_commands:
-      # An unset KEV_TEMPLATE_REF would silently leave the default branch checked out: refuse instead.
-      - 'test -n "${KEV_TEMPLATE_REF}" || { echo "KEV_TEMPLATE_REF is not set; the template must pin a base-image commit" >&2; exit 1; }'
-      # A branch name would pass the checkout check below while following a moving target.
-      - 'printf %s "${KEV_TEMPLATE_REF}" | grep -Eqx "[0-9a-f]{40}" || { echo "KEV_TEMPLATE_REF must be a full commit SHA" >&2; exit 1; }'
-      # The manifest itself must come from the same commit as the files it installs.
-      - 'case "${PROVISIONING_MANIFEST}" in */${KEV_TEMPLATE_REF}/provisioning/kev/kev.yaml) ;; *) echo "PROVISIONING_MANIFEST is not read from KEV_TEMPLATE_REF" >&2; exit 1;; esac'
-      - 'test "$(git rev-parse HEAD)" = "$(git rev-parse "${KEV_TEMPLATE_REF}^{commit}")" || { echo "checkout does not match KEV_TEMPLATE_REF" >&2; exit 1; }'
   - url: https://github.com/jaredpalmer/kev
     dest: /opt/kev
     ref: 557598fced1dada75dfbf36ed144dce309ac6ceb
     recursive: false
     post_commands:
       - 'test "$(git rev-parse HEAD)" = 557598fced1dada75dfbf36ed144dce309ac6ceb'
+      # Checked here (phase 4) so a bad ref fails with this message rather than a 404 from the downloads below.
+      # KEV_TEMPLATE_REF is `main` or a full SHA (an unset value would fetch from a broken URL, and any other branch
+      # would silently follow unreviewed work), and the manifest must be read from that same ref.
+      - 'printf %s "${KEV_TEMPLATE_REF}" | grep -Eqx "main|[0-9a-f]{40}" || { echo "KEV_TEMPLATE_REF must be main or a full commit SHA, got \"${KEV_TEMPLATE_REF}\"" >&2; exit 1; }'
+      - 'case "${PROVISIONING_MANIFEST}" in */${KEV_TEMPLATE_REF}/provisioning/kev/kev.yaml) ;; *) echo "PROVISIONING_MANIFEST is not read from KEV_TEMPLATE_REF" >&2; exit 1;; esac'
+
+# The two files this manifest needs from this repo, read at the same ref as the manifest itself.
+downloads:
+  - url: "https://raw.githubusercontent.com/vast-ai/base-image/${KEV_TEMPLATE_REF}/provisioning/kev/requirements-kev.txt"
+    dest: /opt/kev-template/requirements-kev.txt
+  - url: "https://raw.githubusercontent.com/vast-ai/base-image/${KEV_TEMPLATE_REF}/provisioning/kev/prefetch.py"
+    dest: /opt/kev-template/prefetch.py
 
 services:
   - name: kev-api
@@ -86,9 +87,9 @@ post_commands:
   - &torch_guard >-
     /venv/main/bin/python -c "import sys, torch; v = torch.__version__;
     sys.exit(0 if v.split('+')[0] == '2.8.0' else f'expected the image torch 2.8.0, found {v}')"
-  - 'uv pip install --no-cache --python /venv/main/bin/python --no-deps --require-hashes -r /opt/kev-template/provisioning/kev/requirements-kev.txt'
+  - 'uv pip install --no-cache --python /venv/main/bin/python --no-deps --require-hashes -r /opt/kev-template/requirements-kev.txt'
   - *torch_guard
   - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python -c "import fla, kev.serve"'
   - 'bash -c "source /opt/nvm/nvm.sh && cd /opt/kev/playground && npm ci --no-audit --no-fund && KEV_API=http://127.0.0.1:18000 NEXT_TELEMETRY_DISABLED=1 npx --no-install next build"'
   # Last and longest: the pinned adapter and its pinned base model into the HF cache.
-  - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python /opt/kev-template/provisioning/kev/prefetch.py'
+  - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python /opt/kev-template/prefetch.py'

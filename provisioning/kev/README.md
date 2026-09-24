@@ -11,7 +11,7 @@ that differ only in the model and the GPU floor.
 
 | Path | What it is |
 |---|---|
-| `kev.yaml` | The manifest: clones Kev and this repo at pinned commits, installs the locked deps, registers two supervisor services, pre-downloads the model |
+| `kev.yaml` | The manifest: clones Kev at a pinned commit, fetches its two files below from this repo, installs the locked deps, registers two supervisor services, pre-downloads the model |
 | `requirements-kev.txt` | Kev server deps for `/venv/main`: exact versions + hashes, no torch (the image's is used) |
 | `prefetch.py` | Downloads the pinned adapter and the exact base revision it was trained on, during provisioning |
 | `templates/kev-4b`, `templates/kev-9b` | `template.yml` + marketplace `README.md` (ADR 0011 format) |
@@ -28,12 +28,16 @@ server and adds no GPU memory. It starts only after the API has sent one warm-up
 JIT-compiles the Triton kernels; about 25 s on the first boot of a large GPU, longer on a 12 GB card), so a
 user's first request never pays that compile. Until then its portal link does not answer.
 
-## Pins (nothing follows a moving branch)
+## Pins
+
+Everything from outside this repo is pinned exactly; that is where silent drift would come from. The
+manifest and its two files follow the template's `KEV_TEMPLATE_REF`, which is `main` once merged, so a
+reviewed change on `main` reaches new instances without republishing the templates.
 
 | Pin | Where | Value |
 |---|---|---|
 | Base image | template `tag` | `2.8.0-cu128-cuda-12.9-mini-py313-2026-09-08` (Kev needs torch < 2.9; tested on Python 3.13) |
-| This manifest and its files | template `PROVISIONING_MANIFEST` URL + `KEV_TEMPLATE_REF` | the same base-image commit; the manifest refuses to run if the checkout does not match |
+| This manifest and its two files | template `PROVISIONING_MANIFEST` URL + `KEV_TEMPLATE_REF` | `main` (or a full commit SHA to test an unmerged change); the manifest refuses any other ref, and refuses a manifest URL at a different ref |
 | Kev source | `kev.yaml` | `jaredpalmer/kev@557598fced1dada75dfbf36ed144dce309ac6ceb` |
 | Python deps | `requirements-kev.txt` | exact versions + sha256 hashes, installed `--no-deps --require-hashes` |
 | Model | template `KEV_MODEL` | `jaredpalmer/kev-4b@485ace87…` / `jaredpalmer/kev-9b@2629c06a…`; the base (`Qwen/Qwen3.5-*-Base`) revision comes from the adapter's own metadata |
@@ -78,8 +82,8 @@ Accuracy against TypeSafe's hosted Jev on the same items (Kev's recorded live-Je
 
 1. Bump the value (Kev commit in `kev.yaml`, a lock file, `KEV_MODEL`, or the image `tag`).
 2. For a Kev bump, regenerate `requirements-kev.txt` as its header describes.
-3. Commit, then point both templates' `KEV_TEMPLATE_REF` and `PROVISIONING_MANIFEST` URL at that commit.
+3. To test before merging, publish private copies of the templates with `KEV_TEMPLATE_REF` and the
+   `PROVISIONING_MANIFEST` URL set to the branch's commit SHA (`provisioning/kev/` must exist at that ref).
 4. Boot each template on a real GPU and check both portal entries answer through Caddy.
-
-After a squash-merge the branch commit a template points at becomes unreachable once the branch is deleted,
-so published templates must be re-pointed at the resulting `main` commit.
+5. Merge. Published templates use `main` (`.../vast-ai/base-image/main/provisioning/kev/kev.yaml` and
+   `KEV_TEMPLATE_REF: main`), so the change takes effect on new instances without republishing.
