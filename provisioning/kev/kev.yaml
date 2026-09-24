@@ -1,0 +1,95 @@
+# Kev: open "System One" decision models (typed choice / yes-no / score answers with probabilities, no text
+# generation), served with TypeSafe's /v1/systemone API, plus Kev's browser playground. See ADR 0046 and
+# provisioning/kev/README.md.
+#
+# Base image: vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py313-<date> (Kev requires torch < 2.9 and is
+# tested on Python 3.13). The templates pin the dated tag.
+#
+# Everything from outside this repo is pinned exactly. This manifest and the two files it reads from this repo
+# follow KEV_TEMPLATE_REF, which is `main` for published templates (reviewed changes reach new instances
+# without republishing) or a full commit SHA before a change is merged:
+#   KEV_TEMPLATE_REF  `main` or a full base-image commit SHA; must match the ref in PROVISIONING_MANIFEST (checked below)
+#   Kev source        jaredpalmer/kev @ 557598fced1dada75dfbf36ed144dce309ac6ceb
+#   Python deps       requirements-kev.txt, exact versions + hashes, --no-deps
+#   Model             KEV_MODEL = jaredpalmer/kev-<size>@<revision>; the base revision comes from the
+#                     adapter's own metadata
+#   Playground deps   Kev's package-lock.json at the pinned commit (npm ci)
+#   Node              the image's nvm-installed LTS (fixed by the dated image tag)
+#
+# Services bind 127.0.0.1 only; Caddy (PORTAL_CONFIG) is the only thing listening on the public ports:
+#   Kev API         127.0.0.1:18000  (kev.serve hard-binds 127.0.0.1)  portal 8000, opens /docs
+#   Kev Playground  127.0.0.1:13000  (next start -H 127.0.0.1)          portal 3000
+version: 1
+
+on_failure:
+  action: continue
+  max_retries: 2
+
+git_repos:
+  - url: https://github.com/jaredpalmer/kev
+    dest: /opt/kev
+    ref: 557598fced1dada75dfbf36ed144dce309ac6ceb
+    recursive: false
+    post_commands:
+      - 'test "$(git rev-parse HEAD)" = 557598fced1dada75dfbf36ed144dce309ac6ceb'
+      # Checked here (phase 4) so a bad ref fails with this message rather than a 404 from the downloads below.
+      # KEV_TEMPLATE_REF is `main` or a full SHA (an unset value would fetch from a broken URL, and any other branch
+      # would silently follow unreviewed work), and the manifest must be read from that same ref.
+      - 'printf %s "${KEV_TEMPLATE_REF}" | grep -Eqx "main|[0-9a-f]{40}" || { echo "KEV_TEMPLATE_REF must be main or a full commit SHA, got \"${KEV_TEMPLATE_REF}\"" >&2; exit 1; }'
+      - 'case "${PROVISIONING_MANIFEST}" in */${KEV_TEMPLATE_REF}/provisioning/kev/kev.yaml) ;; *) echo "PROVISIONING_MANIFEST is not read from KEV_TEMPLATE_REF" >&2; exit 1;; esac'
+
+# The two files this manifest needs from this repo, read at the same ref as the manifest itself.
+downloads:
+  - url: "https://raw.githubusercontent.com/vast-ai/base-image/${KEV_TEMPLATE_REF}/provisioning/kev/requirements-kev.txt"
+    dest: /opt/kev-template/requirements-kev.txt
+  - url: "https://raw.githubusercontent.com/vast-ai/base-image/${KEV_TEMPLATE_REF}/provisioning/kev/prefetch.py"
+    dest: /opt/kev-template/prefetch.py
+
+services:
+  - name: kev-api
+    portal_search_term: "Kev API"
+    venv: /venv/main
+    workdir: /opt/kev
+    environment:
+      PYTHONPATH: /opt/kev
+      # bf16 load with the LoRA adapter unmerged. The default (merge) loads the base in fp32 on the GPU first,
+      # roughly doubling peak VRAM; unmerged is what lets Kev-4B fit 12 GB and Kev-9B fit 24 GB, at ~30% latency.
+      KEV_MERGE: "${KEV_MERGE:-0}"
+    pre_commands:
+      # The first request JIT-compiles the Gated DeltaNet Triton kernels (~25 s on a first boot, longer on
+      # smaller GPUs; cached in ~/.triton afterwards). One warm-up request, covering all three question types,
+      # is sent as soon as the server answers; on success it writes /dev/shm/kev-api-warm, which the playground
+      # waits for, so no user request pays the compile. /dev/shm is emptied on every container restart, so the
+      # marker always belongs to this boot.
+      - 'rm -f /dev/shm/kev-api-warm'
+      - >-
+        ( for i in $(seq 1 720); do curl -sf -o /dev/null http://127.0.0.1:18000/v1/models && break; sleep 5; done;
+        curl -sf -o /dev/null -H 'content-type: application/json'
+        -d '{"model":"kev-latest","state":"Warm-up request: the order arrived late and damaged.","questions":{"n":{"type":"noul","instructions":"Is this a warm-up request?"},"c":{"type":"choice","instructions":"Which team?","criteria":{"billing":"Charges","shipping":"Delivery"}},"s":{"type":"score","instructions":"How urgent?","criteria":["low","medium","high"]}}}'
+        http://127.0.0.1:18000/v1/systemone && touch /dev/shm/kev-api-warm && echo "kev-api: kernels warmed" ) &
+    command: 'python -m kev.serve --run "${KEV_MODEL}" --port 18000'
+
+  - name: kev-playground
+    portal_search_term: "Kev Playground"
+    workdir: /opt/kev/playground
+    environment:
+      # Informational: Next bakes the /kev rewrite target at `next build` (post_commands below), which is the value that counts.
+      KEV_API: "http://127.0.0.1:18000"
+      NEXT_TELEMETRY_DISABLED: "1"
+    pre_commands:
+      # Start only once the API has warmed its kernels (see kev-api), so the playground's first request is fast.
+      - 'until [ -f /dev/shm/kev-api-warm ]; do echo "kev-playground: waiting for kev-api to finish warming up"; sleep 5; done'
+      - 'source /opt/nvm/nvm.sh'
+    command: 'npx --no-install next start -H 127.0.0.1 -p 13000'
+
+post_commands:
+  # The image's torch must survive every install below.
+  - &torch_guard >-
+    /venv/main/bin/python -c "import sys, torch; v = torch.__version__;
+    sys.exit(0 if v.split('+')[0] == '2.8.0' else f'expected the image torch 2.8.0, found {v}')"
+  - 'uv pip install --no-cache --python /venv/main/bin/python --no-deps --require-hashes -r /opt/kev-template/requirements-kev.txt'
+  - *torch_guard
+  - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python -c "import fla, kev.serve"'
+  - 'bash -c "source /opt/nvm/nvm.sh && cd /opt/kev/playground && npm ci --no-audit --no-fund && KEV_API=http://127.0.0.1:18000 NEXT_TELEMETRY_DISABLED=1 npx --no-install next build"'
+  # Last and longest: the pinned adapter and its pinned base model into the HF cache.
+  - 'cd /opt/kev && PYTHONPATH=/opt/kev /venv/main/bin/python /opt/kev-template/prefetch.py'

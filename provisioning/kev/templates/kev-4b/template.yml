@@ -1,0 +1,44 @@
+# Kev-4B on the stock pytorch -mini image, provisioned by provisioning/kev/kev.yaml (ADR 0046).
+# KEV_TEMPLATE_REF and the ref in PROVISIONING_MANIFEST must match: `main` here. To test an unmerged change,
+# publish a private copy with both set to that commit's full SHA (provisioning/kev/README.md).
+name: "Kev 4B - System One Decision Model"
+image: vastai/pytorch
+tag: 2.8.0-cu128-cuda-12.9-mini-py313-2026-09-08
+href: https://github.com/jaredpalmer/kev
+repo: vastai/pytorch
+ports:
+  - "1111:1111"
+  - "8080:8080"
+  - "8384:8384"
+  - "3000:3000"
+  - "8000:8000"
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_DIR: /
+  DATA_DIRECTORY: /workspace/
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8000:18000:/docs:Kev API|localhost:3000:13000:/:Kev Playground|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal|localhost:8384:18384:/:Syncthing"
+  PROVISIONING_MANIFEST: "https://raw.githubusercontent.com/vast-ai/base-image/main/provisioning/kev/kev.yaml"
+  KEV_TEMPLATE_REF: "main"
+  KEV_MODEL: "jaredpalmer/kev-4b@485ace8703592fcf405488b262449990824cfed1"
+  KEV_MERGE: "0"
+onstart: entrypoint.sh
+runtype: jupyter
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: false
+extra_filters:
+  cpu_arch:
+    in:
+      - amd64
+  cuda_max_good:
+    gte: 12.9
+  compute_cap:
+    gte: 800
+  gpu_ram:
+    gte: 11500
+recommended_disk_space: 40.0
+desc: "Kev-4B: open decision model with TypeSafe-compatible /v1/systemone API and playground"
+private: true
+readme_visible: true

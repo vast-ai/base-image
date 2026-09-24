@@ -72,6 +72,8 @@ suite (`portal-aio/tests/`).
 Legacy/prototype provisioning path (distinct from the `lib/provisioner` package).
 `provisioning/` = example manifests; `provisioning_scripts/*.sh` = standalone
 installers — the "no dedicated image" route for an app.
+`provisioning/kev/` is the maintained exception: a pinned manifest + two templates (Kev-4B, Kev-9B) on the
+stock pytorch -mini image, with its own lock file and README (ADR 0046).
 
 ## 6. tools/
 - `convert-non-vast-image.sh` — installs the base toolset onto a non-Vast upstream
