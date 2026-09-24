@@ -574,7 +574,7 @@ def test_every_rule_has_a_test():
 _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
-    "L092", "L093", "L095", "L096", "L097", "L098", "L099",
+    "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100",
 })
 
 
@@ -5137,3 +5137,74 @@ def test_L099_only_qa_gate_callers_are_in_scope(tmp_path):
         "on: workflow_dispatch\njobs:\n  x:\n    uses: ./.github/workflows/notify-slack.yml\n"
         "    with:\n      max_price: ${{ inputs.P }}\n")
     assert not _l099(tmp_path)
+
+
+# ---- L100: every custom-tag QA workflow offers the override, wired the one way ----
+#
+# ADR 0047 made the validated QA override the accepted pattern for every build
+# workflow with a QA cell and a CUSTOM_IMAGE_TAG input. A hatch copied by hand drifts:
+# one workflow validating, another wired raw, a third announcing a narrowed pass as a
+# normal one. The mutations below each break one arm, on REAL workflows, including
+# ones whose gate job is not called `preflight`.
+
+def _l100(repo):
+    return [f for f in L.check_qa_override_is_the_pattern(repo) if f.severity == L.ERROR]
+
+
+def test_L100_the_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert not _codes(repo, "L100")
+
+
+_L100_MUTATIONS = [
+    # (workflow, find, replace, fragment the finding must name)
+    ("build-sglang.yml", "      QA_MAX_PRICE:\n", "      QA_MAX_PRICE_X:\n", "`QA_MAX_PRICE`"),
+    ("build-llama-cpp.yml", "uses: ./.github/actions/validate-qa-override",
+     "uses: ./.github/actions/some-other-action", "exactly one job"),
+    ("build-aio-studio-base.yml", "      qa-override-note: ${{ steps.qa-override.outputs.note }}\n",
+     "", "output `qa-override-note`"),
+    ("build-comfyui.yml", "set_filters: ${{ needs.preflight.outputs.qa-set-filters }}",
+     "set_filters: \"\"", "set_filters"),
+    ("build-vllm-omni.yml", "max_price: ${{ needs.preflight.outputs.qa-max-price }}",
+     "max_price: \"9.00\"", "max_price"),
+    ("build-aio-studio.yml", "qa-override-note: ${{ needs.resolve-refs.outputs.qa-override-note }}",
+     "qa-override-note: \"\"", "notify job"),
+]
+
+
+@pytest.mark.parametrize("wf,find,repl,frag", _L100_MUTATIONS,
+                         ids=[m[0] + ":" + m[3] for m in _L100_MUTATIONS])
+def test_mut_L100_each_arm_bites_on_a_real_workflow(tmp_path, wf, find, repl, frag):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    shutil.copytree(repo / ".github", work / ".github")
+    p = work / ".github/workflows" / wf
+    text = p.read_text()
+    assert find in text, f"mutation anchor missing from {wf}"
+    p.write_text(text.replace(find, repl, 1))
+    found = [f for f in _l100(work) if f.path.endswith(wf)]
+    assert found and any(frag in f.msg for f in found), [f.msg for f in found]
+
+
+def test_L100_the_promotion_gates_are_out_of_scope(tmp_path):
+    """No CUSTOM_IMAGE_TAG, mainline tags only: ADR 0047 condition 1 would refuse every
+    override there, so L100 must not demand one."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    (work / ".github/workflows").mkdir(parents=True)
+    for wf in ("promote-base-image.yml", "promote-pytorch.yml"):
+        shutil.copy(repo / ".github/workflows" / wf, work / ".github/workflows" / wf)
+    assert not _l100(work)
+
+
+def test_L100_a_new_custom_tag_qa_workflow_without_it_fires(tmp_path):
+    """The case the rule exists for: an image added by hand, not by the generator."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True)
+    (d / "build-new.yml").write_text(
+        "on:\n  workflow_dispatch:\n    inputs:\n      CUSTOM_IMAGE_TAG:\n        required: false\n"
+        "jobs:\n  preflight:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"
+        "  qa:\n    needs: [preflight]\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      repo: x\n")
+    msgs = [f.msg for f in _l100(tmp_path)]
+    assert any("QA_SET_FILTERS" in m for m in msgs) and any("exactly one job" in m for m in msgs), msgs

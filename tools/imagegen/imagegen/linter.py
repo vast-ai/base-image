@@ -106,6 +106,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
+    ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
     ("L098", ERROR, "An image whose serverless worker READS `MODEL_LOG` bakes it, and its value is `/var/log/portal/<program>.log` for that image's single engine program. SCOPED BY WHAT THE WORKER DOES, not by whether a BACKEND is baked: upstream only `workers/openai/core.py` consults the environment (`model_log_file=os.environ.get(\"MODEL_LOG\", defaults.model_log_file)`), and `workers/{vllm,sglang,llama}` are the EngineDefaults feeding it. `workers/comfyui-json`, `workers/ace` and `workers/wan` are standalone and assign a module constant straight into WorkerConfig, so for those the ENV is never read -- and requiring it would be WORSE than not: the rule would demand the value be updated on a program rename while the worker kept tailing the old file, certifying the exact break it exists to catch. comfyui shows a second cost, because `MODEL_LOG` is not a private name there: its own provisioning scripts already use it with a different default, and the provisioner runs them with os.environ, so baking it would move every model-download line and every provisioning error into another file on ON-DEMAND launches too, in every customer script forked from our starter template. The rule FAILS CLOSED on ambiguity: with two non-infra programs, which one emits the load line is a property of the launch scripts, so the check refuses rather than accepting either (every image in scope today has exactly one, and infrastructure programs -- ray, model-ui and the like -- are excluded so the value names the engine rather than a sidecar). The log path is derived mechanically from the supervisor program name: `ROOT/opt/supervisor-scripts/utils/logging.sh` writes `${logpath:-/var/log/portal/${PROC_NAME}.log}` and supervisord sets PROC_NAME to `%(program_name)s`. The worker that reads it lives in ANOTHER REPO and hardcodes a filename per backend (`workers/vllm` -> vllm.log, `workers/sglang` -> sglang.log, `workers/llama` -> llama.log), so an image whose program name happens to match works by coincidence rather than contract -- and llama-cpp shows how thin that is: the image, directory and tag are all `llama-cpp` while the program is `llama`, which is the only reason it matches. Measured where the coincidence ran out: vllm-omni runs BACKEND=vllm under a program named `vllm-omni`, so the worker tailed /var/log/portal/vllm.log, a file that image never writes. It started, bound :3000, and never benchmarked -- 1800s, on three consecutive hosts, with every static check clean and the failure reported as an engine problem. Nothing else sees this: the value is only read under SERVERLESS=true, so an on-demand cell cannot notice, and the serverless cell that does notice costs a rented GPU to say so (ADR 0044, ADR 0001)"),
     ("L097", ERROR, "Every test a WORKFLOW requires -- in a qa-gate caller's `require_tests`, or in the `INSTANCE_TEST_REQUIRE_PASS` it injects through `extra_env` -- names a test file the image THAT WORKFLOW BUILDS will actually have. L057, L059 and L072 read the TEMPLATE's `env.INSTANCE_TEST_REQUIRE_PASS` and cannot see these: a serverless cell declares its required set in the workflow, because the template is shared with the on-demand cell that must not require serverless tests. So the one place the serverless requirements are written was the one place nothing checked them. A name with no file cannot pass, so the gate fails -- but it fails on a RENTED GPU after a full image build, reporting a missing test rather than a missing FILE, and the fact is visible in the repo the whole time (ADR 0001: static checks are the fast gate). Same shape as L088 one level up. Found while wiring vllm-omni's serverless cell (ADR 0044) -- deleting `vllm-omni.d/20-serverless-pyworker.sh` left the workflow requiring it and every static check clean. SCOPED TO THE IMAGE, not the tree: the workflow is tied to its image through `template_dir`, so a workflow copied between images and left naming the suite it came from is caught -- which is exactly how vllm-omni's gate was first assembled (L088's story), and a first draft of this rule that matched any suite anywhere missed it. Suites are INHERITED, so base's count for every image and pytorch's for a pytorch-nested one: aio-studio requires `pytorch.d/05-venv-manifest` and ships no pytorch.d of its own, correctly. A value built at runtime (`${{ matrix.require_tests }}`) cannot be read here and is reported as a WARN naming itself, rather than dropped silently -- the failure mode L087 condemns. The workflow is PARSED, not scanned. The regex it replaced had ONE defect, measured shape by shape rather than asserted: `\\s*` stops at the block-scalar indicator, so a folded (`>-`) or literal (`|`) value was captured as the literal indicator and every name on the following lines was invisible -- a SILENT pass, in the shape these values naturally take, since they run past 150 characters and this repo already writes long values that way (it is why L095 exists). A folded list whose SECOND half held the deleted test passed here and failed on a rented GPU: the failure this rule exists to prevent, reproduced by the rule. An earlier version of THIS text claimed four shapes; a blank line above the key and a missing trailing newline are the same defect (they read correctly unless the value is a block scalar), and a `with: { ... }` flow mapping was never broken by that regex at all -- it broke under an intermediate fix that never shipped. The correction is recorded rather than quietly dropped because knowing what actually broke is what licenses any claim about what is still broken. `yaml.safe_load` returns the RESOLVED value, so every SCALAR style is covered at once -- and the claim stops there: two non-scalar shapes were live counterexamples, a `.yaml` workflow invisible to a `*.yml` glob and a sequence/mapping value dropped by an isinstance check, and both are now read or WARNed rather than assumed away. Anything else this check cannot read is NAMED: an unparseable workflow, a non-string declaration, an `extra_env` line that is an expression rather than `KEY=value`, and a test-shaped token outside the `<suite>/<NN>-<name>` form `_TEST_NAME` resolves. The value is SPLIT the way runner.sh and qa_verdict.py split it (commas and whitespace) and every token is accounted for; an earlier version of this text claimed the same while SEARCHING the value, so a token matching no pattern vanished and `foo-base/60-gpu-cuda` was read as `base/60-gpu-cuda` and passed. A token with no `base/` or `<suite>.d/` prefix can never equal a runner test name and is an ERROR. L095 took the same route for `if:`. Parsing is also what makes SCOPED TO THE IMAGE true rather than aspirational: reading the file as text pooled every `template_dir` and every require-set in it, so in a two-cell workflow a name valid for one cell satisfied the other, and prose in an input's `description:` was read as a value. `jobs.<id>.with` pairs them per job. A repo-root template (`templates/pytorch-qa`) gates an image elsewhere in the tree and its `template.yml` DECLARES which (`image: vastai/pytorch`); deriving it from the directory stem guessed, and guessed only in `derivatives/<stem>` and `external/<stem>`, so a repo-root template for any of the images under `derivatives/pytorch/derivatives/` resolved to nothing and that image's own tests were reported missing (latent: no workflow in the tree triggered it)"),
@@ -4097,6 +4098,77 @@ def check_qa_selection_is_validated(repo: Path) -> Iterable[Finding]:
                                   f"output (L099)")
 
 
+# L100 — every custom-tag build workflow with a QA cell offers the ADR 0047 override,
+# wired the one way.
+_QA_OVERRIDE_ACTION = "./.github/actions/validate-qa-override"
+
+
+def check_qa_override_is_the_pattern(repo: Path) -> Iterable[Finding]:
+    """L100 — custom-tag QA workflows expose the validated override, uniformly."""
+    import yaml  # lazy
+    wfdir = repo / ".github" / "workflows"
+    if not wfdir.is_dir():
+        return
+    for wf in sorted(wfdir.iterdir()):
+        if wf.suffix not in (".yml", ".yaml") or not wf.is_file():
+            continue
+        rel = f".github/workflows/{wf.name}"
+        try:
+            data = yaml.safe_load(wf.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue    # L097 already names an unparseable workflow
+        if not isinstance(data, dict) or not isinstance(data.get("jobs"), dict):
+            continue
+        on = data.get("on", data.get(True))     # YAML 1.1 reads a bare `on:` as True
+        disp = on.get("workflow_dispatch") if isinstance(on, dict) else None
+        inputs = (disp or {}).get("inputs") or {} if isinstance(disp, dict) else {}
+        jobs = data["jobs"]
+        cells = [j for j, v in jobs.items()
+                 if isinstance(v, dict) and "qa-gate.yml" in str(v.get("uses", ""))]
+        if "CUSTOM_IMAGE_TAG" not in inputs or not cells:
+            continue
+
+        def _err(msg):
+            return Finding("L100", ERROR, "-", rel, f"{msg} (ADR 0047, L100)")
+
+        for name in ("QA_SET_FILTERS", "QA_MAX_PRICE"):
+            if name not in inputs:
+                yield _err(f"declares CUSTOM_IMAGE_TAG and a QA cell but no `{name}` "
+                           f"dispatch input")
+        gates = [j for j, v in jobs.items() if isinstance(v, dict) and any(
+            isinstance(st, dict) and st.get("uses") == _QA_OVERRIDE_ACTION
+            for st in (v.get("steps") or []))]
+        if len(gates) != 1:
+            yield _err(f"must run `{_QA_OVERRIDE_ACTION}` in exactly one job, found "
+                       f"{len(gates)} ({', '.join(gates) or 'none'})")
+            continue
+        g = gates[0]
+        outs = jobs[g].get("outputs") or {}
+        for o in ("qa-set-filters", "qa-max-price", "qa-override-note"):
+            if o not in outs:
+                yield _err(f"job `{g}` runs the override action but does not expose "
+                           f"output `{o}`")
+        want_sf = f"needs.{g}.outputs.qa-set-filters"
+        want_mp = f"${{{{ needs.{g}.outputs.qa-max-price }}}}"
+        for c in cells:
+            w = jobs[c].get("with") if isinstance(jobs[c].get("with"), dict) else {}
+            if want_sf not in str(w.get("set_filters", "")):
+                yield _err(f"qa cell `{c}` does not take `{want_sf}` in set_filters")
+            if str(w.get("max_price", "")).strip() != want_mp:
+                yield _err(f"qa cell `{c}` must pass `max_price: {want_mp}`")
+            if g not in (jobs[c].get("needs") or []):
+                yield _err(f"qa cell `{c}` does not `needs` `{g}`, so it cannot read "
+                           f"the validated override")
+        notifiers = [j for j, v in jobs.items()
+                     if isinstance(v, dict) and "notify-slack.yml" in str(v.get("uses", ""))]
+        want_note = f"${{{{ needs.{g}.outputs.qa-override-note }}}}"
+        for n in notifiers:
+            w = jobs[n].get("with") if isinstance(jobs[n].get("with"), dict) else {}
+            if str(w.get("qa-override-note", "")).strip() != want_note:
+                yield _err(f"notify job `{n}` must pass `qa-override-note: {want_note}`, "
+                           f"or a narrowed pass reads like a normal one")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
@@ -4110,7 +4182,8 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_probe_artifact_is_excluded_from_its_own_log_scan,
     check_vllm_audio_extra_is_installed,
     check_workflow_required_tests_exist,
-    check_qa_selection_is_validated]
+    check_qa_selection_is_validated,
+    check_qa_override_is_the_pattern]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

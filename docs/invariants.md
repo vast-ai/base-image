@@ -2180,6 +2180,30 @@ QA used. A pass on overridden floors is visible, not tied back to that template.
 records the per-model template class plus a lint rule linking the two as the deferred
 durable fix.
 
+### Every custom-tag QA workflow offers the override, the one way — **GATED (L100)**
+
+ADR 0047's override is the accepted pattern, not a vLLM feature. Every build workflow
+with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input carries it, identically:
+
+- the `QA_SET_FILTERS` and `QA_MAX_PRICE` dispatch inputs;
+- exactly one job running `./.github/actions/validate-qa-override` (the rules and the
+  hard maximum live in that one action), exposing `qa-set-filters`, `qa-max-price` and
+  `qa-override-note`. The job is whichever one the QA cells already `need`: `preflight`
+  on most, `resolve-refs` on aio-studio, `build` on aio-studio-base;
+- every qa-gate cell's `set_filters` carrying that job's `qa-set-filters` (llama.cpp adds
+  it to its committed `cuda_max_good` driver floor) and `max_price` equal to its
+  `qa-max-price`;
+- the Slack notify passing `qa-override-note`, which `notify-slack.yml` prefixes to the
+  header whether or not the caller sets a headline (unsloth-studio does not).
+
+`imagegen new` scaffolds this wiring, and `test_generate.py` asserts a fresh scaffold
+passes L099 and L100 untouched. L100 fails any in-scope workflow missing an arm; it was
+mutated arm by arm on six different real workflows.
+
+Scope: the promotion gates (`promote-base-image`, `promote-pytorch`) have no custom tag
+and only certify mainline tags, where condition 1 refuses every override, so they carry
+none and L100 does not ask them to.
+
 ### `EXPOSE` maps a port — correcting L073's stated reason
 
 L073's original text said the platform injects `VAST_TCP_PORT_<n>` **only** for ports a

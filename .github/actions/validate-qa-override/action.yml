@@ -1,0 +1,85 @@
+name: Validate QA selection overrides
+description: >-
+  ADR 0047. Validates a build dispatch's QA_SET_FILTERS / QA_MAX_PRICE and returns
+  the values a qa-gate cell may use. Refuses an override without a custom tag, any
+  filter but compute_cap.gte/lte, and a price outside (0, hard max]; writes a step
+  summary and a note for the Slack header when anything is non-default. Every
+  build workflow with a QA cell and a CUSTOM_IMAGE_TAG input calls this, and its
+  QA cells read these outputs, never the raw inputs (L099, L100).
+
+inputs:
+  set-filters:
+    description: "The dispatch's QA_SET_FILTERS (raw)"
+    required: false
+    default: ""
+  max-price:
+    description: "The dispatch's QA_MAX_PRICE (raw)"
+    required: false
+    default: ""
+  custom-tag:
+    description: "The dispatch's CUSTOM_IMAGE_TAG (raw)"
+    required: false
+    default: ""
+
+outputs:
+  set-filters:
+    description: "Validated compute_cap filters, or empty"
+    value: ${{ steps.v.outputs.set-filters }}
+  max-price:
+    description: "Validated price ceiling; qa-gate's default 2.00 when not overridden"
+    value: ${{ steps.v.outputs.max-price }}
+  note:
+    description: "Header prefix naming the override, or empty"
+    value: ${{ steps.v.outputs.note }}
+
+runs:
+  using: composite
+  steps:
+    - id: v
+      shell: bash
+      env:
+        QA_SET_FILTERS: ${{ inputs.set-filters }}
+        QA_MAX_PRICE: ${{ inputs.max-price }}
+        CUSTOM_IMAGE_TAG: ${{ inputs.custom-tag }}
+        # The most a dispatch may authorise per QA box. A raised price is multiplied
+        # by every CUDA variant, every QA cell and each redraw attempt, so a typo
+        # ("120" for "12.00") must be refused, not rented. One value for every
+        # workflow, which is why it lives here and not in each caller.
+        QA_MAX_PRICE_HARD_MAX: "15.00"
+      run: |
+          set -euo pipefail
+          # Equal to qa-gate.yml's own max_price default, so an empty dispatch and every
+          # scheduled run behave exactly as they did before these inputs existed.
+          DEFAULT_PRICE="2.00"
+          filters="$(echo "${QA_SET_FILTERS:-}" | xargs)"
+          price="$(echo "${QA_MAX_PRICE:-}" | xargs)"
+          if [[ -z "$filters" && -z "$price" ]]; then
+            { echo "set-filters="; echo "max-price=${DEFAULT_PRICE}"; echo "note="; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$(echo "${CUSTOM_IMAGE_TAG:-}" | xargs)" ]]; then
+            echo "::error::QA_SET_FILTERS / QA_MAX_PRICE are accepted only with CUSTOM_IMAGE_TAG (ADR 0047): a version or nightly tag is certified on the template's full floor, never a narrowed one."
+            exit 1
+          fi
+          # read -ra, not an unquoted expansion: a `*` in the value must not glob.
+          read -ra toks <<< "$filters"
+          for t in "${toks[@]}"; do
+            if [[ ! "$t" =~ ^compute_cap\.(gte|lte)=[0-9]+$ ]]; then
+              echo "::error::QA_SET_FILTERS token '${t}' refused: only compute_cap.gte=N and compute_cap.lte=N are accepted (ADR 0047)."
+              exit 1
+            fi
+          done
+          price="${price:-$DEFAULT_PRICE}"
+          if [[ ! "$price" =~ ^[0-9]+(\.[0-9]{1,2})?$ ]] \
+             || ! awk -v p="$price" -v m="$QA_MAX_PRICE_HARD_MAX" 'BEGIN { exit !(p > 0 && p <= m) }'; then
+            echo "::error::QA_MAX_PRICE '${price}' refused: it must be a positive \$/hr amount no higher than ${QA_MAX_PRICE_HARD_MAX} (ADR 0047)."
+            exit 1
+          fi
+          note="[QA override: ${filters:-template floors}, max \$${price}/hr] "
+          { echo "set-filters=${filters}"; echo "max-price=${price}"; echo "note=${note}"; } >> "$GITHUB_OUTPUT"
+          {
+            echo "### QA selection overridden (ADR 0047)"
+            echo ""
+            echo "This run's QA cells are NOT on the template's floors. Filters: \`${filters:-none}\`, price ceiling: \$${price}/hr. A pass certifies \`${CUSTOM_IMAGE_TAG}\` on that hardware only."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::QA override for ${CUSTOM_IMAGE_TAG}: filters='${filters:-none}' max_price=${price}"

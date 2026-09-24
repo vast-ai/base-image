@@ -158,3 +158,32 @@ inputs must be removed.
 - **Preview builds stop needing architecture-specific QA** (every custom build since
   hy4 has passed on the default floor). If that holds, the inputs are dead weight and
   can go.
+
+## Amendment, 2026-09-24 — the override is the pattern for every custom-tag QA workflow
+
+**What changed.** The Decision said engine build workflows may accept the override,
+"starting with `build-vllm.yml`". It is now the accepted pattern for **every build
+workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input**: vllm, sglang,
+llama-cpp, vllm-omni, comfyui, unsloth-studio, aio-studio and aio-studio-base. The
+binding conditions are unchanged and apply to each.
+
+**Why.** The need is not specific to one engine. Any image built under a custom tag for
+a newer architecture fails every draw on its template floor, exactly as hy4-preview did.
+And an escape hatch that exists in one workflow gets copied by hand into the next, where
+it drifts: validated in one, wired raw in another, announced as a normal pass in a third.
+
+**How it is held.**
+- The validation moved out of build-vllm.yml into one composite action,
+  `.github/actions/validate-qa-override`, so the rules and the hard maximum (15.00) exist
+  once.
+- `notify-slack.yml` gained a `qa-override-note` input and prefixes it to the header,
+  whether or not the caller sets a headline. The caller-side `format()` wrapper is gone.
+- **L100** requires the full wiring in every in-scope workflow. **L099** still bars a raw
+  dispatch input in `set_filters`/`max_price` anywhere.
+- `imagegen new` scaffolds the wiring, so a new image is born with it.
+
+**Promotion gates excluded, deliberately.** `promote-base-image` and `promote-pytorch`
+have no custom-tag input and only certify mainline tags, where condition 1 refuses every
+override. Adding the inputs there would be dead surface on the most safety-critical gates.
+Relaxing condition 1 for promotions would be its own decision, not a consequence of this
+one.
