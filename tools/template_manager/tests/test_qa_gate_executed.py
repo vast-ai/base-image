@@ -172,12 +172,12 @@ def test_a_short_headline_is_left_alone(tmp_path):
 
 # ---- the redraw loop itself --------------------------------------------------
 #
-# The step carries seven scalar `${{ }}` inputs, so wfexec.step_script refuses it.
+# The step carries six scalar `${{ }}` inputs (max_price now arrives via env:), so wfexec.step_script refuses it.
 # They are bound explicitly below and the result is asserted to contain no
 # leftover expression — the script under test is the one CI runs, with its inputs
 # supplied, rather than a paraphrase of it.
 
-_BIND = {"inputs.label": "qa-test", "inputs.max_price": "1.00",
+_BIND = {"inputs.label": "qa-test",
          "inputs.require_floor": "false", "inputs.retries": "2",
          "inputs.retry_delay": "0", "inputs.timeout": "60",
          "steps.create.outputs.hash": "deadbeef"}
@@ -225,7 +225,8 @@ def _run_loop(tmp_path, exit_codes, machines):
     (bindir / "python").chmod(0o755)
     (bindir / "sleep").write_text('#!/bin/bash\nexit 0\n')
     (bindir / "sleep").chmod(0o755)
-    r, _, out = _run(script, tmp_path, {"TM": str(tm), "LOG_PATHS": "", "EXTRA_ENV": ""})
+    r, _, out = _run(script, tmp_path, {"TM": str(tm), "LOG_PATHS": "", "EXTRA_ENV": "",
+                                        "QA_MAX_PRICE": "1.00"})
     outputs = dict(l.split("=", 1) for l in out.splitlines() if "=" in l and not l.startswith("suspect"))
     return r, outputs, (tmp_path / "qa-suspect-hosts.txt").read_text()
 

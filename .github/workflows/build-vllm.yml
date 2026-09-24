@@ -32,14 +32,18 @@ on:
         description: "Custom tag (Auto default)"
         required: false
       QA_SET_FILTERS:
-        description: "Raise QA selection floors, space-separated KEY.OP=VALUE (e.g. 'compute_cap.gte=1000' for a Blackwell-only model)"
+        description: "Custom-tag builds only (ADR 0047). Narrow QA to the GPUs the build has kernels for: compute_cap.gte=N and/or compute_cap.lte=N, space-separated. Give a RANGE - e.g. 'compute_cap.gte=1000 compute_cap.lte=1030' for sm_100-only; a lower bound alone draws the smallest-VRAM card above it"
         required: false
       QA_MAX_PRICE:
-        description: "QA offer price ceiling in $/hr (default 2.00) - raise when the floors above only match expensive cards"
+        description: "Custom-tag builds only (ADR 0047). QA offer price ceiling in $/hr (default 2.00, hard max QA_MAX_PRICE_HARD_MAX) - raise when the range above only matches expensive cards"
         required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "vllm"
+  # ADR 0047 condition 3: the most a dispatch may authorise per QA box. A raised price
+  # is multiplied by every CUDA variant, both QA cells and each redraw attempt, so a
+  # typo ("120" for "12.00") must be refused, not rented.
+  QA_MAX_PRICE_HARD_MAX: "15.00"
   # 12 hours
   RELEASE_AGE_THRESHOLD: 43200
 
@@ -51,9 +55,67 @@ jobs:
       vllm-version: ${{ steps.nightly-check.outputs.is-nightly == 'true' && steps.nightly-check.outputs.version || steps.release-check.outputs.resolved-version }}
       build-matrix: ${{ steps.expand.outputs.build-matrix }}
       merge-matrix: ${{ steps.expand.outputs.merge-matrix }}
+      qa-set-filters: ${{ steps.qa-override.outputs.set-filters }}
+      qa-max-price: ${{ steps.qa-override.outputs.max-price }}
+      qa-override-note: ${{ steps.qa-override.outputs.note }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ADR 0047. The QA cells read their floors and price ceiling from THIS step's
+      # outputs, never from the raw inputs, so nothing reaches the gate unvalidated.
+      #   1. Only with CUSTOM_IMAGE_TAG. A version or nightly tag is published under
+      #      the sm_80 production floor, so it must be certified on the template's full
+      #      floor. Narrowing QA for it would test less than production promises.
+      #   2. Only compute_cap. Any other key or operator is merged unchecked by the
+      #      raise-only filter code and could pin the gate to one host or GPU class.
+      #   3. The price is a positive decimal no higher than QA_MAX_PRICE_HARD_MAX. A
+      #      malformed value used to exit 2, which the redraw loop reads as "no
+      #      offers", and a 0 removed the cap entirely.
+      #   4. A non-default run says so in the summary and the Slack headline.
+      - name: Validate QA selection overrides
+        id: qa-override
+        env:
+          QA_SET_FILTERS: ${{ inputs.QA_SET_FILTERS }}
+          QA_MAX_PRICE: ${{ inputs.QA_MAX_PRICE }}
+          CUSTOM_IMAGE_TAG: ${{ inputs.CUSTOM_IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          # Equal to qa-gate.yml's own max_price default, so an empty dispatch and every
+          # scheduled run behave exactly as they did before these inputs existed.
+          DEFAULT_PRICE="2.00"
+          filters="$(echo "${QA_SET_FILTERS:-}" | xargs)"
+          price="$(echo "${QA_MAX_PRICE:-}" | xargs)"
+          if [[ -z "$filters" && -z "$price" ]]; then
+            { echo "set-filters="; echo "max-price=${DEFAULT_PRICE}"; echo "note="; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$(echo "${CUSTOM_IMAGE_TAG:-}" | xargs)" ]]; then
+            echo "::error::QA_SET_FILTERS / QA_MAX_PRICE are accepted only with CUSTOM_IMAGE_TAG (ADR 0047): a version or nightly tag is certified on the template's full floor, never a narrowed one."
+            exit 1
+          fi
+          # read -ra, not an unquoted expansion: a `*` in the value must not glob.
+          read -ra toks <<< "$filters"
+          for t in "${toks[@]}"; do
+            if [[ ! "$t" =~ ^compute_cap\.(gte|lte)=[0-9]+$ ]]; then
+              echo "::error::QA_SET_FILTERS token '${t}' refused: only compute_cap.gte=N and compute_cap.lte=N are accepted (ADR 0047)."
+              exit 1
+            fi
+          done
+          price="${price:-$DEFAULT_PRICE}"
+          if [[ ! "$price" =~ ^[0-9]+(\.[0-9]{1,2})?$ ]] \
+             || ! awk -v p="$price" -v m="$QA_MAX_PRICE_HARD_MAX" 'BEGIN { exit !(p > 0 && p <= m) }'; then
+            echo "::error::QA_MAX_PRICE '${price}' refused: it must be a positive \$/hr amount no higher than ${QA_MAX_PRICE_HARD_MAX} (ADR 0047)."
+            exit 1
+          fi
+          note="[QA override: ${filters:-template floors}, max \$${price}/hr] "
+          { echo "set-filters=${filters}"; echo "max-price=${price}"; echo "note=${note}"; } >> "$GITHUB_OUTPUT"
+          {
+            echo "### QA selection overridden (ADR 0047)"
+            echo ""
+            echo "This run's QA cells are NOT on the template's floors. Filters: \`${filters:-none}\`, price ceiling: \$${price}/hr. A pass certifies \`${CUSTOM_IMAGE_TAG}\` on that hardware only."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::QA override for ${CUSTOM_IMAGE_TAG}: filters='${filters:-none}' max_price=${price}"
 
       - name: Check for required secrets
         id: secrets
@@ -382,25 +444,34 @@ jobs:
       # A real defect still blocks — it fails every draw — and each failed attempt
       # records its machine and excludes it from the next.
       retries: 2
-      # Per-model selection floors. The template's compute_cap floor is the generic
-      # vLLM one (sm_80 — external/vllm/templates/vllm-qa/template.yml), which is
-      # right for most models and wrong for a Blackwell-only build: offers are
-      # searched cheapest-first, so the gate draws an Ampere card and the engine dies
-      # with "no kernel image is available for execution on the device". It then
-      # redraws onto another cheap card and fails identically, which reads as a
-      # reproducible image defect and is not one — the image was never run on a GPU
-      # it has kernels for. Observed on hy4-preview: three draws, A10 / RTX 3080 /
+      # Per-model selection floors, for CUSTOM-TAG builds only (ADR 0047). The
+      # template's compute_cap floor is the generic vLLM one (sm_80 —
+      # external/vllm/templates/vllm-qa/template.yml), which is right for a mainline
+      # release and wrong for a build whose kernels exist only for a newer
+      # architecture. Offers are ranked smallest-VRAM first, then by the LOWEST
+      # compute_cap at or above the floor (ADR 0005: a pass at the floor generalises
+      # up), and price is only a cap. So the gate deliberately draws the oldest
+      # capable generation, and the engine dies with "no kernel image is available
+      # for execution on the device". The redraw excludes that machine and draws the
+      # same class again. Observed on hy4-preview: three draws, A10 / RTX 3080 /
       # RTX 4000 Ada (cc 860, 860, 890), same error each time.
       #
-      # RAISE-ONLY: create.py rejects an override that would widen selection, so this
-      # cannot loosen the linted floors, and an empty value (every scheduled run, and
-      # every dispatch that does not set it) leaves them exactly as they are.
-      set_filters: ${{ inputs.QA_SET_FILTERS }}
+      # Give a RANGE. A lower bound alone still draws the smallest-VRAM card above
+      # it: compute_cap.gte=1000 lands on a consumer sm_120 card before any sm_100
+      # one, so an sm_100-only build needs compute_cap.lte=1030 as well.
+      #
+      # Read from preflight's VALIDATED outputs, never the raw inputs (L099):
+      # preflight refuses an override without CUSTOM_IMAGE_TAG, any key but
+      # compute_cap, and a price outside (0, QA_MAX_PRICE_HARD_MAX]. Empty on every
+      # scheduled run and every dispatch that sets neither, which leaves the linted
+      # floors and qa-gate's default ceiling exactly as they are. create.py still
+      # enforces raise-only on top.
+      set_filters: ${{ needs.preflight.outputs.qa-set-filters }}
       # Companion to the above rather than an independent knob. Raising compute_cap
       # without raising the ceiling can empty the offer pool, and the gate's response
       # to an empty pool is to wait and redraw — so the run burns its retries on
       # "no offers matched the floors" instead of reporting a verdict.
-      max_price: ${{ inputs.QA_MAX_PRICE || '2.00' }}
+      max_price: ${{ needs.preflight.outputs.qa-max-price }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
@@ -529,12 +600,12 @@ jobs:
         INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker
       require_tests: "base/15-boot-markers base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries base/85-serverless-services vllm.d/10-vllm-serving vllm.d/12-vllm-contract vllm.d/20-serverless-pyworker"
       retries: 2
-      # Same floors as the standard cell, for the same reason — see the note there.
-      # These must not fork: a Blackwell-only image that the standard cell refuses to
-      # draw an Ampere card for would still draw one here, and the run would carry one
-      # red cell that means nothing about the image.
-      set_filters: ${{ inputs.QA_SET_FILTERS }}
-      max_price: ${{ inputs.QA_MAX_PRICE || '2.00' }}
+      # Same validated floors as the standard cell, for the same reason — see the
+      # note there. These must not fork: a Blackwell-only image that the standard
+      # cell refuses to draw an Ampere card for would still draw one here, and the
+      # run would carry one red cell that means nothing about the image.
+      set_filters: ${{ needs.preflight.outputs.qa-set-filters }}
+      max_price: ${{ needs.preflight.outputs.qa-max-price }}
     secrets:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
@@ -685,7 +756,10 @@ jobs:
       # promotion that did not happen. Measured 2026-08-27: three branch dispatches
       # cancelled at the production approval gate, every QA cell green, Slack saying
       # "vLLM promoted — live-GPU QA passed" beside a red run card.
-      headline: ${{ (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.qa-serverless.result == 'failure' && 'vLLM SERVERLESS QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '' }}
+      # ADR 0047 condition 2: a run on overridden QA floors must never read like a
+      # normal one. The note is empty unless preflight accepted an override, so every
+      # other run renders byte-identically.
+      headline: ${{ format('{0}{1}', needs.preflight.outputs.qa-override-note, (needs.build.result != 'success' && 'vLLM build failed') || (needs.qa.result == 'failure' && 'vLLM QA FAILED on real GPU — not promoted') || (needs.qa-serverless.result == 'failure' && 'vLLM SERVERLESS QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'vLLM promotion (manifest merge) failed') || (needs.merge-manifests.result != 'success' && 'vLLM NOT promoted — promotion did not run') || (needs.qa.outputs.gated == 'true' && 'vLLM promoted — live-GPU QA passed') || '') }}
       image-name: "vLLM"
       image-ref: ${{ needs.preflight.outputs.vllm-version }}
       image-tags: ${{ needs.collect-tags.outputs.all-tags }}

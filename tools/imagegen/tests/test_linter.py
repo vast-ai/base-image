@@ -574,7 +574,7 @@ def test_every_rule_has_a_test():
 _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
-    "L092", "L093", "L095", "L096", "L097", "L098",
+    "L092", "L093", "L095", "L096", "L097", "L098", "L099",
 })
 
 
@@ -5067,3 +5067,73 @@ def test_mut_L098_a_real_image_pointing_at_the_wrong_file_fires(name):
     mut = replace(img, text=re.sub(r"(?m)^ENV MODEL_LOG=.*$",
                                    "ENV MODEL_LOG=/var/log/portal/engine.log", img.text))
     assert _l098(mut, repo), f"{name} accepted a log path it never writes"
+
+
+# ---- L099: a qa-gate caller's selection inputs come from a validated output ----
+#
+# ADR 0047. set_filters and max_price decide what hardware the promotion gate rents
+# and at what price. PR #270 first wired both vLLM cells straight to dispatch inputs,
+# which skips the preflight validation that carries ADR 0047's conditions (custom tag
+# only, compute_cap only, bounded price) while every other check stays green.
+
+def _l099(repo):
+    return [f for f in L.check_qa_selection_is_validated(repo) if f.severity == L.ERROR]
+
+
+def _l099_tree(tmp_path):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    shutil.copytree(repo / ".github", work / ".github")
+    return work, work / ".github/workflows/build-vllm.yml"
+
+
+def test_L099_the_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert not _codes(repo, "L099")
+
+
+@pytest.mark.parametrize("key,validated,raw", [
+    ("set_filters", "${{ needs.preflight.outputs.qa-set-filters }}",
+     "${{ inputs.QA_SET_FILTERS }}"),
+    ("max_price", "${{ needs.preflight.outputs.qa-max-price }}",
+     "${{ inputs.QA_MAX_PRICE || '2.00' }}"),
+])
+def test_mut_L099_the_real_workflow_rewired_to_the_raw_input_fires(tmp_path, key, validated, raw):
+    """The protocol's mutation, on the REAL workflow: restore PR #270's original
+    wiring on both cells and the rule must name each."""
+    work, wf = _l099_tree(tmp_path)
+    text = wf.read_text()
+    assert text.count(validated) == 2, "both cells should read the validated output"
+    wf.write_text(text.replace(validated, raw))
+    found = _l099(work)
+    assert {f.msg.split("`")[1] for f in found} == {"qa", "qa-serverless"}, [f.msg for f in found]
+    assert all(key in f.msg for f in found)
+
+
+def test_mut_L099_the_github_event_inputs_form_fires_too(tmp_path):
+    work, wf = _l099_tree(tmp_path)
+    wf.write_text(wf.read_text().replace(
+        "${{ needs.preflight.outputs.qa-max-price }}",
+        "${{ github.event.inputs.QA_MAX_PRICE }}", 1))
+    assert len(_l099(work)) == 1
+
+
+def test_L099_a_committed_matrix_value_is_not_a_dispatch_input(tmp_path):
+    """promote-pytorch passes `cuda_max_good.gte=${{ matrix.floor }}`: a reviewed,
+    committed value. That is the pattern ADR 0019 approved, not the one L099 bars."""
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True)
+    (d / "promote-x.yml").write_text(
+        "on: workflow_dispatch\njobs:\n  qa:\n    uses: ./.github/workflows/qa-gate.yml\n"
+        "    with:\n      set_filters: \"cuda_max_good.gte=${{ matrix.floor }}\"\n"
+        "      max_price: \"1.00\"\n")
+    assert not _l099(tmp_path)
+
+
+def test_L099_only_qa_gate_callers_are_in_scope(tmp_path):
+    d = tmp_path / ".github/workflows"
+    d.mkdir(parents=True)
+    (d / "other.yml").write_text(
+        "on: workflow_dispatch\njobs:\n  x:\n    uses: ./.github/workflows/notify-slack.yml\n"
+        "    with:\n      max_price: ${{ inputs.P }}\n")
+    assert not _l099(tmp_path)

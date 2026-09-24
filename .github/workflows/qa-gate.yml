@@ -224,9 +224,20 @@ jobs:
           SET_FILTERS: ${{ inputs.set_filters }}
           QA_LABEL: ${{ inputs.label }}
           QA_TAG: ${{ inputs.tag }}
+          QA_MAX_PRICE: ${{ inputs.max_price }}
         run: |
           IMAGE="${STAGING_NS}/${{ inputs.repo }}"
           echo "Testing ${IMAGE}:${{ inputs.tag }}"
+          # ADR 0047 condition 3, enforced where every caller passes through. A price
+          # that is not a positive amount is OUR configuration error, and it must fail
+          # here as one. Reaching the client, a malformed value exits 2 (argparse),
+          # which the redraw loop below reads as "no offers" and spends every backoff
+          # on; and a 0 used to remove the dph_total cap entirely.
+          if [[ ! "${QA_MAX_PRICE}" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+             || ! awk -v p="${QA_MAX_PRICE}" 'BEGIN { exit !(p > 0) }'; then
+            echo "::error::max_price '${QA_MAX_PRICE}' is not a positive \$/hr amount — refusing to rent (ADR 0047)."
+            exit 1
+          fi
           SF=()
           for f in ${SET_FILTERS}; do SF+=(--set-filter "$f"); done
           # --name-suffix is not cosmetic. Template creation UPSERTS on the NAME, so
@@ -257,6 +268,10 @@ jobs:
         continue-on-error: true
         env:
           LOG_PATHS: ${{ inputs.log_paths }}
+          # Via env, never spliced into the script: a caller may feed this from a
+          # dispatch input (ADR 0047), and `${{ }}` inside `run:` pastes free text
+          # into bash before the shell parses it.
+          QA_MAX_PRICE: ${{ inputs.max_price }}
           QA_REPO: ${{ inputs.repo }}
           QA_TAG: ${{ inputs.tag }}
           EXTRA_ENV: ${{ inputs.extra_env }}
@@ -317,7 +332,7 @@ jobs:
             [ ${#EXCL[@]} -gt 0 ] && echo "excluding already-failed machines: ${EXCL[*]}"
             python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
               --destroy --raw --force --label "${{ inputs.label }}" \
-              --max-price "${{ inputs.max_price }}" --timeout "${{ inputs.timeout }}" \
+              --max-price "${QA_MAX_PRICE}" --timeout "${{ inputs.timeout }}" \
               "${EXCL[@]}" \
               "${ARGS[@]}" \
               > /tmp/qa-raw.json
