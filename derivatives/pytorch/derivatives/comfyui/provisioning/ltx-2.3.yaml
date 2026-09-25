@@ -2,11 +2,24 @@ version: 1
 extensions:
   - module: provisioner_comfyui
     config:
+      # Vendored from Comfy-Org/workflow_templates@d329809768ee (templates/video_ltx2_3_*.json)
+      # rather than fetched from its main branch, for two reasons:
+      #  1. t2v, i2v and flf2v carry a one-value patch. Since ComfyUI v0.29.0,
+      #     LTXVEmptyLatentAudio.frame_rate is a MultiType input (type "FLOAT,INT").
+      #     The workflow->API converter only treats exact INT/FLOAT/... types as widgets,
+      #     drops frame_rate, and shifts widgets_values [97, 25, 1] so batch_size
+      #     becomes 25 - the sampler then fails in pack_latents ("Expected size 1 but
+      #     got size 25"). The stored frame_rate value is changed 25 -> 1: frame_rate
+      #     is always driven by a link in these graphs, so the UI ignores it, while the
+      #     converter's shifted read now lands 1 in batch_size. Remove the patch once
+      #     the converter handles multi-type inputs.
+      #  2. Pinning the set: upstream main already changed CreateVideo.bit_depth to
+      #     "auto", which older ComfyUI rejects. ia2v is an unmodified copy.
       workflows:
-        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_t2v.json
-        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_ia2v.json
-        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_i2v.json
-        - https://github.com/Comfy-Org/workflow_templates/raw/refs/heads/main/templates/video_ltx2_3_flf2v.json
+        - https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/video_ltx2_3_t2v.json
+        - https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/video_ltx2_3_ia2v.json
+        - https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/video_ltx2_3_i2v.json
+        - https://raw.githubusercontent.com/vast-ai/base-image/refs/heads/main/derivatives/pytorch/derivatives/comfyui/workflows/video_ltx2_3_flf2v.json
 
 downloads:
   - url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/input/cactus_man.png
