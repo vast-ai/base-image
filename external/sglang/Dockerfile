@@ -25,6 +25,11 @@ WORKDIR /
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+# The interpreter that runs this image's engine, and the modules that prove it
+# (ADR 0048). The convert script builds /venv/main from it -- a per-file mirror of
+# its site-packages, so uv sees the engine as installed -- and never guesses it.
+ENV VAST_ENGINE_PYTHON=/opt/sglang/bin/python3
+ENV VAST_ENGINE_IMPORT="sglang"
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
 ARG TARGETARCH
@@ -97,7 +102,9 @@ ENV MODEL_LOG=/var/log/portal/sglang.log
 EXPOSE 3000
 
 # Defend against environment clashes when syncing to volume
-RUN env-hash > /.env_hash
+# Read-only check of /venv/main's farm, in the same RUN as env-hash so the hash
+# describes a tree that passed it (ADR 0048).
+RUN venv-farm verify --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

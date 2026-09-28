@@ -1,0 +1,8 @@
+#!/bin/bash
+# venv-farm (ADR 0048): build or verify /venv/main's per-file mirror of an external
+# image's engine site-packages. Stdlib only, so it runs on whichever interpreter is here;
+# /opt/sys-venv is ours and always present on a converted image.
+py=/opt/sys-venv/bin/python
+[[ -x "$py" ]] || py="$(command -v python3)"
+export PYTHONPATH="/opt/instance-tools/lib:${PYTHONPATH:-}"
+exec "$py" -m venv_farm "$@"

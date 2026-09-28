@@ -22,6 +22,11 @@ WORKDIR /
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+# The interpreter that runs this image's engine, and the modules that prove it
+# (ADR 0048). The convert script builds /venv/main from it -- a per-file mirror of
+# its site-packages, so uv sees the engine as installed -- and never guesses it.
+# No Python engine here: /venv/main is a plain venv.
+ENV VAST_ENGINE_PYTHON=none
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
 ARG TARGETARCH

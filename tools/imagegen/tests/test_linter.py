@@ -574,7 +574,7 @@ def test_every_rule_has_a_test():
 _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
-    "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100",
+    "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101",
 })
 
 
@@ -5208,3 +5208,120 @@ def test_L100_a_new_custom_tag_qa_workflow_without_it_fires(tmp_path):
         "    with:\n      repo: x\n")
     msgs = [f.msg for f in _l100(tmp_path)]
     assert any("QA_SET_FILTERS" in m for m in msgs) and any("exactly one job" in m for m in msgs), msgs
+
+
+# ---- L101: an external image's /venv/main is a farm of its DECLARED engine (ADR 0048) ----
+#
+# THE real defect, measured 2026-09-28. uv does not count packages a venv INHERITS as
+# installed, so on an inheriting /venv/main a template's PROVISIONING_PIP=voxcpm==2.0.3
+# installed torch 2.14.0 over vllm-omni's 2.13.0+cu130 and the engine died with
+# `operator torchvision::nms does not exist`; our own build-time installs had already left
+# 32 copies over the engine's on vllm. And the interpreter was GUESSED from PATH, which
+# was wrong on sglang: /venv/main inherited /usr/bin and never saw an sglang package.
+# Each mutation below corrupts a REAL image back towards a shape that shipped.
+
+def _l101(img, repo):
+    return [f for f in lint_image(img, repo) if f.code == "L101"]
+
+
+def test_L101_real_vllm_without_the_engine_declaration_fires():
+    """The shipped shape: no declaration, so the convert script had to guess."""
+    repo, img = _real("vllm")
+    text = re.sub(r"ENV VAST_ENGINE_PYTHON=\S+\n", "", img.text)
+    assert "VAST_ENGINE_PYTHON" not in text
+    assert any("VAST_ENGINE_PYTHON" in f.msg for f in _l101(replace(img, text=text), repo))
+
+
+def test_L101_real_sglang_declared_after_the_convert_step_fires():
+    """An ENV after the convert RUN is set for the running image but not for the step that
+    builds the farm -- which is where the guess used to happen."""
+    repo, img = _real("sglang")
+    decl = "ENV VAST_ENGINE_PYTHON=/opt/sglang/bin/python3\n"
+    text = img.text.replace(decl, "")
+    text = text.replace("COPY ./ROOT /\n", "COPY ./ROOT /\n" + decl, 1)
+    assert decl in text
+    assert _l101(replace(img, text=text), repo)
+
+
+def test_L101_real_vllm_system_install_after_convert_fires():
+    """vllm's `ray[default]` was installed `--system` after convert: into the engine's
+    site-packages after the farm was built, so the venv never saw it."""
+    repo, img = _real("vllm")
+    text = img.text.replace("uv pip install --python /venv/main/bin/python --no-cache-dir ray[default]",
+                            "uv pip install --system --no-cache-dir ray[default]")
+    assert "--system --no-cache-dir ray" in text
+    assert any("--system" in f.msg for f in _l101(replace(img, text=text), repo))
+
+
+def test_L101_real_vllm_env_hash_without_verify_fires():
+    repo, img = _real("vllm-omni")
+    text = img.text.replace('venv-farm verify --engine-import "${VAST_ENGINE_IMPORT}" && ', "")
+    assert "venv-farm verify" not in text
+    assert any("venv-farm verify" in f.msg for f in _l101(replace(img, text=text), repo))
+
+
+def test_L101_real_openwebui_without_the_import_list_fires():
+    repo, img = _real("openwebui")
+    text = re.sub(r'ENV VAST_ENGINE_IMPORT="[^"]*"\n', "", img.text)
+    assert any("VAST_ENGINE_IMPORT" in f.msg for f in _l101(replace(img, text=text), repo))
+
+
+def test_L101_a_generated_external_changeme_is_caught_by_L040():
+    """The imagegen external template ships CHANGEME placeholders. Left unfilled they must
+    not pass -- and they are caught once, by L040 (the unfilled-skeleton rule, which reads
+    the files on disk: test_generate.py's skeleton test proves it fires on a generated
+    external), so L101 stays silent rather than reporting the same marker twice."""
+    repo, img = _real("vllm")
+    text = re.sub(r"ENV VAST_ENGINE_PYTHON=\S+", "ENV VAST_ENGINE_PYTHON=CHANGEME", img.text)
+    assert "VAST_ENGINE_PYTHON=CHANGEME" in text
+    assert _l101(replace(img, text=text), repo) == []
+
+
+def test_L101_real_ollama_none_is_clean():
+    """No Python engine: a plain venv and nothing to verify."""
+    repo, img = _real("ollama")
+    assert "VAST_ENGINE_PYTHON=none" in img.text
+    assert _l101(img, repo) == []
+
+
+def test_L101_every_real_external_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    externals = [i for i in discover(repo) if i.cls == "external"]
+    assert {i.name for i in externals} >= {"vllm", "vllm-omni", "sglang", "openwebui", "ollama"}
+    assert [f for i in externals for f in _l101(i, repo)] == []
+
+
+def _convert_repo(tmp_path, text):
+    (tmp_path / "tools").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tools" / "convert-non-vast-image.sh").write_text(text)
+    return tmp_path
+
+
+def _real_convert():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    return (repo / "tools" / "convert-non-vast-image.sh").read_text()
+
+
+def test_L101_real_convert_script_is_clean(tmp_path):
+    assert _codes(_convert_repo(tmp_path, _real_convert()), "L101") == []
+
+
+def test_L101_real_convert_script_back_to_inheritance_fires(tmp_path):
+    """The shipped shape of the convert script."""
+    text = _real_convert().replace("uv venv --relocatable --seed -p",
+                                   "uv venv --relocatable --seed --system-site-packages -p")
+    assert "--system-site-packages -p" in text
+    assert any("--system-site-packages" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+def test_L101_real_convert_script_without_the_farm_fires(tmp_path):
+    text = re.sub(r"/opt/instance-tools/bin/venv-farm build[^\n]*\\\n[^\n]*\n", "", _real_convert())
+    assert "venv-farm build" not in text.split("#")[0] or "venv-farm build" not in text
+    assert any("venv-farm build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+def test_L101_a_comment_does_not_satisfy_the_convert_script(tmp_path):
+    """Prose naming the command is not the command."""
+    text = re.sub(r"/opt/instance-tools/bin/venv-farm build[^\n]*\\\n[^\n]*\n",
+                  "# venv-farm build used to run here\n", _real_convert())
+    assert any("venv-farm build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))

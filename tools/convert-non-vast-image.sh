@@ -195,11 +195,34 @@ for bin in /opt/sys-venv/bin/*; do
     ln -sf "$bin" "/opt/sys-venv/shim/$(basename "$bin")"
 done
 
-# Set up /venv/main as a standard venv with system package inheritance.
-# Uses the system Python directly — no conda Python, no library conflicts.
-# 37-sync-environment.sh detects pyvenv.cfg and syncs via tar.
+# Set up /venv/main on the engine's own interpreter (ADR 0048).
+#
+# The image DECLARES which interpreter runs its engine (VAST_ENGINE_PYTHON, set in its
+# Dockerfile before this script runs; "none" when there is no Python engine). It is never
+# guessed from PATH: the old guess took the first python3 found and, on sglang, found the
+# engine's /opt/sglang venv, which uv then resolved to its base python -- so /venv/main
+# inherited /usr/bin and never saw a single sglang package.
+#
+# /venv/main is a plain venv (no system-site inheritance) whose site-packages is a per-file
+# symlink farm of the engine's: uv does not count INHERITED packages as installed
+# (astral-sh/uv#4466), so an inheriting venv re-resolved every install as if the engine
+# were absent and laid a second torch over it. The farm is built BEFORE anything is
+# installed into the venv, so every install below resolves against the engine's stack.
+# 37-sync-environment.sh detects pyvenv.cfg and syncs it via tar, as before.
+if [[ -z "${VAST_ENGINE_PYTHON:-}" ]]; then
+    echo "FATAL: VAST_ENGINE_PYTHON is not set. Declare the engine's interpreter in the" >&2
+    echo "       Dockerfile before this script (an absolute path, or 'none') -- ADR 0048." >&2
+    exit 1
+fi
 if [[ ! -d /venv/main ]]; then
-    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)"
+    if [[ "$VAST_ENGINE_PYTHON" == none ]]; then
+        SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)"
+    else
+        [[ -x "$VAST_ENGINE_PYTHON" ]] || { echo "FATAL: VAST_ENGINE_PYTHON=$VAST_ENGINE_PYTHON is not executable" >&2; exit 1; }
+        # The venv must run on the engine's BASE interpreter, or the farmed extensions
+        # would be loaded by a different python (venv-farm refuses a mismatch).
+        SYS_PYTHON="$("$VAST_ENGINE_PYTHON" -c 'import os, sys; print(os.path.realpath(getattr(sys, "_base_executable", sys.executable)))')"
+    fi
     if [[ -n "$SYS_PYTHON" ]]; then
         # Install miniforge3 (available for users who want conda envs)
         curl -L -o /tmp/miniforge3.sh \
@@ -224,11 +247,16 @@ if [[ ! -d /venv/main ]]; then
         fi
         /opt/miniforge3/bin/conda clean -ay
 
-        # Create relocatable venv with system site-packages inheritance
         mkdir -p /venv
-        uv venv --relocatable --seed --system-site-packages -p "$SYS_PYTHON" /venv/main
+        uv venv --relocatable --seed -p "$SYS_PYTHON" /venv/main
+        if [[ "$VAST_ENGINE_PYTHON" != none ]]; then
+            /opt/instance-tools/bin/venv-farm build --venv /venv/main \
+                --engine-python "$VAST_ENGINE_PYTHON"
+        fi
 
-        # Install ipykernel for Jupyter kernel registration
+        # Install ipykernel for Jupyter kernel registration. After the farm, so it adds
+        # only what the engine does not already provide (before it, uv duplicated numpy,
+        # pydantic and 30 more over the engine's copies).
         uv pip install --python /venv/main/bin/python ipykernel
     else
         echo "WARNING: No system Python found, skipping /venv/main creation"
