@@ -76,13 +76,13 @@ def test_every_file_is_a_link_and_no_directory_is(tmp_path, engine):
 
 
 def test_two_metadata_entries_for_one_project_leave_one_copy_and_its_code(tmp_path, engine):
-    """Debian ships cryptography-41.0.7.dist-info (no RECORD, no top_level.txt) AND
-    cryptography.egg-info for ONE tree. Linking both made uv see two copies; blocking the
+    """Debian ships cryptography-41.0.7.dist-info (no RECORD, no top_level.txt) AND an
+    egg-info for ONE tree; the dist-info is chosen whatever the case of the other's name. Linking both made uv see two copies; blocking the
     second entry's files instead left the package's code unlinked while it looked installed."""
     deb = tmp_path / "debian-site"
     deb.mkdir()
     _dist(deb, "cryptography", "41.0.7", {"cryptography/__init__.py": "C"}, record=False)
-    egg = deb / "cryptography.egg-info"
+    egg = deb / "Cryptography.egg-info"            # sorts before the dist-info by name
     egg.mkdir()
     (egg / "PKG-INFO").write_text("Metadata-Version: 1.2\nName: cryptography\nVersion: 41.0.7\n")
     (egg / "top_level.txt").write_text("cryptography\n")
@@ -154,8 +154,8 @@ def test_a_record_is_written_for_debian_metadata_without_one(tmp_path, engine):
 
 
 def test_no_record_when_the_code_cannot_be_found(tmp_path, engine):
-    """No top_level.txt and no tree under the project's name (python-apt ships apt/): a
-    RECORD would list only metadata, so none is written and pip keeps refusing."""
+    """No top_level.txt and no tree under the project's name: a RECORD would list only
+    metadata, so none is written."""
     deb = _debian(tmp_path)
     (deb / "apt").mkdir()
     (deb / "apt" / "__init__.py").write_text("a")
@@ -165,10 +165,23 @@ def test_no_record_when_the_code_cannot_be_found(tmp_path, engine):
     assert (_site(venv) / "apt" / "__init__.py").is_symlink()
     assert not (_site(venv) / "python_apt-2.7.7.dist-info" / "RECORD").exists()
 
+def test_an_egg_info_file_claims_no_tree(tmp_path):
+    """A single-file egg-info (Debian's PyGObject) names no files, so its project's name is
+    not taken as a tree: its stray files stay out of a package another source created."""
+    first = tmp_path / "first-site"
+    first.mkdir()
+    _dist(first, "bar-core", "1.0", {"bar/__init__.py": "core"})
+    deb = _debian(tmp_path)
+    (deb / "bar").mkdir()
+    (deb / "bar" / "x.py").write_text("debian")
+    (deb / "bar-1.0.egg-info").write_text("Metadata-Version: 1.1\nName: bar\nVersion: 1.0\n")
+    venv = _venv(tmp_path)
+    vf.build(venv, [first, deb])
+    assert not (_site(venv) / "bar" / "x.py").exists()
+
 def test_no_record_that_would_take_another_projects_files(tmp_path, engine):
     """lazr.uri and lazr.restfulclient both name lazr/ in top_level.txt; a RECORD listing the
-    tree made `pip uninstall lazr.uri` break lazr.restfulclient. Neither gets a RECORD, so
-    pip refuses as it always did."""
+    tree made `pip uninstall lazr.uri` break lazr.restfulclient. Neither gets a RECORD."""
     deb = _debian(tmp_path)
     for name in ("lazr.uri", "lazr.restfulclient"):
         mod = name.split(".")[1]
@@ -186,9 +199,27 @@ def test_no_record_that_would_take_another_projects_files(tmp_path, engine):
     assert not (site / "lazr.restfulclient-1.0.egg-info" / "RECORD").exists()
 
 
-def test_a_record_never_lists_a_link_into_another_source(tmp_path):
-    """A path the first source already filled is that source's file: uninstalling the
-    lower-priority project must not remove it."""
+def test_no_partial_record_when_only_some_files_are_shared(tmp_path, engine):
+    """One shared file is enough to write none: a RECORD listing only the unshared ones
+    would leave the shared tree behind on uninstall."""
+    deb = _debian(tmp_path)
+    (deb / "ns").mkdir()
+    (deb / "ns" / "__init__.py").write_text("shared")
+    (deb / "a_only.py").write_text("a")
+    for name, tops in (("proj-a", "ns\na_only\n"), ("proj-b", "ns\n")):
+        meta = deb / f"{name.replace('-', '_')}-1.0.egg-info"
+        meta.mkdir()
+        (meta / "PKG-INFO").write_text(f"Metadata-Version: 1.1\nName: {name}\nVersion: 1.0\n")
+        (meta / "top_level.txt").write_text(tops)
+    venv = _venv(tmp_path)
+    vf.build(venv, [engine, deb])
+    assert (_site(venv) / "a_only.py").is_symlink()
+    assert not (_site(venv) / "proj_a-1.0.egg-info" / "RECORD").exists()
+
+
+def test_no_record_when_another_source_holds_one_of_its_files(tmp_path):
+    """A path the first source already filled is that source's file, so the RECORD cannot
+    list it -- and a RECORD without it would leave `import distro` working after uninstall."""
     first = tmp_path / "first-site"
     (first / "distro").mkdir(parents=True)
     (first / "distro" / "__init__.py").write_text("first")
@@ -200,8 +231,7 @@ def test_a_record_never_lists_a_link_into_another_source(tmp_path):
     (meta / "top_level.txt").write_text("distro\n")
     venv = _venv(tmp_path)
     vf.build(venv, [first, deb])
-    rows = _record_rows(_site(venv) / "distro-1.9.0.dist-info")
-    assert "distro/extra.py" in rows and "distro/__init__.py" not in rows
+    assert not (_site(venv) / "distro-1.9.0.dist-info" / "RECORD").exists()
 
 
 def test_build_refuses_a_venv_that_is_not_fresh(tmp_path, engine):

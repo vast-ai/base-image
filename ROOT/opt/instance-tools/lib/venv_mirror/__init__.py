@@ -115,15 +115,16 @@ def _walk_rel(root: Path, prefix: int) -> Iterable[str]:
 def _listed_files(site: Path, meta: Path, name: str) -> Tuple[List[str], bool]:
     """Files a distribution installed, relative to `site`, and whether it keeps a RECORD.
     Debian ships dist-info and egg-info without a file list: top_level.txt names its trees,
-    or, when there is none (blinker, pyparsing), the project's own name does. A wrong guess
-    names a tree that does not exist, so it lists nothing rather than too much."""
+    or, for a metadata directory that has none (blinker, pyparsing), the project's own name
+    does. A tree that name matches but another project owns is caught when the RECORD is
+    written: a file two projects list gets no RECORD at all."""
     prefix = len(str(site)) + 1
     if meta.is_dir() and (meta / "RECORD").exists():
         with open(meta / "RECORD", newline="", encoding="utf-8", errors="replace") as fh:
             return [row[0] for row in csv.reader(fh) if row and row[0]], True
     files: List[str] = []
     tops = _read_text(meta / "top_level.txt").split() if meta.is_dir() else []
-    for top in tops or [name.replace("-", "_")]:
+    for top in tops or ([name.replace("-", "_")] if meta.is_dir() else []):
         tree = site / top
         if tree.is_dir():
             files.extend(_walk_rel(tree, prefix))
@@ -256,11 +257,13 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
 
 
 def _write_record(dst: Path, dist: Dist, src: Path, claims: Dict[str, int]) -> None:
-    """Debian's metadata carries no RECORD, so pip refuses to uninstall it and uv leaves it
-    beside a replacement. Write one only when it can be complete and this project's alone:
-    the links made from its own source for files no other mirrored project lists
-    (lazr.uri and lazr.restfulclient both name lazr/). Otherwise write none, and pip keeps
-    refusing, loudly -- a partial RECORD made pip report a clean uninstall of blinker while
+    """Debian's metadata carries no RECORD, so pip and uv cannot remove it cleanly. Write one
+    only when it can be complete and this project's alone: every file it lists is linked
+    from its own source and listed by no other mirrored project (lazr.uri and
+    lazr.restfulclient both name lazr/). Otherwise write none, which leaves pip's own
+    handling: it refuses a dist-info, and for an egg-info directory removes top_level.txt's
+    trees minus namespace_packages.txt -- for lazr, only the metadata, as before this module.
+    A partial RECORD was worse: pip reported a clean uninstall of blinker while
     `import blinker` still worked."""
     rows = []
     for f in dist.files:
@@ -272,6 +275,8 @@ def _write_record(dst: Path, dist: Dist, src: Path, claims: Dict[str, int]) -> N
             return
         if p.is_symlink() and os.readlink(p).startswith(str(src) + os.sep):
             rows.append(rel)
+        elif os.path.lexists(p):
+            return                      # another source's file stands here: not ours to list
     if not rows:
         return
     for dirpath, _, filenames in os.walk(dst / dist.meta):
