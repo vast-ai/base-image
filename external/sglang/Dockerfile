@@ -102,9 +102,9 @@ ENV MODEL_LOG=/var/log/portal/sglang.log
 EXPOSE 3000
 
 # Defend against environment clashes when syncing to volume
-# Read-only check of /venv/main's farm, in the same RUN as env-hash so the hash
+# Read-only check of /venv/main's mirror, in the same RUN as env-hash so the hash
 # describes a tree that passed it (ADR 0048).
-RUN venv-farm verify --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
+RUN venv-mirror verify --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

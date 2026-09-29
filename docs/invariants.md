@@ -2231,7 +2231,7 @@ boundary. A process binding `0.0.0.0` on a rented box is reachable regardless.
 
 On an external image (vllm, vllm-omni, openwebui, sglang, ollama, and every image the
 imagegen `external` template generates), `/venv/main` is a plain venv with
-`include-system-site-packages = false` whose site-packages is a per-file symlink farm of
+`include-system-site-packages = false` whose site-packages is a per-file symlink mirror of
 the engine interpreter's own site directories (ADR 0048). Verified against the images:
 
 - uv does not count packages a venv only INHERITS as installed (astral-sh/uv#4466), so the
@@ -2243,15 +2243,15 @@ the engine interpreter's own site directories (ADR 0048). Verified against the i
   (`VAST_ENGINE_PYTHON`, `none` for no Python engine; `VAST_ENGINE_IMPORT`), never guessed
   from PATH: the guess was wrong on sglang, whose `/venv/main` inherited `/usr/bin` and
   never saw a single sglang package.
-- No directory under the farm is a symlink (uv installs per file path and wrote through a
+- No directory under the mirror is a symlink (uv installs per file path and wrote through a
   directory link into the engine's tree); ownership is the metadata file: a project whose
-  METADATA is a link is the farm's, anything with real metadata is the venv's.
-- The farm is built once, in the image, before any install into the venv; the final RUN
-  runs `venv-farm verify` before `env-hash`. No boot stage modifies `/venv/main`: after
+  METADATA is a link is the mirror's, anything with real metadata is the venv's.
+- The mirror is built once, in the image, before any install into the venv; the final RUN
+  runs `venv-mirror verify` before `env-hash`. No boot stage modifies `/venv/main`: after
   first boot it is the user's.
 - No `uv pip install --system` after the convert step (it lands in the engine's
-  site-packages after the farm was built, invisible to the venv).
+  site-packages after the mirror was built, invisible to the venv).
 
 Exemptions: base and pytorch images (their conda `/venv/main` owns its packages and never
-inherited); `VAST_ENGINE_PYTHON=none` images have no farm and nothing to verify.
-Runtime check: `base/46-venv-farm.sh`.
+inherited); `VAST_ENGINE_PYTHON=none` images have no mirror and nothing to verify.
+Runtime check: `base/46-venv-mirror.sh`.

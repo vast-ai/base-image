@@ -5210,7 +5210,7 @@ def test_L100_a_new_custom_tag_qa_workflow_without_it_fires(tmp_path):
     assert any("QA_SET_FILTERS" in m for m in msgs) and any("exactly one job" in m for m in msgs), msgs
 
 
-# ---- L101: an external image's /venv/main is a farm of its DECLARED engine (ADR 0048) ----
+# ---- L101: an external image's /venv/main is a mirror of its DECLARED engine (ADR 0048) ----
 #
 # THE real defect, measured 2026-09-28. uv does not count packages a venv INHERITS as
 # installed, so on an inheriting /venv/main a template's PROVISIONING_PIP=voxcpm==2.0.3
@@ -5234,7 +5234,7 @@ def test_L101_real_vllm_without_the_engine_declaration_fires():
 
 def test_L101_real_sglang_declared_after_the_convert_step_fires():
     """An ENV after the convert RUN is set for the running image but not for the step that
-    builds the farm -- which is where the guess used to happen."""
+    builds the mirror -- which is where the guess used to happen."""
     repo, img = _real("sglang")
     decl = "ENV VAST_ENGINE_PYTHON=/opt/sglang/bin/python3\n"
     text = img.text.replace(decl, "")
@@ -5245,7 +5245,7 @@ def test_L101_real_sglang_declared_after_the_convert_step_fires():
 
 def test_L101_real_vllm_system_install_after_convert_fires():
     """vllm's `ray[default]` was installed `--system` after convert: into the engine's
-    site-packages after the farm was built, so the venv never saw it."""
+    site-packages after the mirror was built, so the venv never saw it."""
     repo, img = _real("vllm")
     text = img.text.replace("uv pip install --python /venv/main/bin/python --no-cache-dir ray[default]",
                             "uv pip install --system --no-cache-dir ray[default]")
@@ -5255,9 +5255,9 @@ def test_L101_real_vllm_system_install_after_convert_fires():
 
 def test_L101_real_vllm_env_hash_without_verify_fires():
     repo, img = _real("vllm-omni")
-    text = img.text.replace('venv-farm verify --engine-import "${VAST_ENGINE_IMPORT}" && ', "")
-    assert "venv-farm verify" not in text
-    assert any("venv-farm verify" in f.msg for f in _l101(replace(img, text=text), repo))
+    text = img.text.replace('venv-mirror verify --engine-import "${VAST_ENGINE_IMPORT}" && ', "")
+    assert "venv-mirror verify" not in text
+    assert any("venv-mirror verify" in f.msg for f in _l101(replace(img, text=text), repo))
 
 
 def test_L101_real_openwebui_without_the_import_list_fires():
@@ -5314,14 +5314,14 @@ def test_L101_real_convert_script_back_to_inheritance_fires(tmp_path):
     assert any("--system-site-packages" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
 
 
-def test_L101_real_convert_script_without_the_farm_fires(tmp_path):
-    text = re.sub(r"/opt/instance-tools/bin/venv-farm build[^\n]*\\\n[^\n]*\n", "", _real_convert())
-    assert "venv-farm build" not in text.split("#")[0] or "venv-farm build" not in text
-    assert any("venv-farm build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
+    text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n", "", _real_convert())
+    assert "venv-mirror build" not in text.split("#")[0] or "venv-mirror build" not in text
+    assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
 
 
 def test_L101_a_comment_does_not_satisfy_the_convert_script(tmp_path):
     """Prose naming the command is not the command."""
-    text = re.sub(r"/opt/instance-tools/bin/venv-farm build[^\n]*\\\n[^\n]*\n",
-                  "# venv-farm build used to run here\n", _real_convert())
-    assert any("venv-farm build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+    text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n",
+                  "# venv-mirror build used to run here\n", _real_convert())
+    assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))

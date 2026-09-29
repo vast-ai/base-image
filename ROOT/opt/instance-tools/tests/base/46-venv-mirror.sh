@@ -3,7 +3,7 @@
 #
 # Read-only. uv does not count packages a venv only INHERITS as installed, so an
 # inheriting /venv/main let every `uv pip install` lay a second torch under the engine.
-# /venv/main is instead a per-file symlink farm of the engine's site-packages, built into
+# /venv/main is instead a per-file symlink mirror of the engine's site-packages, built into
 # the image. This proves the instance got one that works: no directory links, nothing
 # dangling, one installed copy per project, the engine importing from its own files through
 # the venv, and uv seeing the engine (and torch) as installed.
@@ -11,17 +11,17 @@ source "$(dirname "$0")/../lib.sh"
 
 engine="${VAST_ENGINE_PYTHON:-}"
 [[ -n "$engine" ]] || test_skip "no VAST_ENGINE_PYTHON: not an external image (base/pytorch own their packages)"
-[[ "$engine" != none ]] || test_skip "VAST_ENGINE_PYTHON=none: no Python engine, no farm"
+[[ "$engine" != none ]] || test_skip "VAST_ENGINE_PYTHON=none: no Python engine, no mirror"
 
 # Declared but absent is a FAILURE, never a skip: it is exactly the image that ships the
 # inheriting venv again.
-[[ -f /venv/main/.vast-venv-farm.json ]] || \
-    test_fail "VAST_ENGINE_PYTHON=${engine} but /venv/main has no farm manifest: it was not built by venv-farm"
+[[ -f /venv/main/.vast-venv-mirror.json ]] || \
+    test_fail "VAST_ENGINE_PYTHON=${engine} but /venv/main has no mirror manifest: it was not built by venv-mirror"
 
-command -v venv-farm >/dev/null || test_fail "venv-farm is not on PATH"
-if ! out=$(venv-farm verify --venv /venv/main --engine-import "${VAST_ENGINE_IMPORT:-}" 2>&1); then
+command -v venv-mirror >/dev/null || test_fail "venv-mirror is not on PATH"
+if ! out=$(venv-mirror verify --venv /venv/main --engine-import "${VAST_ENGINE_IMPORT:-}" 2>&1); then
     echo "$out" | sed 's/^/  /'
-    test_fail "venv-farm verify failed on /venv/main"
+    test_fail "venv-mirror verify failed on /venv/main"
 fi
 echo "  $out"
 

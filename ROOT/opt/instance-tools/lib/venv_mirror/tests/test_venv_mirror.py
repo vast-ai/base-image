@@ -1,4 +1,4 @@
-"""venv_farm on temporary trees (ADR 0048). Each case is a failure measured on a real image
+"""venv_mirror on temporary trees (ADR 0048). Each case is a failure measured on a real image
 while the design was reviewed; the integration proof is the image build and its QA cell."""
 
 import json
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import venv_farm as vf
+import venv_mirror as vf
 
 
 def _dist(site: Path, name: str, version: str, files: dict, *, record=True, meta_dir=None,
@@ -132,7 +132,7 @@ def test_a_debian_egg_info_without_a_file_list_is_linked_by_top_level(tmp_path, 
     site = _site(venv)
     assert (site / "apt/__init__.py").is_symlink()
     assert (site / "apt_pkg.cpython-312-x86_64-linux-gnu.so").is_symlink()
-    assert vf.is_farmed(site / "python_apt-2.7.7.egg-info")
+    assert vf.is_mirrored(site / "python_apt-2.7.7.egg-info")
 
 
 def test_namespace_directories_are_shared_by_two_projects(tmp_path, engine):
@@ -159,7 +159,7 @@ def test_a_source_directory_symlink_is_followed_once(tmp_path, engine):
 
 def test_launchers_run_the_engine_through_the_venv(tmp_path, engine):
     """sglang's launcher ran #!/opt/sglang/bin/python3, so nothing installed in /venv/main
-    reached the engine. The farm writes the engine's console scripts for the venv."""
+    reached the engine. The mirror writes the engine's console scripts for the venv."""
     venv = _venv(tmp_path)
     (venv / "bin" / "existing").write_text("keep")
     _dist(engine, "tool", "1.0", {"tool/__init__.py": ""},
@@ -173,7 +173,7 @@ def test_launchers_run_the_engine_through_the_venv(tmp_path, engine):
     assert os.access(venv / "bin" / "cli", os.X_OK)
 
 
-def test_the_manifest_records_what_was_farmed(tmp_path, engine):
+def test_the_manifest_records_what_was_mirrored(tmp_path, engine):
     venv = _venv(tmp_path)
     vf.build(venv, [engine], engine_python="/usr/bin/python3")
     data = json.loads((venv / vf.MANIFEST).read_text())
@@ -183,7 +183,7 @@ def test_the_manifest_records_what_was_farmed(tmp_path, engine):
 
 
 def test_ownership_follows_the_metadata_file(tmp_path, engine):
-    """A user who upgrades a farmed project owns it afterwards: its metadata is real."""
+    """A user who upgrades a mirrored project owns it afterwards: its metadata is real."""
     venv = _venv(tmp_path)
     vf.build(venv, [engine])
     site = _site(venv)
@@ -225,7 +225,7 @@ def test_verify_reports_inheritance_left_on(tmp_path, engine):
     assert any("include-system-site-packages" in p for p in vf.structural_problems(venv))
 
 
-def test_verify_reports_a_venv_the_farm_did_not_build(tmp_path):
+def test_verify_reports_a_venv_the_mirror_did_not_build(tmp_path):
     venv = _venv(tmp_path)
     assert any(vf.MANIFEST in p for p in vf.structural_problems(venv))
 
@@ -250,7 +250,7 @@ def _elf_with_runpath(path: Path, runpath: str) -> None:
 
 def test_an_rpath_that_leaves_site_packages_is_reported(tmp_path, engine):
     """$ORIGIN resolves relative to the LINK: a library pointing outside site-packages loads
-    from the engine's copy and fails from the farm's."""
+    from the engine's copy and fails from the mirror's."""
     outside = tmp_path / "prefix-lib"
     outside.mkdir()
     (engine / "ext").mkdir()
@@ -270,7 +270,7 @@ def test_an_rpath_inside_site_packages_is_fine(tmp_path, engine):
 
 
 def test_build_refuses_a_venv_on_another_interpreter(tmp_path, monkeypatch):
-    from venv_farm import __main__ as cli
+    from venv_mirror import __main__ as cli
     info = {"/engine/python": {"base": "/usr/bin/python3.12", "version": "3.12", "sources": []},
             str(tmp_path / "v/bin/python"): {"base": "/usr/bin/python3.11", "version": "3.11",
                                               "sources": []}}
@@ -279,18 +279,18 @@ def test_build_refuses_a_venv_on_another_interpreter(tmp_path, monkeypatch):
                      "/engine/python"]) == 1
 
 
-def test_a_real_venv_python_imports_through_the_farm(tmp_path):
-    """End to end on this machine's interpreter: a package importable only through the farm."""
+def test_a_real_venv_python_imports_through_the_mirror(tmp_path):
+    """End to end on this machine's interpreter: a package importable only through the mirror."""
     src = tmp_path / "engine-site"
     src.mkdir()
-    _dist(src, "farmtest", "1.0", {"farmtest/__init__.py": "VALUE = 42\n"})
+    _dist(src, "mirrortest", "1.0", {"mirrortest/__init__.py": "VALUE = 42\n"})
     venv = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
     vf.build(venv, [src])
     out = subprocess.run([str(venv / "bin" / "python"), "-c",
-                          "import farmtest, os; print(farmtest.VALUE, os.path.realpath(farmtest.__file__))"],
+                          "import mirrortest, os; print(mirrortest.VALUE, os.path.realpath(mirrortest.__file__))"],
                          capture_output=True, text=True, check=True).stdout.split()
-    assert out == ["42", str(src / "farmtest" / "__init__.py")]
+    assert out == ["42", str(src / "mirrortest" / "__init__.py")]
 
 
 def _fake_run(uv_output):

@@ -39,7 +39,7 @@ on:
       # The provisioner suite is a CI gate now, so the PR that edits the
       # provisioner has to run it.
       - "ROOT/opt/instance-tools/lib/provisioner/**"
-      - "ROOT/opt/instance-tools/lib/venv_farm/**"
+      - "ROOT/opt/instance-tools/lib/venv_mirror/**"
       - "tools/convert-non-vast-image.sh"
       # cuda-driver-version and the boot script that calls it are covered by
       # test_cuda_driver_version.py and by L063/L064 — the tests are worthless
@@ -88,7 +88,7 @@ on:
       # The provisioner suite is a CI gate now, so the PR that edits the
       # provisioner has to run it.
       - "ROOT/opt/instance-tools/lib/provisioner/**"
-      - "ROOT/opt/instance-tools/lib/venv_farm/**"
+      - "ROOT/opt/instance-tools/lib/venv_mirror/**"
       - "tools/convert-non-vast-image.sh"
       # cuda-driver-version and the boot script that calls it are covered by
       # test_cuda_driver_version.py and by L063/L064 — the tests are worthless
@@ -177,9 +177,9 @@ jobs:
       - name: Run provisioner test suite
         working-directory: ROOT/opt/instance-tools/lib
         run: python -m pytest -q provisioner/tests
-      # venv_farm builds an external image's /venv/main (ADR 0048). Its integration proof is
-      # the image build (venv-farm verify runs before env-hash) and the QA cell's
-      # base/46-venv-farm; these are the ownership and link-safety rules on temporary trees.
-      - name: Run venv_farm test suite
+      # venv_mirror builds an external image's /venv/main (ADR 0048). Its integration proof is
+      # the image build (venv-mirror verify runs before env-hash) and the QA cell's
+      # base/46-venv-mirror; these are the ownership and link-safety rules on temporary trees.
+      - name: Run venv_mirror test suite
         working-directory: ROOT/opt/instance-tools/lib
-        run: python -m pytest -q venv_farm/tests
+        run: python -m pytest -q venv_mirror/tests

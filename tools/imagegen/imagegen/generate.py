@@ -108,8 +108,8 @@ COPY ./ROOT /
 RUN set -euo pipefail; \\
     : '>>> FILL: install/configure @@NAME@@ on top of the upstream image <<<'
 
-# Read-only check of /venv/main's farm, in the same RUN as env-hash (ADR 0048).
-RUN venv-farm verify --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
+# Read-only check of /venv/main's mirror, in the same RUN as env-hash (ADR 0048).
+RUN venv-mirror verify --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
 '''

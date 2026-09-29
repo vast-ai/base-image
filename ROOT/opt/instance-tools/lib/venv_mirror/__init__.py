@@ -12,11 +12,11 @@ Three rules carry the design, each measured before it was written down:
 
 - No directory is ever a symlink. uv and pip install and uninstall per file path, so a
   directory link sends their writes into the engine's tree.
-- Ownership is recorded, not inferred. A project is the farm's exactly when its metadata
+- Ownership is recorded, not inferred. A project is the mirror's exactly when its metadata
   file (METADATA, or PKG-INFO for an egg-info) is a symlink; Debian ships .dist-info
   directories with no RECORD, so RECORD cannot be the marker. Anything with real metadata
-  belongs to the venv, and the farm never links into it.
-- The farm is built once, into the image. After first boot /venv/main is the user's: no
+  belongs to the venv, and the mirror never links into it.
+- The mirror is built once, into the image. After first boot /venv/main is the user's: no
   boot stage refreshes, prunes or re-links it, so an uninstall stays uninstalled.
 """
 
@@ -34,7 +34,7 @@ from email.parser import HeaderParser
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-MANIFEST = ".vast-venv-farm.json"
+MANIFEST = ".vast-venv-mirror.json"
 METADATA_SUFFIXES = (".dist-info", ".egg-info")
 
 # The query run by the ENGINE's interpreter: where it imports from, and what it is built on.
@@ -56,7 +56,7 @@ print(json.dumps({
 """
 
 
-class FarmError(Exception):
+class MirrorError(Exception):
     pass
 
 
@@ -74,7 +74,7 @@ def engine_info(python: str) -> dict:
 def venv_site(venv: Path) -> Path:
     found = sorted((venv / "lib").glob("python3*/site-packages"))
     if len(found) != 1:
-        raise FarmError(f"{venv}: expected one lib/python3*/site-packages, found {len(found)}")
+        raise MirrorError(f"{venv}: expected one lib/python3*/site-packages, found {len(found)}")
     return found[0]
 
 
@@ -180,8 +180,8 @@ def _walk_files(root: Path) -> Iterable[Path]:
             yield Path(dirpath) / f
 
 
-def is_farmed(meta: Path) -> bool:
-    """True when a metadata entry was linked in by the farm rather than installed."""
+def is_mirrored(meta: Path) -> bool:
+    """True when a metadata entry was linked in by the mirror rather than installed."""
     if meta.is_symlink():
         return True
     if meta.is_dir():
@@ -204,9 +204,9 @@ def _walk_rel(root: Path, prefix: int) -> Iterable[str]:
 
 
 def owned_projects(site: Path) -> Set[str]:
-    """Projects the venv itself owns: metadata that is real, not a farm link."""
+    """Projects the venv itself owns: metadata that is real, not a mirror link."""
     return {_read_meta_headers(m)[0] for m in site.iterdir()
-            if m.name.endswith(METADATA_SUFFIXES) and not is_farmed(m)}
+            if m.name.endswith(METADATA_SUFFIXES) and not is_mirrored(m)}
 
 
 # ---------------------------------------------------------------------------------------
@@ -227,10 +227,10 @@ def _inside(rel: str) -> bool:
     return not os.path.normpath(rel).startswith("..") and not os.path.isabs(rel)
 
 
-class _Farm:
+class _Mirror:
     def __init__(self, dst: Path):
         self.dst = dst
-        self.created: Set[Path] = set()      # directories the farm made
+        self.created: Set[Path] = set()      # directories the mirror made
         self.foreign: Set[Path] = set()      # pre-existing directories: not ours to fill
         self.result = Result()
 
@@ -254,7 +254,7 @@ class _Farm:
         return True
 
     def _writable_parent(self, rel: str) -> bool:
-        """A file may go into a directory the farm created, or one that does not exist yet.
+        """A file may go into a directory the mirror created, or one that does not exist yet.
         A pre-existing directory belongs to whatever the venv already installed there."""
         if (self.dst / rel).parent in self.created:
             return True
@@ -290,11 +290,11 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
 
     Projects the venv already owns (its seed packages) are left alone, and so is every file
     of theirs; the first source providing a project wins. Files no distribution lists
-    (`__pycache__`, Debian's apt modules) are linked only into directories the farm made.
+    (`__pycache__`, Debian's apt modules) are linked only into directories the mirror made.
     """
     dst = venv_site(venv)
-    farm = _Farm(dst)
-    res = farm.result
+    mirror = _Mirror(dst)
+    res = mirror.result
     owned = owned_projects(dst)
     blocked: Set[str] = set()                 # paths belonging to projects we did not link
     claimed: Set[Tuple[int, str]] = set()     # (source index, path) any dist lists
@@ -321,7 +321,7 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
         n = 0
         for f in dist.files:
             rel = os.path.normpath(f)
-            if _inside(rel) and farm.link(sources[i], rel):
+            if _inside(rel) and mirror.link(sources[i], rel):
                 n += 1
         res.projects[name] = {"version": dist.version, "source": str(sources[i]),
                               "meta": dist.meta, "links": n}
@@ -335,7 +335,7 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
             top = rel.split(os.sep, 1)[0]
             if (i, rel) in claimed or top in blocked_tops or rel in blocked:
                 continue
-            if farm.link(src, rel):
+            if mirror.link(src, rel):
                 res.residual += 1
 
     if venv_python:
@@ -371,7 +371,7 @@ def launcher(venv_python: str, module: str, attr: str) -> str:
     call = f"{head}.{rest}" if rest else head
     return (f"#!{venv_python}\n"
             "# -*- coding: utf-8 -*-\n"
-            "# Written by venv-farm (ADR 0048): the engine's entry point, run by /venv/main.\n"
+            "# Written by venv-mirror (ADR 0048): the engine's entry point, run by /venv/main.\n"
             "import sys\n"
             f"from {module} import {head}\n"
             "if __name__ == \"__main__\":\n"
@@ -379,7 +379,7 @@ def launcher(venv_python: str, module: str, attr: str) -> str:
 
 
 def write_console_scripts(venv: Path, venv_python: str, dists: List[Dist]) -> List[str]:
-    """One launcher per console script of every farmed project, so the engine's commands
+    """One launcher per console script of every mirrored project, so the engine's commands
     run through /venv/main and see what is installed there. An existing file is never
     replaced. The path is the one each project's RECORD names (`../../../bin/<name>`), so
     uninstalling the project removes its launcher too."""
@@ -431,7 +431,7 @@ def structural_problems(venv: Path) -> List[str]:
         problems.append("pyvenv.cfg: include-system-site-packages must be false "
                         "(uv cannot see inherited packages)")
     if not (venv / MANIFEST).exists():
-        problems.append(f"{MANIFEST} is missing: /venv/main was not built by venv-farm")
+        problems.append(f"{MANIFEST} is missing: /venv/main was not built by venv-mirror")
     site = venv_site(venv)
     for dirpath, dirnames, filenames in os.walk(site):
         for d in dirnames:
@@ -456,7 +456,7 @@ def structural_problems(venv: Path) -> List[str]:
 def origin_problems(venv: Path) -> List[str]:
     """Shared libraries resolve $ORIGIN relative to the LINK, not its target. A library
     whose RUNPATH/RPATH leaves site-packages resolves from the engine's copy but not from
-    the farm's, and fails only when loaded. Report every such entry."""
+    the mirror's, and fails only when loaded. Report every such entry."""
     site = venv_site(venv)
     problems = []
     for path in _walk_files(site):
@@ -468,7 +468,7 @@ def origin_problems(venv: Path) -> List[str]:
             from_link = Path(os.path.normpath(entry.replace("$ORIGIN", str(path.parent))))
             if from_src.exists() and not from_link.exists():
                 problems.append(f"{path}: RPATH {entry} resolves from the engine's copy "
-                                f"({from_src}) but not from the farm ({from_link})")
+                                f"({from_src}) but not from the mirror ({from_link})")
     return problems
 
 
@@ -558,7 +558,7 @@ def engine_problems(venv: Path, imports: List[str]) -> List[str]:
             problems.append(f"uv does not see {spec} as installed in the venv: "
                             f"{'; '.join(own) or (text.strip().splitlines() or [r.returncode])[-1]}")
         elif planned:
-            print(f"venv-farm: note: `uv pip install {spec}` would also change "
+            print(f"venv-mirror: note: `uv pip install {spec}` would also change "
                   f"{', '.join(planned)} (the engine's own pins; the same plan as against "
                   f"its own environment)")
     return problems
