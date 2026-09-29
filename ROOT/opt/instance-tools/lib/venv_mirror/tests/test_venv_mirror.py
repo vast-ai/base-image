@@ -2,7 +2,6 @@
 failure measured on a real image; the integration proof is the image build and its QA cell."""
 
 import csv
-import json
 import os
 import subprocess
 import sys
@@ -32,8 +31,12 @@ def _dist(site: Path, name: str, version: str, files: dict, *, record=True, meta
 
 
 def _venv(tmp_path: Path) -> Path:
+    """A venv as `uv venv` leaves it: site-packages holds only its own _virtualenv files."""
     venv = tmp_path / "venv"
-    (venv / "lib" / "python3.12" / "site-packages").mkdir(parents=True)
+    site = venv / "lib" / "python3.12" / "site-packages"
+    (site / "__pycache__").mkdir(parents=True)
+    (site / "_virtualenv.py").write_text("")
+    (site / "_virtualenv.pth").write_text("import _virtualenv")
     (venv / "bin").mkdir()
     (venv / "pyvenv.cfg").write_text("home = /usr/bin\ninclude-system-site-packages = false\n")
     return venv
@@ -68,32 +71,8 @@ def test_every_file_is_a_link_and_no_directory_is(tmp_path, engine):
     assert vf.structural_problems(venv) == []
 
 
-def test_a_project_the_venv_owns_is_not_linked_nor_filled(tmp_path, engine):
-    """The venv's own pip wins over the engine's, and the engine's stray files (pyc) are not
-    linked into the venv's pip directory."""
-    venv = _venv(tmp_path)
-    _dist(_site(venv), "pip", "26.0", {"pip/__init__.py": "venv pip"})
-    _dist(engine, "pip", "24.0", {"pip/__init__.py": "engine pip"})
-    (engine / "pip/__pycache__").mkdir()
-    (engine / "pip/__pycache__/__init__.cpython-312.pyc").write_text("engine pyc")
-    res = vf.build(venv, [engine])
-    site = _site(venv)
-    assert res.skipped["pip"] == "owned by the venv"
-    assert not (site / "pip/__init__.py").is_symlink()
-    assert not (site / "pip/__pycache__").exists() and not (site / "pip-24.0.dist-info").exists()
 
 
-def test_a_directory_the_venv_owns_is_never_filled(tmp_path, engine):
-    """A directory the venv already had gains nothing from the engine: neither a stray file
-    nor one an engine project lists for it."""
-    venv = _venv(tmp_path)
-    _dist(_site(venv), "mylib", "1.0", {"mylib/__init__.py": "mine"})
-    (engine / "mylib" / "__pycache__").mkdir(parents=True)
-    (engine / "mylib" / "__pycache__" / "stray.pyc").write_text("engine")
-    _dist(engine, "mylib-plugin", "1.0", {"mylib/plugin.py": "engine"})
-    vf.build(venv, [engine])
-    assert not (_site(venv) / "mylib" / "__pycache__").exists()
-    assert not (_site(venv) / "mylib" / "plugin.py").exists()
 
 
 def test_two_metadata_entries_for_one_project_leave_one_copy_and_its_code(tmp_path, engine):
@@ -114,6 +93,7 @@ def test_two_metadata_entries_for_one_project_leave_one_copy_and_its_code(tmp_pa
              and m.name.endswith(vf.METADATA_SUFFIXES)]
     assert metas == ["cryptography-41.0.7.dist-info"]
     assert (site / "cryptography/__init__.py").is_symlink()
+    assert "cryptography/__init__.py" in _record_rows(site / "cryptography-41.0.7.dist-info")
     assert vf.structural_problems(venv) == []
 
 
@@ -147,22 +127,89 @@ def test_unlisted_files_stay_out_of_another_sources_package(tmp_path, engine):
     assert (site / "numpy" / "addon.py").is_symlink()
 
 
-def test_a_record_is_written_for_debian_metadata_without_one(tmp_path, engine):
-    """Without a RECORD pip refused to uninstall (`no RECORD file was found ... installed by
-    debian`) and uv left the old metadata beside the new, so verify saw two copies."""
+def _record_rows(meta: Path) -> set:
+    return {r[0] for r in csv.reader((meta / "RECORD").open())} if (meta / "RECORD").exists() else set()
+
+
+def _debian(tmp_path: Path) -> Path:
     deb = tmp_path / "debian-site"
-    deb.mkdir()
+    deb.mkdir(exist_ok=True)
+    return deb
+
+
+def test_a_record_is_written_for_debian_metadata_without_one(tmp_path, engine):
+    """Debian's blinker ships a dist-info with no RECORD and no top_level.txt. Without a
+    RECORD pip refused to uninstall it; with one that listed only metadata, pip reported a
+    clean uninstall while `import blinker` still worked. The project's own tree is listed."""
+    deb = _debian(tmp_path)
+    (deb / "blinker").mkdir()
+    (deb / "blinker" / "__init__.py").write_text("b")
+    _dist(deb, "blinker", "1.7.0", {}, record=False)
+    venv = _venv(tmp_path)
+    vf.build(venv, [engine, deb])
+    meta = _site(venv) / "blinker-1.7.0.dist-info"
+    assert not (meta / "RECORD").is_symlink()
+    assert {"blinker/__init__.py", "blinker-1.7.0.dist-info/METADATA",
+            "blinker-1.7.0.dist-info/RECORD"} <= _record_rows(meta)
+
+
+def test_no_record_when_the_code_cannot_be_found(tmp_path, engine):
+    """No top_level.txt and no tree under the project's name (python-apt ships apt/): a
+    RECORD would list only metadata, so none is written and pip keeps refusing."""
+    deb = _debian(tmp_path)
+    (deb / "apt").mkdir()
+    (deb / "apt" / "__init__.py").write_text("a")
+    _dist(deb, "python-apt", "2.7.7", {}, record=False)
+    venv = _venv(tmp_path)
+    vf.build(venv, [engine, deb])
+    assert (_site(venv) / "apt" / "__init__.py").is_symlink()
+    assert not (_site(venv) / "python_apt-2.7.7.dist-info" / "RECORD").exists()
+
+def test_no_record_that_would_take_another_projects_files(tmp_path, engine):
+    """lazr.uri and lazr.restfulclient both name lazr/ in top_level.txt; a RECORD listing the
+    tree made `pip uninstall lazr.uri` break lazr.restfulclient. Neither gets a RECORD, so
+    pip refuses as it always did."""
+    deb = _debian(tmp_path)
+    for name in ("lazr.uri", "lazr.restfulclient"):
+        mod = name.split(".")[1]
+        (deb / "lazr" / mod).mkdir(parents=True)
+        (deb / "lazr" / mod / "__init__.py").write_text(mod)
+        meta = deb / f"{name}-1.0.egg-info"
+        meta.mkdir()
+        (meta / "PKG-INFO").write_text(f"Metadata-Version: 1.1\nName: {name}\nVersion: 1.0\n")
+        (meta / "top_level.txt").write_text("lazr\n")
+    venv = _venv(tmp_path)
+    vf.build(venv, [engine, deb])
+    site = _site(venv)
+    assert (site / "lazr" / "uri" / "__init__.py").is_symlink()
+    assert not (site / "lazr.uri-1.0.egg-info" / "RECORD").exists()
+    assert not (site / "lazr.restfulclient-1.0.egg-info" / "RECORD").exists()
+
+
+def test_a_record_never_lists_a_link_into_another_source(tmp_path):
+    """A path the first source already filled is that source's file: uninstalling the
+    lower-priority project must not remove it."""
+    first = tmp_path / "first-site"
+    (first / "distro").mkdir(parents=True)
+    (first / "distro" / "__init__.py").write_text("first")
+    deb = _debian(tmp_path)
     (deb / "distro").mkdir()
     (deb / "distro" / "__init__.py").write_text("d")
+    (deb / "distro" / "extra.py").write_text("d")
     meta = _dist(deb, "distro", "1.9.0", {}, record=False)
     (meta / "top_level.txt").write_text("distro\n")
     venv = _venv(tmp_path)
-    vf.build(venv, [engine, deb])
-    record = _site(venv) / "distro-1.9.0.dist-info" / "RECORD"
-    assert record.is_file() and not record.is_symlink()
-    rows = {r[0] for r in csv.reader(record.open())}
-    assert {"distro/__init__.py", "distro-1.9.0.dist-info/METADATA",
-            "distro-1.9.0.dist-info/RECORD"} <= rows
+    vf.build(venv, [first, deb])
+    rows = _record_rows(_site(venv) / "distro-1.9.0.dist-info")
+    assert "distro/extra.py" in rows and "distro/__init__.py" not in rows
+
+
+def test_build_refuses_a_venv_that_is_not_fresh(tmp_path, engine):
+    """The mirror is built once, before anything is installed into the venv."""
+    venv = _venv(tmp_path)
+    _dist(_site(venv), "pip", "26.0", {"pip/__init__.py": "venv pip"})
+    with pytest.raises(vf.MirrorError, match="not fresh"):
+        vf.build(venv, [engine])
 
 
 def test_a_source_directory_symlink_is_followed_once(tmp_path, engine):

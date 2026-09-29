@@ -5211,14 +5211,7 @@ def test_L100_a_new_custom_tag_qa_workflow_without_it_fires(tmp_path):
 
 
 # ---- L101: an external image's /venv/main is a mirror of its DECLARED engine (ADR 0048) ----
-#
-# THE real defect, measured 2026-09-28. uv does not count packages a venv INHERITS as
-# installed, so on an inheriting /venv/main a template's PROVISIONING_PIP=voxcpm==2.0.3
-# installed torch 2.14.0 over vllm-omni's 2.13.0+cu130 and the engine died with
-# `operator torchvision::nms does not exist`; our own build-time installs had already left
-# 32 copies over the engine's on vllm. And the interpreter was GUESSED from PATH, which
-# was wrong on sglang: /venv/main inherited /usr/bin and never saw an sglang package.
-# Each mutation below corrupts a REAL image back towards a shape that shipped.
+# Each mutation corrupts a REAL image or the convert script back towards a shape that shipped.
 
 def _l101(img, repo):
     return [f for f in lint_image(img, repo) if f.code == "L101"]
@@ -5258,15 +5251,13 @@ def test_L101_real_vllm_omni_verify_without_build_fires():
     # without --build the check that catches a build-time shadow does not run
     text = img.text.replace("venv-mirror verify --build ", "venv-mirror verify ")
     assert "verify --build" not in text
-    assert any("venv-mirror verify" in f.msg for f in _l101(replace(img, text=text), repo))
+    assert any("--build" in f.msg for f in _l101(replace(img, text=text), repo))
 
 
 def test_L101_real_openwebui_without_the_import_list_fires():
     repo, img = _real("openwebui")
     text = re.sub(r'ENV VAST_ENGINE_IMPORT="[^"]*"\n', "", img.text)
     assert any("VAST_ENGINE_IMPORT" in f.msg for f in _l101(replace(img, text=text), repo))
-
-
 
 
 def _convert_repo(tmp_path, text):
@@ -5280,16 +5271,12 @@ def _real_convert():
     return (repo / "tools" / "convert-non-vast-image.sh").read_text()
 
 
-
-
 def test_L101_real_convert_script_back_to_inheritance_fires(tmp_path):
     """The shipped shape of the convert script."""
     text = _real_convert().replace("uv venv --relocatable -p",
                                    "uv venv --relocatable --system-site-packages -p")
     assert "--system-site-packages -p" in text
     assert any("--system-site-packages" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
-
-
 
 
 def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):

@@ -112,15 +112,18 @@ def _walk_rel(root: Path, prefix: int) -> Iterable[str]:
             yield os.path.join(base, f) if base else f
 
 
-def _listed_files(site: Path, meta: Path) -> Tuple[List[str], bool]:
+def _listed_files(site: Path, meta: Path, name: str) -> Tuple[List[str], bool]:
     """Files a distribution installed, relative to `site`, and whether it keeps a RECORD.
-    Debian ships dist-info and egg-info without a file list; top_level.txt names its trees."""
+    Debian ships dist-info and egg-info without a file list: top_level.txt names its trees,
+    or, when there is none (blinker, pyparsing), the project's own name does. A wrong guess
+    names a tree that does not exist, so it lists nothing rather than too much."""
     prefix = len(str(site)) + 1
     if meta.is_dir() and (meta / "RECORD").exists():
         with open(meta / "RECORD", newline="", encoding="utf-8", errors="replace") as fh:
             return [row[0] for row in csv.reader(fh) if row and row[0]], True
     files: List[str] = []
-    for top in (_read_text(meta / "top_level.txt").split() if meta.is_dir() else []):
+    tops = _read_text(meta / "top_level.txt").split() if meta.is_dir() else []
+    for top in tops or [name.replace("-", "_")]:
         tree = site / top
         if tree.is_dir():
             files.extend(_walk_rel(tree, prefix))
@@ -130,27 +133,22 @@ def _listed_files(site: Path, meta: Path) -> Tuple[List[str], bool]:
 
 
 def read_dists(site: Path) -> Dict[str, List[Dist]]:
-    """Every metadata entry in `site`, grouped by normalised project name, in name order.
+    """Every metadata entry in `site`, grouped by normalised project name, dist-info first.
     A site can hold two for one project: Debian ships `cryptography-41.0.7.dist-info` AND
     `cryptography.egg-info` for the same tree."""
     prefix = len(str(site)) + 1
     dists: Dict[str, List[Dist]] = {}
-    for meta in sorted(site.iterdir()):
+    # a dist-info before an egg-info describing the same project, whatever the case of its name
+    for meta in sorted(site.iterdir(), key=lambda m: (not m.name.endswith(".dist-info"), m.name)):
         if not meta.name.endswith(METADATA_SUFFIXES):
             continue
         name, version = _read_meta_headers(meta)
-        files, has_record = _listed_files(site, meta)
+        files, has_record = _listed_files(site, meta, name)
         own = list(_walk_rel(meta, prefix)) if meta.is_dir() else [meta.name]
         eps = _read_text(meta / "entry_points.txt") if meta.is_dir() else ""
         dists.setdefault(name, []).append(
             Dist(name, version, meta.name, sorted(set(files + own)), eps, has_record))
     return dists
-
-
-def _is_mirrored(meta: Path) -> bool:
-    """A metadata entry the mirror linked in, as opposed to one installed into the venv."""
-    target = meta / "METADATA" if meta.is_dir() else meta
-    return target.is_symlink() or (meta / "PKG-INFO").is_symlink()
 
 
 # ---------------------------------------------------------------------------------------
@@ -165,16 +163,14 @@ class Result:
     scripts: List[str] = field(default_factory=list)
 
 
-def _inside(rel: str) -> bool:
-    return not rel.startswith("..") and not os.path.isabs(rel)
-
-
 class _Mirror:
-    """Two rules decide where a link may go. A file some mirrored project LISTS may go into
-    any directory except one the venv already had. A file NO project lists (__pycache__,
-    Debian's metadata-less trees) may go only into a directory created for the same source:
-    otherwise Debian's orphan pkg_resources/ filled the pkg_resources/ made for /usr/local's
-    setuptools, and uninstalling setuptools left an importable empty package behind."""
+    """A file NO mirrored project lists (__pycache__, Debian's metadata-less trees) goes only
+    into a directory created for the same source: otherwise Debian's orphan pkg_resources/
+    filled the one made for /usr/local's setuptools, and uninstalling setuptools left an
+    importable empty package behind. A file a project lists may share a directory another
+    source created -- which is right for a namespace package such as nvidia/, and makes a
+    lower source's file importable in a regular package the engine would not see it in (no
+    supported image has such a pair)."""
 
     def __init__(self, dst: Path):
         self.dst = str(dst)
@@ -183,7 +179,7 @@ class _Mirror:
     def _dir_owner(self, d: str) -> Optional[int]:
         if d in self.owner:
             return self.owner[d]
-        return -1 if os.path.lexists(d) else None     # pre-existing: the venv's own
+        return -1 if os.path.lexists(d) else None     # a file stands here: never a directory
 
     def link(self, src_site: Path, i: int, rel: str, listed: bool) -> bool:
         dst = os.path.join(self.dst, rel)
@@ -207,20 +203,22 @@ class _Mirror:
 def build(venv: Path, sources: List[Path], engine_python: str = "",
           venv_python: str = "") -> Result:
     """Mirror `sources` (highest priority first) into `venv`'s site-packages, once, on a
-    fresh venv. The first source providing a project wins; a project already in the venv
-    is left alone."""
+    fresh venv. The first source providing a project wins."""
     dst = venv_site(venv)
+    held = [e.name for e in dst.iterdir() if e.name != "__pycache__"      # uv venv's own
+            and (e.is_dir() or e.name.endswith(METADATA_SUFFIXES))]
+    if held:
+        raise MirrorError(f"{dst} is not fresh ({', '.join(sorted(held)[:5])}): the mirror is "
+                          "built once, before anything is installed into the venv")
     mirror, res = _Mirror(dst), Result()
-    owned = {_read_meta_headers(m)[0] for m in dst.iterdir() if m.name.endswith(METADATA_SUFFIXES)}
     chosen: Dict[str, Tuple[int, Dist]] = {}
     per_source = [read_dists(s) for s in sources]
 
     for i, (src, dists) in enumerate(zip(sources, per_source)):
         blocked: Set[str] = set()
         for name, entries in dists.items():
-            if name in owned or name in chosen:
-                res.skipped.setdefault(name, "owned by the venv" if name in owned
-                                       else f"shadowed by {sources[chosen[name][0]]}")
+            if name in chosen:
+                res.skipped.setdefault(name, f"shadowed by {sources[chosen[name][0]]}")
                 for d in entries:                   # none of this copy may leak in
                     blocked.update(os.path.normpath(f) for f in d.files)
                 continue
@@ -234,7 +232,7 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
                 continue
             for f in dist.files:
                 rel = os.path.normpath(f)
-                if _inside(rel) and rel not in blocked:
+                if rel not in blocked:          # a path outside site-packages is refused by link()
                     listed.add(rel)
                     res.links += mirror.link(src, i, rel, listed=True)
             res.projects[name] = dist.version
@@ -242,9 +240,13 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
             if rel not in listed and rel not in blocked:
                 res.links += mirror.link(src, i, rel, listed=False)
 
+    claims: Dict[str, int] = {}
+    for _, dist in chosen.values():
+        for f in set(dist.files):
+            claims[os.path.normpath(f)] = claims.get(os.path.normpath(f), 0) + 1
     for name, (i, dist) in chosen.items():
         if not dist.has_record and (dst / dist.meta).is_dir():
-            _write_record(dst, dist, sources[i])
+            _write_record(dst, dist, sources[i], claims)
     if venv_python:
         res.scripts = write_console_scripts(venv, venv_python, [d for _, d in chosen.values()])
     (venv / MANIFEST).write_text(json.dumps(
@@ -253,14 +255,25 @@ def build(venv: Path, sources: List[Path], engine_python: str = "",
     return res
 
 
-def _write_record(dst: Path, dist: Dist, src: Path) -> None:
+def _write_record(dst: Path, dist: Dist, src: Path, claims: Dict[str, int]) -> None:
     """Debian's metadata carries no RECORD, so pip refuses to uninstall it and uv leaves it
-    beside the replacement. Write one listing the links made for it, so both can remove it."""
+    beside a replacement. Write one only when it can be complete and this project's alone:
+    the links made from its own source for files no other mirrored project lists
+    (lazr.uri and lazr.restfulclient both name lazr/). Otherwise write none, and pip keeps
+    refusing, loudly -- a partial RECORD made pip report a clean uninstall of blinker while
+    `import blinker` still worked."""
     rows = []
     for f in dist.files:
-        p = dst / os.path.normpath(f)
+        rel = os.path.normpath(f)
+        p = dst / rel
+        if rel.split(os.sep, 1)[0] == dist.meta:
+            continue
+        if claims.get(rel, 0) != 1:
+            return
         if p.is_symlink() and os.readlink(p).startswith(str(src) + os.sep):
-            rows.append(f)
+            rows.append(rel)
+    if not rows:
+        return
     for dirpath, _, filenames in os.walk(dst / dist.meta):
         rows.extend(os.path.relpath(os.path.join(dirpath, n), dst) for n in filenames)
     record = dst / dist.meta / "RECORD"
@@ -351,14 +364,13 @@ def structural_problems(venv: Path) -> List[str]:
 
 
 def shadow_problems(venv: Path) -> List[str]:
-    """Build time only: a mirrored project that an install replaced before the image was
-    finished. That is the build-time shadow this design exists to prevent -- 32 copies over
-    vllm's packages, numpy 2.3.5 over the engine's 2.2.6. After first boot a user may replace
+    """Build time only: a mirrored project an install replaced before the image was finished,
+    the build-time shadow ADR 0048 exists to prevent. After first boot a user may replace
     anything, so the instance test does not run this."""
     mirrored = json.loads(_read_text(venv / MANIFEST) or "{}").get("projects", {})
     problems = []
     for meta in venv_site(venv).iterdir():
-        if meta.name.endswith(METADATA_SUFFIXES) and not _is_mirrored(meta):
+        if meta.name.endswith(METADATA_SUFFIXES):
             name, version = _read_meta_headers(meta)
             if name in mirrored and version != mirrored[name]:
                 problems.append(f"{name} {version} was installed over the engine's "

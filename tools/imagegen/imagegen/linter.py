@@ -2834,8 +2834,9 @@ def check_engine_python_declared(img: Image) -> Iterable[Finding]:
                           "the modules venv-mirror verify must import from the engine's files")
         runs = [i for i in instrs if i.cmd == "RUN"]
         last = runs[-1].exec if runs else ""
-        v, e = last.find("venv-mirror verify --build"), last.find("env-hash > /.env_hash")
-        if v < 0 or e < 0 or v > e:
+        m = re.search(r"venv-mirror\s+verify\b[^;&|]*\s--build\b", last)
+        e = last.find("env-hash > /.env_hash")
+        if not m or e < 0 or m.start() > e:
             yield Finding("L101", ERROR, img.name, "Dockerfile",
                           "the final RUN must run `venv-mirror verify --build --engine-import "
                           "\"${VAST_ENGINE_IMPORT}\"` BEFORE `env-hash > /.env_hash`, so the hash "
