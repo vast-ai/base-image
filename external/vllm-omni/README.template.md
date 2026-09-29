@@ -213,8 +213,8 @@ Images are tagged with the CUDA version they were built against (e.g. `v0.14.0-c
 # You have root access - install anything!
 apt update && apt install -y your-favorite-package
 
-# Install Python packages
-uv pip install --system requests openai anthropic
+# Install Python packages into /venv/main (the environment the engine runs in)
+uv pip install --python /venv/main/bin/python requests openai anthropic
 
 # Add system services
 echo "your-service-config" > /etc/supervisor/conf.d/my-app.conf

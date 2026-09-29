@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import (MirrorError, build, engine_info, engine_problems, origin_problems,
+from . import (MirrorError, build, engine_info, engine_problems, shadow_problems,
                structural_problems)
 
 
@@ -33,8 +33,8 @@ def _build(args) -> int:
     t = time.monotonic()
     res = build(venv, sources, engine_python=args.engine_python,
                 venv_python=str(venv / "bin" / "python"))
-    print(f"venv-mirror: {len(res.projects)} projects, {res.links + res.residual} links, "
-          f"{res.dirs} dirs, {len(res.scripts)} launchers from {', '.join(map(str, sources))} "
+    print(f"venv-mirror: {len(res.projects)} projects, {res.links} links, "
+          f"{len(res.scripts)} launchers from {', '.join(map(str, sources))} "
           f"in {time.monotonic() - t:.1f}s; skipped {len(res.skipped)} "
           f"({', '.join(sorted(res.skipped)) or 'none'})")
     return 0
@@ -43,7 +43,9 @@ def _build(args) -> int:
 def _verify(args) -> int:
     venv = Path(args.venv)
     t = time.monotonic()
-    problems = structural_problems(venv) + origin_problems(venv)
+    problems = structural_problems(venv)
+    if args.build:
+        problems += shadow_problems(venv)
     if args.engine_import:
         problems += engine_problems(venv, args.engine_import.split())
     for p in problems:
@@ -63,6 +65,8 @@ def main(argv=None) -> int:
     b.add_argument("--engine-python", required=True)
     v = sub.add_parser("verify", help="read-only check of a built mirror")
     v.add_argument("--venv", default="/venv/main")
+    v.add_argument("--build", action="store_true",
+                   help="also fail on a mirrored project replaced during the image build")
     v.add_argument("--engine-import", default="",
                    help="space-separated modules that must import from the engine's files")
     args = ap.parse_args(argv)

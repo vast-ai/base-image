@@ -2235,22 +2235,19 @@ imagegen `external` template generates), `/venv/main` is a plain venv with
 the engine interpreter's own site directories (ADR 0048). Verified against the images:
 
 - uv does not count packages a venv only INHERITS as installed (astral-sh/uv#4466), so the
-  previous inheriting `/venv/main` let every `uv pip install` re-resolve as if the engine
-  were absent: `torch>=2.0` planned torch 2.14.0 over the engine's 2.13.0+cu130 on vllm,
-  vllm-omni and openwebui, and a template's `PROVISIONING_PIP=voxcpm==2.0.3` broke
-  vllm-omni's engine that way. Our own build installs had left 32 copies over vllm's.
+  previous inheriting `/venv/main` let `uv pip install` lay a second torch under the engine
+  (a template's `PROVISIONING_PIP=voxcpm==2.0.3` broke vllm-omni that way), and our own
+  build installs had left 32 copies over vllm's.
 - The engine interpreter is DECLARED in the Dockerfile before the convert step
   (`VAST_ENGINE_PYTHON`, `none` for no Python engine; `VAST_ENGINE_IMPORT`), never guessed
-  from PATH: the guess was wrong on sglang, whose `/venv/main` inherited `/usr/bin` and
-  never saw a single sglang package.
+  from PATH: the guess was wrong on sglang.
 - No directory under the mirror is a symlink (uv installs per file path and wrote through a
-  directory link into the engine's tree); ownership is the metadata file: a project whose
-  METADATA is a link is the mirror's, anything with real metadata is the venv's.
-- The mirror is built once, in the image, before any install into the venv; the final RUN
-  runs `venv-mirror verify` before `env-hash`. No boot stage modifies `/venv/main`: after
-  first boot it is the user's.
-- No `uv pip install --system` after the convert step (it lands in the engine's
-  site-packages after the mirror was built, invisible to the venv).
+  directory link into the engine's tree). A file no project lists goes only into a
+  directory created for the same source.
+- The mirror is built once, in the image, before any install into the venv, and the final
+  RUN runs `venv-mirror verify --build` before `env-hash`; no `uv pip install --system`
+  after the convert step. No boot stage modifies `/venv/main`: after first boot it is the
+  user's.
 
 Exemptions: base and pytorch images (their conda `/venv/main` owns its packages and never
 inherited); `VAST_ENGINE_PYTHON=none` images have no mirror and nothing to verify.

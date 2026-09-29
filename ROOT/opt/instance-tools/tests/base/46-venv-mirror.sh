@@ -13,12 +13,7 @@ engine="${VAST_ENGINE_PYTHON:-}"
 [[ -n "$engine" ]] || test_skip "no VAST_ENGINE_PYTHON: not an external image (base/pytorch own their packages)"
 [[ "$engine" != none ]] || test_skip "VAST_ENGINE_PYTHON=none: no Python engine, no mirror"
 
-# Declared but absent is a FAILURE, never a skip: it is exactly the image that ships the
-# inheriting venv again.
-[[ -f /venv/main/.vast-venv-mirror.json ]] || \
-    test_fail "VAST_ENGINE_PYTHON=${engine} but /venv/main has no mirror manifest: it was not built by venv-mirror"
-
-command -v venv-mirror >/dev/null || test_fail "venv-mirror is not on PATH"
+# Declared but not mirrored is a FAILURE, never a skip: verify reports the missing manifest.
 if ! out=$(venv-mirror verify --venv /venv/main --engine-import "${VAST_ENGINE_IMPORT:-}" 2>&1); then
     echo "$out" | sed 's/^/  /'
     test_fail "venv-mirror verify failed on /venv/main"

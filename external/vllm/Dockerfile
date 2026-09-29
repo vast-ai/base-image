@@ -25,9 +25,7 @@ WORKDIR /
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
-# The interpreter that runs this image's engine, and the modules that prove it
-# (ADR 0048). The convert script builds /venv/main from it -- a per-file mirror of
-# its site-packages, so uv sees the engine as installed -- and never guesses it.
+# The engine's interpreter and the modules that prove it: /venv/main mirrors it (ADR 0048).
 ENV VAST_ENGINE_PYTHON=/usr/bin/python3
 ENV VAST_ENGINE_IMPORT="vllm"
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
@@ -62,9 +60,7 @@ RUN \
     set -euo pipefail && \
     mv /vllm-workspace /opt/workspace-internal
 
-# Add Ray dashboard. Into /venv/main, which mirrors the engine's site-packages: a
-# --system install here would land after the mirror was built and be invisible to
-# the venv that vllm and ray.sh run through (ADR 0048).
+# Add Ray dashboard, into /venv/main: a --system install would bypass its mirror (ADR 0048).
 RUN \
     set -euo pipefail && \
     uv pip install --python /venv/main/bin/python --no-cache-dir ray[default]
@@ -125,9 +121,7 @@ ENV MODEL_LOG=/var/log/portal/vllm.log
 EXPOSE 3000
 
 # Defend against environment clashes when syncing to volume
-# Read-only check of /venv/main's mirror, in the same RUN as env-hash so the hash
-# describes a tree that passed it (ADR 0048).
-RUN venv-mirror verify --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
+RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

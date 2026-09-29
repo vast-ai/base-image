@@ -220,6 +220,10 @@ WORKDIR /
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+# The engine's interpreter and the modules that prove it; /venv/main mirrors its
+# site-packages (ADR 0048). `none` when the upstream has no Python engine.
+ENV VAST_ENGINE_PYTHON=/usr/bin/python3
+ENV VAST_ENGINE_IMPORT="your_engine_module"
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
 ARG TARGETARCH
@@ -234,6 +238,7 @@ RUN \
 # Copy Supervisor configuration and startup scripts
 COPY ./ROOT /
 
+RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
 ```
@@ -241,7 +246,7 @@ CMD []
 ### Key Steps
 
 1. Multi-stage build: pull both the upstream image and `vastai/base-image`
-2. Run `convert-non-vast-image.sh` to graft Vast infrastructure onto the upstream image
+2. Declare the engine's interpreter (`VAST_ENGINE_PYTHON`, `VAST_ENGINE_IMPORT`), then run `convert-non-vast-image.sh` to graft Vast infrastructure onto the upstream image; it builds `/venv/main` as a mirror of the engine's site-packages (ADR 0048). Install Python packages into `/venv/main` afterwards, never `--system`
 3. Copy portal-aio and caddy from the Vast base
 4. `COPY ./ROOT /` for app-specific supervisor scripts
 5. Set `ENTRYPOINT` to Vast's entrypoint
