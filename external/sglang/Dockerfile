@@ -25,6 +25,9 @@ WORKDIR /
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+# The engine's interpreter and the modules that prove it: /venv/main mirrors it (ADR 0048).
+ENV VAST_ENGINE_PYTHON=/opt/sglang/bin/python3
+ENV VAST_ENGINE_IMPORT="sglang"
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
 ARG TARGETARCH
@@ -97,7 +100,7 @@ ENV MODEL_LOG=/var/log/portal/sglang.log
 EXPOSE 3000
 
 # Defend against environment clashes when syncing to volume
-RUN env-hash > /.env_hash
+RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

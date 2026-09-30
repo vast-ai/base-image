@@ -23,6 +23,9 @@ WORKDIR /
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+# The engine's interpreter and the modules that prove it: /venv/main mirrors it (ADR 0048).
+ENV VAST_ENGINE_PYTHON=/usr/bin/python3
+ENV VAST_ENGINE_IMPORT="vllm vllm_omni"
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 
 ARG TARGETARCH
@@ -51,10 +54,10 @@ RUN \
     set -euo pipefail && \
     if [ -d /workspace ]; then mv /workspace /opt/workspace-internal; fi
 
-# Add Ray dashboard
+# Add Ray dashboard, into /venv/main: a --system install would bypass its mirror (ADR 0048).
 RUN \
     set -euo pipefail && \
-    uv pip install --system --no-cache-dir ray[default]
+    uv pip install --python /venv/main/bin/python --no-cache-dir ray[default]
 
 # vLLM keeps audio decoding behind an optional extra and the upstream image does not
 # install it, so /v1/audio/transcriptions and /v1/audio/translations -- routes vLLM
@@ -111,7 +114,7 @@ ENV MODEL_LOG=/var/log/portal/vllm-omni.log
 EXPOSE 3000
 
 # Defend against environment clashes when syncing to volume
-RUN env-hash > /.env_hash
+RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []

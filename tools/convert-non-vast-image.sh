@@ -195,11 +195,21 @@ for bin in /opt/sys-venv/bin/*; do
     ln -sf "$bin" "/opt/sys-venv/shim/$(basename "$bin")"
 done
 
-# Set up /venv/main as a standard venv with system package inheritance.
-# Uses the system Python directly — no conda Python, no library conflicts.
-# 37-sync-environment.sh detects pyvenv.cfg and syncs via tar.
+# /venv/main: a plain venv whose site-packages is a per-file symlink mirror of the DECLARED
+# engine interpreter's (VAST_ENGINE_PYTHON, or "none"), built before anything is installed
+# into it so uv sees the engine as installed (ADR 0048). 37-sync-environment.sh syncs it.
+if [[ -z "${VAST_ENGINE_PYTHON:-}" ]]; then
+    echo "FATAL: VAST_ENGINE_PYTHON is not set. Declare the engine's interpreter in the" >&2
+    echo "       Dockerfile before this script (an absolute path, or 'none') -- ADR 0048." >&2
+    exit 1
+fi
 if [[ ! -d /venv/main ]]; then
-    SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)"
+    if [[ "$VAST_ENGINE_PYTHON" == none ]]; then
+        SYS_PYTHON="$(which -a python3 | grep -v /opt/sys-venv/ | head -1)"
+    else
+        [[ -x "$VAST_ENGINE_PYTHON" ]] || { echo "FATAL: VAST_ENGINE_PYTHON=$VAST_ENGINE_PYTHON is not executable" >&2; exit 1; }
+        SYS_PYTHON="$("$VAST_ENGINE_PYTHON" -c 'import os, sys; print(os.path.realpath(getattr(sys, "_base_executable", sys.executable)))')"
+    fi
     if [[ -n "$SYS_PYTHON" ]]; then
         # Install miniforge3 (available for users who want conda envs)
         curl -L -o /tmp/miniforge3.sh \
@@ -224,11 +234,18 @@ if [[ ! -d /venv/main ]]; then
         fi
         /opt/miniforge3/bin/conda clean -ay
 
-        # Create relocatable venv with system site-packages inheritance
         mkdir -p /venv
-        uv venv --relocatable --seed --system-site-packages -p "$SYS_PYTHON" /venv/main
+        # No --seed: on python < 3.12 it installs setuptools/wheel into the venv, where they
+        # would win over the engine's own (setuptools >= 81 has no pkg_resources).
+        uv venv --relocatable -p "$SYS_PYTHON" /venv/main
+        if [[ "$VAST_ENGINE_PYTHON" != none ]]; then
+            /opt/instance-tools/bin/venv-mirror build --venv /venv/main \
+                --engine-python "$VAST_ENGINE_PYTHON"
+        fi
+        /venv/main/bin/python -m pip --version >/dev/null 2>&1 || \
+            uv pip install --python /venv/main/bin/python pip
 
-        # Install ipykernel for Jupyter kernel registration
+        # After the mirror, so ipykernel adds only what the engine does not provide.
         uv pip install --python /venv/main/bin/python ipykernel
     else
         echo "WARNING: No system Python found, skipping /venv/main creation"

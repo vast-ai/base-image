@@ -40,6 +40,11 @@ Local counterparts to CI. Model: **staging namespace → prod namespace via reta
   - `opt/instance-tools/lib/provisioner/` — **Python** package (`python -m provisioner`):
     phased, idempotent manifest runner (apt/git/pip/conda installers, HF/wget
     downloaders, schema/state/concurrency). Has its own `tests/`.
+  - `opt/instance-tools/lib/venv_mirror/` — **Python** (stdlib) package behind
+    `bin/venv-mirror` (ADR 0048): builds an external image's `/venv/main` as a per-file
+    symlink mirror of the declared engine interpreter's site-packages (`build`, once, in the
+    convert step) and checks it read-only (`verify`, in the env-hash RUN and in
+    `tests/base/46-venv-mirror.sh`). Never runs at boot. Has its own `tests/`.
   - `opt/instance-tools/tests/` — bash test harness (`runner.sh`) for capabilities.
   - `opt/supervisor-scripts/` — service launch scripts (`caddy.sh`, `jupyter.sh`,
     `instance_portal.sh`, …) + `utils/` (6 sourced helpers).
@@ -78,6 +83,8 @@ stock pytorch -mini image, with its own lock file and README (ADR 0046).
 ## 6. tools/
 - `convert-non-vast-image.sh` — installs the base toolset onto a non-Vast upstream
   (the mechanism behind `external/*`).
+  Requires `ENV VAST_ENGINE_PYTHON` (and `VAST_ENGINE_IMPORT`) in the Dockerfile; builds
+  `/venv/main` via `venv-mirror build`, never with `--system-site-packages` (L101).
 - `model-ui/` (**Python**, Starlette proxy) — shared inference UI for vLLM/SGLang.
 
 ## 7. CI — .github/

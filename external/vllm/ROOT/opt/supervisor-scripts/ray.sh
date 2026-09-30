@@ -3,6 +3,8 @@
 utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/environment.sh"
+# Run ray through /venv/main, where its dashboard extras are installed (ADR 0048).
+[[ -f /venv/main/bin/activate ]] && . /venv/main/bin/activate
 . "${utils}/exit_portal.sh" "ray dash"
 
 trap 'ray stop' EXIT

@@ -91,6 +91,12 @@ ENV DATA_DIRECTORY=/workspace \\
 COPY --from=base_image_source /ROOT /
 COPY --from=base_image_source /portal-aio /opt/portal-aio
 COPY --from=vast_base_image /opt/portal-aio/caddy_manager/caddy /opt/portal-aio/caddy_manager/caddy
+# The interpreter that runs the upstream's engine, and the modules that prove it (ADR 0048,
+# L101). The convert script builds /venv/main as a per-file mirror of its site-packages so uv
+# sees the engine as installed; it refuses to guess. Use `none` if there is no Python engine
+# (then delete VAST_ENGINE_IMPORT and use a plain `RUN env-hash > /.env_hash` below).
+ENV VAST_ENGINE_PYTHON=CHANGEME
+ENV VAST_ENGINE_IMPORT="CHANGEME"
 COPY --from=base_image_source tools/convert-non-vast-image.sh /tmp/convert-non-vast-image.sh
 RUN set -euo pipefail; \\
     chmod +x /tmp/convert-non-vast-image.sh; \\
@@ -102,7 +108,7 @@ COPY ./ROOT /
 RUN set -euo pipefail; \\
     : '>>> FILL: install/configure @@NAME@@ on top of the upstream image <<<'
 
-RUN env-hash > /.env_hash
+RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]
 CMD []
 '''
