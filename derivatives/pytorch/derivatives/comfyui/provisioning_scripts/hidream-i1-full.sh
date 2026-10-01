@@ -967,6 +967,13 @@ WORKFLOW_API_JSON
     payload_json=$(jq -n --argjson workflow "$workflow_json" '{input: {workflow_json: $workflow}}')
     rm /opt/comfyui-api-wrapper/payloads/*.json
     echo "$payload_json" > /opt/comfyui-api-wrapper/payloads/hidream-i1-full.json
+    # Serverless benchmark. convert-workflows.sh skips a workflow whose payload
+    # already exists (the one above) and only writes the pyworker benchmark for
+    # workflows it converts, so write it here. Without it the pyworker falls back
+    # to an SD 1.5 Text2Image benchmark that never loads this model.
+    mkdir -p /opt/comfyui-api-wrapper/workflows
+    echo "$workflow_json" > /opt/comfyui-api-wrapper/workflows/hidream-i1-full.json
+    ln -sfn hidream-i1-full.json /opt/comfyui-api-wrapper/workflows/pyworker_benchmark.json
 }
 
 main
