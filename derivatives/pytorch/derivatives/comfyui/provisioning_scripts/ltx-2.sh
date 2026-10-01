@@ -903,6 +903,13 @@ EOF
     ln -sfn wan_2.2_i2v.json /opt/comfyui-api-wrapper/workflows/pyworker_benchmark.json
 }
 
+# The UI workflow below carries a one-value patch: LTXVEmptyLatentAudio stores
+# frame_rate 1 (was 25). Since ComfyUI v0.29.0 frame_rate is a MultiType input
+# ("FLOAT,INT"), which the workflow->API converter does not count as a widget, so
+# it reads widgets_values off by one and batch_size became 25 (pack_latents:
+# "Expected size 1 but got size 25"). frame_rate is link-driven here, so the UI
+# ignores the stored value; the converter's shifted read now puts 1 in batch_size.
+# Same workaround as the vendored LTX-2.3 workflows (comfyui/workflows/).
 write_ui_workflow() {
     local workflow_json
     read -r -d '' workflow_json << 'WORKFLOW_JSON' || true
@@ -1767,7 +1774,7 @@ write_ui_workflow() {
             },
             "widgets_values": [
               97,
-              25,
+              1,
               1
             ]
           },
