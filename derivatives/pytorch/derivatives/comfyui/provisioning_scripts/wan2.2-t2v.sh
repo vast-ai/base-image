@@ -1211,7 +1211,7 @@ write_api_workflow() {
   "78": {
     "inputs": {
       "add_noise": "disable",
-      "noise_seed": 0,
+      "noise_seed": "__RANDOM_INT__",
       "steps": 4,
       "cfg": 1,
       "sampler_name": "euler",
@@ -1259,7 +1259,7 @@ write_api_workflow() {
   "81": {
     "inputs": {
       "add_noise": "enable",
-      "noise_seed": 392459563371087,
+      "noise_seed": "__RANDOM_INT__",
       "steps": 4,
       "cfg": 1,
       "sampler_name": "euler",

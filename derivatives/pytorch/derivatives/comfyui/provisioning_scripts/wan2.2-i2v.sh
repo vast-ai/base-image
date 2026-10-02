@@ -1443,7 +1443,7 @@ write_api_workflow() {
   "85": {
     "inputs": {
       "add_noise": "disable",
-      "noise_seed": 0,
+      "noise_seed": "__RANDOM_INT__",
       "steps": 4,
       "cfg": 1,
       "sampler_name": "euler",
