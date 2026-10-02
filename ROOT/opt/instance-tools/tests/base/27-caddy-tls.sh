@@ -54,16 +54,21 @@ fi
 # (ADR 0049). It still encrypts, and every check above passes, so without this a
 # signer that names the wrong address reaches customers before it reaches a
 # cell. A WARN, not a failure: the address the console signs is its behaviour,
-# not the image's. Only for the pair 55-tls-cert-gen.sh installed itself.
-if [[ -n "${CONTAINER_API_KEY:-}" ]] && [[ "$(openssl x509 -in "$CERT_PATH" -noout -fingerprint -sha256)" \
-        == "$(cat /etc/.instance-cert-console 2>/dev/null)" ]]; then
+# not the image's. Only for the pair 55-tls-cert-gen.sh installed itself, and
+# only for a global IPv4 address, the only kind the console names. The read is
+# repeated here on purpose rather than taken from the boot log, so this checks
+# the boot script instead of trusting it.
+if [[ -n "${CONTAINER_API_KEY:-}" && -s /etc/.instance-cert-console ]] \
+   && [[ "$(openssl x509 -in "$CERT_PATH" -noout -fingerprint -sha256)" == "$(cat /etc/.instance-cert-console)" ]]; then
     cid=${CONTAINER_ID:-${VAST_CONTAINERLABEL:-}}
     live_ip=$(printf 'header = "Authorization: Bearer %s"\n' "$CONTAINER_API_KEY" \
         | curl -fsS --max-time 5 -K - "https://console.vast.ai/api/v0/instances/${cid#C.}/" 2>/dev/null \
         | grep -oE '"public_ipaddr": *"[^"]*"' | head -1 | cut -d'"' -f4)
     cert_ips=$(openssl x509 -in "$CERT_PATH" -noout -ext subjectAltName 2>/dev/null \
-        | grep -oE 'IP Address:[0-9.]+' | cut -d: -f2)
-    if [[ -n "$live_ip" ]] && ! grep -qxF "$live_ip" <<< "$cert_ips"; then
+        | grep -oE 'IP Address:[0-9]+(\.[0-9]+){3}' | cut -d: -f2)
+    if [[ "$live_ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
+       && ! [[ "$live_ip" =~ ^(0|10|127|169\.254|172\.(1[6-9]|2[0-9]|3[01])|192\.168|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\. ]] \
+       && ! grep -qxF "$live_ip" <<< "$cert_ips"; then
         echo "  WARN: certificate names ${cert_ips//$'\n'/,}, but the machine's address is ${live_ip}"
     fi
 fi

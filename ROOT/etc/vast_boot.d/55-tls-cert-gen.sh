@@ -224,85 +224,120 @@ fi
 # $PUBLIC_IPADDR is NOT the live address. The platform writes it once, when the
 # container is created, and 10-prep-env.sh re-applies its own snapshot of the
 # environment on every boot. The instance API reads the live machine record, the
-# same one the console signs from.
+# same one the console signs from. That record follows a change only once the
+# machine has reported its new address, so the first boot after a move may find
+# it stale; a later boot picks the change up.
 #
 # Every failure keeps the pair on disk exactly as it is. It never self-signs and
 # never touches the self-signed marker: a CA-signed certificate for an old
 # address is better than a self-signed one for 0.0.0.0.
 _CERT_IP_MARKER=/etc/.instance-cert-ip-refresh   # "<address> <attempts>"
+_CERT_UA="vast-base-image cert-ip-refresh"       # lets the platform count, or refuse, this traffic
 _cert_ipv4_sans() { # file -> one IPv4 SAN per line
     openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null \
         | grep -oE 'IP Address:[0-9]+(\.[0-9]+){3}' | cut -d: -f2
 }
-_cert_is_ipv4() {
-    local IFS=. octet
+# A dotted quad the console would put in a SAN. It names the machine's address
+# only when that is a global one, and the caller's otherwise, so a private,
+# shared (CGNAT), loopback, link-local, documentation or multicast address can
+# never match: treat it as unknown rather than spend signing requests on it.
+_cert_is_global_ipv4() {
+    local a b c d
     [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
-    for octet in $1; do (( 10#$octet <= 255 )) || return 1; done
+    IFS=. read -r a b c d <<< "$1"
+    a=$((10#$a)) b=$((10#$b)) c=$((10#$c)) d=$((10#$d))
+    (( a <= 255 && b <= 255 && c <= 255 && d <= 255 )) || return 1
+    (( a == 0 || a == 10 || a == 127 || a >= 224 )) && return 1
+    (( a == 100 && b >= 64 && b <= 127 )) && return 1
+    (( a == 169 && b == 254 )) && return 1
+    (( a == 172 && b >= 16 && b <= 31 )) && return 1
+    (( a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2))) )) && return 1
+    (( a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)) )) && return 1
+    (( a == 203 && b == 0 && c == 113 )) && return 1
+    return 0
 }
 _cert_ip_refresh() {
-    local id=${CONTAINER_ID:-${VAST_CONTAINERLABEL:-}} live sans tries=0 last="" n csr signed
+    local id=${CONTAINER_ID:-${VAST_CONTAINERLABEL:-}} off=${CERT_IP_REFRESH:-true}
+    local live sans tries=0 last="" n csr signed why code rc
     id=${id#C.}
-    # In Jupyter launch mode the platform signs a fresh certificate on every
-    # start, before any boot stage runs. Judged from /.launch alone:
-    # JUPYTER_OVERRIDE does not stop the platform's certificate step.
-    if [[ -f /.launch ]] && grep -qi jupyter /.launch; then return 0; fi
-    _cert_usable >/dev/null 2>&1 || return 0
-    [[ "$(_cert_fingerprint)" == "$(cat "$_CERT_CONSOLE" 2>/dev/null)" ]] || return 0
-    [[ "${CERT_IP_REFRESH:-true}" != "false" ]] \
+    # The platform's own launch script signs a fresh certificate on every start
+    # in Jupyter direct-HTTPS mode, alongside the boot stages. Leave that to it.
+    # Matched on the signing call itself: other Jupyter modes do not sign.
+    if [[ -f /.launch ]] && grep -q '/api/v0/sign_cert/' /.launch; then return 0; fi
+    # Only the pair this script installed from the console. An empty marker
+    # never matches, so a missing certificate cannot pass as ours.
+    [[ -s "$_CERT_CONSOLE" && "$(_cert_fingerprint)" == "$(cat "$_CERT_CONSOLE")" ]] || return 0
+    [[ "${off,,}" != "false" ]] \
         || { echo "Certificate IP refresh: skipped, CERT_IP_REFRESH=false"; return 0; }
     [[ -n "${CONTAINER_API_KEY:-}" && -n "$id" ]] \
-        || { echo "Certificate IP refresh: skipped, no CONTAINER_API_KEY"; return 0; }
+        || { echo "Certificate IP refresh: skipped, no CONTAINER_API_KEY or container id"; return 0; }
 
     # One short attempt: a host that cannot reach the console pays 5 s, not a
     # retry loop. The key goes in on stdin, never in argv, where any process in
     # the container could read it. Only public_ipaddr is kept: the response
     # carries the instance's environment, so it is never logged.
     live=$(printf 'header = "Authorization: Bearer %s"\n' "$CONTAINER_API_KEY" \
-        | curl -fsS --max-time 5 -K - "https://console.vast.ai/api/v0/instances/${id}/" 2>/dev/null \
+        | curl -fsS --max-time 5 -A "$_CERT_UA" -K - "https://console.vast.ai/api/v0/instances/${id}/" 2>/dev/null \
         | grep -oE '"public_ipaddr": *"[^"]*"' | head -1 | cut -d'"' -f4)
-    _cert_is_ipv4 "$live" \
-        || { echo "Certificate IP refresh: skipped, live address unknown"; return 0; }
-    sans=$(_cert_ipv4_sans /etc/instance.crt)
-    [[ -n "$sans" ]] || { echo "Certificate IP refresh: skipped, certificate has no IPv4 SAN"; return 0; }
-    grep -qxF "$live" <<< "$sans" && return 0
-
-    # BOUNDED PER ADDRESS. If the console keeps naming an address the API does
-    # not report, this would otherwise re-sign on every boot: the churn ADR 0026
-    # ended. At most _CERT_RETRY_LIMIT requests per live address, counted BEFORE
-    # the request so every attempt counts; a new address starts again.
-    [[ -f "$_CERT_IP_MARKER" ]] && read -r last tries < "$_CERT_IP_MARKER"
-    [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
-    [[ "$last" == "$live" ]] || tries=0
-    if (( 10#$tries >= _CERT_RETRY_LIMIT )); then
-        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; giving up after ${_CERT_RETRY_LIMIT} attempts for this address"
+    if ! _cert_is_global_ipv4 "$live"; then
+        echo "Certificate IP refresh: skipped, live address ${live:-unknown} is not a global IPv4 address"
         return 0
     fi
-    n=$(( 10#$tries + 1 ))
-    echo "$live $n" > "$_CERT_IP_MARKER"
+    sans=$(_cert_ipv4_sans /etc/instance.crt)
+    if grep -qxF "$live" <<< "$sans"; then
+        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; matched"
+        return 0
+    fi
+
+    # BOUNDED PER ADDRESS. If the console keeps answering with a certificate for
+    # another address, this would otherwise re-sign on every boot: the churn ADR
+    # 0026 ended. Only an ANSWER counts. A request that failed (a 429 from the
+    # rate limit every container on the host shares, a 5xx, no connection) says
+    # nothing about the address and is retried on the next boot, so a busy host
+    # rebooting onto a new address cannot use up its attempts on rejections.
+    [[ -f "$_CERT_IP_MARKER" ]] && read -r last tries < "$_CERT_IP_MARKER"
+    [[ "$tries" =~ ^[0-9]+$ && "$last" == "$live" ]] || tries=0
+    if (( 10#$tries >= _CERT_RETRY_LIMIT )); then
+        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; the console answered ${_CERT_RETRY_LIMIT} times without naming it, giving up for this address"
+        return 0
+    fi
 
     # THE EXISTING KEY. The regeneration path writes a new key before it posts,
     # so a rejected request there leaves a mismatched pair. Here only the
     # certificate changes, and only once the new one has been proven.
     csr=$(mktemp); signed=$(mktemp)
-    sleep $(( RANDOM % 5 ))   # a host's containers boot together; the console's rate limit is per host
-    if openssl req -new -key /etc/instance.key -subj "/C=US/ST=CA/CN=jupyter.vast.ai/" \
-            -sha256 -out "$csr" 2>/dev/null \
-       && curl -fsS --max-time 30 \
+    sleep $(( RANDOM % 16 ))   # spread a host's containers over its shared signing rate limit
+    openssl req -new -key /etc/instance.key -subj "/C=US/ST=CA/CN=jupyter.vast.ai/" \
+        -sha256 -out "$csr" 2>/dev/null
+    code=$(curl -fsS --retry 2 --retry-delay 5 --max-time 30 -A "$_CERT_UA" \
             --header 'Content-Type: application/octet-stream' \
-            --data-binary "@${csr}" \
+            --data-binary "@${csr}" -w '%{http_code}' \
             -X POST "https://console.vast.ai/api/v0/sign_cert/?instance_id=${id}" \
-            -o "$signed" 2>/dev/null \
-       && _cert_usable "$signed" /etc/instance.key 2>/dev/null \
+            -o "$signed" 2>/dev/null); rc=$?
+    rm -f "$csr"
+    if (( rc != 0 )); then
+        rm -f "$signed"
+        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; signing request failed (HTTP ${code:-000}, curl ${rc}), keeping the current certificate"
+        return 0
+    fi
+    if _cert_usable "$signed" /etc/instance.key 2>/dev/null \
        && grep -qxF "$live" <<< "$(_cert_ipv4_sans "$signed")"; then
         mv "$signed" /etc/instance.crt
         chmod 644 /etc/instance.crt
         _cert_fingerprint > "$_CERT_CONSOLE"
+        rm -f "$_CERT_IP_MARKER"
         echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; re-signed"
-    else
-        rm -f "$signed"
-        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; attempt ${n}/${_CERT_RETRY_LIMIT} failed, keeping the current certificate"
+        return 0
     fi
-    rm -f "$csr"
+    if _cert_usable "$signed" /etc/instance.key 2>/dev/null; then
+        why="a certificate for $(_cert_ipv4_sans "$signed" | paste -sd, -)"
+    else
+        why="no certificate usable with this key"
+    fi
+    rm -f "$signed"
+    n=$(( 10#$tries + 1 ))
+    echo "$live $n" > "$_CERT_IP_MARKER"
+    echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; the console answered with ${why} (${n}/${_CERT_RETRY_LIMIT}), keeping the current certificate"
 }
 if [[ "$_CERT_HELPER_OK" = true ]] && [[ "${generate_tls_cert}" = "true" ]]; then
     _cert_ip_refresh

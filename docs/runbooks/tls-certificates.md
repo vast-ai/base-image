@@ -76,33 +76,54 @@ installed) refuse it; others see the usual untrusted-certificate warning either
 way. The certificate binds the machine's address, not the instance.
 
 Since ADR 0049, `55-tls-cert-gen.sh` re-signs at boot when the SAN does not
-contain the live address, for a pair it installed itself, outside Jupyter launch
-mode. Diagnose:
+contain the live address, for a pair it installed itself. Diagnose:
 
 ```
 openssl x509 -in /etc/instance.crt -noout -ext subjectAltName
-cat /etc/.instance-cert-ip-refresh 2>/dev/null     # "<address> <attempts>"
+cat /etc/.instance-cert-ip-refresh 2>/dev/null     # "<address> <answers>"
 cat /etc/.instance-cert-console 2>/dev/null        # fingerprint of the pair it installed
 ```
 
-The boot log has one `Certificate IP refresh:` line saying what it decided. After
-three failed attempts for one address it stops (`giving up`): the console is
-still naming another address, so raise it with the platform rather than
-restarting. `CERT_IP_REFRESH=false` turns the refresh off without turning off
-certificate generation. Hosts whose address changes often re-sign on each change,
-so a new certificate (same key) in the log is expected there.
+The boot log has one `Certificate IP refresh:` line whenever the refresh
+applies. No line means it did not apply: not a pair it installed, or Jupyter
+direct-HTTPS mode. What the line says:
+
+- **`matched`** — the certificate names the machine's address.
+- **`skipped, live address ... is not a global IPv4 address`** — the platform's
+  machine record is unreadable, empty, or holds an address the console never
+  signs for (private, CGNAT, documentation). Right after a move the record can
+  lag, or refuse the instance key; a later boot picks the change up.
+- **`signing request failed (HTTP 429, ...)`** — usually the signer's rate limit,
+  which every container on a host shares. Not counted; the next boot tries again.
+- **`the console answered with a certificate for X`** — the console is naming an
+  address the platform's record does not hold. After three such answers it says
+  `giving up` for that address: raise it with the platform, a restart will not
+  help.
+
+`CERT_IP_REFRESH=false` turns the refresh off without turning off certificate
+generation. Hosts whose address changes often re-sign on each change, so a new
+certificate (same key) in the log is expected there.
 
 **Instances created from an image without this change** keep the certificate
 until it expires: stop/start reuses their boot script. Fix by hand, after checking
-`generate_tls_cert` as above:
+`generate_tls_cert` as above, and restart straight away (a Caddy reload in
+between would find no pair):
 
 ```
 rm -f /etc/instance.crt /etc/instance.key /etc/.instance-cert-selfsigned
-# then restart the instance
+# then restart the instance, and check the result:
+/opt/instance-tools/bin/cert-usable; echo $?        # 0
+openssl x509 -in /etc/instance.crt -noout -ext subjectAltName
 ```
 
-In Jupyter launch mode a restart alone is enough: the platform signs a fresh
-certificate on every start.
+If the check fails, the image's own boot script could not get a good
+certificate from the console; that script is the one the instance was created
+with, and older ones install whatever the console returned. Self-sign in place as
+above rather than leave a broken pair.
+
+In Jupyter direct-HTTPS mode a restart alone is enough: the platform's launch
+script signs a fresh certificate on every start. Other Jupyter modes follow the
+rules above.
 
 ## Symptom: HTTPS is off entirely (plain HTTP)
 

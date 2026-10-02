@@ -200,12 +200,12 @@ def test_the_helper_defaults_to_the_instance_pair(certs):
 
 def test_the_helper_never_touches_the_network():
     """ADR 0049: whether the SAN names the machine's live address is the boot
-    script's question, never this helper's. It runs four times per boot and at
-    every portal start, and portals already released read any new exit code as
-    "unusable" and turn HTTPS off. Comments are stripped first: they may name
-    curl when explaining what a bad response looks like."""
-    code = "\n".join(line.split("#", 1)[0] for line in HELPER.read_text().splitlines())
-    assert not re.search(r"\b(curl|wget|nc|ssh)\b|/dev/(tcp|udp)/", code)
+    script's question, never this helper's. It runs at every boot and every portal
+    start, and must answer offline. Comments are stripped first: they may name
+    curl when explaining what a bad response looks like; a `#` inside `${var#...}`
+    is not a comment."""
+    code = "\n".join(re.sub(r"(^|\s)#.*", "", line) for line in HELPER.read_text().splitlines())
+    assert not re.search(r"\b(curl|wget|nc|ssh|s_client|ocsp|python3?)\b|/dev/(tcp|udp)/", code)
 
 
 # ── The superseded implementations, demonstrated wrong ────────────────

@@ -34,18 +34,29 @@ untrusted-certificate warning either way, so the defect is invisible to it.
 Facts the design rests on:
 
 - **`PUBLIC_IPADDR` cannot be the comparison point.** The platform sets it when
-  the container is created and never refreshes it. Separately,
-  `10-prep-env.sh` snapshots the environment into `/etc/environment` once and
-  re-sources that snapshot on every boot, so even a refreshed value would be
-  masked by the image's own snapshot.
-- **The live address is available.** `GET /api/v0/instances/$CONTAINER_ID/` with
-  the instance's own `CONTAINER_API_KEY` returns `public_ipaddr`, read from the
-  same machine record the signer uses. That key is optional in practice
+  the container is created and never refreshes it. Separately, with the default
+  `export_env`, `10-prep-env.sh` snapshots the environment into
+  `/etc/environment` once and re-sources that snapshot on every boot, so even a
+  refreshed value would be masked by the image's own snapshot.
+- **The live address is available, with a lag.** `GET
+  /api/v0/instances/$CONTAINER_ID/` with the instance's own `CONTAINER_API_KEY`
+  returns `public_ipaddr` from the machine record the signer also reads. The
+  platform updates that record from the machine's own reports, not instantly, and
+  it accepts the instance key only from an address the record already holds. So
+  the first boot after a move can find the record stale, or be refused; a later
+  boot picks the change up. The key is optional in practice
   (`base/11-instance-metadata.sh` warns when it is absent).
-- **Jupyter launch mode already re-signs.** In that mode the platform's launch
-  command generates a key and requests a certificate on every container start,
-  before the boot stages run. Stage 55 still runs there and only repairs a pair
-  the platform left unusable.
+- **The signer names the machine's address only when it is global.** For a
+  private, shared (CGNAT), loopback or documentation `public_ipaddr` it signs the
+  caller's address instead, so a certificate can never name such an address.
+- **Jupyter direct-HTTPS mode already re-signs.** In that mode the platform's
+  launch script (`/.launch`) generates a key and requests a certificate on every
+  container start, alongside the boot stages. Other Jupyter modes do not sign.
+  Stage 55 still runs in every mode and repairs a pair the platform left
+  unusable.
+- **The signer's rate limit is shared by a host.** It is keyed on the caller's
+  address, which every container on a host shares, and a host reboot is exactly
+  when its containers sign together.
 - **No image change reaches an existing instance's boot script.** Stop/start
   reuses the container. The portal tarball update runs only on first boot.
   Derivatives pin dated base tags. So whatever is decided here affects instances
@@ -59,12 +70,12 @@ Facts the design rests on:
 ### A. Compare the SAN with the live address in the boot script, and re-sign on a mismatch (chosen, hardened)
 
 The question needs the environment (the live address), not only the files, so
-it belongs in the boot script, not the predicate. As first proposed it had four
+it belongs in the boot script, not the predicate. As first proposed it had these
 defects, each fixed by a binding part of the decision:
 
 - **It could loop.** If the signer and the API ever disagree, every boot
   re-signs. That is the unbounded churn ADR 0026 ended, through a new door.
-  Fixed by a per-address attempt bound.
+  Fixed by a per-address bound on answers.
 - **It could downgrade.** The current regeneration path overwrites the key
   before it POSTs. A refresh that hits a rate limit would leave a mismatched
   pair, fall into the self-sign branch and replace a CA-signed certificate with
@@ -76,17 +87,24 @@ defects, each fixed by a binding part of the decision:
 - **IPv6 text forms differ.** openssl prints IPv6 SANs expanded and in upper
   case, the API returns the compressed form, so a string compare never matches.
   Fixed by comparing IPv4 only.
+- **Rejections would use up the bound.** Counting every request meant a busy
+  host rebooting onto a new address lost most of its requests to the shared rate
+  limit and stopped for good. Fixed by counting only answers, retrying a
+  rejected request within the boot, and spreading requests over 0-15 s.
+- **A non-global address never resolves.** The signer never names one, so a
+  machine registered with one would spend its attempts on every new instance.
+  Fixed by treating it as unknown, as the signer does.
 
 ### B. Re-sign on every boot, keeping the existing key
 
 Rejected. It is the simplest code, and the platform already does per-boot
-signing in Jupyter launch mode. But:
+signing in Jupyter direct-HTTPS mode. But:
 
 - `generate_tls_cert` defaults to true, so B would replace a customer-supplied
   pair with a Vast-signed one on the next restart.
-- It sends a signing request from every instance on every boot. The signer's
-  rate limit is per caller address, which every container on a host shares, so a
-  host reboot becomes a burst of rejections.
+- It sends a signing request from every instance on every boot, against a rate
+  limit a host's containers share, so a host reboot becomes a burst of
+  rejections.
 - Gating it on "console-signed" needs the same machinery as A, and then all it
   saves is one read-only GET.
 - It reopens the per-boot signing traffic ADR 0026 deliberately ended.
@@ -124,11 +142,17 @@ ADR 0026 named.
 - **Normalise IPv4 and IPv6 in Python.** Rejected. The address column is IPv4 in
   practice, and comparing IPv4 only (skipping anything else) avoids a new
   interpreter in this boot stage.
-- **Exactly one attempt per address.** Rejected in favour of a small cap. The
-  refresh fires at the moment a host's containers boot together after an address
-  change, which is when the signer's shared rate limit rejects requests. One
-  attempt would leave a rejected instance wrong until the next address change.
-- **Skip the whole of stage 55 in Jupyter launch mode.** Rejected. The
+- **Count every request against the bound.** Rejected: see "Rejections would use
+  up the bound" above. The cost of counting only answers is that a signer that
+  keeps failing gets one short retried request per boot instead of stopping.
+- **Skip the refresh whenever `/.launch` mentions Jupyter.** Rejected. Only
+  direct-HTTPS mode signs; proxy mode would then never follow an address change.
+  The skip matches the signing call itself.
+- **Drop the Jupyter skip and rely on the provenance marker alone.** Rejected. The
+  platform's signing runs alongside the boot stages, so whether its certificate
+  is on disk when the refresh looks is a matter of timing. An explicit check does
+  not depend on it.
+- **Skip the whole of stage 55 in Jupyter direct-HTTPS mode.** Rejected. The
   platform's own certificate step writes the response without checking it, so a
   failed request can leave an error page where the certificate should be. Stage
   55's existing repair path is the backstop for that. Only the new refresh is
@@ -149,119 +173,102 @@ ADR 0026 named.
 2. **A provenance marker, `/etc/.instance-cert-console`.** Whenever stage 55
    installs a console-signed certificate, by the existing path or by a refresh,
    it records that certificate's SHA-256 fingerprint here. The refresh acts only
-   when the certificate on disk matches the recorded fingerprint. So it never
-   touches:
+   when the certificate on disk matches a non-empty recorded fingerprint. So it
+   never touches:
    - a customer-supplied pair (no marker, or a fingerprint that does not match);
    - the self-signed fallback (its fingerprint is not the recorded one);
-   - a certificate the platform wrote in Jupyter launch mode (not installed by
-     stage 55);
+   - a certificate the platform wrote (not installed by stage 55);
+   - a missing certificate (an empty marker never matches);
    - a certificate installed by an image built before this change (no marker).
      That last case is covered by the manual remedy, as Context explains.
 
-3. **Preconditions.** The refresh runs only when all of these hold. Where the
-   refresh does not apply at all (not our pair, Jupyter launch mode) it returns
-   silently, so a customer certificate does not add a line to every boot.
-   Otherwise it skips and logs one line saying why.
+3. **Preconditions.** The refresh runs only when all of these hold. Where it does
+   not apply at all (not our pair, direct-HTTPS mode) it returns silently, so a
+   customer certificate does not add a line to every boot. Otherwise it logs one
+   line saying why it skipped.
    - The helper passed its sanity probe (`_CERT_HELPER_OK`).
    - `generate_tls_cert` is `true`.
-   - Not Jupyter launch mode: `/.launch` exists and contains `jupyter`. This is
-     judged from `/.launch` alone. `JUPYTER_OVERRIDE` does not change it, because
-     the platform's certificate step runs in that mode either way.
-   - `CONTAINER_API_KEY` and the container id are set.
-   - The off switch is not set (decision 9).
-   - `cert-usable` exits 0 on the pair on disk.
+   - Not Jupyter direct-HTTPS mode: `/.launch` does not contain the platform's
+     signing call (`/api/v0/sign_cert/`). Judged from `/.launch` alone, so
+     `JUPYTER_OVERRIDE` does not change it.
    - The certificate's fingerprint matches the provenance marker.
+   - The off switch is not set (decision 9).
+   - `CONTAINER_API_KEY` and the container id are set.
 
 4. **One read of the live address.** `GET /api/v0/instances/<id>/`, a single
    attempt with a short limit (`--max-time 5`, no retry). The API key goes to
-   curl through a header read from stdin or a 0600 file, never in argv (where any
-   process can read it), and never under `set -x`. Only `public_ipaddr` is
-   extracted. The response body is never logged, because it can carry the
-   tenant's environment. Any failure (no response, non-200, a null or empty
-   value, anything that is not an IPv4 literal) means "unknown": keep the pair,
-   change no marker.
+   curl on stdin (`-K -`), never in argv, where any process can read it. Only
+   `public_ipaddr` is extracted. The response body is never logged, because it
+   can carry the tenant's environment. Any failure (no response, non-200, a null
+   or empty value, anything that is not a global IPv4 address) means "unknown":
+   keep the pair, change no marker.
 
 5. **The comparison.** The certificate's IPv4 SAN entries are read with
-   `openssl x509 -noout -ext subjectAltName`. If the live address is among them,
-   nothing happens. If the certificate has no IPv4 SAN, the refresh skips and
-   logs. Only IPv4 is compared.
+   `openssl x509 -noout -ext subjectAltName`, and the live address must equal one
+   of them exactly. A match logs `matched` and does nothing more.
 
-6. **A bound per address.** `/etc/.instance-cert-ip-refresh` records the live
-   address last attempted and an attempt count. A refresh runs only while the
-   count for that address is below `_CERT_RETRY_LIMIT` (3, the existing
-   self-sign retry limit). The count is written before the request, so every
-   attempt counts, whatever its outcome. A new live address resets it. If the
-   signer keeps naming an address the API does not report, the instance makes at
-   most three signing requests for that address and then stops.
+6. **A bound per address, on answers.** `/etc/.instance-cert-ip-refresh` records
+   the live address and how many times the console has ANSWERED for it with a
+   certificate that could not be installed. At `_CERT_RETRY_LIMIT` (3, the
+   existing self-sign retry limit) the refresh stops for that address. A request
+   that failed (a 429, a 5xx, no connection) is not an answer: it is not counted
+   and is tried again on the next boot. A new live address resets the count, and
+   a successful refresh removes it. If the console keeps naming an address the
+   API does not report, the instance installs nothing and stops after three
+   answers.
 
 7. **Re-sign with the existing key, keep the old pair on any failure.**
    - Build a CSR from `/etc/instance.key` (`openssl req -new -key`) into a temp
      file.
-   - Wait a few random seconds, so containers booting together on one host
-     spread out against the shared rate limit.
-   - POST once, with no curl retries, to the same signing endpoint, into a temp
-     file.
+   - Wait 0-15 random seconds, so a host's containers spread out over the rate
+     limit they share. This costs boot time only on a boot that re-signs.
+   - POST to the same signing endpoint with `--retry 2 --retry-delay 5`, so a
+     rejection is retried within the boot, into a temp file.
    - Install it only if `cert-usable` exits 0 against the existing key **and**
      the live address is among its IPv4 SANs. Then `mv` it over
      `/etc/instance.crt`, `chmod 644`, and update the provenance marker.
    - On any failure, discard the temp files. The old pair stays, the self-signed
      marker is untouched, and nothing self-signs.
 
-8. **One log line per decision**, naming the old SAN, the live address and the
-   outcome: matched, refreshed, skipped and why, failed and why, bound reached.
-   It never includes the key or the response body.
+8. **One log line whenever the refresh applies**, naming the old SAN, the live
+   address and the outcome: matched, re-signed, skipped and why, a failed request
+   with its HTTP status and curl exit code, a wrong answer with the address it
+   named, or the bound reached. It never includes the key or the response body.
 
-9. **An off switch.** `CERT_IP_REFRESH=false` disables the refresh without
-   disabling certificate generation. `generate_tls_cert` / `--no-cert-gen` is
-   too coarse for that job.
+9. **An off switch.** `CERT_IP_REFRESH=false` (any case) disables the refresh
+   without disabling certificate generation. `generate_tls_cert` /
+   `--no-cert-gen` is too coarse for that job.
 
-10. **A QA warning, not a failure.** `base/27-caddy-tls.sh` warns when the
+10. **Both requests identify themselves** with the user agent
+    `vast-base-image cert-ip-refresh`. The platform can then count this traffic,
+    and refuse it fleet-wide if it ever must: a refused read is the existing
+    "unknown, keep the pair" path. This is the only lever that reaches instances
+    already created.
+
+11. **A QA warning, not a failure.** `base/27-caddy-tls.sh` warns when the
     certificate carries the provenance marker but its SAN does not contain the
-    live address. It skips when the address cannot be read. It warns rather than
-    fails because the address the console signs is the console's behaviour, not
-    the image's. It would have surfaced cause 1 as a warning on a QA cell instead
-    of a customer report.
+    machine's global IPv4 address. It skips when the address cannot be read. It
+    warns rather than fails because the address the console signs is the
+    console's behaviour, not the image's. It would have surfaced cause 1 as a
+    warning on a QA cell instead of a customer report.
 
-11. **`cert-usable` stays network-free.** A unit test asserts the helper invokes
-    no network tool, so option C cannot creep in later.
+12. **`cert-usable` stays network-free.** A unit test asserts the helper invokes
+    no network tool.
 
 ## Binding conditions
 
-1. **The container harness is the gate** (ADR 0026, binding condition 1). The
-   curl shim in `tls-cert-gen-harness.sh` must dispatch on URL (the instance GET
-   versus the signing POST) and sign with a fake CA that writes an IP SAN. Today
-   its `good` mode self-signs with no SAN, so a console certificate and the
-   self-signed fallback cannot be told apart there. The scenarios:
-   - Live address in the SAN: no POST, pair unchanged.
-   - Live address differs: one POST, key unchanged, new SAN, and stable on the
-     next boot.
-   - Signer keeps returning the old address: three POSTs for that address, then
-     none, key unchanged throughout.
-   - API unreachable, 401, 404/410, null or empty, IPv6, or garbage: no POST,
-     pair byte-identical.
-   - Signing request rejected (429, or no response): old pair kept, self-signed
-     marker absent, HTTPS on.
-   - Customer pair (no provenance marker), including one with only an IP SAN:
-     no GET, no POST, byte-identical.
-   - Self-signed fallback: no GET. The existing retry behaviour is unchanged.
-   - Jupyter launch mode (`/.launch` containing `jupyter`, with and without
-     `JUPYTER_OVERRIDE`): no GET.
-   - `CONTAINER_API_KEY` unset, `generate_tls_cert=false`, or
-     `CERT_IP_REFRESH=false`: no GET.
-2. **Every guard is mutation-proven** (ADR 0026, binding condition 2). Each
-   mutation must turn a named scenario red:
-   - removing the provenance check;
-   - removing the per-address bound;
-   - removing the SAN check before install;
-   - removing key retention;
-   - removing keep-on-failure;
-   - removing the Jupyter-mode skip.
-
-   Met at build: each of these, and 11 more (the key check before install, the
-   off switch, the API-key gate,
-   the IPv4 and octet checks, the matched-SAN no-op, the stdin key, the
-   provenance writes, the per-address reset and the `generate_tls_cert` gate),
-   turns at least one scenario red.
+1. **The container harness is the gate** (ADR 0026, binding condition 1).
+   `tls-cert-gen-harness.sh` dispatches its curl shim on URL (the instance GET
+   versus the signing POST) and signs with a fake CA that writes an IP SAN.
+   Scenarios 17-27 cover: a match; a move; a console stuck on the old address; a
+   rejected request that must not count; an unknown or non-global address and an
+   address that is only a substring of the SAN; failed or wrong answers; customer
+   pairs; the self-signed fallback and a missing pair; direct-HTTPS versus proxy
+   Jupyter mode; the off switches; the key, the response and the user agent.
+2. **Every guard is mutation-proven** (ADR 0026, binding condition 2).
+   `tools/imagegen/tests/harness/tls-cert-gen-mutations.py` breaks each guard in
+   turn and fails if any break leaves the harness green. Run it after changing
+   the refresh. At build, all 35 mutations turn a scenario red.
 3. **The signing fix is confirmed live first.** Before base is promoted, a fresh
    signing request on a live NAT'd host must return a SAN equal to the API's
    `public_ipaddr`, and the instance key must get a 200 from the instance GET. If
@@ -271,17 +278,18 @@ ADR 0026 named.
    rule. Derivatives receive it only through their next base-pin bump.
 5. **The runbook carries the remedy for certificates already issued.** The
    remedy is to remove `/etc/instance.crt`, `/etc/instance.key` and
-   `/etc/.instance-cert-selfsigned`, then restart. The runbook must say to check
-   `generate_tls_cert` first: with it off, removing the pair leaves no
-   certificate and HTTPS turns off. In Jupyter launch mode a restart alone
-   suffices.
+   `/etc/.instance-cert-selfsigned`, then restart at once and check the result.
+   The runbook must say to check `generate_tls_cert` first: with it off, removing
+   the pair leaves no certificate and HTTPS turns off. In Jupyter direct-HTTPS
+   mode a restart alone suffices.
 6. **`docs/invariants.md` is updated with the build.** Under "One TLS
    cert-usability predicate" it records:
    - environment-dependent checks (the address) belong to the boot script, never
      to `cert-usable`;
    - the refresh touches only provenance-marked pairs and never removes a
      working pair;
-   - refresh attempts are bounded per observed address;
+   - refresh answers are bounded per observed address, and failed requests are
+     not counted;
    - `PUBLIC_IPADDR` is a creation-time snapshot, re-applied by `10-prep-env.sh`
      on every boot.
 
@@ -293,10 +301,11 @@ ADR 0026 named.
 Positive:
 
 - A console certificate on an instance from a new image follows a machine
-  address change, at the next boot, without operator action.
+  address change without operator action, at the first boot after the platform's
+  machine record has caught up.
 - A certificate signed for the wrong address is repaired on such an instance the
   next time it boots after the signing side is corrected.
-- Customer certificates, the self-signed fallback and the platform's Jupyter-mode
+- Customer certificates, the self-signed fallback and the platform's own
   certificates are untouched by construction, not by heuristic.
 - Every failure leaves TLS exactly as it was.
 
@@ -304,14 +313,19 @@ Accepted negatives:
 
 - **New boot-time console traffic.** Every boot of an instance holding a
   provenance-marked certificate makes one read-only GET. The rate limit on that
-  endpoint is per instance, unlike the signer's. Signing traffic stays bounded
-  at no more than three requests per address change.
+  endpoint is per instance, unlike the signer's.
+- **Signing traffic on a changed address.** A boot that re-signs makes up to
+  three requests (one plus two retries). Wrong answers stop after three per
+  address. Failed requests are tried again on later boots, so a signer that keeps
+  failing receives up to three requests per boot from each affected instance
+  until it recovers or the address changes. If the regeneration path also signed
+  on that boot, the refresh adds to its requests.
+- **Up to 15 s of extra boot time,** only on a boot that re-signs.
 - **A boot-time dependency on the v0 instance endpoint.** The v0 instance API
   family is being deprecated for new accounts. Today that applies only to the
   bulk list, and no v1 single-instance route exists yet. If the GET starts
   returning 404 or 410, the refresh silently becomes a no-op, which is safe but
-  loses the feature. The harness covers that mode, so it fails visibly in tests
-  rather than in the fleet.
+  loses the feature.
 - **A change during uptime waits for the next boot.** Stage 55 runs before
   supervisor, and nothing re-checks a running instance.
 - **Hosts with dynamic addresses re-sign on every change.** That is correct and
@@ -326,9 +340,11 @@ Accepted negatives:
   keeps that harmless, but the feature becomes dead weight and should be
   removed.
 - **The per-boot GET proves unacceptable load.** Then the check moves to every
-  Nth boot, or to certificates past a certain age, as a recorded amendment.
+  Nth boot, or to certificates past a certain age, as a recorded amendment. Until
+  a new image ships, the platform can refuse the user agent.
 - **The single-instance v0 GET is removed.** Then the refresh moves to its
   successor route, or is withdrawn.
 - **The platform takes over re-signing in every launch mode**, as it already
-  does in Jupyter launch mode. Then this step duplicates platform-owned work and
-  should be deleted, for the same reason it is skipped in Jupyter mode today.
+  does in Jupyter direct-HTTPS mode. Then this step duplicates platform-owned
+  work and should be deleted, for the same reason it is skipped in that mode
+  today.
