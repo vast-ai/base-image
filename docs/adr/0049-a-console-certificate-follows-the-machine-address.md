@@ -1,6 +1,6 @@
 # ADR 0049 — A console-signed instance certificate follows the machine's address
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-02)
 - **Date:** 2026-10-01
 - **Decision owner:** Rob Ballantyne
 - Amends: [ADR 0026](0026-one-tls-cert-usability-predicate.md) — "a usable pair is
