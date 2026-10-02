@@ -619,7 +619,7 @@ write_api_workflow() {
   },
   "92:67": {
     "inputs": {
-      "noise_seed": 0
+      "noise_seed": "__RANDOM_INT__"
     },
     "class_type": "RandomNoise",
     "_meta": {

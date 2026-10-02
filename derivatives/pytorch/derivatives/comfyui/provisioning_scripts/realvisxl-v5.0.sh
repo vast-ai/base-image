@@ -649,7 +649,7 @@ write_api_workflow() {
   },
   "5": {
     "inputs": {
-      "seed": 789424763092339,
+      "seed": "__RANDOM_INT__",
       "steps": 30,
       "cfg": 6.5,
       "sampler_name": "dpmpp_2m",
