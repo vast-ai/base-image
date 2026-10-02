@@ -148,18 +148,20 @@ ADR 0026 named.
 
 2. **A provenance marker, `/etc/.instance-cert-console`.** Whenever stage 55
    installs a console-signed certificate, by the existing path or by a refresh,
-   it records that certificate's SHA-256 fingerprint here. The self-sign branch
-   removes it. The refresh acts only when the certificate on disk matches the
-   recorded fingerprint. So it never touches:
+   it records that certificate's SHA-256 fingerprint here. The refresh acts only
+   when the certificate on disk matches the recorded fingerprint. So it never
+   touches:
    - a customer-supplied pair (no marker, or a fingerprint that does not match);
-   - the self-signed fallback (marker removed when it was written);
+   - the self-signed fallback (its fingerprint is not the recorded one);
    - a certificate the platform wrote in Jupyter launch mode (not installed by
      stage 55);
    - a certificate installed by an image built before this change (no marker).
      That last case is covered by the manual remedy, as Context explains.
 
-3. **Preconditions.** The refresh runs only when all of these hold. Otherwise it
-   skips and logs one line saying which one failed.
+3. **Preconditions.** The refresh runs only when all of these hold. Where the
+   refresh does not apply at all (not our pair, Jupyter launch mode) it returns
+   silently, so a customer certificate does not add a line to every boot.
+   Otherwise it skips and logs one line saying why.
    - The helper passed its sanity probe (`_CERT_HELPER_OK`).
    - `generate_tls_cert` is `true`.
    - Not Jupyter launch mode: `/.launch` exists and contains `jupyter`. This is
@@ -254,6 +256,12 @@ ADR 0026 named.
    - removing key retention;
    - removing keep-on-failure;
    - removing the Jupyter-mode skip.
+
+   Met at build: each of these, and 11 more (the key check before install, the
+   off switch, the API-key gate,
+   the IPv4 and octet checks, the matched-SAN no-op, the stdin key, the
+   provenance writes, the per-address reset and the `generate_tls_cert` gate),
+   turns at least one scenario red.
 3. **The signing fix is confirmed live first.** Before base is promoted, a fresh
    signing request on a live NAT'd host must return a SAN equal to the API's
    `public_ipaddr`, and the instance key must get a 200 from the instance GET. If

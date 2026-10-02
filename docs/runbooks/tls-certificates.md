@@ -67,6 +67,43 @@ rm -f /etc/.instance-cert-selfsigned /etc/instance.crt /etc/instance.key
 `base/27-caddy-tls.sh` already WARNs when the self-signed marker is present, so
 the state is visible in a QA cell.
 
+## Symptom: "certificate is not valid for this IP" / name mismatch
+
+The certificate names an address the machine no longer has: the machine's IP
+changed, or the console signed for the wrong one. Clients that trust the Vast
+root and check the address (the serverless SDK, a browser with the root
+installed) refuse it; others see the usual untrusted-certificate warning either
+way. The certificate binds the machine's address, not the instance.
+
+Since ADR 0049, `55-tls-cert-gen.sh` re-signs at boot when the SAN does not
+contain the live address, for a pair it installed itself, outside Jupyter launch
+mode. Diagnose:
+
+```
+openssl x509 -in /etc/instance.crt -noout -ext subjectAltName
+cat /etc/.instance-cert-ip-refresh 2>/dev/null     # "<address> <attempts>"
+cat /etc/.instance-cert-console 2>/dev/null        # fingerprint of the pair it installed
+```
+
+The boot log has one `Certificate IP refresh:` line saying what it decided. After
+three failed attempts for one address it stops (`giving up`): the console is
+still naming another address, so raise it with the platform rather than
+restarting. `CERT_IP_REFRESH=false` turns the refresh off without turning off
+certificate generation. Hosts whose address changes often re-sign on each change,
+so a new certificate (same key) in the log is expected there.
+
+**Instances created from an image without this change** keep the certificate
+until it expires: stop/start reuses their boot script. Fix by hand, after checking
+`generate_tls_cert` as above:
+
+```
+rm -f /etc/instance.crt /etc/instance.key /etc/.instance-cert-selfsigned
+# then restart the instance
+```
+
+In Jupyter launch mode a restart alone is enough: the platform signs a fresh
+certificate on every start.
+
 ## Symptom: HTTPS is off entirely (plain HTTP)
 
 `ENABLE_HTTPS=false` was exported by the boot script because there was no

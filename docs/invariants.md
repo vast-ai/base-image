@@ -477,6 +477,21 @@ pinned by `tools/imagegen/tests/test_cert_usable.py` against real
 RSA/EC/mismatched/expired/unreadable/unknown-algorithm fixtures, and the boot
 script's across-boot convergence by `test_tls_cert_gen.py` (ADR 0026).
 
+**The certificate follows the machine's address, outside the predicate (ADR 0049).**
+Whether the SAN names the machine's live address is the boot script's question,
+never `cert-usable`'s: the helper stays network-free with the same three exit
+codes (`test_the_helper_never_touches_the_network`). The refresh in
+`55-tls-cert-gen.sh` acts only on the pair it installed itself from the console
+(fingerprint in `/etc/.instance-cert-console`), so customer pairs, the
+self-signed fallback and Jupyter-launch-mode certificates are never touched. It
+keeps the existing key, installs a new certificate only once it is usable and
+names the live address, never removes or downgrades a working pair, and makes at
+most three signing requests per observed address (`/etc/.instance-cert-ip-refresh`).
+The live address comes from the instance API, not `$PUBLIC_IPADDR`: the platform
+writes that once at creation, and `10-prep-env.sh` re-applies its own snapshot of
+the environment on every boot. Pinned by scenarios 17-26 of
+`tls-cert-gen-harness.sh`.
+
 **Caveat, true at the time of writing:** the portal caller is fixed *in the
 repo* only. `portal-aio` is also published as a release tarball, and
 `portal-aio/VERSION` has not been bumped — so the published `v3.1.4` tarball

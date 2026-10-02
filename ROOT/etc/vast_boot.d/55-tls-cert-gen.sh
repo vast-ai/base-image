@@ -94,6 +94,15 @@ _cert_retry_due() {
     (( $(_cert_attempts) < _CERT_RETRY_LIMIT ))
 }
 
+# PROVENANCE, not shape (ADR 0049). The fingerprint of the certificate this
+# script last installed from the console. The IP refresh below acts only on the
+# certificate that matches it, so a customer's own pair, the self-signed
+# fallback and a certificate the platform wrote in Jupyter launch mode are never
+# touched: none of them was installed here. A pinned Vast root would answer the
+# same question, but it couples every published image to one CA.
+_CERT_CONSOLE=/etc/.instance-cert-console
+_cert_fingerprint() { openssl x509 -in "${1:-/etc/instance.crt}" -noout -fingerprint -sha256 2>/dev/null; }
+
 if [[ "$_CERT_HELPER_OK" = true ]] && [[ "${generate_tls_cert}" = "true" ]] \
    && { [[ ! -f /etc/instance.key ]] || ! _cert_usable || _cert_retry_due; }; then
     # This guard protects the CONFIG only. It used to wrap the signing too, so a
@@ -158,6 +167,7 @@ if [[ "$_CERT_HELPER_OK" = true ]] && [[ "${generate_tls_cert}" = "true" ]] \
         # which branch ran.
         chmod 644 /etc/instance.crt
         rm -f "$_CERT_MARKER"
+        _cert_fingerprint > "$_CERT_CONSOLE"
         echo "Instance certificate signed by the Vast console"
     else
         # SELF-SIGN RATHER THAN GO WITHOUT.
@@ -196,6 +206,106 @@ if [[ "$_CERT_HELPER_OK" = true ]] && [[ "${generate_tls_cert}" = "true" ]] \
             -out /etc/instance.crt 2>/dev/null \
             || echo "Error: self-signed fallback failed; HTTPS will be disabled below"
     fi
+fi
+
+# FOLLOW THE MACHINE'S ADDRESS (ADR 0049).
+#
+# The console names the certificate's IP SAN when it signs, and a usable pair is
+# then kept for its full 365 days: cert-usable never looks at the SAN, and /etc
+# survives stop/start. When the machine's address changes, or the console signed
+# for the wrong one, every client that trusts the Vast root and checks the IP
+# gets a hard name mismatch until the certificate expires.
+#
+# So, once per boot, compare the SAN with the machine's live address and re-sign
+# when it is missing. This is a SEPARATE step and not a new cert-usable exit code:
+# portals already released read any code but 0 (and 3 with its sentinel) as
+# unusable and turn HTTPS off, and a wrong-address certificate still encrypts.
+#
+# $PUBLIC_IPADDR is NOT the live address. The platform writes it once, when the
+# container is created, and 10-prep-env.sh re-applies its own snapshot of the
+# environment on every boot. The instance API reads the live machine record, the
+# same one the console signs from.
+#
+# Every failure keeps the pair on disk exactly as it is. It never self-signs and
+# never touches the self-signed marker: a CA-signed certificate for an old
+# address is better than a self-signed one for 0.0.0.0.
+_CERT_IP_MARKER=/etc/.instance-cert-ip-refresh   # "<address> <attempts>"
+_cert_ipv4_sans() { # file -> one IPv4 SAN per line
+    openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null \
+        | grep -oE 'IP Address:[0-9]+(\.[0-9]+){3}' | cut -d: -f2
+}
+_cert_is_ipv4() {
+    local IFS=. octet
+    [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    for octet in $1; do (( 10#$octet <= 255 )) || return 1; done
+}
+_cert_ip_refresh() {
+    local id=${CONTAINER_ID:-${VAST_CONTAINERLABEL:-}} live sans tries=0 last="" n csr signed
+    id=${id#C.}
+    # In Jupyter launch mode the platform signs a fresh certificate on every
+    # start, before any boot stage runs. Judged from /.launch alone:
+    # JUPYTER_OVERRIDE does not stop the platform's certificate step.
+    if [[ -f /.launch ]] && grep -qi jupyter /.launch; then return 0; fi
+    _cert_usable >/dev/null 2>&1 || return 0
+    [[ "$(_cert_fingerprint)" == "$(cat "$_CERT_CONSOLE" 2>/dev/null)" ]] || return 0
+    [[ "${CERT_IP_REFRESH:-true}" != "false" ]] \
+        || { echo "Certificate IP refresh: skipped, CERT_IP_REFRESH=false"; return 0; }
+    [[ -n "${CONTAINER_API_KEY:-}" && -n "$id" ]] \
+        || { echo "Certificate IP refresh: skipped, no CONTAINER_API_KEY"; return 0; }
+
+    # One short attempt: a host that cannot reach the console pays 5 s, not a
+    # retry loop. The key goes in on stdin, never in argv, where any process in
+    # the container could read it. Only public_ipaddr is kept: the response
+    # carries the instance's environment, so it is never logged.
+    live=$(printf 'header = "Authorization: Bearer %s"\n' "$CONTAINER_API_KEY" \
+        | curl -fsS --max-time 5 -K - "https://console.vast.ai/api/v0/instances/${id}/" 2>/dev/null \
+        | grep -oE '"public_ipaddr": *"[^"]*"' | head -1 | cut -d'"' -f4)
+    _cert_is_ipv4 "$live" \
+        || { echo "Certificate IP refresh: skipped, live address unknown"; return 0; }
+    sans=$(_cert_ipv4_sans /etc/instance.crt)
+    [[ -n "$sans" ]] || { echo "Certificate IP refresh: skipped, certificate has no IPv4 SAN"; return 0; }
+    grep -qxF "$live" <<< "$sans" && return 0
+
+    # BOUNDED PER ADDRESS. If the console keeps naming an address the API does
+    # not report, this would otherwise re-sign on every boot: the churn ADR 0026
+    # ended. At most _CERT_RETRY_LIMIT requests per live address, counted BEFORE
+    # the request so every attempt counts; a new address starts again.
+    [[ -f "$_CERT_IP_MARKER" ]] && read -r last tries < "$_CERT_IP_MARKER"
+    [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
+    [[ "$last" == "$live" ]] || tries=0
+    if (( 10#$tries >= _CERT_RETRY_LIMIT )); then
+        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; giving up after ${_CERT_RETRY_LIMIT} attempts for this address"
+        return 0
+    fi
+    n=$(( 10#$tries + 1 ))
+    echo "$live $n" > "$_CERT_IP_MARKER"
+
+    # THE EXISTING KEY. The regeneration path writes a new key before it posts,
+    # so a rejected request there leaves a mismatched pair. Here only the
+    # certificate changes, and only once the new one has been proven.
+    csr=$(mktemp); signed=$(mktemp)
+    sleep $(( RANDOM % 5 ))   # a host's containers boot together; the console's rate limit is per host
+    if openssl req -new -key /etc/instance.key -subj "/C=US/ST=CA/CN=jupyter.vast.ai/" \
+            -sha256 -out "$csr" 2>/dev/null \
+       && curl -fsS --max-time 30 \
+            --header 'Content-Type: application/octet-stream' \
+            --data-binary "@${csr}" \
+            -X POST "https://console.vast.ai/api/v0/sign_cert/?instance_id=${id}" \
+            -o "$signed" 2>/dev/null \
+       && _cert_usable "$signed" /etc/instance.key 2>/dev/null \
+       && grep -qxF "$live" <<< "$(_cert_ipv4_sans "$signed")"; then
+        mv "$signed" /etc/instance.crt
+        chmod 644 /etc/instance.crt
+        _cert_fingerprint > "$_CERT_CONSOLE"
+        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; re-signed"
+    else
+        rm -f "$signed"
+        echo "Certificate IP refresh: SAN ${sans//$'\n'/,}, live ${live}; attempt ${n}/${_CERT_RETRY_LIMIT} failed, keeping the current certificate"
+    fi
+    rm -f "$csr"
+}
+if [[ "$_CERT_HELPER_OK" = true ]] && [[ "${generate_tls_cert}" = "true" ]]; then
+    _cert_ip_refresh
 fi
 
 # If there is no SERVABLE key and cert, supervisor must know. Checking existence
