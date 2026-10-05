@@ -106,6 +106,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
+    ("L103", ERROR, "Every GitHub repository an image's Dockerfile fetches (a `git clone`, a release download, an `ARG` default URL - any `https://github.com/<owner>/<repo>` in executed instructions, comments excluded) has an entry in that image's `ROOT/LICENSES.md` with `**Upstream:**` set to that repository, and an image that fetches one ships a LICENSES.md at all. LICENSES.md is what the image tells its recipient it contains, so a fetched component missing from it is shipped without its licence ever being stated. Found by a full audit (2026-10-05): comfyui bundled ComfyUI-Manager, the workflow converter and the API wrapper undeclared; linux-desktop bundled VirtualGL, nvidia-vaapi-driver and an all-rights-reserved Guacamole extension undeclared; llama-cpp declared ggml-org while fetching the unslothai fork (ADR 0033); voicebox and UnrealPixelStreaming shipped no LICENSES.md at all. Our own organisations (`vast-ai`, `vastai`) are exempt. Scope ends at what the Dockerfile names literally: a repository chosen by a build argument the WORKFLOW sets (sd-forge's `FORGE_REPO`), pip/apt packages, and anything provisioned at runtime are not seen. The base image is out of scope - it has no LICENSES.md convention yet. This rule checks that a licence is DECLARED, not that it is CORRECT: the upstream's real licence needs the network, so a wrong declaration (fluxgym said Apache-2.0 for an MIT repo) passes here"),
+    ("L102", ERROR, "Every licence an image's README states in its `## Licenses` section - a `- **App** \u2014 LICENCE ([upstream](URL))` bullet or a `| App | LICENCE | [..](URL) |` table row - matches the licence that image's `ROOT/LICENSES.md` records for the SAME upstream URL, and that upstream has an entry there. Compared on the licence's head (`MIT (per upstream README)` -> `MIT`); the parenthetical is prose. Matched on the URL, not the app name, because the two files name apps differently. The README is the public face and LICENSES.md is what ships, and they drifted: wan2gp's README said Apache-2.0 from the day the image was added (2026-04-23) while upstream had been under its own non-commercial, then community licence for over a year, and a later licensing pass (2026-07-02) corrected LICENSES.md but left the README - a public misstatement of a licence that restricts paid hosting. Scaffold residue inside `>>> FILL ... <<<` is L040's, not this rule's. Like L103 it cannot see whether either file matches the upstream's actual licence"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -2849,6 +2851,100 @@ def check_engine_python_declared(img: Image) -> Iterable[Finding]:
                           "it: install with `--python /venv/main/bin/python` (ADR 0048)")
 
 
+# L102/L103 - the licence a README states, and the sources a Dockerfile fetches, are
+# backed by the image's own LICENSES.md. Matched on the upstream URL, not the app name:
+# the two files name the same app differently ("Text Generation Web UI" vs "... (oobabooga)").
+_GH_REPO = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+_OWN_ORGS = {"vast-ai", "vastai"}
+_LIC_UPSTREAM = re.compile(r"\*\*Upstream:\*\*\s*(?P<url>\S+)")
+_README_LIC_BULLET = re.compile(
+    r"^- \*\*(?P<app>.+?)\*\*\s*[—-]+\s*(?P<lic>.+?)\s*\(\[upstream\]\((?P<url>[^)\s]+)\)\)\s*$")
+_README_LIC_ROW = re.compile(
+    r"^\|\s*(?P<app>[^|]+?)\s*\|\s*(?P<lic>[^|]+?)\s*\|\s*\[[^\]]*\]\((?P<url>[^)\s]+)\)\s*\|")
+
+
+def _norm_url(url: str) -> str:
+    url = url.strip().rstrip("/.").lower()
+    return url[:-4] if url.endswith(".git") else url
+
+
+def _lic_head(lic: str) -> str:
+    """`MIT (per upstream README)` -> `mit`: the qualifier is prose, the head is the claim."""
+    return lic.split(" (", 1)[0].strip().casefold()
+
+
+def _licenses_md(img: Image) -> dict[str, tuple[str, str]] | None:
+    """{normalised upstream URL: (app, licence)} from the image's ROOT/LICENSES.md."""
+    lm = img.root / "LICENSES.md" if img.root else None
+    if not lm or not lm.is_file():
+        return None
+    out: dict[str, tuple[str, str]] = {}
+    for m in _LIC_ENTRY.finditer(lm.read_text(encoding="utf-8", errors="replace")):
+        body = m.group("body")
+        up, kind = _LIC_UPSTREAM.search(body), _LIC_KIND.search(body)
+        if up:
+            out[_norm_url(up.group("url"))] = (m.group("app").strip(),
+                                               kind.group("lic").strip() if kind else "")
+    return out
+
+
+def check_readme_licence_matches_licenses_md(img: Image) -> Iterable[Finding]:
+    """L102 - every licence the README's Licenses section states is the one LICENSES.md
+    records for the same upstream."""
+    readme = img.dir / "README.md"
+    if img.cls == "base" or not readme.is_file():
+        return
+    text = readme.read_text(encoding="utf-8", errors="replace")
+    sec = re.search(r"^## Licen[cs]es\s*$(?P<s>.*?)(?=^## |\Z)", text, re.M | re.S)
+    if not sec:
+        return
+    body = re.sub(r">>> FILL.*?<<<", "", sec.group("s"), flags=re.S)  # scaffold residue is L040's
+    claims = [m for line in body.splitlines()
+              for m in [_README_LIC_BULLET.match(line) or _README_LIC_ROW.match(line)] if m]
+    if not claims:
+        return
+    declared = _licenses_md(img)
+    if declared is None:
+        yield Finding("L102", ERROR, img.name, "README.md",
+                      "the README states vendor licences but the image ships no ROOT/LICENSES.md "
+                      "to back them")
+        return
+    for m in claims:
+        app, lic, url = m.group("app").strip(), m.group("lic").strip(), _norm_url(m.group("url"))
+        if url not in declared:
+            yield Finding("L102", ERROR, img.name, "README.md",
+                          f"`{app}` is stated as {lic} with upstream {m.group('url')}, but "
+                          f"LICENSES.md has no entry for that upstream")
+        elif _lic_head(lic) != _lic_head(declared[url][1]):
+            yield Finding("L102", ERROR, img.name, "README.md",
+                          f"`{app}` is stated as {lic}, but LICENSES.md records "
+                          f"{declared[url][1] or 'no licence'} for the same upstream")
+
+
+def check_fetched_sources_are_declared(img: Image) -> Iterable[Finding]:
+    """L103 - every GitHub repository the Dockerfile fetches has a LICENSES.md entry."""
+    if img.cls == "base":
+        return
+    fetched: dict[str, str] = {}
+    for owner, repo in _GH_REPO.findall(code_text(parse(img.text))):
+        if owner.lower() not in _OWN_ORGS:
+            url = _norm_url(f"https://github.com/{owner}/{repo}")
+            fetched.setdefault(url, f"{owner}/{repo.removesuffix('.git').rstrip('.')}")
+    if not fetched:
+        return
+    declared = _licenses_md(img)
+    if declared is None:
+        yield Finding("L103", ERROR, img.name, "Dockerfile",
+                      f"fetches {', '.join(sorted(fetched.values()))} but the image ships no "
+                      f"ROOT/LICENSES.md declaring them")
+        return
+    for url, name in sorted(fetched.items()):
+        if url not in declared:
+            yield Finding("L103", ERROR, img.name, "Dockerfile",
+                          f"fetches {name} but LICENSES.md has no entry with "
+                          f"`**Upstream:** https://github.com/{name}`")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
@@ -2856,7 +2952,8 @@ IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_external_env, check_llama_cuda_assert, check_llama_sass_coverage,
     check_vendored_script_is_executed, check_forge_opencv_is_headless,
     check_ai_toolkit_binds_loopback, check_curl_download_fails_on_http_error,
-    check_engine_python_declared]
+    check_engine_python_declared, check_readme_licence_matches_licenses_md,
+    check_fetched_sources_are_declared]
 
 
 # ---- Repo-level checks (not tied to a single image) -------------------------

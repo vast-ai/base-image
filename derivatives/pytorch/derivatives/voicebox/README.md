@@ -131,6 +131,15 @@ To build a variant with modifications:
 2. Trigger a manual build. Your changes will be included in the built image.
 3. Supervisor configuration lives in `ROOT/etc/supervisor/conf.d/voicebox.conf` and the startup script in `ROOT/opt/supervisor-scripts/voicebox.sh`.
 
+## Licenses
+
+This image ships vendor application(s) under the following license(s):
+
+- **Voicebox** — MIT ([upstream](https://github.com/jamiepine/voicebox))
+- **FlashAttention** — BSD-3-Clause ([upstream](https://github.com/Dao-AILab/flash-attention))
+
+See `/LICENSES.md` in the image for license details and file locations.
+
 ## Useful Links
 
 - [Voicebox Documentation](https://github.com/jamiepine/voicebox)

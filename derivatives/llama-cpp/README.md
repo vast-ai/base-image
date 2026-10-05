@@ -174,7 +174,7 @@ To build a variant with modifications:
 
 This image ships vendor application(s) under the following license(s):
 
-- **llama.cpp** — MIT ([upstream](https://github.com/ggml-org/llama.cpp))
+- **llama.cpp** — MIT ([upstream](https://github.com/unslothai/llama.cpp))
 
 See `/LICENSES.md` in the image for license details and file locations.
 

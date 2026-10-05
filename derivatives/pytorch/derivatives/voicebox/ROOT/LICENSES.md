@@ -13,14 +13,15 @@ as the canonical source for the license text.
 - **License file in image:** Included in the pip-installed package under
   `/venv/main/lib/python3.*/site-packages/torch-*.dist-info/LICENSE`
 
-## FluxGym
+## Voicebox
 
 - **License:** MIT
-- **Upstream:** https://github.com/cocktailpeanut/fluxgym
-- **License file in image:** `$WORKSPACE/fluxgym/LICENSE`
+- **Upstream:** https://github.com/jamiepine/voicebox
+- **License file in image:** `/opt/voicebox/LICENSE`
 
-## Kohya sd-scripts
+## FlashAttention
 
-- **License:** Apache-2.0
-- **Upstream:** https://github.com/kohya-ss/sd-scripts
-- **License file in image:** `$WORKSPACE/fluxgym/sd-scripts/LICENSE.md`
+- **License:** BSD-3-Clause
+- **Upstream:** https://github.com/Dao-AILab/flash-attention
+- **License file in image:** Included in the pip-installed package under
+  `/venv/main/lib/python3.*/site-packages/flash_attn-*.dist-info/LICENSE` (amd64 builds only)

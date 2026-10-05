@@ -23,3 +23,23 @@ as the canonical source for the license text.
   `requirements.txt` so the apps inherit the base image's torch build. Complete
   corresponding source, including these changes, is public at
   https://github.com/vast-ai/base-image (see the image's Dockerfile).
+
+## ComfyUI-Manager
+
+- **License:** GPL-3.0
+- **Upstream:** https://github.com/Comfy-Org/ComfyUI-Manager
+- **License file in image:** `/opt/workspace-internal/ComfyUI/custom_nodes/ComfyUI-Manager/LICENSE.txt`
+- **Modifications:** See the ComfyUI entry above: the torch pins are
+  stripped from this node's `requirements.txt` as well.
+
+## ComfyUI workflow-to-API converter
+
+- **License:** Unlicense
+- **Upstream:** https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint
+- **License file in image:** `/opt/workspace-internal/ComfyUI/custom_nodes/comfyui-workflow-to-api-converter-endpoint/LICENSE`
+
+## ComfyUI API wrapper
+
+- **License:** None declared - the upstream repository ships no LICENSE file
+- **Upstream:** https://github.com/ai-dock/comfyui-api-wrapper
+- **License file in image:** None

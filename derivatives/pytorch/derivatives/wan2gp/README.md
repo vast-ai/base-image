@@ -115,7 +115,7 @@ Go to **Actions > Build Wan2GP Image > Run workflow** and fill in the inputs:
 
 This image ships vendor application(s) under the following license(s):
 
-- **Wan2GP** — Apache-2.0 ([upstream](https://github.com/deepbeepmeep/Wan2GP))
+- **Wan2GP** — WanGP Community License 2.0 (custom) ([upstream](https://github.com/deepbeepmeep/Wan2GP))
 
 See `/LICENSES.md` in the image for license details and file locations.
 

@@ -1303,6 +1303,32 @@ Until then (b) is a REVIEW obligation, not a gated one: when a change patches a 
 upstream, the `Modifications:` note is the author's job and the reviewer's check. Anyone
 tempted to trust the linter here should read this paragraph first.
 
+### Licence declarations are complete and consistent — **GATED (L102, L103); correctness NOT ENFORCEABLE**
+
+An image's `ROOT/LICENSES.md` is the record of what it ships, for every licence, not only
+copyleft ones. Two rules hold it together, both matched on the upstream URL (the two files
+name apps differently):
+
+- **L103 — every source is declared.** Every `https://github.com/<owner>/<repo>` in the
+  Dockerfile's executed instructions (clone, release download, `ARG` default; comments
+  excluded) has a LICENSES.md entry whose `**Upstream:**` is that repository, and an image
+  that fetches one ships a LICENSES.md at all. Exempt: our own `vast-ai` / `vastai` orgs,
+  and the base image, which has no LICENSES.md convention yet (it ships cloudflared,
+  syncthing, miniforge and nvm undeclared — a known gap, not an oversight).
+- **L102 — the README agrees.** Every licence the README's `## Licenses` section states
+  (bullet or table row) matches the head of the licence LICENSES.md records for the same
+  upstream. `README.template.md`'s free-prose licence lines are not parsed.
+
+What these do NOT check: whether either file matches the upstream's actual licence (that
+needs the network), repositories a WORKFLOW selects by build argument (sd-forge's
+`FORGE_REPO`), pip/apt packages, and model weights. Found by a full audit on 2026-10-05:
+wan2gp's README stated Apache-2.0 from the day the image was added while upstream had not
+been Apache for over a year, and a licensing pass later fixed LICENSES.md but not the
+README; comfyui, aio-studio, linux-desktop, llama-cpp and unsloth-studio fetched
+undeclared sources; voicebox and UnrealPixelStreaming had no LICENSES.md. The same audit
+found fluxgym declared Apache-2.0 for an MIT upstream — consistent in both files, so
+neither rule could see it. Upstream truth stays a review obligation.
+
 ### Portal "not ready" interstitial is CDN-safe (200 for Cloudflare only) — **enforced by portal-aio tests (ADR 0017)**
 
 When a proxied backing service has not started yet, Caddy's `handle_errors 502 503

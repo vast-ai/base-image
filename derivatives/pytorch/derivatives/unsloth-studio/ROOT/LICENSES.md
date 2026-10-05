@@ -41,3 +41,10 @@ as the canonical source for the license text.
   `package.json` are installed exactly as pinned. Recorded for transparency about
   how the conveyed frontend was built. It applies only while the lockfile is absent
   and lapses when upstream restores one.
+
+## llama.cpp
+
+- **License:** MIT
+- **Upstream:** https://github.com/unslothai/llama.cpp
+- **License file in image:** `/opt/llama-cpp/LICENSE` (shipped in the release bundle)
+- **Notes:** A fork of https://github.com/ggml-org/llama.cpp, under the same license.
