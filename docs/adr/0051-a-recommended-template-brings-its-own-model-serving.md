@@ -87,6 +87,9 @@ obligation beyond normal `$WORKSPACE` output paths.
 precedents**; adding one requires a new ADR that supersedes this one.
 - **Open WebUI** (as shipped, bundled with Ollama). Open WebUI is a client; the Ollama
   beside it is our packaging. It stays as the one-click starter for local LLM chat.
+- **Langflow** (as shipped, bundled with Ollama). Langflow is a client of model servers.
+  It stays for now and is **expected to be retired**; when it is, it leaves this list,
+  and nothing replaces it here.
 
 **Applied to the current catalogue:**
 
@@ -101,7 +104,7 @@ precedents**; adding one requires a new ADR that supersedes this one.
 | vLLM, SGLang, Ollama, llama.cpp | They are the serving | Stays | — |
 | Linux desktop, Unreal Pixel Streaming, PyTorch/TensorFlow/Jupyter | Yes, GPU work on the box | Stays | — |
 | **Open WebUI** | **No — client of the bundled Ollama** | **Recorded exception** | Chats, documents |
-| **Langflow** | **No — client of model servers** | **Fails; decision pending** | Flows |
+| **Langflow** | **No — client of model servers** | **Recorded exception; retirement expected** | Flows |
 
 **Applied to the current shortlist:**
 
@@ -134,8 +137,8 @@ Dockerfile.
    that way. The decision owner re-checks the client verdicts when those changes merge.
 2. **The model library publishes a connection guide** for the clients this ADR turns
    away: SillyTavern, Open Notebook and AnythingLLM.
-3. **The exception list is the one named above.** Langflow must be resolved (recorded
-   exception, or retired) by a change to this ADR's successor, not by silent drift.
+3. **The exception list is the two named above, and it only shrinks.** Retiring Langflow
+   removes it; adding any app requires a new ADR that supersedes this one.
 4. **The state obligation is verified, not assumed,** for each admitted app that
    accumulates user content, the next time its image is changed. This ADR does not claim
    the existing images already comply.
@@ -155,8 +158,8 @@ Dockerfile.
 **Accepted negative**
 - Some of the most popular apps in the survey are excluded, including SillyTavern, the
   default roleplay front end.
-- Open WebUI remains a visible inconsistency, kept by deliberate exception; Langflow is
-  a second failure awaiting a decision.
+- Open WebUI and Langflow remain visible inconsistencies, kept by deliberate exception;
+  Langflow is expected to be retired.
 - Until binding condition 1 is met, excluded clients have no supported path at all.
 - Admitted apps can still lose user content on destroy; the state obligation reduces this
   only for users who attach a volume.
