@@ -111,8 +111,10 @@ instances established the facts this decision rests on:
    2025 change switched every route to `Host: {upstream_hostport}` with no recorded reason).
    Rejected for now. The rewrite is load-bearing for apps that guard against DNS rebinding
    with a Host allowlist: Ollama bound to loopback, as it is behind Caddy, returns 403 unless
-   Host is loopback, a private IP, `localhost`, or a `.local`/`.internal` name (read from its
-   `allowedHostsMiddleware`, not reproduced live), and Vite dev servers have the same kind of
+   Host is loopback, a private IP, `localhost`, or a `.local`/`.internal` name (its
+   `allowedHostsMiddleware`; verified live on `vastai/ollama:0.34.0` behind portal v3.1.7: 200
+   with the default rewrite, 403 for a public-IP or tunnel Host once its port is passed
+   through), and Vite dev servers have the same kind of
    guard. Which other apps behind Caddy depend on it has not been audited. The portal also
    updates itself at first boot on every image version, including tags that cannot be
    rebuilt, so a default flip changes every app at once, while an opt-in cannot break an

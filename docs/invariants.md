@@ -1845,7 +1845,9 @@ too, which turns the check off: a foreign Origin carrying valid Basic credential
   reason, but it is load-bearing: an app that guards against DNS rebinding with a Host
   allowlist refuses the browser's Host. Ollama bound to loopback (as it is behind Caddy)
   returns 403 unless Host is loopback, a private IP, `localhost`, or a `.local`/`.internal`
-  name (from its `allowedHostsMiddleware`); Vite dev servers have the same kind of guard.
+  name (its `allowedHostsMiddleware`; verified live on `vastai/ollama:0.34.0`: 200 with the
+  rewrite, 403 for a public-IP or tunnel Host with its port passed through); Vite dev servers
+  have the same kind of guard.
   The base apps do not depend on it: Syncthing runs with `insecure-skip-host-check` and
   Jupyter with `allow_remote_access`. No audit of the remaining apps exists, and the portal
   reaches every image version at first boot, so flipping the default needs that audit first
