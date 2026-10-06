@@ -236,11 +236,20 @@ RUN \
     create_app_venv ostris torch-2.7.1 && \
     . /venv/ostris/bin/activate && \
     . /opt/nvm/nvm.sh && \
+    # The shared torch-2.7.1 stack is the single source of truth for torch, torchvision,
+    # torchaudio and torchcodec (L105). Snapshot it; `uv pip freeze` because a uv venv has
+    # no pip.
+    torch_versions_pre="$({ uv pip freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     cd /opt/workspace-internal && \
     git clone "${AI_TOOLKIT_REPO}" && \
     cd $(basename ${AI_TOOLKIT_REPO}) && \
     git checkout "${AI_TOOLKIT_REF}" && \
     uv pip install --no-cache-dir timm==1.0.22 && \
+    # Upstream pins torchcodec (0.15.0 since 2026-09-24) in requirements_base.txt, which the
+    # torch-2.7.1 stack cannot satisfy and must not be replaced by. Strip every torch-family
+    # pin, as the standalone ostris image does; the assertion after the build catches any
+    # pin this misses.
+    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements_base.txt && \
     uv pip install --no-cache-dir -r requirements.txt && \
     cd ui && \
     # AI Toolkit's UI binds EVERY interface. On the current tree `cron/fileServer.ts`
@@ -274,7 +283,10 @@ RUN \
     fi && \
     npm install && \
     npm run update_db && \
-    npm run build
+    npm run build && \
+    cd /opt/workspace-internal/$(basename ${AI_TOOLKIT_REPO}) && \
+    torch_versions_post="$({ uv pip freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift in /venv/ostris:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # ---------- Wan2GP (base: torch-2.7.1) ----------
 ARG WAN2GP_REPO=https://github.com/deepbeepmeep/Wan2GP

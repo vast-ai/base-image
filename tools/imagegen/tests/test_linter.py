@@ -5348,3 +5348,41 @@ def test_L103_catches_the_strip_this_migration_removed(tmp_path):
     stage.write_text(_L103_1X_STAGE)
     errs = list(L.check_no_route_strip_on_binary_probe(tmp_path / "base-image"))
     assert [f.code for f in errs] == ["L103"], errs
+# --- L105: an AI Toolkit install keeps the venv's torch stack ---------------------- #
+
+def _aio_image(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    img = next(i for i in discover(repo) if i.name == "aio-studio")
+    text = mutate(img.text)
+    return replace(img, text=text)
+
+
+_AITK_STRIP = ("    sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' "
+               "requirements_base.txt && \\\n")
+_AITK_INSTALL = "    uv pip install --no-cache-dir -r requirements.txt && \\\n"
+
+
+def test_L105_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for name in ("aio-studio", "ostris-ai-toolkit"):
+        img = next(i for i in discover(repo) if i.name == name)
+        assert list(L.check_ai_toolkit_keeps_the_torch_stack(img)) == [], name
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda t: t.replace(_AITK_STRIP, "", 1), "without first stripping"),
+    (lambda t: t.replace(_AITK_STRIP + _AITK_INSTALL, _AITK_INSTALL + _AITK_STRIP, 1),
+     "without first stripping"),
+    (lambda t: t.replace('[[ "$torch_versions_pre" = "$torch_versions_post" ]]', "true", 1)
+               .replace("torch_versions_post=", "unused=", 1), "unchanged afterwards"),
+    # A strip in ANOTHER app's RUN must not satisfy AI Toolkit's: aio-studio builds nine
+    # apps, and a whole-file check missed exactly this.
+    (lambda t: t.replace(_AITK_STRIP, "", 1).replace(
+        "RUN \\\n", "RUN \\\n" + _AITK_STRIP, 1), "without first stripping"),
+])
+def test_L105_real_aio_studio_catches_each_way_the_install_breaks(tmp_path, mutate, needle):
+    img = _aio_image(tmp_path, mutate)
+    assert img.text != next(i for i in discover(find_repo_root(Path(__file__).resolve().parent))
+                            if i.name == "aio-studio").text, "mutation did not apply"
+    msgs = [f.msg for f in L.check_ai_toolkit_keeps_the_torch_stack(img)]
+    assert any(needle in m for m in msgs), msgs

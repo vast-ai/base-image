@@ -1536,6 +1536,27 @@ executing it — the artifact, not the transfer. That assertion is BRACED so its
 the check alone; left bare, `curl && check || FATAL` reports "not a script" for a download
 that never happened.
 
+### An AI Toolkit install keeps the venv's torch stack — **GATED (L105)**
+
+Both images that install AI Toolkit track its upstream HEAD, and its `requirements_base.txt`
+pins torch-family packages. On 2026-09-24 upstream pinned `torchcodec==0.15.0`; aio-studio's
+ostris venv (shared torch-2.7.1 stack, via `create_app_venv`) could not resolve it
+(`no version of torchcodec==0.15.0`), which failed every aio-studio build from 2026-10-01. Had
+it resolved, it would have shadowed the base's torchcodec with one built for a different torch,
+an ABI mismatch torchcodec's metadata does not declare.
+
+- The RUN that installs AI Toolkit strips `torch`, `torchvision`, `torchaudio` and `torchcodec`
+  from `requirements_base.txt` before `-r requirements.txt`, so the venv's torch stack stays
+  the single source of truth (the standalone ostris image already did).
+- The same RUN snapshots the torch ecosystem first and fails the build if it changed
+  afterwards (`[[ "$torch_versions_pre" = "$torch_versions_post" ]] ||`), which catches a pin
+  the strip does not cover. In aio-studio's uv venv the snapshot uses `uv pip freeze`.
+- L105 is scoped to that RUN: aio-studio builds nine apps, and another app's install earlier in
+  the file must not stand in for AI Toolkit's.
+- aio-studio's L020 exception (no single `/venv/main` torch guard) was removed because this
+  guard now satisfies L020. L020 checks the whole file, so that pass rests on the ostris venv's
+  guard alone; aio-studio's other per-app venvs still carry no torch-drift guard.
+
 ### AI Toolkit's public UI listener is pinned to loopback at BUILD time — **GATED (L091)**
 
 An image that installs AI Toolkit must pin its UI's public listener to `127.0.0.1` during

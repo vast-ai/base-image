@@ -39,8 +39,6 @@ class Finding:
 EXCEPTIONS: dict[tuple[str, str], tuple[str, str]] = {
     ("aio-studio", "L004"): ("builds on custom robatvastai/aio-studio:base-* (invariants §2)",
                              "must derive from vastai/pytorch"),
-    ("aio-studio", "L020"): ("uses per-app venvs, not a single /venv/main guard (invariants §2)",
-                             "torch-drift guard"),
     # Provisional (2026-07-06): comfyui bakes one small default SD-1.5 checkpoint for the
     # out-of-box / QA first-run. Deviation from invariants §6 (no baked weights), tracked for
     # migration to runtime provisioning — not an endorsement of baking. See ADR 0011 discussion.
@@ -108,6 +106,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
     ("L102", ERROR, "Every Dockerfile that installs Selkies pins it: a concrete `ARG SELKIES_VERSION=X.Y.Z`, `ARG SELKIES_SHA256_AMD64` and `ARG SELKIES_SHA256_ARM64` as 64-hex digests checked with `sha256sum -c`, and no `releases/latest` lookup for it; and every such Dockerfile carries the SAME version and digests. Upstream deleted every 1.x release when 2.0 shipped, which broke both desktop images on the same day, and 2.0 changes behaviour under unchanged flag names (1.x `x264enc` became hardware-first `h264enc`; unknown flags only warn), so a float can change what ships with no build signal. Amends ADR 0027 for this artifact (ADR 0050)"),
+    ("L105", ERROR, "An image that installs AI Toolkit strips the torch-family pins (`torch`, `torchvision`, `torchaudio`, `torchcodec`) from its `requirements_base.txt` before installing `requirements.txt`, and asserts after the install that the venv's torch ecosystem is unchanged. The venv's torch stack (the pytorch base, or aio-studio's shared torch venv) is the single source of truth: upstream pinned `torchcodec==0.15.0` on 2026-09-24, which aio-studio's torch-2.7.1 ostris venv could not resolve (`no version of torchcodec==0.15.0`), failing every aio-studio build, and which would otherwise have shadowed the base's torchcodec with one built for a different torch - an ABI mismatch torchcodec's metadata does not declare. The standalone ostris image already did both; aio-studio did neither"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -2851,13 +2850,49 @@ def check_engine_python_declared(img: Image) -> Iterable[Finding]:
                           "it: install with `--python /venv/main/bin/python` (ADR 0048)")
 
 
+def check_ai_toolkit_keeps_the_torch_stack(img: Image) -> Iterable[Finding]:
+    """L105 - an AI Toolkit install strips upstream's torch-family pins first and proves
+    the venv's torch ecosystem survived it."""
+    # Scoped to the RUN that installs AI Toolkit: aio-studio builds nine apps, and another
+    # app's `-r requirements.txt` earlier in the file must not stand in for this one's.
+    # The RUN clones `${AI_TOOLKIT_REPO}`; the upstream URL itself lives in the ARG.
+    if not _AITK_MARK.search(code_text(parse(img.text))):
+        return
+    runs = [i for i in parse(img.text)
+            if i.cmd == "RUN" and re.search(r"ai-toolkit|AI_TOOLKIT_REPO", i.exec)
+            and re.search(r"-r requirements\.txt", i.exec)]
+    if not runs:
+        return
+    code = code_text(runs)
+    install = re.search(r"uv pip install[^\n]*-r requirements\.txt", code)
+    strip = None
+    for m in re.finditer(r"sed[^\n]*requirements_base\.txt", code):
+        if all(n in m.group(0) for n in ("torchvision", "torchaudio", "torchcodec")):
+            strip = m
+            break
+    if strip is None or (install and strip.start() > install.start()):
+        yield Finding("L105", ERROR, img.name, "Dockerfile",
+                      "installs AI Toolkit's requirements without first stripping torch, "
+                      "torchvision, torchaudio and torchcodec from requirements_base.txt - "
+                      "an upstream pin then fails resolution against the venv's torch stack "
+                      "or silently replaces part of it")
+    # The comparison itself, failing the build: the variable names alone also appear in a
+    # leftover diff or echo that compares nothing.
+    if not re.search(r'\[\[\s*"\$torch_versions_pre"\s*=\s*"\$torch_versions_post"\s*\]\]\s*\|\|', code):
+        yield Finding("L105", ERROR, img.name, "Dockerfile",
+                      "installs AI Toolkit without asserting the torch ecosystem is unchanged "
+                      "afterwards - a pin the strip does not cover would replace the venv's "
+                      "torch stack unseen")
+
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
     check_external_env, check_llama_cuda_assert, check_llama_sass_coverage,
     check_vendored_script_is_executed, check_forge_opencv_is_headless,
-    check_ai_toolkit_binds_loopback, check_curl_download_fails_on_http_error,
+    check_ai_toolkit_binds_loopback, check_ai_toolkit_keeps_the_torch_stack,
+    check_curl_download_fails_on_http_error,
     check_engine_python_declared]
 
 
