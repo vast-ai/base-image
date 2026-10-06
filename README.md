@@ -275,22 +275,12 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 4. `PROVISIONING_MANIFEST` (runs after Supervisor, declarative setup via provisioner)
 5. `PROVISIONING_SCRIPT` (runs after manifest, imperative customizations)
 
-### Referencing Other Variables
+### Template Environment Values Are Literal
 
-At first boot the template's environment variables are written to `/etc/environment`, which login shells, Supervisor services and provisioning scripts all load. While that happens, a value can refer to another variable as `$NAME` or `${NAME}`:
+At first boot the template's environment variables are written to `/etc/environment`, which login shells, Supervisor services and provisioning scripts all load. Every value arrives exactly as you wrote it, whatever characters it contains: `;`, `$`, quotes, backticks, `\`, newlines. Nothing is expanded or run, so a generated password like `p4$sW0rd` stays intact.
 
-| Template variable | Value your services see |
-|-------------------|-------------------------|
-| `MODEL_DIR=$WORKSPACE/models` | `/workspace/models` |
-| `CACHE=${HF_HOME}/extra` | `/workspace/.hf_home/extra` |
-| `PRICE=\$5` | `$5` (write `\$` for a literal `$`) |
-| `DB=Server=db;Database=app` | `Server=db;Database=app` |
-| `CMD=$(date)` | `$(date)`. Nothing in a value runs, and every other character stays as written |
+To build one value from another (for example `MODEL_DIR=$WORKSPACE/models`), put the line in `${WORKSPACE}/.env`, which is loaded as a shell script after `/etc/environment`, or set it in a provisioning script.
 
-- A variable can't extend itself. In `LD_LIBRARY_PATH=/x:$LD_LIBRARY_PATH`, the old value was already replaced when the container started, so the reference stays as literal text. Put the change in `${WORKSPACE}/.env` or a provisioning script instead.
-- A reference to a variable that isn't set becomes empty.
-- A value containing a newline or tab is kept exactly as written, with no references expanded.
-- The process Docker starts first (the image entrypoint) sees the value as written, before expansion.
 ### Custom Boot Scripts
 
 For derivative images, you can add custom scripts to `/etc/vast_boot.d/` to hook into the boot sequence. Scripts are sourced in alphabetical order by filename, so use numeric prefixes to control ordering:

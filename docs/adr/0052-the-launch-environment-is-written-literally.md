@@ -1,4 +1,4 @@
-# ADR 0052 — the launch environment is written literally, except plain variable references
+# ADR 0052 — the launch environment is written to /etc/environment literally
 
 - Status: accepted
 - Date: 2026-10-06
@@ -19,82 +19,78 @@ double quotes bash still evaluates `$`, backticks and `\`, and a `"` ends the st
 | Launch value | What sourcing produced |
 |---|---|
 | `a;b` | `a;b` (literal; `;` is harmless inside `"..."`) |
-| `$WORKSPACE/models` | the expanded path |
+| `p4$sW0rd` (a generated password) | `p4` |
+| `abc$1xyz` | `abcxyz` |
 | `` `cmd` `` or `$(cmd)` | the output of `cmd`, which runs at every boot and every login |
 | `say "hi"` | `say hi` |
 | `say "hi there"` | empty, and `there` runs as a command |
 | a value containing a newline | extra lines; a line shaped like `NAME=...` becomes its own variable |
+| `$WORKSPACE/models` | the expanded path |
 
 Docker passes these values through unchanged, so the image was the only layer altering
-them. Nobody designed the expansion, but one part of it is useful: a template can
-build one value from another (`MODEL_DIR=$WORKSPACE/models`). The rest is a hazard.
-The Vast platform currently filters some characters out of template env values, and
-that filter is expected to be loosened. Values containing `;`, `\` and backticks would
-then reach this dump, which needs to be correct before that happens.
+them, and PID 1 saw a different value from every other process in the instance. The
+Vast platform currently filters some characters out of template env values, and that
+filter is expected to be loosened. Values containing `;`, `\` and backticks would then
+reach this dump, which needs to be correct before that happens.
 
 ## Options considered
 
-1. **Fully literal (`NAME='value'`).** Simplest and exact, but it removes `$VAR`
-   expansion that templates may already use, and it throws away a useful feature.
+1. **Keep `"..."` and escape `\ " \``.** `$(...)`, `$((...))` and `${VAR:-$(cmd)}`
+   would still run, and every `$` in a secret would still be read as a reference.
    Rejected.
-2. **Keep `"..."` and escape only `\ " \``.** `$(...)`, `$((...))` and `${VAR:-$(cmd)}`
-   would still run, and `${VAR@P}` runs command substitution held in another
-   variable's value. Allowing only "safe" `${...}` operators means re-implementing
-   bash's parameter-expansion grammar. Rejected.
-3. **`${value@Q}`/`printf %q` plus a separate expansion pass.** Expanding a second
-   time at write time resolves references against the boot environment instead of the
-   environment that sources the file, and needs bash 4.4+ for `@Q`. `Dockerfile.extend`
-   wraps third-party bases whose bash we don't control. Rejected.
-4. **Double quotes, with only `$NAME` and `${NAME}` left live (chosen).** A small
-   tokenizer copies plain text through, keeps a reference to another variable as it
-   is, and backslash-escapes every other `\`, `"`, backtick and `$`. `\$` in the value
-   gives a literal `$`, which is what the old format also did. It is portable to any
-   bash. Values with a control character are written fully literal with `%q` (`$'...'`)
-   so they stay on one line.
+2. **Keep plain `$NAME` / `${NAME}` references as a feature, everything else literal.**
+   This was built and tested: a tokenizer kept references live, escaped everything
+   else, and used `\$` for a literal `$`. It was rejected because it leaves silent
+   corruption exactly where it hurts most. A generated secret containing `$` followed
+   by a letter or underscore (`p4$sW0rd`, `Xk9$_aZ`) is still cut short (`p4`, `Xk9`).
+   Nothing points the user at the env, and `\$` only helps users who know to escape a
+   value a generator gave them. The benefit (`MODEL_DIR=$WORKSPACE/models`) is a
+   convenience that `${WORKSPACE}/.env` and provisioning scripts already provide.
+3. **`printf %q` for every value.** Correct and single-line, but ordinary values come
+   out with backslash escapes (`a\;b`, `my\ value`), which is hard to read in a file
+   users are told they can edit. Rejected as the default; used for the
+   control-character case.
+4. **`${value@Q}`.** Exactly the right output, but it needs bash 4.4 or newer.
+   `Dockerfile.extend` wraps third-party bases whose bash we don't control. Rejected.
+5. **Single quotes, with `%q` for control characters (chosen).** `NAME='value'`, with
+   each `'` written as `'\''`. A value without a control character comes back
+   byte-for-byte. A value with a newline or tab is written as `$'...'` on one line.
+   This is portable to any bash.
 
 ## Decision
 
-`_vast_dump_env` writes each launch variable as `NAME="..."` built by
-`_vast_env_quote`, or as `NAME=$'...'` when the value contains a control character.
-When sourced:
-
-- `$OTHER` and `${OTHER}` expand to that variable's value, or to empty if it is unset.
-  This is a documented feature (README, "Referencing Other Variables").
-- Everything else is literal: `;`, quotes, backticks, `\`, `$(...)`, `$((...))`,
-  special parameters (`$1`, `$$`, ...) and every `${...}` form beyond a bare name.
-- `\$` is a literal `$`.
-- A reference to the variable itself stays literal. Docker has already replaced the
-  value it would extend, so expanding it would produce `/x:/x:$NAME`.
-- Names that are not shell identifiers are skipped, because sourcing cannot assign
-  them and their text would be run as a command.
+`_vast_dump_env` writes each launch variable as `NAME='value'`, or as `NAME=$'...'`
+when the value contains a control character. Sourcing the file restores every value
+exactly as Docker passed it: nothing is expanded and nothing runs. Names that are not
+shell identifiers are skipped, because sourcing cannot assign them and their text
+would be run as a command.
 
 ## Binding conditions
 
-- Nothing in a value runs, and every value other than a plain reference comes back
-  byte-for-byte. `tools/imagegen/tests/test_prep_env_sh.py` checks this against the
-  shipped file. Separate test failures catch each of these mutations: the old
-  unescaped `"%s"`, fully literal quoting (the expansion feature lost), an unescaped
-  `$`, and an allowed self-reference.
+- Every value round-trips byte-for-byte in both the boot shell and a fresh login
+  shell, generated secrets containing `$` included, and nothing in a value runs.
+  `tools/imagegen/tests/test_prep_env_sh.py` checks this against the shipped file. It
+  catches the old `"%s"` quoting, the `$NAME`-expanding variant (option 2), and an
+  unescaped embedded `'`.
 - Each variable stays on one line starting `NAME=`. ADR 0014's `_vast_user_set`
   depends on this.
 
 ## Consequences
 
-- Template values reach services as written, plus the documented reference expansion.
-- Values that used to break or run code (`$(...)`, backticks, `"`, newlines) are now
-  literal. That is a behaviour change only for values that were already broken.
-- A reference resolves against the environment of the shell that sources the file. In
-  the boot shell that is the launch env; in a fresh shell it is the lines above plus
-  whatever that shell inherited. References are one level deep.
-- PID 1 still sees the unexpanded text. That was already true before this change.
-- `pam_env` also reads `/etc/environment`. It strips one pair of matching quotes and
-  does not unescape, so a value containing an escaped character reads differently
-  there. Those values were already garbled for `pam_env` before.
-- Quoting is a bash loop over special characters: about 2.5 s for a pathological
-  30 KB value, and negligible for normal ones.
+- Template values reach every process as written, matching what Docker gives PID 1.
+- **Behaviour change:** a value containing `$VAR` is no longer expanded when the file
+  is sourced. No template or doc that relies on this was found (the
+  `-e HF_TOKEN=$HF_TOKEN` examples are expanded by the user's local shell before the
+  request is sent). Users who want it put the line in `${WORKSPACE}/.env`, which is
+  still sourced as shell. The README says so.
+- Values that used to run code or break (`$(...)`, backticks, `"`, newlines) are now
+  literal. That only changes values that were already broken.
+- `pam_env` also reads `/etc/environment`. It strips one pair of matching quotes, so
+  ordinary values read the same as before. A value containing `'` or a control
+  character was already garbled there and still is.
 
 ## What would reverse this
 
-Real templates needing more of bash's expansion (defaults like `${VAR:-x}`, for
-example). Adding a specific operator would be a deliberate change to this ADR, with a
-test showing that it cannot run code.
+Evidence that templates in use depend on in-container `$VAR` expansion of launch env
+values. Even then, it would come back as an explicit opt-in, never as the default,
+because of the secret-truncation case in option 2.

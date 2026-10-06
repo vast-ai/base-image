@@ -1,32 +1,11 @@
 #!/bin/bash
 
-# Double-quote VALUE (of variable NAME) for /etc/environment so that sourcing
-# expands only plain references to other variables, `$OTHER` and `${OTHER}`, and
-# keeps everything else literal (ADR 0052): `;`, quotes, backticks, `$(...)` and
-# every other `$` form. `\$` gives a literal `$`. A reference to NAME itself
-# stays literal, because Docker has already replaced the value it would extend.
-_vast_env_quote() {
-    local name="$1" v="$2" out="" tok
-    local plain='^[^\\"`$]+' ref='^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))'
-    while [[ -n "$v" ]]; do
-        if [[ "$v" =~ $plain ]]; then
-            tok=${BASH_REMATCH[0]}; out+=$tok
-        elif [[ "$v" == '\$'* ]]; then
-            tok='\$'; out+=$tok
-        elif [[ "$v" =~ $ref ]] && [[ "${BASH_REMATCH[2]}${BASH_REMATCH[3]}" != "$name" ]]; then
-            tok=${BASH_REMATCH[0]}; out+=$tok
-        else
-            tok=${v:0:1}; out+="\\$tok"
-        fi
-        v=${v:${#tok}}
-    done
-    printf '"%s"' "$out"
-}
-
 # Print the current environment as /etc/environment lines, one per variable.
-# A value with a control character (newline, tab) is written fully literal in
-# bash's $'...' form, so it stays on one line. Names that are not shell
-# identifiers cannot be sourced, so they are skipped.
+# Values are single-quoted so sourcing the file gives back exactly what Docker
+# passed (ADR 0052): `;`, `$`, backticks, quotes and `\` stay literal, and
+# nothing in a value is expanded or run. A value with a control character
+# (newline, tab) uses bash's $'...' form so it stays on one line. Names that are
+# not shell identifiers cannot be sourced, so they are skipped.
 _vast_dump_env() {
     local line name value
     env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
@@ -35,10 +14,10 @@ _vast_dump_env() {
         [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         if [[ "$value" == *[[:cntrl:]]* ]]; then
             printf -v value '%q' "$value"
+            printf '%s=%s\n' "$name" "$value"
         else
-            value=$(_vast_env_quote "$name" "$value")
+            printf "%s='%s'\n" "$name" "${value//\'/\'\\\'\'}"
         fi
-        printf '%s=%s\n' "$name" "$value"
     done
 }
 
