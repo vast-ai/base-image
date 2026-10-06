@@ -11,6 +11,8 @@
 SELKIES_INTERNAL_PORT=16100
 SELKIES_RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/selkies"
 SELKIES_NVREACH=/usr/local/lib/selkies/nvreach.so
+SELKIES_PORTAL_VERSION_FILE=/opt/portal-aio/VERSION
+SELKIES_PORTAL_MIN=v3.1.7
 
 # /etc persists across stop/start, so last boot's Caddyfile is there before this boot's
 # generator rewrites it. Only a file written since PID 1 started describes this boot.
@@ -155,8 +157,27 @@ json.dump({"iceServers": servers}, sys.stdout)
     SELKIES_PLAN_RTC=$out
 }
 
+# Caddy forwards the browser's Host to Selkies only from portal v3.1.7
+# (CADDY_HOST_PASSTHROUGH). An image built on an older base gets it from the first-boot
+# portal update, which can be skipped (no network, PORTAL_VERSION pinned, serverless); then
+# Selkies refuses every browser WebSocket with nothing else saying why.
+selkies_check_portal() {
+    local v
+    v=$(tr -d '[:space:]' < "$SELKIES_PORTAL_VERSION_FILE" 2>/dev/null)
+    [[ -n $v ]] || return 0
+    [[ $v == v* ]] || v="v$v"
+    if [[ $(printf '%s\n%s\n' "$SELKIES_PORTAL_MIN" "$v" | sort -V | head -n1) != "$SELKIES_PORTAL_MIN" ]]; then
+        echo "selkies: WARNING: portal ${v} predates ${SELKIES_PORTAL_MIN} and rewrites the Host header, so"
+        echo "selkies: browsers will be refused (\"disallowed Origin\"). Unset PORTAL_VERSION or let the"
+        echo "selkies: first-boot portal update run."
+        return 1
+    fi
+    return 0
+}
+
 selkies_exec() {
     selkies_write_rtc || exit 1
+    selkies_check_portal
     echo "selkies: transport=${SELKIES_PLAN_MODE} https=${SELKIES_PLAN_HTTPS} turn=${SELKIES_PLAN_TURN} switch=${SELKIES_PLAN_DUAL}"
     if [[ $SELKIES_PLAN_MODE == websockets && $SELKIES_PLAN_HTTPS != true ]]; then
         echo "selkies: this page is served over plain HTTP, where browsers withhold the video decoder the"

@@ -193,13 +193,16 @@ def test_coturn_stays_down_without_the_turn_directive(tmp_path):
 
 
 def test_launch_binds_loopback_preloads_the_shim_and_drops_fallback_names(tmp_path):
-    out = bash('SELKIES_NVREACH=/dev/null; selkies_plan /nonexistent; selkies_exec', tmp_path,
+    (tmp_path / "VERSION").write_text("v3.1.6\n")
+    out = bash(f'SELKIES_NVREACH=/dev/null; SELKIES_PORTAL_VERSION_FILE="{tmp_path}/VERSION"; '
+               'selkies_plan /nonexistent; selkies_exec', tmp_path,
                {"SUBFOLDER": "/desktop", "LD_PRELOAD": "/other.so", "SELKIES_ENCODER": "nvh264enc"})
     args = out.splitlines()
     assert "--addr=127.0.0.1" in args and "--port=16100" in args
     assert "--enable-basic-auth=false" in args
     assert any(a.startswith("--rtc-config-json=") for a in args)
     assert "LD_PRELOAD=/dev/null:/other.so SUBFOLDER=<unset> ENCODER=h264enc" in args
+    assert any("predates v3.1.7" in a for a in args), "the launch must check the portal version"
 
 
 STAGE = "etc/vast_boot.d/05-caddy-host-passthrough.sh"
@@ -224,3 +227,15 @@ def test_every_desktop_image_declares_selkies_for_host_passthrough(template, exp
     out = subprocess.run(["bash", "-c", '. "$1"; printf %s "$CADDY_HOST_PASSTHROUGH"', "_",
                           str(STAGES[0])], env=env, capture_output=True, text=True, check=True)
     assert out.stdout == expected
+
+
+@pytest.mark.parametrize("version,warns", [
+    ("v3.1.6", True), ("3.1.6", True), ("v3.1.7", False), ("v3.2.0", False), ("v3.1.10", False),
+])
+def test_launch_warns_when_the_portal_predates_host_passthrough(tmp_path, version, warns):
+    """An older portal rewrites Host and Selkies refuses every browser WebSocket; the
+    first-boot update that brings v3.1.7 can be skipped, so the launcher says so."""
+    vf = tmp_path / "VERSION"
+    vf.write_text(version + "\n")
+    out = bash(f'SELKIES_PORTAL_VERSION_FILE="{vf}"; selkies_check_portal; true', tmp_path)
+    assert ("predates v3.1.7" in out) == warns
