@@ -1841,6 +1841,15 @@ too, which turns the check off: a foreign Origin carrying valid Basic credential
   deliberately no `true` form). Caddy then omits `header_up Host`, so the browser's Host
   reaches the app and the app's own check holds on direct, tunnel, and changed-IP paths.
 - Passthrough wins over `CADDY_HEADER_UP_LOCALHOST` for the same port.
+- **Why the Host rewrite stays the default.** It was introduced in 2025 with no recorded
+  reason, but it is load-bearing: an app that guards against DNS rebinding with a Host
+  allowlist refuses the browser's Host. Ollama bound to loopback (as it is behind Caddy)
+  returns 403 unless Host is loopback, a private IP, `localhost`, or a `.local`/`.internal`
+  name (from its `allowedHostsMiddleware`); Vite dev servers have the same kind of guard.
+  The base apps do not depend on it: Syncthing runs with `insecure-skip-host-check` and
+  Jupyter with `allow_remote_access`. No audit of the remaining apps exists, and the portal
+  reaches every image version at first boot, so flipping the default needs that audit first
+  (ADR 0050).
 - The portal reads it at first boot, so an image setting it needs a portal release that
   understands it (portal v3.1.7 and later). An older portal ignores it and the app's
   WebSockets fail as before.
