@@ -58,6 +58,9 @@ Local counterparts to CI. Model: **staging namespace → prod namespace via reta
 ## 3. Image tree — directory layout mirrors the FROM chain
 - `derivatives/<x>/` — `FROM vastai/base-image` (pytorch, tensorflow, llama-cpp,
   linux-desktop, UnrealPixelStreaming).
+- **Desktop streaming** (linux-desktop, the aio-studio base): Selkies 2.0 behind Caddy.
+  One shared launch library (`opt/supervisor-scripts/utils/selkies.sh`), passthrough
+  stage and `selkies/nvreach.c` shim, held identical by test (ADR 0050).
 - `derivatives/pytorch/` — the hub; own `build-many.sh`, `torch-companions.json`,
   `install-torch-venv.sh`, `Dockerfile.{extend,multi-torch}`.
 - `derivatives/pytorch/derivatives/<app>/` — `FROM vastai/pytorch` (~16: comfyui,

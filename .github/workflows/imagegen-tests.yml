@@ -33,6 +33,13 @@ on:
       - "derivatives/**/ROOT/etc/vast_boot.d/**"
       - "derivatives/**/ROOT/opt/supervisor-scripts/**"
       - "derivatives/**/Dockerfile"
+      # The Selkies library, passthrough stage and nvreach shim are shared byte-for-byte
+      # by linux-desktop and the aio base (ADR 0050); test_selkies_sh.py and
+      # test_selkies_nvreach.py hold the copies identical, so a PR touching one copy
+      # must run them.
+      - "derivatives/**/ROOT_BASE/**"
+      - "derivatives/**/Dockerfile.base"
+      - "derivatives/**/selkies/**"
       # L069 reads the supervisord program list from this directory, so adding a
       # program changes what the rule covers.
       - "ROOT/etc/supervisor/conf.d/**"
@@ -82,6 +89,13 @@ on:
       - "derivatives/**/ROOT/etc/vast_boot.d/**"
       - "derivatives/**/ROOT/opt/supervisor-scripts/**"
       - "derivatives/**/Dockerfile"
+      # The Selkies library, passthrough stage and nvreach shim are shared byte-for-byte
+      # by linux-desktop and the aio base (ADR 0050); test_selkies_sh.py and
+      # test_selkies_nvreach.py hold the copies identical, so a PR touching one copy
+      # must run them.
+      - "derivatives/**/ROOT_BASE/**"
+      - "derivatives/**/Dockerfile.base"
+      - "derivatives/**/selkies/**"
       # L069 reads the supervisord program list from this directory, so adding a
       # program changes what the rule covers.
       - "ROOT/etc/supervisor/conf.d/**"

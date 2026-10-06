@@ -6,14 +6,14 @@ via that entry's `direct_url` + token (base.md §5). It is **not** an OpenAI/web
 endpoint; it's an interactive GUI to drive visually or automate. Built on the
 **base image** (not pytorch) — base.md applies; there is no `/venv/main` torch stack here.
 
-**Browser delivery path depends on arch** (this is the thing agents get wrong):
-- **amd64** — **Selkies** low-latency WebRTC (internal port 16100), plus a
-  **Guacamole** HTML5 VNC path (Tomcat, internal 16200).
-- **arm64** — Selkies is published amd64-only upstream, so it is **not installed**
-  here: its `supervisor` program and its `:16100:` portal entry are removed
-  automatically at boot. **Guacamole VNC (16200) is the remote-access path.** Don't
-  look for a `selkies` service under `supervisorctl` on arm64 — its absence is
-  expected, not a fault.
+**Browser delivery paths** (both arches):
+- **Selkies** (internal port 16100): low-latency streaming with audio. Over HTTPS it
+  streams over a WebSocket on that port; over plain HTTP it streams over WebRTC through
+  the in-image TURN server (`coturn`), which needs the 73478 TCP/UDP ports mapped. The
+  choice is logged at launch as `selkies: transport=...`; `SELKIES_MODE` overrides it.
+  Encoding is NVENC where it works and software otherwise; the chosen encoder is logged
+  as `Encoder: ...` in `/var/log/selkies.log`.
+- **Guacamole** HTML5 VNC (Tomcat, internal 16200).
 
 Either way `x11vnc` also serves the raw display on `:5900` for a native VNC client
 (reach it by SSH-forwarding 5900, base.md §7). The VNC password is **`VNC_PASSWORD`**
@@ -64,5 +64,6 @@ Universe** (`tari-universe.sh`), each dropped as a `~/Desktop/*.desktop` entry.
 
 Desktop-stack `supervisor` services: `x-server` (Xvfb on `:20`), `kde`, `x11vnc`,
 `tomcat` + `guacd` (Guacamole), `vgl-desktop-patcher`, the PipeWire audio stack, and
-`selkies` (amd64 only). `supervisorctl status` is the quick health check before you
+`selkies` and `coturn` (which exits at once unless WebRTC needs it). `supervisorctl
+status` is the quick health check before you
 assume the GUI is up.

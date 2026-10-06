@@ -34,7 +34,7 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 
 | Application | Description | Port | Supervisor Service |
 |------------|-------------|------|-------------------|
-| Desktop (KDE + [Blender](https://www.blender.org/)) | GPU-accelerated remote desktop via WebRTC | 16100 | `desktop` |
+| Desktop (KDE + [Blender](https://www.blender.org/)) | GPU-accelerated remote desktop (Selkies; WebSocket over HTTPS, WebRTC over plain HTTP with the 73478 ports mapped) | 16100 | `desktop` |
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Node-based image/video generation | 18188 | `comfyui` |
 | [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) | Stable Diffusion WebUI (classic) | 17860 | `forge` |
 | [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | Video generation (Wan 2.x) | 17861 | `wan2gp` |
@@ -100,7 +100,8 @@ This means you can fine-tune a model and immediately serve it for inference — 
 | `SUPERVISOR_AUTOSTART` | (none) | Comma-separated services to auto-start on boot |
 | `DISPLAY_SIZEW` | `1920` | Desktop resolution width |
 | `DISPLAY_SIZEH` | `1080` | Desktop resolution height |
-| `SELKIES_ENCODER` | `x264enc` | Desktop streaming encoder |
+| `SELKIES_ENCODER` | `h264enc` | Desktop streaming encoder (`h264enc` uses NVENC where it works, else software) |
+| `SELKIES_MODE` | chosen at launch | Force the desktop transport: `websockets` or `webrtc` |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 | `ENABLE_HTTPS` | (none) | Set to `true` for HTTPS access (strongly recommended) |
 
@@ -198,7 +199,7 @@ This image ships the following vendor applications under their respective licens
 | Whisper WebUI | Apache-2.0 | [jhj0517/Whisper-WebUI](https://github.com/jhj0517/Whisper-WebUI) |
 | ACE-Step 1.5 | MIT | [ace-step/ACE-Step-1.5](https://github.com/ace-step/ACE-Step-1.5) |
 | ACE-Step UI | MIT (per upstream README) | [fspecii/ace-step-ui](https://github.com/fspecii/ace-step-ui) |
-| Selkies-GStreamer | MPL-2.0 | [selkies-project/selkies-gstreamer](https://github.com/selkies-project/selkies-gstreamer) |
+| Selkies | MPL-2.0 | [selkies-project/selkies](https://github.com/selkies-project/selkies) |
 | Blender | GPL-2.0-or-later | [blender.org](https://www.blender.org/) |
 
 See `/LICENSES.md` in the image for license details and file locations.
