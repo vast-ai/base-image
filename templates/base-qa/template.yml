@@ -31,7 +31,22 @@ readme_visible: false
 # directory and the lock, completion markers, wait, relinking and .ssh round-trip
 # are identical. Only the multi-instance race needs a shared volume, and that is
 # not what this gate is for. Measured cost on base: ~17s.
-onstart: entrypoint.sh --sync-home --sync-environment
+#
+# QA-only, NOT in the customer template: the QA_ENV_* exports feed
+# base/57-env-literal (ADR 0052). onstart runs before the image boots, so they
+# reach 10-prep-env.sh exactly as template env vars would, without the
+# platform's env character filter. Keep the values in step with that test.
+onstart: |
+  export QA_ENV_PROBE=1
+  export QA_ENV_SECRET='p4$sW0rd'
+  export QA_ENV_SEMI='Server=db;Database=app'
+  export QA_ENV_QUOTE='say "hi there"'
+  export QA_ENV_SQUOTE="it's"
+  export QA_ENV_BACKSLASH='a\b\'
+  export QA_ENV_TICK='`touch /tmp/qa-env-canary`'
+  export QA_ENV_SUBST='$(touch /tmp/qa-env-canary)'
+  export QA_ENV_NL=$'line1\nQA_ENV_FAKE=injected'
+  entrypoint.sh --sync-home --sync-environment
 runtype: jupyter                  # production launch mode
 jup_direct: true
 ssh_direct: true
@@ -69,7 +84,7 @@ env:
   # cannot produce a passing verdict. Gated by linter rule L057.
   # 36 is required so it cannot skip its way to green: it self-skips when the
   # sync flags are off, which is correct everywhere else and would be a hole here.
-  INSTANCE_TEST_REQUIRE_PASS: "base/36-home-env-sync base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+  INSTANCE_TEST_REQUIRE_PASS: "base/36-home-env-sync base/57-env-literal base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
   # Promote the exposure scan from advisory to gating, for base only (ADR 0006
   # condition 2 always intended this flip once a clean baseline existed; base is
   # the image that OWNS exposure-allowlist/00-base.conf, so its baseline is the

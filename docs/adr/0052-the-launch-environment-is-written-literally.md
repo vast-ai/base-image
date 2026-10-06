@@ -72,6 +72,11 @@ would be run as a command.
   `tools/imagegen/tests/test_prep_env_sh.py` checks this against the shipped file. It
   catches the old `"%s"` quoting, the `$NAME`-expanding variant (option 2), and an
   unescaped embedded `'`.
+- On a live instance, `base/57-env-literal` (required to pass in base-qa) reads probe
+  values back from a fresh shell, supervisord and caddy, and checks that none of them
+  ran. base-qa exports the probes from its onstart, which runs before the image boots,
+  so they reach the dump the way template env vars do, without the platform's env
+  character filter.
 - Each variable stays on one line starting `NAME=`. ADR 0014's `_vast_user_set`
   depends on this.
 

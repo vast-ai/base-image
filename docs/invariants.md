@@ -686,9 +686,11 @@ like `p4$sW0rd` stays intact) and nothing in a value runs. Each variable stays o
 `^NAME=` line, which ADR 0014's `_vast_user_set` depends on. Names that are not shell
 identifiers are skipped. `tools/imagegen/tests/test_prep_env_sh.py` sources the
 shipped function in a boot-like and a fresh shell, and catches the old `"%s"`
-quoting, the `$NAME`-expanding variant and an unescaped embedded `'`. Not statically
-gated: the property is about what bash does with the output, so only executing it
-proves it.
+quoting, the `$NAME`-expanding variant and an unescaped embedded `'`. On a live
+instance, `base/57-env-literal` (required to pass in base-qa, whose onstart exports
+the `QA_ENV_*` probes) checks the same values in a fresh shell, supervisord and caddy.
+Not statically gated: the property is about what bash does with the output, so only
+executing it proves it.
 
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
 
