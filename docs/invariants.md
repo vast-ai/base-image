@@ -1829,6 +1829,33 @@ Dockerfiles. NOT gated: a new upstream origin check. No QA cell sends a WebSocke
 POST through Caddy with a browser Origin, which is how aio-studio `2026-09-15` shipped
 with a broken Wan2GP.
 
+### An app that enforces same-origin itself gets the browser's Host, not a rewrite — ADR 0050, **config shape enforced by portal-aio test_caddy_config_manager.py; the app's Origin refusal by aio-studio-base QA (aio-base.d/25-selkies-live), not gated on linux-desktop**
+
+Selkies 2.0 compares the browser's `Origin` with `Host` and refuses a mismatch. Behind
+Caddy's default `Host: localhost:<port>` it refused every browser WebSocket (verified
+live). The ADR 0042/0043 localhost rewrite would make it work by rewriting `Origin`
+too, which turns the check off: a foreign Origin carrying valid Basic credentials got
+`101` with the rewrite and `403` without it.
+
+- Such an app's internal port goes in `CADDY_HOST_PASSTHROUGH` (a port list; there is
+  deliberately no `true` form). Caddy then omits `header_up Host`, so the browser's Host
+  reaches the app and the app's own check holds on direct, tunnel, and changed-IP paths.
+- Passthrough wins over `CADDY_HEADER_UP_LOCALHOST` for the same port.
+- **Why the Host rewrite stays the default.** It was introduced in 2025 with no recorded
+  reason, but it is load-bearing: an app that guards against DNS rebinding with a Host
+  allowlist refuses the browser's Host. Ollama bound to loopback (as it is behind Caddy)
+  returns 403 unless Host is loopback, a private IP, `localhost`, or a `.local`/`.internal`
+  name (its `allowedHostsMiddleware`; verified live on `vastai/ollama:0.34.0`: 200 with the
+  rewrite, 403 for a public-IP or tunnel Host with its port passed through); Vite dev servers
+  have the same kind of guard.
+  The base apps do not depend on it: Syncthing runs with `insecure-skip-host-check` and
+  Jupyter with `allow_remote_access`. No audit of the remaining apps exists, and the portal
+  reaches every image version at first boot, so flipping the default needs that audit first
+  (ADR 0050).
+- The portal reads it at first boot, so an image setting it needs a portal release that
+  understands it (portal v3.1.7 and later). An older portal ignores it and the app's
+  WebSockets fail as before.
+
 ### A vLLM-derived image ships the engine's audio extra — **GATED (L096)**
 
 vLLM registers `/v1/audio/transcriptions` (>= v0.7.3) and `/v1/audio/translations`

@@ -66,6 +66,9 @@ jobs:
           VAST_CONTAINERLABEL: ci
           VAST_TCP_PORT_6006: "1"
           ENABLE_HTTPS: "false"
+          # Route TB through the passthrough path, so the block without `header_up Host`
+          # is validated by real Caddy too (ADR 0050).
+          CADDY_HOST_PASSTHROUGH: "16006"
         run: |
           python - <<'PY'
           import caddy_config_manager as m
