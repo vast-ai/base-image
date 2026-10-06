@@ -5284,3 +5284,45 @@ def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
     text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n",
                   "# venv-mirror build used to run here\n", _real_convert())
     assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+# --- L104: update-portal works the same from either download source ------------- #
+
+_UPDATE_PORTAL = "ROOT/opt/instance-tools/bin/update-portal"
+
+
+def _update_portal_tree(tmp_path, mutate=None):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    (work / _UPDATE_PORTAL).parent.mkdir(parents=True)
+    text = (repo / _UPDATE_PORTAL).read_text()
+    (work / _UPDATE_PORTAL).write_text(mutate(text) if mutate else text)
+    return work
+
+
+def test_L104_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_update_portal_paths_agree(repo)) == []
+
+
+def _into_github_branch(text, line):
+    """Move a top-level line into the GitHub-release branch, where the bug had it."""
+    assert f"\n{line}\n" in text
+    text = text.replace(f"\n{line}\n", "\n", 1)
+    return text.replace("if [[ -z $PORTAL_DOWNLOAD_URL ]]; then\n",
+                        f"if [[ -z $PORTAL_DOWNLOAD_URL ]]; then\n    {line}\n", 1)
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda t: _into_github_branch(t, "TEMP_DIR=$(mktemp -d)"), "TEMP_DIR"),
+    (lambda t: _into_github_branch(t, 'DOWNLOAD_FILE="${PORTAL_FILENAME:-instance-portal.tar.gz}"'),
+     "DOWNLOAD_FILE"),
+    (lambda t: t.replace("\nwhile [[ $# -gt 0 ]]; do\n", "\n  while [[ $# -gt 0 ]]; do\n", 1),
+     "argument parse"),
+    (lambda t: t.replace('if [[ ! -s "$INSTALL_ROOT/portal-aio/VERSION" ]]; then',
+                         'if false; then', 1), "empty installed"),
+])
+def test_L104_real_tree_catches_each_way_the_override_path_broke(tmp_path, mutate, needle):
+    work = _update_portal_tree(tmp_path, mutate)
+    msgs = [f.msg for f in L.check_update_portal_paths_agree(work)]
+    assert any(needle in m for m in msgs), msgs

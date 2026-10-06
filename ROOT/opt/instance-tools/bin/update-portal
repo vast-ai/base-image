@@ -1,54 +1,60 @@
 #!/bin/bash
 set -e
 
+# Everything below the release lookup runs for both sources: a GitHub release (default) or
+# PORTAL_DOWNLOAD_URL. Setup, cleanup and the argument parse therefore live at top level
+# (L104); they used to sit inside the GitHub branch, so the override wrote the archive to "/"
+# and left an empty VERSION.
+REPO="${PORTAL_REPO:-vast-ai/base-image}"
+DOWNLOAD_FILE="${PORTAL_FILENAME:-instance-portal.tar.gz}"
+# Where the portal is installed; overridable so the installer can be tested in a sandbox.
+INSTALL_ROOT="${PORTAL_INSTALL_ROOT:-/opt}"
+TARGET_VERSION=""
+TEMP_DIR=$(mktemp -d)
+
+# Cleanup function to run on exit
+cleanup() {
+  rm -rf "$TEMP_DIR"
+  echo "Cleaned up temporary files"
+}
+
+# Register the cleanup function to run on exit
+trap cleanup EXIT
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -v|--version)
+      TARGET_VERSION="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [-v|--version VERSION]"
+      exit 2
+      ;;
+  esac
+done
+
+# Add 'v' prefix if not already present
+if [[ -n $TARGET_VERSION && $TARGET_VERSION != v* ]]; then
+  TARGET_VERSION="v$TARGET_VERSION"
+fi
+
 if [[ -z $PORTAL_DOWNLOAD_URL ]]; then
     # Default behavior is to check against latest GitHub release
-    TARGET_VERSION=""
-    REPO="${PORTAL_REPO:-vast-ai/base-image}"
-    TEMP_DIR=$(mktemp -d)
-    DOWNLOAD_FILE="${PORTAL_FILENAME:-instance-portal.tar.gz}"
-
-    # Cleanup function to run on exit
-    cleanup() {
-      rm -rf "$TEMP_DIR"
-      echo "Cleaned up temporary files"
-    }
-
-    # Register the cleanup function to run on exit
-    trap cleanup EXIT
-
-    # Parse command line arguments
-    while [[ $# -gt 0 ]]; do
-      case $1 in
-        -v|--version)
-          TARGET_VERSION="$2"
-          shift 2
-          ;;
-        *)
-          echo "Unknown option: $1"
-          echo "Usage: $0 [-v|--version VERSION]"
-          exit 2
-          ;;
-      esac
-    done
-
-    # If no target version specified, fetch from GitHub
     if [ -z "$TARGET_VERSION" ]; then
       TARGET_VERSION=$(curl -s https://api.github.com/repos/$REPO/releases/latest | jq -r .tag_name)
-      
+
       # Check if we got a valid version from GitHub
       if [ -z "$TARGET_VERSION" ] || [ "$TARGET_VERSION" = "null" ]; then
         echo "Error: Failed to detect latest version from GitHub."
         echo "Please specify a version with -v flag or check your internet connection."
         exit 1
       fi
-      
+
       echo "Updating to latest GitHub release: $TARGET_VERSION"
     else
-      # Add 'v' prefix if not already present
-      if [[ $TARGET_VERSION != v* ]]; then
-        TARGET_VERSION="v$TARGET_VERSION"
-      fi
       echo "Updating to specified version: $TARGET_VERSION"
     fi
 fi
@@ -56,7 +62,7 @@ fi
 # Download the archive
 DOWNLOAD_URL="${PORTAL_DOWNLOAD_URL:-https://github.com/$REPO/releases/download/$TARGET_VERSION/$DOWNLOAD_FILE}"
 echo "Downloading from: $DOWNLOAD_URL"
-curl -L "$DOWNLOAD_URL" -o "$TEMP_DIR/$DOWNLOAD_FILE"
+curl -fL "$DOWNLOAD_URL" -o "$TEMP_DIR/$DOWNLOAD_FILE"
 
 # Check if download was successful
 if [ ! -f "$TEMP_DIR/$DOWNLOAD_FILE" ]; then
@@ -64,22 +70,31 @@ if [ ! -f "$TEMP_DIR/$DOWNLOAD_FILE" ]; then
     exit 1
 fi
 
-# Extract the archive to /opt
-echo "Extracting archive to /opt directory..."
-tar -xzf "$TEMP_DIR/$DOWNLOAD_FILE" -C /opt --no-same-owner
+# Extract the archive
+echo "Extracting archive to ${INSTALL_ROOT} directory..."
+tar -xzf "$TEMP_DIR/$DOWNLOAD_FILE" -C "$INSTALL_ROOT" --no-same-owner
 
 # Install dependencies
 echo "Installing Python dependencies..."
-if [[ ! -d /opt/portal-aio/venv/ ]]; then
-    uv venv --seed /opt/portal-aio/venv -p 3.11
+if [[ ! -d "$INSTALL_ROOT/portal-aio/venv/" ]]; then
+    uv venv --seed "$INSTALL_ROOT/portal-aio/venv" -p 3.11
 fi
-/opt/portal-aio/venv/bin/pip install -r /opt/portal-aio/requirements.txt
+"$INSTALL_ROOT/portal-aio/venv/bin/pip" install -r "$INSTALL_ROOT/portal-aio/requirements.txt"
 
-# Write the VERSION file — this is the source of truth for the installed version
-echo "$TARGET_VERSION" > /opt/portal-aio/VERSION
+# Write the VERSION file — this is the source of truth for the installed version. A requested
+# version names it; otherwise the archive's own VERSION stands (release-portal.yml checks it
+# equals the release tag). An empty VERSION makes every later first boot skip portal updates,
+# so the install fails rather than finish without one.
+if [[ -n $TARGET_VERSION ]]; then
+    echo "$TARGET_VERSION" > "$INSTALL_ROOT/portal-aio/VERSION"
+fi
+if [[ ! -s "$INSTALL_ROOT/portal-aio/VERSION" ]]; then
+    echo "Error: the installed portal has no VERSION; pass -v with the version this archive holds."
+    exit 1
+fi
 
 echo "Update completed successfully!"
-echo "Portal updated to version $TARGET_VERSION"
+echo "Portal updated to version $(< "$INSTALL_ROOT/portal-aio/VERSION")"
 echo "You may need to restart the instance_portal and tunnel_manager services for changes to take effect."
 
 exit 0

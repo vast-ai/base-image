@@ -106,6 +106,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
+    ("L104", ERROR, "`update-portal` works the same whichever source it downloads from: the temp download path (`TEMP_DIR=`, `DOWNLOAD_FILE=`) and the argument parse are set up at top level, not inside the branch that resolves a GitHub release, and the script refuses to finish with an empty installed `portal-aio/VERSION`. With `PORTAL_DOWNLOAD_URL` set, all three lived only in the other branch: curl wrote the archive to `/` and the script overwrote VERSION with an empty string, and an empty VERSION makes every later first boot report \"No portal VERSION file found\" and skip portal updates for the life of the instance. Found while verifying portal v3.1.7 through that override"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -4238,8 +4239,35 @@ def check_convert_builds_the_mirror(repo: Path) -> Iterable[Finding]:
                       "mirror the engine's site-packages")
 
 
+def check_update_portal_paths_agree(repo: Path) -> Iterable[Finding]:
+    """L104 (repo) — update-portal sets up its download and its argument parse on every
+    path, and never finishes with an empty installed VERSION."""
+    path = repo / "ROOT" / "opt" / "instance-tools" / "bin" / "update-portal"
+    if not path.exists():
+        return
+    rel = "ROOT/opt/instance-tools/bin/update-portal"
+    # A bash comment starts at a `#` that begins a word; `$#` is not one.
+    lines = [re.sub(r"(^|\s)#.*$", "", l).rstrip() for l in path.read_text().splitlines()]
+    def top(pattern):
+        return any(re.match(pattern, l) for l in lines)
+    for var in ("TEMP_DIR", "DOWNLOAD_FILE"):
+        if not top(rf"^{var}="):
+            yield Finding("L104", ERROR, "repo", rel,
+                          f"`{var}` is not assigned at top level, so a download from "
+                          f"PORTAL_DOWNLOAD_URL runs without it (L104)")
+    if not top(r"^while \[\[ \$# -gt 0 \]\]"):
+        yield Finding("L104", ERROR, "repo", rel,
+                      "the argument parse is not at top level, so `-v` is ignored on the "
+                      "PORTAL_DOWNLOAD_URL path (L104)")
+    if not re.search(r"-s\s+\"?[^\s\"]*portal-aio/VERSION", "\n".join(lines)):
+        yield Finding("L104", ERROR, "repo", rel,
+                      "nothing refuses an empty installed portal-aio/VERSION, which makes "
+                      "every later first boot skip portal updates (L104)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
-    check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port,
+    check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
+    check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
     check_no_template_declares_unsecured, check_bind_address_reads_the_local_field,
     check_fail_later_arity, check_curl_status_capture,
