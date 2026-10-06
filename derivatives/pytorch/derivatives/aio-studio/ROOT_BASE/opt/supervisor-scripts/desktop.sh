@@ -63,14 +63,11 @@ wait_file() {
 }
 
 # Apply WIDTHxHEIGHT to the Xvfb screen (run as 'user' on the desktop DISPLAY).
-# Prefer Selkies' resize helper when present; otherwise fall back to a direct
-# xrandr resize. Selkies ships amd64-only release artifacts, so on arches that
-# lack it (e.g. aarch64/sbsa) this keeps the desktop from staying at Xvfb's
-# full 8192x4096 startup framebuffer.
+# Prefer Selkies' resize helper; fall back to a direct xrandr resize.
 resize_display() {
     local target="$1"
-    if [[ -x /usr/local/bin/selkies-gstreamer-resize ]]; then
-        DISPLAY="${DISPLAY}" runuser -u user -- /usr/local/bin/selkies-gstreamer-resize "${target}" >/dev/null 2>&1
+    if [[ -x /usr/bin/selkies-resize ]]; then
+        DISPLAY="${DISPLAY}" runuser -u user -- /usr/bin/selkies-resize "${target}" >/dev/null 2>&1
         return
     fi
     DISPLAY="${DISPLAY}" runuser -u user -- bash -c '
@@ -111,9 +108,6 @@ export DISPLAY_REFRESH="${DISPLAY_REFRESH:-60}"
 export DISPLAY_DPI="${DISPLAY_DPI:-96}"
 export DISPLAY_CDEPTH="${DISPLAY_CDEPTH:-24}"
 export VGL_DISPLAY="${VGL_DISPLAY:-egl}"
-export GSTREAMER_PATH="${GSTREAMER_PATH:-/opt/gstreamer}"
-export SELKIES_ENABLE_RESIZE="${SELKIES_ENABLE_RESIZE:-false}"
-export SELKIES_ENABLE_BASIC_AUTH="${SELKIES_ENABLE_BASIC_AUTH:-false}"
 export __GL_SYNC_TO_VBLANK="${__GL_SYNC_TO_VBLANK:-0}"
 export PIPEWIRE_LATENCY="${PIPEWIRE_LATENCY:-128/48000}"
 export PIPEWIRE_RUNTIME_DIR="${PIPEWIRE_RUNTIME_DIR:-/run/user/1001}"
@@ -196,7 +190,9 @@ export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.debug=false;qt.qpa.*=false}"
 export GTK_IM_MODULE="${GTK_IM_MODULE:-fcitx}"
 export QT_IM_MODULE="${QT_IM_MODULE:-fcitx}"
 export SHELL="${SHELL:-/bin/bash}"
-run_bg_user "kde" /usr/bin/startplasma-x11
+# The desktop's applications reach the client's camera and gamepads through Selkies'
+# interposers, inherited from the session (ADR 0050).
+run_bg_user "kde" env LD_PRELOAD="$(. /opt/supervisor-scripts/utils/selkies.sh; selkies_session_preload)" /usr/bin/startplasma-x11
 
 # --- 7. VNC ---
 VNC_PASS="${VNC_PASSWORD:-$OPEN_BUTTON_TOKEN}"
@@ -206,81 +202,23 @@ run_bg_user "x11vnc" /usr/bin/x11vnc \
     -rfbport 5900 -rfbauth "${XDG_RUNTIME_DIR}/.vncpasswd"
 log "VNC server listening on :5900"
 
-# Selkies (and its TURN companion) are skipped if the binary isn't present —
-# upstream only publishes amd64 release artifacts, so non-amd64 builds (e.g.
-# aarch64/sbsa Grace Blackwell) ship without it. VNC remains the remote-access
-# path; the resize loop is also Selkies-specific and is skipped together.
-if command -v selkies-gstreamer >/dev/null 2>&1; then
-    # --- 8. TURN server (for Selkies WebRTC NAT traversal) ---
-    export TURN_HOST="${TURN_HOST:-${PUBLIC_IPADDR:-localhost}}"
-    export TURN_PORT="${TURN_PORT:-${VAST_TCP_PORT_73478:-73478}}"
-    export TURN_USERNAME="${TURN_USERNAME:-turnuser}"
-    export TURN_PASSWORD="${TURN_PASSWORD:-${OPEN_BUTTON_TOKEN:-password}}"
+# --- 8. Selkies streaming and its TURN server (ADR 0050) ---
+# The shared library decides the transport from what Caddy serves (HTTPS ->
+# WebSocket; plain HTTP with 73478 and 73479/udp mapped -> WebRTC through coturn) and
+# starts coturn only when WebRTC needs it. Both run as the desktop user.
+run_bg_user "coturn" bash -c '. /opt/supervisor-scripts/utils/selkies.sh; selkies_plan; selkies_coturn'
+run_bg_user "selkies" bash -c '. /opt/supervisor-scripts/utils/selkies.sh
+    selkies_wait_caddyfile; selkies_plan; selkies_exec'
 
-    if [[ -n "${VAST_UDP_PORT_73478:-}" ]]; then
-        export TURN_PROTOCOL="${TURN_PROTOCOL:-udp}"
-    else
-        export TURN_PROTOCOL="${TURN_PROTOCOL:-tcp}"
-    fi
-
-    if [[ -z "${TURN_SERVER:-}" ]]; then
-        log "Starting TURN server (${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT})"
-        run_bg "coturn" turnserver -n -a \
-            --log-file=stdout --lt-cred-mech --fingerprint \
-            --no-stun --no-multicast-peers --no-cli --no-tlsv1 --no-tlsv1_1 \
-            --realm="vast.ai" \
-            --user="${TURN_USERNAME}:${TURN_PASSWORD}" \
-            -p "${VAST_UDP_PORT_73478:-${VAST_TCP_PORT_73478:-73478}}" \
-            -X "${PUBLIC_IPADDR:-localhost}"
-    else
-        log "Using external TURN server: ${TURN_SERVER}"
-    fi
-
-    # --- 9. Selkies GStreamer (low-latency WebRTC streaming) ---
-    . /opt/gstreamer/gst-env 2>/dev/null || true
-    rm -rf "${HOME}/.cache/gstreamer-1.0"
-    log "Starting Selkies streaming (encoder: ${SELKIES_ENCODER:-x264enc}, TURN: ${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT})"
-    run_bg_user "selkies" selkies-gstreamer \
-        --addr="127.0.0.1" \
-        --port="16100" \
-        --enable_https=false \
-        --encoder="${SELKIES_ENCODER:-x264enc}" \
-        --enable_basic_auth=false \
-        --enable_resize=false \
-        --turn_host="${TURN_HOST}" \
-        --turn_port="${TURN_PORT}" \
-        --turn_protocol="${TURN_PROTOCOL}" \
-        --turn_username="${TURN_USERNAME}" \
-        --turn_password="${TURN_PASSWORD}"
-else
-    log "Selkies not installed (arch=$(uname -m)); skipping Selkies + TURN. VNC remains available."
-fi
-
-# --- Persistent display resize ---
-# Xvfb starts at its full 8192x4096 framebuffer, so the target resolution must
-# be applied after start. Selkies (when present) also resets the resolution
-# when its pipeline (re)initializes, so this background loop monitors and
-# re-applies. Runs on all arches; resize_display falls back to xrandr where
-# Selkies' own resize helper is unavailable.
-(
-    TARGET="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
-    while true; do
-        CURRENT=$(DISPLAY=${DISPLAY} runuser -u user -- xrandr 2>/dev/null | grep '\*' | awk '{print $1}')
-        if [[ "$CURRENT" != "$TARGET" ]]; then
-            resize_display "$TARGET" && echo "[desktop] Display resized to $TARGET"
-        fi
-        sleep 5
-    done
-) &
-PIDS+=($!)
+# --- Initial display size ---
+# Xvfb starts at its full 8192x4096 framebuffer. Apply the target once; after that
+# Selkies fits the display to the browser window.
+resize_display "${DISPLAY_SIZEW}x${DISPLAY_SIZEH}" && log "Display resized to ${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
 
 # --- All services started ---
 log "=========================================="
 log "Desktop stack ready"
-if command -v selkies-gstreamer >/dev/null 2>&1; then
-    log "  Selkies (WebRTC): http://localhost:16100"
-    log "  TURN:             ${TURN_PROTOCOL}://${TURN_HOST}:${TURN_PORT}"
-fi
+log "  Selkies:          http://localhost:16100 (transport logged by selkies)"
 log "  VNC:              vnc://localhost:5900"
 log "  Resolution:       ${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
 log "=========================================="

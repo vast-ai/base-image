@@ -4,7 +4,7 @@
 source "$(dirname "$0")/../lib.sh"
 
 # WHAT THIS BASE IS FOR. Two things: the shared torch venvs (10-base-venvs) and the
-# desktop infrastructure — selkies-gstreamer, VirtualGL, Chrome and the supervisor
+# desktop infrastructure — Selkies, VirtualGL, Chrome and the supervisor
 # program that ties them together. The desktop is the reason this base is large enough
 # to be worth caching separately, so a base that built without it is the wrong artifact
 # even though `docker build` succeeded.
@@ -42,13 +42,34 @@ done
 
 echo ""
 echo "  -- desktop stack --"
-# selkies is what 05-aio-studio-env.sh gates the Desktop PORTAL entry on: absent, the
-# entry is silently stripped and the Desktop button disappears with no error anywhere.
-# That makes its absence exactly the kind of failure a gate should catch.
-if command -v selkies-gstreamer >/dev/null 2>&1; then
-    echo "  selkies-gstreamer: on PATH"
+# Selkies backs the Desktop portal entry. It must run, not just exist: the .deb's venv
+# runs on the system Python, so a base that moved Python breaks it with the binary
+# still on PATH. The GPU-node shim is what lets subset-GPU rentals use NVENC (ADR 0050).
+if selkies_version="$(selkies --version 2>&1 | tail -n1)" && [[ $selkies_version == selkies\ * ]]; then
+    echo "  selkies: ${selkies_version}"
 else
-    fail_later "selkies" "selkies-gstreamer is not on PATH — 05-aio-studio-env.sh will strip the Desktop portal entry and the button will simply vanish"
+    fail_later "selkies" "selkies does not run (${selkies_version:-not on PATH}); the Desktop portal entry has nothing behind it"
+fi
+# The client's camera and gamepads reach desktop applications only through these, preloaded
+# into the KDE session; without them the camera arrives at Selkies and no application sees it.
+for lib in selkies_input_interposer selkies_v4l2_interposer; do
+    if compgen -G "/usr/lib/*/${lib}.so" >/dev/null; then
+        echo "  ${lib}: present"
+    else
+        fail_later "selkies-${lib}" "${lib}.so is missing; the desktop's applications cannot see the client's camera or gamepads"
+    fi
+done
+# GStreamer applications (Cheese and the like) find the client's camera only as the
+# "Selkies Virtual Camera" PipeWire node, which needs the PipeWire GStreamer plugin.
+if compgen -G "/usr/lib/*/gstreamer-1.0/libgstpipewire.so" >/dev/null; then
+    echo "  gstreamer pipewire plugin: present"
+else
+    fail_later "gst-pipewire" "libgstpipewire.so is missing; GStreamer applications cannot see the client's camera"
+fi
+if [[ -r /usr/local/lib/selkies/nvreach.so ]]; then
+    echo "  nvreach shim: present"
+else
+    fail_later "selkies-nvreach" "/usr/local/lib/selkies/nvreach.so is missing; subset-GPU rentals will encode in software"
 fi
 
 # VirtualGL is what gives the desktop GPU-accelerated GL; without it the desktop starts

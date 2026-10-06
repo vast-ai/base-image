@@ -108,8 +108,8 @@ RUN \
         libva2 libvdpau-va-gl1 libvdpau1 libwayland-egl1 \
         libx11-6 libx11-xcb1 libxcb-dri3-0 libxcb1 libxdamage1 \
         libxext6 libxfixes3 libxtst6 libxv1 \
-        novnc pipewire pipewire-audio-client-libraries pipewire-pulse \
-        websockify wireplumber wmctrl \
+        pipewire pipewire-audio-client-libraries pipewire-pulse gstreamer1.0-pipewire \
+        wireplumber wmctrl \
         x11-apps x11-utils x11-xkb-utils x11-xserver-utils x11vnc \
         xauth xcvt xdg-user-dirs xdg-utils xdotool xfonts-base \
         xinit xkb-data xclip xsel xserver-xorg-core \
@@ -126,7 +126,6 @@ RUN \
     else \
         apt-get install --no-install-recommends -y "${BASE_PACKAGES[@]}"; \
     fi && \
-    ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Vulkan & EGL fallback configs
@@ -152,46 +151,33 @@ RUN \
     fi && \
     rm -f /tmp/virtualgl* && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# NVIDIA VAAPI driver (build + clean)
+# Selkies 2.0, pinned with a per-arch checksum (ADR 0050): upstream deletes old releases
+# and changes behaviour under unchanged flag names, so it is never fetched from
+# releases/latest. The .deb carries its own venv at /opt/selkies on the system Python.
+# Version and digests are identical to linux-desktop's (L102).
+ARG SELKIES_VERSION=2.0.0
+ARG SELKIES_SHA256_AMD64=bbaa4d71012b9374a753b7dfddc1da07e31f34b04277fe4fb3d045f18fd88391
+ARG SELKIES_SHA256_ARM64=3900f3ba805898c495829629092553cc1cf4d5a864ffc4056f57d21646ad45e4
+COPY ./selkies/nvreach.c /tmp/nvreach.c
 RUN \
     set -euo pipefail && \
-    apt-get update && apt-get install --no-install-recommends -y \
-        meson pkg-config libc6-dev libegl-dev libglvnd-dev libva-dev \
-        libopenh264-dev libvpx-dev libvulkan-dev libwayland-dev \
-        libxrandr-dev libgstreamer-plugins-bad1.0-dev libffmpeg-nvenc-dev \
-        wayland-protocols libelf-dev && \
-    NVIDIA_VAAPI_DRIVER_VERSION="$(curl -fsSL "https://api.github.com/repos/elFarto/nvidia-vaapi-driver/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
-    cd /tmp && \
-    curl -fsSL "https://github.com/elFarto/nvidia-vaapi-driver/archive/v${NVIDIA_VAAPI_DRIVER_VERSION}.tar.gz" | tar -xzf - && \
-    cd nvidia-vaapi-driver* && \
-    meson setup build && meson install -C build && \
-    rm -rf /tmp/* && \
-    apt-get purge -y --auto-remove \
-        meson libegl-dev libglvnd-dev libva-dev libopenh264-dev \
-        libvpx-dev libvulkan-dev libwayland-dev libxrandr-dev \
-        libgstreamer-plugins-bad1.0-dev libffmpeg-nvenc-dev \
-        wayland-protocols libelf-dev && \
+    arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+        amd64) sha="${SELKIES_SHA256_AMD64}" ;; \
+        arm64) sha="${SELKIES_SHA256_ARM64}" ;; \
+        *) echo "FATAL: no Selkies checksum for ${arch}"; exit 1 ;; \
+    esac && \
+    deb="selkies-${SELKIES_VERSION}-ubuntu$(. /etc/os-release && echo "${VERSION_ID}")-${arch}.deb" && \
+    curl -fsSL -o "/tmp/${deb}" "https://github.com/selkies-project/selkies/releases/download/${SELKIES_VERSION}/${deb}" && \
+    echo "${sha}  /tmp/${deb}" | sha256sum -c - && \
+    apt-get update && \
+    apt-get install --no-install-recommends -y "/tmp/${deb}" && \
+    rm -f "/tmp/${deb}" && \
+    selkies --version 2>&1 | grep -qx "selkies ${SELKIES_VERSION}" && \
+    mkdir -p /usr/local/lib/selkies && \
+    gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o /usr/local/lib/selkies/nvreach.so /tmp/nvreach.c -ldl && \
+    rm -f /tmp/nvreach.c && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Selkies GStreamer (low-latency WebRTC streaming) — amd64 only (upstream
-# only publishes amd64 release artifacts). On other arches (e.g. aarch64/sbsa
-# for Grace Blackwell) skip; desktop.sh detects the missing binary at runtime
-# and falls back to VNC.
-RUN \
-    set -euo pipefail && \
-    if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then \
-        SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies-gstreamer/releases/latest" | jq -r '.tag_name' | sed 's/[^0-9\.\-]*//g')" && \
-        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).tar.gz" | tar -xzf - && \
-        cd /tmp && curl -O -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" && \
-        pip3 install --no-cache-dir --force-reinstall "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" "websockets<14.0" && \
-        rm -f *.whl && \
-        cd /opt && curl -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" | tar -xzf - && \
-        cd /tmp && curl -o selkies-js-interposer.deb -fsSL "https://github.com/selkies-project/selkies-gstreamer/releases/download/v${SELKIES_VERSION}/selkies-js-interposer_v${SELKIES_VERSION}_ubuntu$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"')_$(dpkg --print-architecture).deb" && \
-        apt-get update && apt-get install --no-install-recommends -y ./selkies-js-interposer.deb && \
-        rm -f *.deb && apt-get clean && rm -rf /var/lib/apt/lists/*; \
-    else \
-        echo "Skipping Selkies install on $(dpkg --print-architecture)"; \
-    fi
 
 # KDE Plasma desktop environment
 RUN \
@@ -222,9 +208,6 @@ ENV DISPLAY_REFRESH=60
 ENV DISPLAY_DPI=96
 ENV DISPLAY_CDEPTH=24
 ENV VGL_DISPLAY=egl
-ENV SELKIES_ENABLE_RESIZE=false
-ENV SELKIES_ENABLE_BASIC_AUTH=false
-ENV GSTREAMER_PATH=/opt/gstreamer
 ENV DESKTOP_SESSION=plasma
 ENV XDG_SESSION_DESKTOP=KDE
 ENV XDG_CURRENT_DESKTOP=KDE

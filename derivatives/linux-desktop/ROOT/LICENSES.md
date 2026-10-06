@@ -6,12 +6,13 @@ the vendor's source or LICENSE file is shipped inside this image at a known
 location, the path is given. Otherwise, the upstream repository is referenced
 as the canonical source for the license text.
 
-## Selkies-GStreamer
+## Selkies
 
 - **License:** MPL-2.0
-- **Upstream:** https://github.com/selkies-project/selkies-gstreamer
-- **License file in image:** Included in the pip-installed package under
-  `/usr/lib/python3/dist-packages/selkies_gstreamer-*.dist-info/LICENSE`
+- **Upstream:** https://github.com/selkies-project/selkies
+- **License file in image:**
+  `/opt/selkies/lib/python3.12/site-packages/selkies-*.dist-info/licenses/LICENSE`
+  (the `.deb` installs Selkies into its own venv at `/opt/selkies`)
 
 ## Apache Guacamole
 

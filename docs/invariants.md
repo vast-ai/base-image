@@ -1856,6 +1856,55 @@ too, which turns the check off: a foreign Origin carrying valid Basic credential
   understands it (portal v3.1.7 and later). An older portal ignores it and the app's
   WebSockets fail as before.
 
+### Selkies is pinned, identical across desktop images, and installed wherever they build — ADR 0050, **GATED (L102, L103)**
+
+Selkies 2.0 shipped on 2026-09-23 and upstream deleted every 1.x release (and 1.x left
+PyPI). Both desktop images fetched `releases/latest` and broke the same day.
+
+- **L102.** Every Dockerfile that installs Selkies carries a concrete
+  `ARG SELKIES_VERSION`, per-arch `ARG SELKIES_SHA256_{AMD64,ARM64}` checked with
+  `sha256sum -c`, and no `releases/latest` lookup; all of them carry the same version
+  and digests. This amends ADR 0027's float-by-default convention for this artifact:
+  2.0 changes behaviour under unchanged flag names (1.x `x264enc` is now hardware-first
+  `h264enc`; unknown flags only warn), so a float changes what ships with no build signal.
+- **L103.** No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed.
+  The 1.x images stripped the Desktop route when `selkies-gstreamer` was absent; 2.0
+  renamed the binary, so the strip would have deleted the route silently. A route the
+  image ships is installed on every arch it builds.
+- **Shared, held identical by test** (`test_selkies_sh.py`, `test_selkies_nvreach.py`):
+  `opt/supervisor-scripts/utils/selkies.sh` (the launch plan),
+  `etc/vast_boot.d/05-caddy-host-passthrough.sh`, and `selkies/nvreach.c`.
+- **The transport follows what Caddy serves**, not `ENABLE_HTTPS`: Caddy serves TLS only
+  when `ENABLE_HTTPS` is true AND a usable certificate exists, and the supervisor
+  scripts reload the template's original `ENABLE_HTTPS` from `/etc/environment`. The
+  WebSocket client needs a secure context (WebCodecs); plain HTTP with the TURN ports
+  (73478 and 73479/udp) mapped streams over WebRTC through the in-image coturn.
+- **An old portal is named, not silent.** Caddy forwards the browser's Host to Selkies only
+  from portal v3.1.7; an image built on an older base gets it from the first-boot update,
+  which can be skipped. The launcher warns when `/opt/portal-aio/VERSION` predates v3.1.7.
+- **Microphone, camera and gamepads reach the desktop's applications.** The launcher enables
+  the microphone and camera on `demand` (upstream defaults leave both off; the toggle alone
+  delivered silence live). The KDE session preloads the input and V4L2 interposers
+  (`selkies_session_preload`), which Selkies is told about but never loads. Held by
+  `test_selkies_sh.py`; aio-base QA checks both interposers ship.
+- **The RTC config is always written.** With no TURN it holds no servers; otherwise
+  Selkies falls back to a public relay (verified live).
+- **coturn** runs as the desktop user, never with `allow-loopback-peers`, denies
+  private ranges except the container's own addresses, and keeps its credential off
+  argv. TCP takes directive 73478 and UDP takes 73479 (Vast refuses one number mapped for
+  both protocols, L106); each maps to its own 1:1 port, and each TURN URL carries its own.
+- **nvreach** (`/usr/local/lib/selkies/nvreach.so`, preloaded into Selkies only) makes
+  `access(F_OK)` on a `/dev/nvidiaN` that refuses `open()` report absent. On a subset-GPU
+  rental every node exists and the cgroup refuses the unallocated ones, so pixelflux's
+  multi-GPU NVENC filter never installed. Deleting the nodes is no fix: any root
+  NVML/CUDA process, the portal's GPU metrics among them, re-creates them. Remove the
+  shim when the pinned Selkies `.deb` bundles a pixelflux release containing commit `7f8369e`
+  (selkies-project/pixelflux#44, merged 2026-10-05; Selkies 2.0.0 bundles pixelflux 2.1.0, which
+  predates it).
+
+NOT gated: whether NVENC is actually used on a given host, which is runtime behaviour;
+the selkies log names the encoder (`Encoder: NVENC ...` or `software`).
+
 ### A vLLM-derived image ships the engine's audio extra — **GATED (L096)**
 
 vLLM registers `/v1/audio/transcriptions` (>= v0.7.3) and `/v1/audio/translations`

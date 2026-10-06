@@ -3,7 +3,7 @@
 
 ## What is this template?
 
-This template gives you a **full Linux desktop environment** running in a Docker container. Access your desktop through a low-latency WebRTC interface (Selkies) or traditional VNC. It's perfect for GPU-accelerated applications, 3D modeling, video editing, or any workflow that needs a graphical interface.
+This template gives you a **full Linux desktop environment** running in a Docker container. Access your desktop through a low-latency streaming interface (Selkies) or traditional VNC. It's perfect for GPU-accelerated applications, 3D modeling, video editing, or any workflow that needs a graphical interface.
 
 **Think:** *"Your own private Linux workstation in the cloud with GPU acceleration."*
 
@@ -15,7 +15,7 @@ This template gives you a **full Linux desktop environment** running in a Docker
 
 - **Run GPU-accelerated desktop applications** like Blender, video editors, or 3D modeling software
 - **Access a full desktop** through your web browser with audio support
-- **Use multiple connection methods** - WebRTC, VNC, or SSH
+- **Use multiple connection methods** - Selkies, VNC, or SSH
 - **Install any Linux software** with root access
 - **Sync files across devices** with built-in Syncthing
 - **Terminal access** with root privileges for installing additional software
@@ -45,7 +45,7 @@ The desktop environment will initialize automatically *(this takes a couple of m
 **Easy access:** Just click the **"Open"** button - authentication is handled automatically!
 
 Choose your preferred connection method:
-- **Selkies Desktop** (port 6100) - Best performance, audio support, WebRTC
+- **Selkies Desktop** (port 6100) - Best performance, audio support, hardware video encoding
 - **Guacamole VNC** (port 6200) - Browser-based VNC, good compatibility
 - **Direct VNC** (port 5900) - Use your preferred VNC client
 
@@ -55,15 +55,21 @@ Choose your preferred connection method:
 
 ## Connection Methods
 
-### **Selkies WebRTC**
+### **Selkies Desktop**
 
 This is the most performant interface. It has audio support and is very responsive, but requires a fast and stable connection between your computer and the instance.
 
-Only a single user can connect to this interface at once.
+**How it streams depends on how you open it:**
+- **Over HTTPS** (`ENABLE_HTTPS=true` with the [Vast.ai certificate](https://docs.vast.ai/instances/jupyter) installed, or through a tunnel) it streams over a WebSocket on the same port. This is the best experience and needs nothing else.
+- **Over plain HTTP** your browser withholds the video decoder this mode needs, so the desktop streams over WebRTC instead, through the TURN server included in the image. This needs ports `73478` (TCP) and `73479/udp` mapped in your template. Without them, the page asks you to switch to HTTPS.
 
-The `x264enc` encoder is selected as the default for best compatibility, but you may change this to `nvh264enc` for best performance.
+Set `SELKIES_MODE=webrtc` or `SELKIES_MODE=websockets` to choose the transport yourself.
 
-A TURN server is included in the docker image, but if you would like to use your own TURN server, you can do so by specifying the `TURN_HOST`, `TURN_PORT`, `TURN_PROTOCOL`, `TURN_USERNAME` & `TURN_PASSWORD` environment variables.
+**Microphone and camera** from your browser are passed into the desktop. Your browser is asked for them only while an application on the desktop is recording, and they are released shortly after it stops. The camera appears to applications as `/dev/video0` and the microphone as the default input. Set `SELKIES_MICROPHONE_ON_START` or `SELKIES_WEBCAM_ON_START` to `true` (ask on connect) or `false` (side-panel toggle only) to change that.
+
+**Video encoding** uses the GPU's hardware encoder (NVENC) wherever it works, including instances given only some of a machine's GPUs, and falls back to software encoding otherwise. GPUs without a video encoder (A100, H100, H200) always encode in software.
+
+To use your own TURN server instead of the included one, set `TURN_HOST`, `TURN_PORT`, `TURN_PROTOCOL`, `TURN_USERNAME` and `TURN_PASSWORD` (or the `SELKIES_TURN_*` equivalents).
 
 ### **Guacamole VNC**
 
@@ -145,13 +151,14 @@ If both are set, the manifest runs first and the script runs as its final phase.
 | `PORTAL_CONFIG` | See docs | Configures the Instance Portal and application startup |
 | `PROVISIONING_MANIFEST` | | URL or path to a declarative YAML provisioning manifest (recommended; e.g. `provisioning/pinokio.yaml`) |
 | `PROVISIONING_SCRIPT` | | URL pointing to a shell script (GitHub Repo, Gist) |
-| `SELKIES_ENCODER` | `x264enc` | Video encoder (`x264enc` or `nvh264enc`) |
+| `SELKIES_ENCODER` | `h264enc` | Video encoder: `h264enc` (hardware where available), `h265enc`, `vp8enc`, `vp9enc`, `av1enc`, `jpeg` |
+| `SELKIES_MODE` | chosen at launch | Force the transport: `websockets` or `webrtc` |
 | `VNC_PASSWORD` | `$OPEN_BUTTON_TOKEN` | Custom password for VNC connections |
-| `TURN_HOST` | `$PUBLIC_IPADDR` | TURN host |
-| `TURN_PORT` | `$VAST_TCP_PORT_73478` | TURN port |
-| `TURN_PROTOCOL` | `tcp` | TURN protocol |
-| `TURN_USERNAME` | `turnuser` | TURN username |
-| `TURN_PASSWORD` | `$OPEN_BUTTON_TOKEN` | TURN password |
+| `TURN_HOST` | | Use your own TURN server instead of the included one |
+| `TURN_PORT` | `3478` | Your TURN server's port |
+| `TURN_PROTOCOL` | `udp` | Your TURN server's protocol (`udp` or `tcp`) |
+| `TURN_USERNAME` | | Your TURN server's username |
+| `TURN_PASSWORD` | | Your TURN server's password |
 
 ---
 

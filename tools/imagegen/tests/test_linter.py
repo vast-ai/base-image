@@ -5284,3 +5284,97 @@ def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
     text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n",
                   "# venv-mirror build used to run here\n", _real_convert())
     assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+# --- L102 / L103: the Selkies 2.0 migration (ADR 0050) ---------------------------- #
+
+_SELKIES_DFS = ("derivatives/linux-desktop/Dockerfile",
+                "derivatives/pytorch/derivatives/aio-studio/Dockerfile.base")
+
+
+def _selkies_tree(tmp_path):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    for rel in _SELKIES_DFS:
+        (work / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(repo / rel, work / rel)
+    return repo, work
+
+
+def test_L102_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_selkies_pinned(repo)) == []
+
+
+@pytest.mark.parametrize("old,new,needle", [
+    ("ARG SELKIES_VERSION=2.0.0\n",
+     'RUN SELKIES_VERSION="$(curl -fsSL https://api.github.com/repos/selkies-project/selkies/releases/latest | jq -r .tag_name)"\n',
+     "releases/latest"),
+    ('echo "${sha}  /tmp/${deb}" | sha256sum -c - && \\\n', "", "sha256sum -c"),
+    ("ARG SELKIES_VERSION=2.0.0\n", "ARG SELKIES_VERSION=2.0.1\n", "disagree"),
+])
+def test_L102_real_tree_catches_a_floating_or_drifting_pin(tmp_path, old, new, needle):
+    """The incident: upstream deleted every 1.x release, and both images fetched
+    releases/latest. Each corruption of linux-desktop's real Dockerfile must fire."""
+    _, work = _selkies_tree(tmp_path)
+    df = work / _SELKIES_DFS[0]
+    text = df.read_text()
+    assert old in text
+    df.write_text(text.replace(old, new, 1))
+    msgs = [f.msg for f in L.check_selkies_pinned(work) if f.severity == L.ERROR]
+    assert any(needle in m for m in msgs), msgs
+
+
+def test_L103_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_no_route_strip_on_binary_probe(repo)) == []
+
+
+_L103_1X_STAGE = """#!/bin/bash
+# Strip the Selkies "Desktop" entry (internal port 16100) when the binary
+# isn't installed.
+if [[ -n "$PORTAL_CONFIG" ]] && ! command -v selkies-gstreamer >/dev/null 2>&1; then
+    PORTAL_CONFIG=$(echo "$PORTAL_CONFIG" | tr '|' '\\n' | grep -v ':16100:' | tr '\\n' '|' | sed 's/|$//')
+fi
+"""
+
+
+def test_L103_catches_the_strip_this_migration_removed(tmp_path):
+    """The 1.x stage, verbatim in its logic: it stripped the Desktop route whenever
+    `selkies-gstreamer` was absent, and under 2.0's renamed binary that silently deletes
+    the route. Inlined so the mutation runs in a shallow CI checkout and after merge."""
+    stage = tmp_path / "base-image/derivatives/linux-desktop/ROOT/etc/vast_boot.d/05-desktop-env.sh"
+    stage.parent.mkdir(parents=True)
+    stage.write_text(_L103_1X_STAGE)
+    errs = list(L.check_no_route_strip_on_binary_probe(tmp_path / "base-image"))
+    assert [f.code for f in errs] == ["L103"], errs
+
+
+# --- L106: no template maps one port for both TCP and UDP --------------------------- #
+
+def test_L106_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_no_port_mapped_for_both_protocols(repo)) == []
+
+
+_L106_TPL = "derivatives/pytorch/derivatives/aio-studio/templates/aio-studio-base-qa/template.yml"
+
+
+@pytest.mark.parametrize("extra,fires", [
+    ('  - "73478:73478"\n  - "73478:73478/udp"\n', True),
+    ('  - "73478:73478/tcp"\n  - "73478:73478/udp"\n', True),
+    ('  - "73478:73478"\n  - "73479:73479/udp"\n', False),
+])
+def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
+    """The incident: the desktop QA templates mapped TURN as 73478/tcp and 73478/udp,
+    which Vast's port validator refuses. Corrupt the real aio-studio base QA template."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    tpl = work / _L106_TPL
+    tpl.parent.mkdir(parents=True)
+    text = (repo / _L106_TPL).read_text()
+    anchor = '  - "6100:6100"'
+    assert anchor in text
+    tpl.write_text(text.replace(anchor, extra + anchor, 1))
+    codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
+    assert codes == (["L106"] if fires else []), codes

@@ -92,12 +92,13 @@ as the canonical source for the license text.
 - **Upstream:** https://github.com/fspecii/ace-step-ui
 - **License file in image:** N/A (upstream ships no LICENSE file)
 
-## Selkies-GStreamer
+## Selkies
 
 - **License:** MPL-2.0
-- **Upstream:** https://github.com/selkies-project/selkies-gstreamer
-- **License file in image:** Included in the pip-installed package under
-  `/usr/lib/python3/dist-packages/selkies_gstreamer-*.dist-info/LICENSE`
+- **Upstream:** https://github.com/selkies-project/selkies
+- **License file in image:**
+  `/opt/selkies/lib/python3.12/site-packages/selkies-*.dist-info/licenses/LICENSE`
+  (the `.deb` installs Selkies into its own venv at `/opt/selkies`)
 
 ## Blender
 
