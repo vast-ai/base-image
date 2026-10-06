@@ -1,5 +1,50 @@
 #!/bin/bash
 
+# Double-quote VALUE (of variable NAME) for /etc/environment so that sourcing
+# expands only plain references to other variables, `$OTHER` and `${OTHER}`, and
+# keeps everything else literal (ADR 0052): `;`, quotes, backticks, `$(...)` and
+# every other `$` form. `\$` gives a literal `$`. A reference to NAME itself
+# stays literal, because Docker has already replaced the value it would extend.
+_vast_env_quote() {
+    local name="$1" v="$2" out="" tok
+    local plain='^[^\\"`$]+' ref='^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))'
+    while [[ -n "$v" ]]; do
+        if [[ "$v" =~ $plain ]]; then
+            tok=${BASH_REMATCH[0]}; out+=$tok
+        elif [[ "$v" == '\$'* ]]; then
+            tok='\$'; out+=$tok
+        elif [[ "$v" =~ $ref ]] && [[ "${BASH_REMATCH[2]}${BASH_REMATCH[3]}" != "$name" ]]; then
+            tok=${BASH_REMATCH[0]}; out+=$tok
+        else
+            tok=${v:0:1}; out+="\\$tok"
+        fi
+        v=${v:${#tok}}
+    done
+    printf '"%s"' "$out"
+}
+
+# Print the current environment as /etc/environment lines, one per variable.
+# A value with a control character (newline, tab) is written fully literal in
+# bash's $'...' form, so it stays on one line. Names that are not shell
+# identifiers cannot be sourced, so they are skipped.
+_vast_dump_env() {
+    local line name value
+    env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
+        name=${line%%=*}
+        value=${line#*=}
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        if [[ "$value" == *[[:cntrl:]]* ]]; then
+            printf -v value '%q' "$value"
+        else
+            value=$(_vast_env_quote "$name" "$value")
+        fi
+        printf '%s=%s\n' "$name" "$value"
+    done
+}
+
+# Load the function only (the test sources the shipped file this way).
+[[ -n "${_VAST_PREP_ENV_LIB_ONLY:-}" ]] && return 0
+
 mkdir -p "${WORKSPACE}"
 cd "${WORKSPACE}"
 
@@ -37,11 +82,7 @@ if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment;
     echo "$message" > /etc/environment
     echo 'PATH="/opt/instance-tools/bin:/opt/sys-venv/shim:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
         >> /etc/environment
-    env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
-            name=${line%%=*}
-            value=${line#*=}
-            printf '%s="%s"\n' "$name" "$value"
-        done >> /etc/environment
+    _vast_dump_env >> /etc/environment
 fi
 
 # Source the file at /etc/environment - We can now edit environment variables in a running instance

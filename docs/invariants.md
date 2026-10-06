@@ -676,6 +676,20 @@ nothing. It self-skips when the flags are off, which is correct for every other
 image, so `base-qa` names it in `INSTANCE_TEST_REQUIRE_PASS` where that would be
 a hole (ADR 0019).
 
+### The launch environment is written literally, except plain references — **enforced by test (ADR 0052)**
+
+`10-prep-env.sh` dumps the launch env into `/etc/environment`, which the boot shell,
+login shells and supervisor scripts all source. When sourced, only `$OTHER` and
+`${OTHER}` expand (a documented feature). `\$` is a literal `$`, a self-reference stays
+literal, and everything else (`;`, quotes, backticks, `\`, `$(...)`, every other `$`
+form) comes back as Docker passed it. Nothing in a value runs. A value with a control
+character is written fully literal as `$'...'`. Each variable stays on one `^NAME=`
+line, which ADR 0014's `_vast_user_set` depends on. Names that are not shell
+identifiers are skipped. `tools/imagegen/tests/test_prep_env_sh.py` sources the
+shipped functions and catches four mutations: old unescaped quoting, fully literal
+quoting, an unescaped `$` and an allowed self-reference. Not statically gated: the
+property is about what bash does with the output, so only executing it proves it.
+
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
 
 Auditing the whole image surface for the pattern behind L069 and L071 —
