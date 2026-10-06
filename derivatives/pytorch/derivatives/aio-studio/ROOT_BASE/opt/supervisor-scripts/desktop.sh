@@ -204,7 +204,7 @@ log "VNC server listening on :5900"
 
 # --- 8. Selkies streaming and its TURN server (ADR 0050) ---
 # The shared library decides the transport from what Caddy serves (HTTPS ->
-# WebSocket; plain HTTP with the 73478 ports mapped -> WebRTC through coturn) and
+# WebSocket; plain HTTP with 73478 and 73479/udp mapped -> WebRTC through coturn) and
 # starts coturn only when WebRTC needs it. Both run as the desktop user.
 run_bg_user "coturn" bash -c '. /opt/supervisor-scripts/utils/selkies.sh; selkies_plan; selkies_coturn'
 run_bg_user "selkies" bash -c '. /opt/supervisor-scripts/utils/selkies.sh

@@ -61,7 +61,7 @@ This is the most performant interface. It has audio support and is very responsi
 
 **How it streams depends on how you open it:**
 - **Over HTTPS** (`ENABLE_HTTPS=true` with the [Vast.ai certificate](https://docs.vast.ai/instances/jupyter) installed, or through a tunnel) it streams over a WebSocket on the same port. This is the best experience and needs nothing else.
-- **Over plain HTTP** your browser withholds the video decoder this mode needs, so the desktop streams over WebRTC instead, through the TURN server included in the image. This needs the `73478` TCP and UDP ports mapped in your template. Without them, the page asks you to switch to HTTPS.
+- **Over plain HTTP** your browser withholds the video decoder this mode needs, so the desktop streams over WebRTC instead, through the TURN server included in the image. This needs ports `73478` (TCP) and `73479/udp` mapped in your template. Without them, the page asks you to switch to HTTPS.
 
 Set `SELKIES_MODE=webrtc` or `SELKIES_MODE=websockets` to choose the transport yourself.
 

@@ -52,8 +52,9 @@ selkies_https_effective() {
 }
 
 # TURN, in order: a server the user configured (SELKIES_TURN_HOST or legacy TURN_HOST),
-# else the in-image coturn when Vast mapped the 73478 directive (TCP and UDP get
-# different 1:1 ports), else none. A bare legacy TURN_SERVER only ever meant "do not
+# else the in-image coturn when Vast mapped its directives, else none. TCP and UDP use
+# separate directives, 73478/tcp and 73479/udp: Vast refuses one port number mapped for
+# both protocols. A bare legacy TURN_SERVER only ever meant "do not
 # start coturn", so on its own it disables TURN rather than naming a server.
 selkies_turn_plan() {
     SELKIES_PLAN_TURN=none
@@ -73,10 +74,10 @@ selkies_turn_plan() {
         SELKIES_PLAN_TURN_PASS=${SELKIES_TURN_PASSWORD:-${TURN_PASSWORD:-}}
     elif [[ -n ${TURN_SERVER:-} ]]; then
         echo "selkies: TURN_SERVER is set without TURN_HOST; the in-image TURN server stays off"
-    elif [[ -n ${PUBLIC_IPADDR:-} && ( -n ${VAST_UDP_PORT_73478:-} || -n ${VAST_TCP_PORT_73478:-} ) ]]; then
+    elif [[ -n ${PUBLIC_IPADDR:-} && ( -n ${VAST_UDP_PORT_73479:-} || -n ${VAST_TCP_PORT_73478:-} ) ]]; then
         SELKIES_PLAN_TURN=self
         SELKIES_PLAN_TURN_HOST=$PUBLIC_IPADDR
-        SELKIES_PLAN_TURN_UDP=${VAST_UDP_PORT_73478:-}
+        SELKIES_PLAN_TURN_UDP=${VAST_UDP_PORT_73479:-}
         SELKIES_PLAN_TURN_TCP=${VAST_TCP_PORT_73478:-}
         SELKIES_PLAN_TURN_USER=selkies
         SELKIES_PLAN_TURN_PASS=$(selkies_turn_secret)
@@ -189,10 +190,10 @@ selkies_exec() {
     if [[ $SELKIES_PLAN_MODE == websockets && $SELKIES_PLAN_HTTPS != true ]]; then
         echo "selkies: this page is served over plain HTTP, where browsers withhold the video decoder the"
         echo "selkies: stream needs. Install the console certificate and set ENABLE_HTTPS=true, or map the"
-        echo "selkies: 73478 TURN ports so the desktop can stream over WebRTC instead."
+        echo "selkies: TURN ports 73478 and 73479/udp so the desktop can stream over WebRTC instead."
     elif [[ $SELKIES_PLAN_MODE == webrtc && $SELKIES_PLAN_TURN == none ]]; then
         echo "selkies: WebRTC is forced but no TURN server is available; browsers outside this host's"
-        echo "selkies: network will not connect. Map the 73478 ports or set TURN_HOST."
+        echo "selkies: network will not connect. Map 73478 and 73479/udp, or set TURN_HOST."
     fi
     # Selkies reads these fallback names too; a value inherited from the template would
     # silently move its routes, port, or auth.

@@ -5348,3 +5348,33 @@ def test_L103_catches_the_strip_this_migration_removed(tmp_path):
     stage.write_text(_L103_1X_STAGE)
     errs = list(L.check_no_route_strip_on_binary_probe(tmp_path / "base-image"))
     assert [f.code for f in errs] == ["L103"], errs
+
+
+# --- L106: no template maps one port for both TCP and UDP --------------------------- #
+
+def test_L106_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_no_port_mapped_for_both_protocols(repo)) == []
+
+
+_L106_TPL = "derivatives/pytorch/derivatives/aio-studio/templates/aio-studio-base-qa/template.yml"
+
+
+@pytest.mark.parametrize("extra,fires", [
+    ('  - "73478:73478"\n  - "73478:73478/udp"\n', True),
+    ('  - "73478:73478/tcp"\n  - "73478:73478/udp"\n', True),
+    ('  - "73478:73478"\n  - "73479:73479/udp"\n', False),
+])
+def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
+    """The incident: the desktop QA templates mapped TURN as 73478/tcp and 73478/udp,
+    which Vast's port validator refuses. Corrupt the real aio-studio base QA template."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    tpl = work / _L106_TPL
+    tpl.parent.mkdir(parents=True)
+    text = (repo / _L106_TPL).read_text()
+    anchor = '  - "6100:6100"'
+    assert anchor in text
+    tpl.write_text(text.replace(anchor, extra + anchor, 1))
+    codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
+    assert codes == (["L106"] if fires else []), codes

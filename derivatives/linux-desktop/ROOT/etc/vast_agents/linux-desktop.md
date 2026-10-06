@@ -9,8 +9,9 @@ endpoint; it's an interactive GUI to drive visually or automate. Built on the
 **Browser delivery paths** (both arches):
 - **Selkies** (internal port 16100): low-latency streaming with audio. Over HTTPS it
   streams over a WebSocket on that port; over plain HTTP it streams over WebRTC through
-  the in-image TURN server (`coturn`), which needs the 73478 TCP/UDP ports mapped. The
-  choice is logged at launch as `selkies: transport=...`; `SELKIES_MODE` overrides it.
+  the in-image TURN server (`coturn`), which needs ports 73478 (TCP) and 73479/udp
+  mapped. The choice is logged at launch as `selkies: transport=...`; `SELKIES_MODE`
+  overrides it.
   Encoding is NVENC where it works and software otherwise; the chosen encoder is logged
   as `Encoder: ...` in `/var/log/selkies.log`.
   The browser's microphone is the desktop's default input (`SelkiesVirtualMic`) and its

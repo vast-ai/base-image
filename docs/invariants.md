@@ -1877,8 +1877,8 @@ PyPI). Both desktop images fetched `releases/latest` and broke the same day.
 - **The transport follows what Caddy serves**, not `ENABLE_HTTPS`: Caddy serves TLS only
   when `ENABLE_HTTPS` is true AND a usable certificate exists, and the supervisor
   scripts reload the template's original `ENABLE_HTTPS` from `/etc/environment`. The
-  WebSocket client needs a secure context (WebCodecs); plain HTTP with the 73478 ports
-  mapped streams over WebRTC through the in-image coturn.
+  WebSocket client needs a secure context (WebCodecs); plain HTTP with the TURN ports
+  (73478 and 73479/udp) mapped streams over WebRTC through the in-image coturn.
 - **An old portal is named, not silent.** Caddy forwards the browser's Host to Selkies only
   from portal v3.1.7; an image built on an older base gets it from the first-boot update,
   which can be skipped. The launcher warns when `/opt/portal-aio/VERSION` predates v3.1.7.
@@ -1891,7 +1891,8 @@ PyPI). Both desktop images fetched `releases/latest` and broke the same day.
   Selkies falls back to a public relay (verified live).
 - **coturn** runs as the desktop user, never with `allow-loopback-peers`, denies
   private ranges except the container's own addresses, and keeps its credential off
-  argv. TCP and UDP 73478 map to different 1:1 ports; each TURN URL carries its own.
+  argv. TCP takes directive 73478 and UDP takes 73479 (Vast refuses one number mapped for
+  both protocols, L106); each maps to its own 1:1 port, and each TURN URL carries its own.
 - **nvreach** (`/usr/local/lib/selkies/nvreach.so`, preloaded into Selkies only) makes
   `access(F_OK)` on a `/dev/nvidiaN` that refuses `open()` report absent. On a subset-GPU
   rental every node exists and the cgroup refuses the unallocated ones, so pixelflux's
