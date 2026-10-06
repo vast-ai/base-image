@@ -1829,7 +1829,7 @@ Dockerfiles. NOT gated: a new upstream origin check. No QA cell sends a WebSocke
 POST through Caddy with a browser Origin, which is how aio-studio `2026-09-15` shipped
 with a broken Wan2GP.
 
-### An app that enforces same-origin itself gets the browser's Host, not a rewrite — ADR 0050, **enforced by portal-aio test_caddy_config_manager.py**
+### An app that enforces same-origin itself gets the browser's Host, not a rewrite — ADR 0050, **config shape enforced by portal-aio test_caddy_config_manager.py; the app's Origin refusal by aio-studio-base QA (aio-base.d/25-selkies-live), not gated on linux-desktop**
 
 Selkies 2.0 compares the browser's `Origin` with `Host` and refuses a mismatch. Behind
 Caddy's default `Host: localhost:<port>` it refused every browser WebSocket (verified

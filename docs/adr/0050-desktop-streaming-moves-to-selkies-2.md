@@ -8,6 +8,9 @@
 - **Affects:** `derivatives/linux-desktop`, and the aio-studio base
   (`derivatives/pytorch/derivatives/aio-studio/Dockerfile.base`, `ROOT_BASE/`) plus the
   aio-studio app layer that boots it.
+- **Rollout:** in two steps. The portal part (`CADDY_HOST_PASSTHROUGH`, portal v3.1.7) ships first;
+  everything else this ADR decides (the Selkies install, the launch library, coturn, the nvreach
+  shim, L102/L103 and the QA cell) takes effect with the desktop-image change that follows it.
 
 ## Context
 
@@ -202,11 +205,14 @@ instances established the facts this decision rests on:
    That includes the boot-time downgrade to false when no usable certificate exists (stage
    55). A launcher that sees a stale `true` from `/etc/environment` would pick WebSockets on a
    plain-HTTP instance.
-2. **Host passthrough is scoped to the Desktop route, covered by a test, and released first.**
+2. **Host passthrough is scoped to the Desktop route, tested, and released first.**
    It ships as portal v3.1.7 (`CADDY_HOST_PASSTHROUGH`), which instances pick up at first boot;
-   no Selkies 2.0 image is promoted before that release is out, or its WebSockets fail as before. The test checks
-   that a foreign Origin with valid credentials is refused and a same-origin request is
-   upgraded. No other app's Host behaviour changes.
+   no Selkies 2.0 image is promoted before that release is out, or its WebSockets fail as before.
+   The portal unit tests enforce the config shape: a listed port gets no Host or Origin rewrite
+   and every other port keeps its rewrite. The behaviour that rests on it (same-origin upgraded,
+   foreign Origin with valid credentials refused) is Selkies' own and is enforced by the
+   aio-studio-base QA cell (`aio-base.d/25-selkies-live`); linux-desktop has no QA gate, so
+   there it is not gated. No other app's Host behaviour changes.
 3. **The shim is inert outside the case it fixes.** It affects only `access(F_OK)` on
    `/dev/nvidia<N>`, passes everything else through, is preloaded into Selkies (its child
    processes inherit it, harmlessly), and has a test. A full allocation and a CPU-only instance behave exactly as without it.
