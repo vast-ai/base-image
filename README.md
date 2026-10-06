@@ -242,7 +242,7 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 | Argument | Description |
 |----------|-------------|
 | `--no-user-keys` | Skip SSH key propagation to the `user` account |
-| `--no-export-env` | Don't export environment variables to `/etc/environment` |
+| `--no-export-env` | Don't load `/etc/environment` and `${WORKSPACE}/.env` into the boot shell or users' `.bashrc`. The file is still written at first boot, and Supervisor services still load it |
 | `--no-cert-gen` | Skip TLS certificate generation |
 | `--no-update-portal` | Don't check for Instance Portal updates |
 | `--no-update-vast` | Don't check for Vast CLI updates |
