@@ -104,6 +104,7 @@ RUN \
         libxv1 \
         pipewire \
         pipewire-audio-client-libraries \
+        gstreamer1.0-pipewire \
         pipewire-pulse \
         python3-gi \
         python3-numpy \

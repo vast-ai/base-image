@@ -108,7 +108,7 @@ RUN \
         libva2 libvdpau-va-gl1 libvdpau1 libwayland-egl1 \
         libx11-6 libx11-xcb1 libxcb-dri3-0 libxcb1 libxdamage1 \
         libxext6 libxfixes3 libxtst6 libxv1 \
-        pipewire pipewire-audio-client-libraries pipewire-pulse \
+        pipewire pipewire-audio-client-libraries pipewire-pulse gstreamer1.0-pipewire \
         wireplumber wmctrl \
         x11-apps x11-utils x11-xkb-utils x11-xserver-utils x11vnc \
         xauth xcvt xdg-user-dirs xdg-utils xdotool xfonts-base \

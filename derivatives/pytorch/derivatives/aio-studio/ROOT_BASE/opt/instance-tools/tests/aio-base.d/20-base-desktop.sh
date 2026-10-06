@@ -59,6 +59,13 @@ for lib in selkies_input_interposer selkies_v4l2_interposer; do
         fail_later "selkies-${lib}" "${lib}.so is missing; the desktop's applications cannot see the client's camera or gamepads"
     fi
 done
+# GStreamer applications (Cheese and the like) find the client's camera only as the
+# "Selkies Virtual Camera" PipeWire node, which needs the PipeWire GStreamer plugin.
+if compgen -G "/usr/lib/*/gstreamer-1.0/libgstpipewire.so" >/dev/null; then
+    echo "  gstreamer pipewire plugin: present"
+else
+    fail_later "gst-pipewire" "libgstpipewire.so is missing; GStreamer applications cannot see the client's camera"
+fi
 if [[ -r /usr/local/lib/selkies/nvreach.so ]]; then
     echo "  nvreach shim: present"
 else
