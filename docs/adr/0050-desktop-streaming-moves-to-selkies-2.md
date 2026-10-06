@@ -196,6 +196,15 @@ instances established the facts this decision rests on:
   - The shim is removed when the pinned Selkies carries that change. #44 merged on 2026-10-05
     as pixelflux commit `7f8369e`; Selkies 2.0.0 bundles pixelflux 2.1.0, which predates it, so
     the shim stays until a Selkies release bundles a pixelflux release containing that commit.
+- **Microphone, camera and gamepads.** Selkies starts with the microphone and camera enabled
+  and on `demand`: the browser is asked only while an application in the desktop records from
+  them. Upstream's defaults leave both off, and on a live instance the side-panel toggle alone
+  delivered silence while a mic requested by the page carried speech. The desktop session
+  preloads Selkies' input and V4L2 interposers, so applications see the client's camera as
+  `/dev/video0` and gamepads under `/dev/input` with no kernel device; Selkies is told about them
+  (`SELKIES_INTERPOSER`) but never loads them, since their hooks block its event loop.
+  `/dev/input` is created at boot. Upstream's fake libudev, which lets SDL-style applications
+  discover the pads, is not shipped in the `.deb` and is not built here.
 - **Desktop route.** The boot stages stop removing the Desktop portal entry based on a 1.x
   binary name. Selkies is installed wherever the image builds.
 

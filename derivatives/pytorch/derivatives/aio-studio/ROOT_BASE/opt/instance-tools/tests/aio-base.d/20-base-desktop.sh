@@ -50,6 +50,15 @@ if selkies_version="$(selkies --version 2>&1 | tail -n1)" && [[ $selkies_version
 else
     fail_later "selkies" "selkies does not run (${selkies_version:-not on PATH}); the Desktop portal entry has nothing behind it"
 fi
+# The client's camera and gamepads reach desktop applications only through these, preloaded
+# into the KDE session; without them the camera arrives at Selkies and no application sees it.
+for lib in selkies_input_interposer selkies_v4l2_interposer; do
+    if compgen -G "/usr/lib/*/${lib}.so" >/dev/null; then
+        echo "  ${lib}: present"
+    else
+        fail_later "selkies-${lib}" "${lib}.so is missing; the desktop's applications cannot see the client's camera or gamepads"
+    fi
+done
 if [[ -r /usr/local/lib/selkies/nvreach.so ]]; then
     echo "  nvreach shim: present"
 else

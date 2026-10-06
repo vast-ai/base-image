@@ -65,6 +65,8 @@ This is the most performant interface. It has audio support and is very responsi
 
 Set `SELKIES_MODE=webrtc` or `SELKIES_MODE=websockets` to choose the transport yourself.
 
+**Microphone and camera** from your browser are passed into the desktop. Your browser is asked for them only while an application on the desktop is recording, and they are released shortly after it stops. The camera appears to applications as `/dev/video0` and the microphone as the default input. Set `SELKIES_MICROPHONE_ON_START` or `SELKIES_WEBCAM_ON_START` to `true` (ask on connect) or `false` (side-panel toggle only) to change that.
+
 **Video encoding** uses the GPU's hardware encoder (NVENC) wherever it works, including instances given only some of a machine's GPUs, and falls back to software encoding otherwise. GPUs without a video encoder (A100, H100, H200) always encode in software.
 
 To use your own TURN server instead of the included one, set `TURN_HOST`, `TURN_PORT`, `TURN_PROTOCOL`, `TURN_USERNAME` and `TURN_PASSWORD` (or the `SELKIES_TURN_*` equivalents).

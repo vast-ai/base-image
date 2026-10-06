@@ -1882,6 +1882,11 @@ PyPI). Both desktop images fetched `releases/latest` and broke the same day.
 - **An old portal is named, not silent.** Caddy forwards the browser's Host to Selkies only
   from portal v3.1.7; an image built on an older base gets it from the first-boot update,
   which can be skipped. The launcher warns when `/opt/portal-aio/VERSION` predates v3.1.7.
+- **Microphone, camera and gamepads reach the desktop's applications.** The launcher enables
+  the microphone and camera on `demand` (upstream defaults leave both off; the toggle alone
+  delivered silence live). The KDE session preloads the input and V4L2 interposers
+  (`selkies_session_preload`), which Selkies is told about but never loads. Held by
+  `test_selkies_sh.py`; aio-base QA checks both interposers ship.
 - **The RTC config is always written.** With no TURN it holds no servers; otherwise
   Selkies falls back to a public relay (verified live).
 - **coturn** runs as the desktop user, never with `allow-loopback-peers`, denies

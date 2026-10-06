@@ -7,10 +7,17 @@
 #   selkies_write_rtc       write the RTC config Selkies reads (never the public relay)
 #   selkies_exec            exec Selkies on loopback with the GPU-node shim preloaded
 #   selkies_coturn          run coturn when the plan uses the in-image TURN server
+#   selkies_session_preload LD_PRELOAD for the desktop session's applications
 
 SELKIES_INTERNAL_PORT=16100
 SELKIES_RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/selkies"
 SELKIES_NVREACH=/usr/local/lib/selkies/nvreach.so
+# The client's camera and gamepads reach the desktop's applications only through these
+# interposers (no kernel device in a container). `$LIB` is the dynamic loader's token, so
+# 32-bit applications get the 32-bit build; the shell must leave it unexpanded.
+SELKIES_INPUT_INTERPOSER='/usr/$LIB/selkies_input_interposer.so'
+SELKIES_V4L2_INTERPOSER='/usr/$LIB/selkies_v4l2_interposer.so'
+SELKIES_INTERPOSER_DIRS=/usr/lib
 SELKIES_PORTAL_VERSION_FILE=/opt/portal-aio/VERSION
 SELKIES_PORTAL_MIN=v3.1.7
 
@@ -190,6 +197,19 @@ selkies_exec() {
     # Selkies reads these fallback names too; a value inherited from the template would
     # silently move its routes, port, or auth.
     unset SUBFOLDER CUSTOM_WS_PORT PASSWORD PASSWD DRI_NODE AUTO_GPU
+    # Microphone and camera are on, and asked of the browser only while an application in
+    # the desktop records from them (released ten seconds after it stops). Upstream's
+    # defaults leave both off, and the side-panel toggle alone delivered silence.
+    export SELKIES_MICROPHONE_ENABLED="${SELKIES_MICROPHONE_ENABLED:-true}"
+    export SELKIES_MICROPHONE_ON_START="${SELKIES_MICROPHONE_ON_START:-demand}"
+    export SELKIES_WEBCAM_ENABLED="${SELKIES_WEBCAM_ENABLED:-true}"
+    export SELKIES_WEBCAM_ON_START="${SELKIES_WEBCAM_ON_START:-demand}"
+    # Selkies serves gamepads and the camera to applications through the interposers, and
+    # must know it; but their process-wide hooks would block its own event loop, so they
+    # are never preloaded into Selkies itself.
+    export SELKIES_INTERPOSER="$SELKIES_INPUT_INTERPOSER"
+    export SELKIES_WEBCAM_INTERPOSER="$SELKIES_V4L2_INTERPOSER"
+    LD_PRELOAD=$(selkies_drop_interposers "${LD_PRELOAD:-}")
     # 1.x encoder names; h264enc is hardware-first with a software fallback in 2.0.
     case ${SELKIES_ENCODER:-} in
         x264enc|nvh264enc|vah264enc) export SELKIES_ENCODER=h264enc ;;
@@ -206,6 +226,35 @@ selkies_exec() {
         --enable-dual-mode="${SELKIES_PLAN_DUAL}" \
         --rtc-config-json="${SELKIES_PLAN_RTC}" \
         "$@"
+}
+
+# Drop the interposers from a preload list, keeping anything else an operator set.
+selkies_drop_interposers() {
+    local entry kept="" IFS=:
+    for entry in $1; do
+        case $entry in
+            "$SELKIES_INPUT_INTERPOSER"|"$SELKIES_V4L2_INTERPOSER"|*/selkies_input_interposer.so|*/selkies_v4l2_interposer.so) ;;
+            "") ;;
+            *) kept="${kept:+$kept:}$entry" ;;
+        esac
+    done
+    printf '%s' "$kept"
+}
+
+# LD_PRELOAD for the desktop session: the interposers that are installed, then whatever
+# was already preloaded. Applications inherit it from the session, so a camera appears as
+# /dev/video0 and gamepads as /dev/input nodes with no kernel device.
+selkies_session_preload() {
+    local libs=() name existing
+    for name in selkies_input_interposer selkies_v4l2_interposer; do
+        if compgen -G "${SELKIES_INTERPOSER_DIRS}/*/${name}.so" >/dev/null; then
+            [[ $name == selkies_input_interposer ]] && libs+=("$SELKIES_INPUT_INTERPOSER") || libs+=("$SELKIES_V4L2_INTERPOSER")
+        fi
+    done
+    existing=$(selkies_drop_interposers "${LD_PRELOAD:-}")
+    [[ -n $existing ]] && libs+=("$existing")
+    local IFS=:
+    printf '%s' "${libs[*]}"
 }
 
 # coturn relays for the browser only when the plan runs it, one listener per mapped

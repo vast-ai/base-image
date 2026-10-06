@@ -74,7 +74,10 @@ def bash(code: str, tmp_path: Path, env: dict | None = None) -> str:
     for name in ("selkies", "turnserver"):
         p = stub / name
         p.write_text('#!/bin/bash\nprintf "%s\\n" "$0" "$@"\nprintf "LD_PRELOAD=%s SUBFOLDER=%s ENCODER=%s\\n" '
-                     '"${LD_PRELOAD-}" "${SUBFOLDER-<unset>}" "${SELKIES_ENCODER-}"\n')
+                     '"${LD_PRELOAD-}" "${SUBFOLDER-<unset>}" "${SELKIES_ENCODER-}"\n'
+                     'printf "MIC=%s/%s CAM=%s/%s INTERPOSER=%s\\n" "${SELKIES_MICROPHONE_ENABLED-}" '
+                     '"${SELKIES_MICROPHONE_ON_START-}" "${SELKIES_WEBCAM_ENABLED-}" '
+                     '"${SELKIES_WEBCAM_ON_START-}" "${SELKIES_INTERPOSER-}"\n')
         p.chmod(0o755)
     full = {"PATH": f"{stub}:/usr/bin:/bin", "XDG_RUNTIME_DIR": str(tmp_path / "run")}
     full.update(env or {})
@@ -239,3 +242,53 @@ def test_launch_warns_when_the_portal_predates_host_passthrough(tmp_path, versio
     vf.write_text(version + "\n")
     out = bash(f'SELKIES_PORTAL_VERSION_FILE="{vf}"; selkies_check_portal; true', tmp_path)
     assert ("predates v3.1.7" in out) == warns
+
+
+def test_launch_turns_mic_and_camera_on_demand_and_keeps_interposers_out_of_selkies(tmp_path):
+    """Upstream's defaults leave the microphone and camera off, and the side-panel toggle
+    alone delivered silence on a live instance. Selkies must know the interposers carry
+    gamepads and the camera, but never load them: their hooks block its event loop."""
+    out = bash('SELKIES_NVREACH=/dev/null; selkies_plan /nonexistent; selkies_exec', tmp_path,
+               {"LD_PRELOAD": "/usr/$LIB/selkies_v4l2_interposer.so:/keep.so"}).splitlines()
+    assert "MIC=true/demand CAM=true/demand INTERPOSER=/usr/$LIB/selkies_input_interposer.so" in out
+    preload = next(l for l in out if l.startswith("LD_PRELOAD="))
+    assert "interposer" not in preload and "/keep.so" in preload
+    templated = bash('SELKIES_NVREACH=/dev/null; selkies_plan /nonexistent; selkies_exec', tmp_path,
+                     {"SELKIES_MICROPHONE_ON_START": "false"}).splitlines()
+    assert any(l.startswith("MIC=true/false ") for l in templated), "a template setting must win"
+
+
+def test_desktop_session_preloads_the_installed_interposers(tmp_path):
+    """The desktop's applications find the client's camera at /dev/video0, and gamepads
+    under /dev/input, only through these; `$LIB` must reach the loader unexpanded."""
+    libdir = tmp_path / "usrlib/x86_64-linux-gnu"
+    libdir.mkdir(parents=True)
+    for n in ("selkies_input_interposer", "selkies_v4l2_interposer"):
+        (libdir / f"{n}.so").write_text("")
+    out = bash(f'SELKIES_INTERPOSER_DIRS="{tmp_path}/usrlib"; selkies_session_preload', tmp_path,
+               {"LD_PRELOAD": "/usr/$LIB/selkies_input_interposer.so:/vgl.so"})
+    assert out == ("/usr/$LIB/selkies_input_interposer.so:/usr/$LIB/selkies_v4l2_interposer.so"
+                   ":/vgl.so")
+    assert bash('SELKIES_INTERPOSER_DIRS=/nonexistent; selkies_session_preload', tmp_path,
+                {"LD_PRELOAD": "/vgl.so"}) == "/vgl.so"
+
+
+def test_every_desktop_session_starts_with_the_interposers():
+    launches = [
+        REPO / "derivatives/linux-desktop/ROOT/opt/supervisor-scripts/kde.sh",
+        REPO / "derivatives/pytorch/derivatives/aio-studio/ROOT_BASE/opt/supervisor-scripts/desktop.sh",
+    ]
+    for f in launches:
+        text = f.read_text()
+        start = text.index("startplasma-x11")
+        assert "selkies_session_preload" in text[max(0, start - 400):start], f
+
+
+INPUT_STAGE = "etc/vast_boot.d/05-selkies-input-dir.sh"
+
+
+def test_every_desktop_image_creates_dev_input_for_the_gamepad_interposer():
+    stages = [REPO / "derivatives/linux-desktop/ROOT" / INPUT_STAGE,
+              REPO / "derivatives/pytorch/derivatives/aio-studio/ROOT_BASE" / INPUT_STAGE]
+    assert len({p.read_bytes() for p in stages}) == 1
+    assert "mkdir -pm1777 /dev/input" in stages[0].read_text()

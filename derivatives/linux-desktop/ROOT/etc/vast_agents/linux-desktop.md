@@ -13,6 +13,10 @@ endpoint; it's an interactive GUI to drive visually or automate. Built on the
   choice is logged at launch as `selkies: transport=...`; `SELKIES_MODE` overrides it.
   Encoding is NVENC where it works and software otherwise; the chosen encoder is logged
   as `Encoder: ...` in `/var/log/selkies.log`.
+  The browser's microphone is the desktop's default input (`SelkiesVirtualMic`) and its
+  camera is `/dev/video0` for applications started in the KDE session (through an
+  interposer, so it does not exist in an SSH shell). Both are requested only while an
+  application records.
 - **Guacamole** HTML5 VNC (Tomcat, internal 16200).
 
 Either way `x11vnc` also serves the raw display on `:5900` for a native VNC client

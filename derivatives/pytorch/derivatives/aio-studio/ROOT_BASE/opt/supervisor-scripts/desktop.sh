@@ -190,7 +190,9 @@ export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.debug=false;qt.qpa.*=false}"
 export GTK_IM_MODULE="${GTK_IM_MODULE:-fcitx}"
 export QT_IM_MODULE="${QT_IM_MODULE:-fcitx}"
 export SHELL="${SHELL:-/bin/bash}"
-run_bg_user "kde" /usr/bin/startplasma-x11
+# The desktop's applications reach the client's camera and gamepads through Selkies'
+# interposers, inherited from the session (ADR 0050).
+run_bg_user "kde" env LD_PRELOAD="$(. /opt/supervisor-scripts/utils/selkies.sh; selkies_session_preload)" /usr/bin/startplasma-x11
 
 # --- 7. VNC ---
 VNC_PASS="${VNC_PASSWORD:-$OPEN_BUTTON_TOKEN}"
