@@ -21,7 +21,8 @@ double quotes bash still evaluates `$`, backticks and `\`, and a `"` ends the st
 | `a;b` | `a;b` (literal; `;` is harmless inside `"..."`) |
 | `$WORKSPACE/models` | the expanded path |
 | `` `cmd` `` or `$(cmd)` | the output of `cmd`, which runs at every boot and every login |
-| `say "hi"` | `say hi` followed by a failed command |
+| `say "hi"` | `say hi` |
+| `say "hi there"` | empty, and `there` runs as a command |
 | a value containing a newline | extra lines; a line shaped like `NAME=...` becomes its own variable |
 
 Docker passes these values through unchanged, so the image was the only layer altering
