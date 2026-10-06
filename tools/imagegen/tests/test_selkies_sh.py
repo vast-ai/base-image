@@ -9,7 +9,8 @@ decides, at launch, what the browser can actually use:
   * the WebSocket client needs a secure context, so plain HTTP with TURN available
     streams over WebRTC instead;
   * the RTC config is always written, so the built-in public relay is never used;
-  * TCP and UDP 73478 map to different 1:1 ports, so each TURN URL carries its own;
+  * TURN uses directive 73478 for TCP and 73479 for UDP (Vast refuses one number
+    mapped for both); each maps to its own 1:1 port, and each TURN URL carries its own;
   * coturn never relays to loopback or private ranges, except this container.
 
 The library is sourced from the shipped file, so the text under test is the text
@@ -113,8 +114,8 @@ def test_https_is_caddys_tls_decision_for_the_selkies_site(tmp_path):
 
 @pytest.mark.parametrize("caddy,env,mode,dual", [
     (TLS_SITE, {}, "websockets", "false"),
-    (TLS_SITE, {"VAST_UDP_PORT_73478": "21361", "PUBLIC_IPADDR": "203.0.113.7"}, "websockets", "true"),
-    (TLS_ELSEWHERE, {"VAST_UDP_PORT_73478": "21361", "PUBLIC_IPADDR": "203.0.113.7"}, "webrtc", "false"),
+    (TLS_SITE, {"VAST_UDP_PORT_73479": "21361", "PUBLIC_IPADDR": "203.0.113.7"}, "websockets", "true"),
+    (TLS_ELSEWHERE, {"VAST_UDP_PORT_73479": "21361", "PUBLIC_IPADDR": "203.0.113.7"}, "webrtc", "false"),
     (TLS_ELSEWHERE, {}, "websockets", "false"),
     (TLS_ELSEWHERE, {"SELKIES_MODE": "websockets", "VAST_TCP_PORT_73478": "21345",
                      "PUBLIC_IPADDR": "203.0.113.7"}, "websockets", "false"),
@@ -137,7 +138,7 @@ def test_rtc_config_without_turn_holds_no_servers(tmp_path):
 
 
 def test_rtc_config_gives_udp_and_tcp_their_own_ports(tmp_path):
-    cfg = rtc(tmp_path, VAST_UDP_PORT_73478="21361", VAST_TCP_PORT_73478="21345",
+    cfg = rtc(tmp_path, VAST_UDP_PORT_73479="21361", VAST_TCP_PORT_73478="21345",
               PUBLIC_IPADDR="203.0.113.7")
     urls = [u for s in cfg["iceServers"] for u in s["urls"]]
     assert "turn:203.0.113.7:21361?transport=udp" in urls
@@ -158,7 +159,7 @@ def test_rtc_config_stays_valid_json_for_any_credential(tmp_path):
 def test_bare_turn_server_only_keeps_coturn_off(tmp_path):
     """1.x's TURN_SERVER meant "do not start coturn"; it never named a usable server."""
     got = plan(tmp_path, TLS_ELSEWHERE, TURN_SERVER="turn:relay.example:3478",
-               VAST_UDP_PORT_73478="21361", PUBLIC_IPADDR="203.0.113.7")
+               VAST_UDP_PORT_73479="21361", PUBLIC_IPADDR="203.0.113.7")
     assert got["turn"] == "none"
 
 
@@ -172,7 +173,7 @@ def test_last_boots_caddyfile_does_not_count(tmp_path):
 
 def test_coturn_never_relays_to_loopback_or_private_ranges(tmp_path):
     out = bash("selkies_plan /nonexistent; selkies_coturn", tmp_path,
-               {"VAST_UDP_PORT_73478": "21361", "VAST_TCP_PORT_73478": "21345",
+               {"VAST_UDP_PORT_73479": "21361", "VAST_TCP_PORT_73478": "21345",
                 "PUBLIC_IPADDR": "203.0.113.7"})
     assert "turnserver" in out and "-c" in out
     udp = (tmp_path / "run/selkies/turnserver-udp.conf").read_text().splitlines()

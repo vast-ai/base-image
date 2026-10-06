@@ -34,7 +34,7 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 
 | Application | Description | Port | Supervisor Service |
 |------------|-------------|------|-------------------|
-| Desktop (KDE + [Blender](https://www.blender.org/)) | GPU-accelerated remote desktop (Selkies; WebSocket over HTTPS, WebRTC over plain HTTP with the 73478 ports mapped) | 16100 | `desktop` |
+| Desktop (KDE + [Blender](https://www.blender.org/)) | GPU-accelerated remote desktop (Selkies; WebSocket over HTTPS, WebRTC over plain HTTP with ports 73478 and 73479/udp mapped) | 16100 | `desktop` |
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Node-based image/video generation | 18188 | `comfyui` |
 | [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) | Stable Diffusion WebUI (classic) | 17860 | `forge` |
 | [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | Video generation (Wan 2.x) | 17861 | `wan2gp` |
