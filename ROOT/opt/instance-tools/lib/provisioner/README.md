@@ -306,7 +306,7 @@ def run(config: dict, context: ExtensionContext, dry_run: bool = False) -> None:
 
 **Error handling:** Extension failure is **fail-fast** — if an extension raises, the provisioner aborts before any other phase runs. This prevents partial provisioning when discovery fails.
 
-**Built-in extension — `provisioner_comfyui`:** Parses ComfyUI workflow JSON files (GUI format) to automatically discover required models and custom nodes. For each workflow URL, it downloads the JSON, extracts model download URLs from `nodes[].properties.models[]`, resolves custom node git repos via the [ComfyUI Registry API](https://registry.comfy.org), and appends them to `manifest.downloads` and `manifest.git_repos`. Workflows are also saved to `{comfyui_dir}/user/default/workflows/` via `write_files_late`. Additional workflow URLs can be provided at runtime via `PROVISIONING_COMFYUI_WORKFLOWS` (semicolon-delimited).
+**Built-in extension — `provisioner_comfyui`:** Parses ComfyUI workflow JSON files (GUI format) to automatically discover required models and custom nodes. For each workflow URL, it downloads the JSON, extracts model download URLs from `nodes[].properties.models[]`, resolves custom node git repos via the [ComfyUI Registry API](https://registry.comfy.org), and appends them to `manifest.downloads` and `manifest.git_repos`. Workflows are also saved to `{comfyui_dir}/user/default/workflows/` via `write_files_late`. Additional workflow URLs can be provided at runtime via `PROVISIONING_COMFYUI_WORKFLOWS` (comma-separated, see [Separating entries](#separating-entries)).
 
 ```yaml
 extensions:
@@ -513,11 +513,11 @@ env_merge:
   EXTRA_DOWNLOADS: downloads
 ```
 
-Parses environment variables as semicolon-separated `url|path` entries and appends them to the `downloads` list at runtime. Only the `"downloads"` target is supported.
+Parses environment variables as comma-separated `url|path` entries ([Separating entries](#separating-entries)) and appends them to the `downloads` list at runtime. Only the `"downloads"` target is supported.
 
 ```bash
 # Example:
-export HF_MODELS="https://hf.co/org/model/resolve/main/a.safetensors|/workspace/models/a.safetensors;https://hf.co/org/model/resolve/main/b.safetensors|/workspace/models/b.safetensors"
+export HF_MODELS="https://hf.co/org/model/resolve/main/a.safetensors|/workspace/models/a.safetensors,https://hf.co/org/model/resolve/main/b.safetensors|/workspace/models/b.safetensors"
 ```
 
 Lines starting with `#` are treated as comments and skipped. Entries without `|` are warned and skipped.
@@ -623,14 +623,25 @@ This replaces the legacy `75-provisioning-script.sh` boot script. Existing scrip
 
 | Env var | Target | Format | Example |
 |---------|--------|--------|---------|
-| `PROVISIONING_DOWNLOADS` | `downloads` | `url\|dest;...` | `https://x.com/m.bin\|/models/m.bin;https://y.com/n.bin\|/models/n.bin` |
-| `PROVISIONING_GIT_REPOS` | `git_repos` | `url\|dest\|ref;...` (dest + ref optional) | `https://github.com/org/repo\|/workspace/repo\|v2.0` |
-| `PROVISIONING_APT` | `apt_packages` | `pkg;pkg;...` | `ffmpeg;libgl1;htop` |
-| `PROVISIONING_PIP` | `pip_packages` | `spec;spec;...` | `transformers>=4.0;accelerate;torch` |
-| `PROVISIONING_CONDA` | `conda_packages` | `spec;spec;...` | `numpy;scipy;cudatoolkit=11.8` |
-| `PROVISIONING_POST_COMMANDS` | `post_commands` | `cmd;cmd;...` | `chmod +x /opt/run.sh;ln -s /a /b` |
+| `PROVISIONING_DOWNLOADS` | `downloads` | `url\|dest,...` | `https://x.com/m.bin\|/models/m.bin,https://y.com/n.bin\|/models/n.bin` |
+| `PROVISIONING_GIT_REPOS` | `git_repos` | `url\|dest\|ref,...` (dest + ref optional) | `https://github.com/org/repo\|/workspace/repo\|v2.0` |
+| `PROVISIONING_APT` | `apt_packages` | `pkg,pkg,...` | `ffmpeg,libgl1,htop` |
+| `PROVISIONING_PIP` | `pip_packages` | `spec,spec,...` | `transformers>=4.0,<5,accelerate,torch` |
+| `PROVISIONING_CONDA` | `conda_packages` | `spec,spec,...` | `numpy,scipy,cudatoolkit=11.8` |
+| `PROVISIONING_POST_COMMANDS` | `post_commands` | `cmd,cmd,...` | `chmod +x /opt/run.sh,ln -s /a /b` |
 
-**Delimiter convention:** `;` separates entries, `|` separates fields within an entry (consistent with `PORTAL_CONFIG` and `env_merge`).
+### Separating entries
+
+The same rule applies to every multi-entry variable here, to `env_merge` variables and to `PROVISIONING_COMFYUI_WORKFLOWS`:
+
+- `,` or `;` separates entries, and `|` separates fields within an entry.
+- **Use `,` in templates.** Vast currently drops any template variable whose value contains `;`, so a `;`-separated list never reaches the instance.
+- A comma inside `[...]` does not separate, so pip extras stay whole: `transformers[torch,sentencepiece]`.
+- A comma followed by a version operator (`<`, `>`, `=`, `!=`, `~=`) does not separate, so version ranges stay whole: `torch>=2.4,<2.6`.
+- Write a comma inside a URL as `%2C`.
+- A shell command that itself contains a comma cannot go in `PROVISIONING_POST_COMMANDS`; put it in a manifest's `post_commands` list or a script.
+
+A manifest list field written as one string, such as `apt_packages: "${APT_PACKAGES}"` or `packages: "${PIP_PACKAGES}"`, is split by the same rule.
 
 **Parsing rules:**
 - Empty entries and entries starting with `#` are skipped
@@ -643,25 +654,25 @@ This replaces the legacy `75-provisioning-script.sh` boot script. Existing scrip
 
 ```bash
 # Add model downloads
-PROVISIONING_DOWNLOADS="https://hf.co/org/model/resolve/main/a.safetensors|/workspace/models/a.safetensors;https://hf.co/org/model/resolve/main/b.safetensors|/workspace/models/b.safetensors"
+PROVISIONING_DOWNLOADS="https://hf.co/org/model/resolve/main/a.safetensors|/workspace/models/a.safetensors,https://hf.co/org/model/resolve/main/b.safetensors|/workspace/models/b.safetensors"
 
 # Clone repos (url only — dest derived automatically)
 PROVISIONING_GIT_REPOS="https://github.com/org/app"
 
 # Clone with dest and ref
-PROVISIONING_GIT_REPOS="https://github.com/org/app|/workspace/app|v2.0;https://github.com/org/lib|/workspace/lib"
+PROVISIONING_GIT_REPOS="https://github.com/org/app|/workspace/app|v2.0,https://github.com/org/lib|/workspace/lib"
 
 # Install system packages
-PROVISIONING_APT="ffmpeg;libgl1;htop"
+PROVISIONING_APT="ffmpeg,libgl1,htop"
 
 # Install Python packages (uses default venv)
-PROVISIONING_PIP="transformers>=4.0;accelerate;torch"
+PROVISIONING_PIP="transformers>=4.0,<5,accelerate,torch"
 
 # Install conda packages
-PROVISIONING_CONDA="numpy;scipy;cudatoolkit=11.8"
+PROVISIONING_CONDA="numpy,scipy,cudatoolkit=11.8"
 
 # Run commands after everything else
-PROVISIONING_POST_COMMANDS="chmod +x /opt/run.sh;ln -sf /models /workspace/app/models"
+PROVISIONING_POST_COMMANDS="chmod +x /opt/run.sh,ln -sf /models /workspace/app/models"
 ```
 
 **Comparison with `env_merge`:** Convention env vars don't require any manifest declaration — they work with a bare `version: 1` manifest.

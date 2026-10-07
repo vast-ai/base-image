@@ -5284,3 +5284,47 @@ def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
     text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n",
                   "# venv-mirror build used to run here\n", _real_convert())
     assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+# --- L107: multi-entry env vars go through the provisioner's splitter ------------- #
+
+_L107_MANIFEST = "ROOT/opt/instance-tools/lib/provisioner/manifest.py"
+_L107_WGET = "ROOT/opt/instance-tools/lib/provisioner/downloaders/wget.py"
+_L107_SDFORGE = "derivatives/pytorch/derivatives/sd-forge/provisioning_scripts/default.sh"
+
+
+def _l107_tree(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    for rel in (_L107_MANIFEST, _L107_WGET, _L107_SDFORGE):
+        dst = work / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (repo / rel).read_text()
+        new = mutate.get(rel, lambda t: t)(text)
+        if rel in mutate:
+            assert new != text, f"mutation did not apply to {rel}"
+        dst.write_text(new)
+    return [f.path for f in L.check_env_lists_use_the_splitter(work)]
+
+
+def test_L107_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_env_lists_use_the_splitter(repo)) == []
+
+
+def test_L107_exempt_header_split_stays_quiet(tmp_path):
+    """wget.py's Content-Disposition split is a header, not an env list."""
+    assert _l107_tree(tmp_path, {}) == []
+
+
+@pytest.mark.parametrize("rel,mutate", [
+    # The provisioner's flat-list parser back to ";" only.
+    (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in value.split(\";\"):", 1)),
+    # sd-forge's parser back to its own IFS split, outside the splitter's fallback.
+    (_L107_SDFORGE, lambda t: t.replace('mapfile -d \'\' entries < <(split_env_entries "$env_value")',
+                                        "IFS=';' read -ra entries <<< \"$env_value\"", 1)),
+])
+def test_L107_catches_a_semicolon_only_parser(tmp_path, rel, mutate):
+    """The incident: every PROVISIONING_* list split on ";", which Vast drops."""
+    where = _l107_tree(tmp_path, {rel: mutate})
+    assert where and all(w.startswith(rel) for w in where), where

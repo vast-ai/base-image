@@ -11,6 +11,7 @@ import urllib.request
 
 import yaml
 
+from .envlist import split_entries
 from .schema import CondaPackages, DownloadEntry, GitRepo, Manifest, PipPackages, validate_manifest
 
 log = logging.getLogger("provisioner")
@@ -53,15 +54,13 @@ def _expand_recursive(obj):
 
 
 def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
-    """Parse semicolon-separated 'url|path' entries from an env var value.
+    """Parse 'url|path' entries from an env var value.
 
-    Format: "url1|path1;url2|path2"
-    This matches the convention used in existing provisioning scripts.
+    Format: "url1|path1,url2|path2" (``,`` or ``;`` between entries, see envlist).
     """
     entries = []
-    for raw in env_value.split(";"):
-        raw = raw.strip()
-        if not raw or raw.startswith("#"):
+    for raw in split_entries(env_value):
+        if raw.startswith("#"):
             continue
         if "|" not in raw:
             log.warning("Skipping malformed env_merge entry (no '|'): %s", raw)
@@ -78,7 +77,7 @@ def apply_env_merge(manifest: Manifest) -> None:
     """Merge download entries from environment variables into the manifest.
 
     For each entry in env_merge, read the named env var, parse its
-    semicolon-separated url|path values, and append to the downloads list.
+    url|path entries, and append to the downloads list.
     """
     for env_var, target in manifest.env_merge.items():
         value = os.environ.get(env_var, "")
@@ -164,11 +163,10 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
 
 
 def _parse_env_flat_list(value: str) -> list[str]:
-    """Parse a semicolon-separated flat list, stripping whitespace and skipping empties/comments."""
+    """Parse a flat list (see envlist), skipping comments."""
     items = []
-    for raw in value.split(";"):
-        raw = raw.strip()
-        if not raw or raw.startswith("#"):
+    for raw in split_entries(value):
+        if raw.startswith("#"):
             continue
         items.append(raw)
     return items
@@ -189,15 +187,14 @@ def _repo_dest_from_url(url: str) -> str:
 
 
 def _parse_env_git_repos(value: str) -> list[GitRepo]:
-    """Parse semicolon-separated 'url|dest|ref' entries (dest and ref optional).
+    """Parse 'url|dest|ref' entries (dest and ref optional; see envlist).
 
     When *dest* is omitted the repo is cloned into
     ``${WORKSPACE:-/workspace}/{repo_name}``.
     """
     repos = []
-    for raw in value.split(";"):
-        raw = raw.strip()
-        if not raw or raw.startswith("#"):
+    for raw in split_entries(value):
+        if raw.startswith("#"):
             continue
         parts = raw.split("|")
         url = parts[0].strip()

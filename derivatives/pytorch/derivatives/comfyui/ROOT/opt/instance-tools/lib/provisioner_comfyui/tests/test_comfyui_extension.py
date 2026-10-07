@@ -173,6 +173,11 @@ class TestParseWorkflowUrls:
         result = ext._parse_workflow_urls("https://a.com/wf1.json;https://b.com/wf2.json")
         assert result == ["https://a.com/wf1.json", "https://b.com/wf2.json"]
 
+    def test_comma_separated(self):
+        """Vast drops any template variable containing ";" (ADR 0053)."""
+        result = ext._parse_workflow_urls("https://a.com/wf1.json,https://b.com/wf2.json")
+        assert result == ["https://a.com/wf1.json", "https://b.com/wf2.json"]
+
     def test_whitespace_trimmed(self):
         result = ext._parse_workflow_urls("  https://a.com/wf1.json ; https://b.com/wf2.json  ")
         assert result == ["https://a.com/wf1.json", "https://b.com/wf2.json"]
@@ -393,6 +398,20 @@ def _make_urlopen_mock(workflow_data, registry_responses=None):
 
 
 class TestRun:
+    def test_workflows_config_written_as_one_string(self):
+        """`workflows: "${PROVISIONING_COMFYUI_WORKFLOWS}"` expands to one string; it used
+        to be iterated one character at a time."""
+        ctx = FakeContext()
+        config = {"workflows": "https://example.com/my-workflow.json", "comfyui_dir": COMFYUI_DIR}
+        registry = {
+            "comfyui-ipadapter-plus": {"repository": "https://github.com/user/ComfyUI-IPAdapter-Plus"},
+            "comfyui-impact-pack": {"repository": "https://github.com/user/ComfyUI-Impact-Pack.git"},
+        }
+        with patch("urllib.request.urlopen", side_effect=_make_urlopen_mock(SAMPLE_GUI_WORKFLOW, registry)):
+            ext.run(config, ctx)
+        assert [f.path for f in ctx.manifest.write_files_late] == [
+            f"{COMFYUI_DIR}/user/default/workflows/my-workflow.json"]
+
     def test_full_integration(self):
         ctx = FakeContext()
         config = {

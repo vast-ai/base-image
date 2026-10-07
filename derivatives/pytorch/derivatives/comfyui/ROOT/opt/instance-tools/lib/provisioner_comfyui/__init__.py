@@ -13,6 +13,7 @@ import os
 import urllib.parse
 import urllib.request
 
+from provisioner.envlist import as_list, split_entries
 from provisioner.manifest import expand_env
 from provisioner.schema import DownloadEntry, FileWrite, GitRepo
 
@@ -21,16 +22,13 @@ _WORKFLOWS_ENV_VAR = "PROVISIONING_COMFYUI_WORKFLOWS"
 
 
 def _parse_workflow_urls(value: str) -> list[str]:
-    """Parse a semicolon-delimited string of workflow URLs.
-
-    Splits on ``;``, consistent with all other ``PROVISIONING_*`` env vars.
-    Empty tokens and duplicates are discarded while preserving order.
+    """Parse a list of workflow URLs (``,`` or ``;`` between them, as for every
+    ``PROVISIONING_*`` env var). Duplicates are discarded while preserving order.
     """
     urls: list[str] = []
     seen: set[str] = set()
-    for token in value.split(";"):
-        token = token.strip()
-        if token and token not in seen:
+    for token in split_entries(value):
+        if token not in seen:
             urls.append(token)
             seen.add(token)
     return urls
@@ -39,7 +37,7 @@ def _parse_workflow_urls(value: str) -> list[str]:
 def run(config: dict, context, dry_run: bool = False) -> None:
     """Extension entry point called by the provisioner."""
     log = context.log
-    workflows = list(config.get("workflows", []))
+    workflows = list(as_list(config.get("workflows", [])))
     comfyui_dir = expand_env(
         config.get("comfyui_dir", "${WORKSPACE:-/workspace}/ComfyUI")
     )

@@ -317,6 +317,21 @@ class TestLoadManifest:
         m = load_manifest(path)
         assert m.settings.venv == "/venv/fallback"
 
+    def test_list_field_from_one_env_var(self, tmp_manifest, monkeypatch):
+        """A list field written as one `${VAR}` string is split into entries; the
+        installers used to receive the bare string (pip got one argument per
+        character, apt raised TypeError)."""
+        monkeypatch.setenv("MY_PIP", "torch>=2.4,<2.6,numpy")
+        monkeypatch.setenv("MY_APT", "ffmpeg,libgl1")
+        path = tmp_manifest({
+            "version": 1,
+            "apt_packages": "${MY_APT}",
+            "pip_packages": [{"packages": "${MY_PIP}"}],
+        })
+        m = load_manifest(path)
+        assert m.apt_packages == ["ffmpeg", "libgl1"]
+        assert m.pip_packages[0].packages == ["torch>=2.4,<2.6", "numpy"]
+
     def test_empty_file_raises(self, tmp_path):
         path = tmp_path / "empty.yaml"
         path.write_text("")
@@ -533,6 +548,15 @@ class TestApplyEnvConventions:
         m = self._manifest()
         apply_env_conventions(m)
         assert m.post_commands == ["chmod +x /opt/run.sh", "ln -s /a /b"]
+
+    def test_comma_separated_conventions(self, monkeypatch):
+        """Vast drops any template variable containing ";", so commas separate too (ADR 0053)."""
+        monkeypatch.setenv("PROVISIONING_PIP", "transformers[torch,sentencepiece]>=4.40,torch>=2.4,<2.6")
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://h/a.bin|/m/a.bin,https://h/b.bin|/m/")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.pip_packages[0].packages == ["transformers[torch,sentencepiece]>=4.40", "torch>=2.4,<2.6"]
+        assert [(d.url, d.dest) for d in m.downloads] == [("https://h/a.bin", "/m/a.bin"), ("https://h/b.bin", "/m/")]
 
     def test_empty_env_var_noop(self, monkeypatch):
         # Ensure unset vars don't add anything

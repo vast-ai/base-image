@@ -238,14 +238,16 @@ post_commands:
 
 # ---- Convention environment variables ----
 # PROVISIONING_* env vars inject resources without any manifest declaration.
-# They append to existing manifest entries. Semicolon-delimited.
+# They append to existing manifest entries. Entries are separated by "," (or ";",
+# which Vast currently drops from template variables); see the README's
+# "Separating entries".
 #
-#   PROVISIONING_DOWNLOADS="https://x.com/m.bin|/models/m.bin;https://y.com/n.bin|/models/n.bin"
+#   PROVISIONING_DOWNLOADS="https://x.com/m.bin|/models/m.bin,https://y.com/n.bin|/models/n.bin"
 #   PROVISIONING_GIT_REPOS="https://github.com/org/repo|/workspace/repo|v2.0"
-#   PROVISIONING_APT="ffmpeg;libgl1;htop"
-#   PROVISIONING_PIP="transformers>=4.0;accelerate;torch"
-#   PROVISIONING_CONDA="numpy;scipy;cudatoolkit=11.8"
-#   PROVISIONING_POST_COMMANDS="chmod +x /opt/run.sh;ln -s /a /b"
+#   PROVISIONING_APT="ffmpeg,libgl1,htop"
+#   PROVISIONING_PIP="transformers>=4.0,<5,accelerate,torch"
+#   PROVISIONING_CONDA="numpy,scipy,cudatoolkit=11.8"
+#   PROVISIONING_POST_COMMANDS="chmod +x /opt/run.sh,ln -s /a /b"
 #
 # PROVISIONER_* env vars override settings (how to provision):
 #   PROVISIONER_RETRY_MAX, PROVISIONER_RETRY_DELAY,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from .envlist import split_entries
+
 log = logging.getLogger("provisioner")
 
 VALID_FAILURE_ACTIONS = frozenset({"continue", "stop", "destroy"})
@@ -171,6 +173,10 @@ def _build_nested(cls, data):
                 filtered[f.name] = [_build_nested(args[0], item) for item in v]
             else:
                 filtered[f.name] = v
+        elif origin is list and isinstance(v, str) and getattr(resolved_type, "__args__", ()) == (str,):
+            # A list field written as one string, usually `packages: "${PIP_PACKAGES}"`:
+            # without this the installers iterate it one character at a time.
+            filtered[f.name] = split_entries(v)
         else:
             filtered[f.name] = v
     return cls(**filtered)

@@ -23,20 +23,20 @@ PIP_PACKAGES=(
 )
 
 # Extensions to install: "REPO_URL"
-# Can also be set via EXTENSIONS env var (semicolon-separated)
-# Example: EXTENSIONS="https://github.com/org/ext1;https://github.com/org/ext2"
+# Can also be set via EXTENSIONS env var (comma-separated)
+# Example: EXTENSIONS="https://github.com/org/ext1,https://github.com/org/ext2"
 EXTENSIONS=(
     #"https://github.com/example/extension-name"
 )
 
 # Model downloads use "URL|OUTPUT_PATH" format
 # - If OUTPUT_PATH ends with /, filename is extracted via content-disposition
-# - Can also be set via environment variables (semicolon-separated entries)
+# - Can also be set via environment variables (comma-separated entries)
 #
 # Example env var format:
-#   HF_MODELS="url1|path1;url2|path2"
-#   CIVITAI_MODELS="url1|path1;url2|path2"
-#   WGET_DOWNLOADS="url1|path1;url2|path2"
+#   HF_MODELS="url1|path1,url2|path2"
+#   CIVITAI_MODELS="url1|path1,url2|path2"
+#   WGET_DOWNLOADS="url1|path1,url2|path2"
 
 # HuggingFace models - CLIP encoders always downloaded
 # FLUX checkpoint/VAE added dynamically based on HF_TOKEN validity
@@ -94,7 +94,23 @@ normalize_entry() {
     echo "$entry"
 }
 
-# Parse semicolon-separated string into array, filtering out comments and empty entries
+# Split an env var into entries with the provisioner's splitter (ADR 0053): "," or ";"
+# between entries, as for every PROVISIONING_* var. Images built before it have no
+# splitter and split on ";" only.
+split_env_entries() {
+    local splitter=/opt/instance-tools/lib/provisioner/envlist.py
+    local python=/opt/instance-tools/provisioner/venv/bin/python
+    [[ -x $python ]] || python=python3
+    if [[ -f $splitter ]]; then
+        "$python" "$splitter" "$1"
+    else
+        local -a parts=()
+        IFS=';' read -ra parts <<< "$1"
+        [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
+    fi
+}
+
+# Parse a multi-entry env var into an array, filtering out comments and empty entries
 # Usage: parse_env_array "ENV_VAR_NAME"
 # Output: null-terminated entries (use read -r -d '' to consume)
 parse_env_array() {
@@ -102,8 +118,8 @@ parse_env_array() {
     local env_value="${!env_var_name:-}"
 
     if [[ -n "$env_value" ]]; then
-        local -a result=()
-        IFS=';' read -ra entries <<< "$env_value"
+        local -a result=() entries=()
+        mapfile -d '' entries < <(split_env_entries "$env_value")
         for entry in "${entries[@]}"; do
             entry=$(normalize_entry "$entry")
             # Skip empty entries and comments
