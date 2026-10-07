@@ -58,8 +58,13 @@ Every multi-entry variable listed above splits with one function,
   (`transformers[torch,sentencepiece]`).
 - A comma followed, after any spaces, by a version operator (`<`, `>`, `=`, `!=`, `~=`)
   does not separate, so version ranges stay whole (`torch>=2.4,<2.6`).
+- A `[` that is never closed (a typo, or a raw bracket in a URL) does not count: what
+  follows it splits normally.
 - Entries are trimmed, and empty entries are dropped. Callers that skipped `#` comments
   still do.
+- The provisioner logs the parsed entries, not just how many, so a value split where the
+  user did not mean it shows in the provisioning log. URLs are logged without credentials,
+  query or fragment, where tokens travel.
 
 The documentation recommends `,` and says why. `;` keeps working. One kind of existing
 value does change meaning: a single entry that contains a bare comma, such as a lone
@@ -67,32 +72,52 @@ value does change meaning: a single entry that contains a bare comma, such as a 
 comma. It now splits. Values with `;` never reached instances from templates, so these
 single entries are the only ones that worked before and behave differently now.
 
-A manifest field typed `list[str]` that arrives as a string is split by the same rule. The
-ComfyUI extension's `workflows:` setting does the same.
+A manifest field typed `list[str]` that arrives as a string is split by the same rule,
+except the command fields (`post_commands`, a git repo's `post_commands`, a service's
+`pre_commands`). A command string is shell already, so splitting it could only break it:
+`cd /x; make` would run `make` outside `/x`. A command field written as one string runs as
+one command. The `PROVISIONING_POST_COMMANDS` variable still splits, because it is defined
+as a list of commands. The ComfyUI extension's `workflows:` setting is split like an item
+field.
 
-sd-forge's bash parser calls the same file rather than repeating the rule. Those scripts are
-fetched by URL and can run on an image built before this change; there the splitter is
-missing, and they fall back to splitting on `;`, which is the old behaviour.
+The rule ships in the base image, and derivatives pin a dated base, so two callers outside
+the base must survive an older one:
+
+- **The ComfyUI extension** ships in the derivative. If `provisioner.envlist` is missing it
+  falls back to the old `;` split, rather than failing to import, which would abort
+  provisioning on every ComfyUI and AIO Studio instance.
+- **sd-forge's bash parser** runs the same file rather than repeating the rule. The scripts
+  are fetched by URL. Where the splitter is missing or fails, they split on `,` and `;`
+  plainly, which is safe for their lists of `URL|PATH` entries and extension URLs.
 
 ## Binding conditions
 
-1. **One implementation.** Lint rule L107 refuses a direct `.split(";")` in the provisioner or
-   a provisioner extension, and an `IFS=';'` in a provisioning script outside its
-   `split_env_entries` fallback. `downloaders/wget.py` is exempt, by name: it splits an HTTP
-   `Content-Disposition` header.
-2. **Tested where it ships.** The splitter, the convention variables, the `${VAR}` list
-   fields, the ComfyUI extension and sd-forge's shipped parser each have tests, and each fix
-   has a mutation that fails them. The ComfyUI extension's suite runs in CI (it had never
-   run there).
+1. **One implementation.** Lint rule L107 refuses a `;` split (`.split`, `.rsplit`,
+   `split(sep=...)`, `re.split`) in the provisioner or a provisioner extension, outside an
+   extension's `split_entries` fallback for older bases, and an `IFS=';'` in any
+   provisioning script outside its `split_env_entries` fallback. `downloaders/wget.py` is
+   exempt, by name: it splits an HTTP `Content-Disposition` header. A split written some
+   other way is not caught; the rule is a fast check, not a proof.
+2. **Tested where it ships.** The splitter, each convention variable's parser, the
+   `${VAR}` item and command fields, the ComfyUI extension (including loading on a base
+   without the splitter) and sd-forge's shipped parser (including a missing or failing
+   splitter) each have tests, and each fix has a mutation that fails them. The ComfyUI
+   extension's suite runs in CI (it had never run there).
+3. **Released after the base.** Base and pytorch are built, QA'd and promoted from the
+   branch before merging. Each derivative gets commas when its base pin moves to a base
+   that has the splitter; until then a comma-separated value is read as one entry. The
+   documentation says so.
 
 ## Consequences
 
-- Lists set in templates reach the provisioner with commas today.
+- Lists set in templates reach the provisioner with commas, on images built after this
+  change.
 - `${VAR}` in a manifest list field works as people already wrote it.
 - Accepted limits: a URL's own comma must be written `%2C`. A shell command that itself
   contains a comma cannot go in `PROVISIONING_POST_COMMANDS`; it belongs in a manifest's
   `post_commands` list or a script. A pip marker still cannot go in `PROVISIONING_PIP`,
   as before.
+- Once templates use commas, reverting this breaks them again. Problems are fixed forward.
 - Not changed here: `PORTAL_CONFIG` (split on `|`), and `AUTH_EXCLUDE`, `PORTAL_LINKS` and
   the other comma-separated portal variables.
 

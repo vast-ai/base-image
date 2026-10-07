@@ -37,7 +37,15 @@ def test_commas_separate_entries(script):
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
-def test_image_without_the_splitter_still_splits_on_semicolons(script):
+def test_image_without_the_splitter_still_splits(script):
     """The scripts are fetched by URL, so they also run on images built before ADR 0053."""
-    assert parse(script, "https://h/a|/m/;https://h/b|/m/", "/nonexistent/envlist.py") == [
-        "https://h/a|/m/", "https://h/b|/m/"]
+    assert parse(script, "https://h/a|/m/;https://h/b|/m/,https://h/c|/m/", "/nonexistent/envlist.py") == [
+        "https://h/a|/m/", "https://h/b|/m/", "https://h/c|/m/"]
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_a_failing_splitter_does_not_empty_the_list(script, tmp_path):
+    """A process substitution hides the splitter's exit status; the list must not vanish."""
+    broken = tmp_path / "envlist.py"
+    broken.write_text("raise SystemExit(1)\n")
+    assert parse(script, "https://h/a|/m/,https://h/b|/m/", str(broken)) == ["https://h/a|/m/", "https://h/b|/m/"]

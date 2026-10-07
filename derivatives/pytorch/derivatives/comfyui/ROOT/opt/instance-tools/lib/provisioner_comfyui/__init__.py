@@ -13,8 +13,18 @@ import os
 import urllib.parse
 import urllib.request
 
-from provisioner.envlist import as_list, split_entries
 from provisioner.manifest import expand_env
+
+try:
+    from provisioner.envlist import as_list, split_entries
+except ImportError:
+    # The extension ships in the derivative; the provisioner comes from the pinned
+    # base, which may predate envlist.py (ADR 0053). Split on ";" there, as before.
+    def split_entries(value: str) -> list[str]:
+        return [t.strip() for t in value.split(";") if t.strip()]
+
+    def as_list(value) -> list:
+        return [value] if isinstance(value, str) else value
 from provisioner.schema import DownloadEntry, FileWrite, GitRepo
 
 REGISTRY_URL = "https://api.comfy.org/nodes/{cnr_id}"

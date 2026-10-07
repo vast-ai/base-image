@@ -397,6 +397,22 @@ def _make_urlopen_mock(workflow_data, registry_responses=None):
     return side_effect
 
 
+def test_loads_on_a_base_without_the_splitter(monkeypatch):
+    """The extension ships in the derivative but imports the provisioner from the pinned
+    base, which can predate envlist.py. It must still load (a failed import aborts every
+    ComfyUI instance's provisioning) and split on ";" as before."""
+    import importlib
+    import sys
+    monkeypatch.setitem(sys.modules, "provisioner.envlist", None)
+    old = importlib.reload(ext)
+    try:
+        assert old._parse_workflow_urls("https://a/1.json;https://b/2.json") == ["https://a/1.json", "https://b/2.json"]
+        assert old.as_list("https://a/1.json") == ["https://a/1.json"]
+    finally:
+        monkeypatch.delitem(sys.modules, "provisioner.envlist")
+        importlib.reload(ext)
+
+
 class TestRun:
     def test_workflows_config_written_as_one_string(self):
         """`workflows: "${PROVISIONING_COMFYUI_WORKFLOWS}"` expands to one string; it used

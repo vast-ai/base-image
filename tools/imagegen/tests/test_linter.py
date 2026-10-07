@@ -5291,12 +5291,13 @@ def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
 _L107_MANIFEST = "ROOT/opt/instance-tools/lib/provisioner/manifest.py"
 _L107_WGET = "ROOT/opt/instance-tools/lib/provisioner/downloaders/wget.py"
 _L107_SDFORGE = "derivatives/pytorch/derivatives/sd-forge/provisioning_scripts/default.sh"
+_L107_COMFY = "derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/lib/provisioner_comfyui/__init__.py"
 
 
 def _l107_tree(tmp_path, mutate):
     repo = find_repo_root(Path(__file__).resolve().parent)
     work = tmp_path / "base-image"
-    for rel in (_L107_MANIFEST, _L107_WGET, _L107_SDFORGE):
+    for rel in (_L107_MANIFEST, _L107_WGET, _L107_SDFORGE, _L107_COMFY):
         dst = work / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         text = (repo / rel).read_text()
@@ -5313,13 +5314,19 @@ def test_L107_real_tree_is_clean():
 
 
 def test_L107_exempt_header_split_stays_quiet(tmp_path):
-    """wget.py's Content-Disposition split is a header, not an env list."""
+    """wget.py's Content-Disposition split is a header, not an env list, and the ComfyUI
+    extension's ImportError fallback for older bases is the one allowed `;` split."""
     assert _l107_tree(tmp_path, {}) == []
 
 
 @pytest.mark.parametrize("rel,mutate", [
     # The provisioner's flat-list parser back to ";" only.
     (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in value.split(\";\"):", 1)),
+    # The ComfyUI extension's workflow parser back to ";" only, outside its fallback.
+    (_L107_COMFY, lambda t: t.replace("for token in split_entries(value):", "for token in value.split(\";\"):", 1)),
+    # The same, spelled differently.
+    (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in re.split(r\";\", value):", 1)),
+    (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in value.rsplit(\";\"):", 1)),
     # sd-forge's parser back to its own IFS split, outside the splitter's fallback.
     (_L107_SDFORGE, lambda t: t.replace('mapfile -d \'\' entries < <(split_env_entries "$env_value")',
                                         "IFS=';' read -ra entries <<< \"$env_value\"", 1)),
@@ -5328,3 +5335,13 @@ def test_L107_catches_a_semicolon_only_parser(tmp_path, rel, mutate):
     """The incident: every PROVISIONING_* list split on ";", which Vast drops."""
     where = _l107_tree(tmp_path, {rel: mutate})
     assert where and all(w.startswith(rel) for w in where), where
+
+
+def test_L107_reaches_scripts_in_subdirectories(tmp_path):
+    """provisioning_scripts/serverless/ and the top-level provisioning_scripts/ are scanned too."""
+    for rel in ("derivatives/x/provisioning_scripts/serverless/s.sh", "provisioning_scripts/t.sh"):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True)
+        f.write_text("IFS=$';' read -ra parts <<< \"$V\"\n")
+    assert sorted(f.path for f in L.check_env_lists_use_the_splitter(tmp_path)) == [
+        "derivatives/x/provisioning_scripts/serverless/s.sh:1", "provisioning_scripts/t.sh:1"]

@@ -332,6 +332,18 @@ class TestLoadManifest:
         assert m.apt_packages == ["ffmpeg", "libgl1"]
         assert m.pip_packages[0].packages == ["torch>=2.4,<2.6", "numpy"]
 
+    def test_command_field_from_one_string_is_one_command(self, tmp_manifest, monkeypatch):
+        """A command string is shell already: splitting it would run `make` outside /x."""
+        monkeypatch.setenv("MY_SETUP", "cd /x; python -c 'print(1,2)'")
+        path = tmp_manifest({
+            "version": 1,
+            "post_commands": "${MY_SETUP}",
+            "git_repos": [{"url": "https://github.com/o/r", "dest": "/r", "post_commands": "make, install"}],
+        })
+        m = load_manifest(path)
+        assert m.post_commands == ["cd /x; python -c 'print(1,2)'"]
+        assert m.git_repos[0].post_commands == ["make, install"]
+
     def test_empty_file_raises(self, tmp_path):
         path = tmp_path / "empty.yaml"
         path.write_text("")
@@ -549,12 +561,22 @@ class TestApplyEnvConventions:
         apply_env_conventions(m)
         assert m.post_commands == ["chmod +x /opt/run.sh", "ln -s /a /b"]
 
+    def test_parsed_downloads_are_logged_without_tokens(self, monkeypatch, caplog):
+        """The entries are logged so an unintended split is visible; a token in the URL is not."""
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://u:p@h/a.bin?token=SECRET#x|/m/a.bin,https://h/b.bin|/m/")
+        with caplog.at_level("INFO", logger="provisioner"):
+            apply_env_conventions(self._manifest())
+        assert "https://h/a.bin -> /m/a.bin, https://h/b.bin -> /m/" in caplog.text
+        assert "SECRET" not in caplog.text and "u:p" not in caplog.text
+
     def test_comma_separated_conventions(self, monkeypatch):
         """Vast drops any template variable containing ";", so commas separate too (ADR 0053)."""
         monkeypatch.setenv("PROVISIONING_PIP", "transformers[torch,sentencepiece]>=4.40,torch>=2.4,<2.6")
         monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://h/a.bin|/m/a.bin,https://h/b.bin|/m/")
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/o/a|/a|v1,https://github.com/o/b")
         m = self._manifest()
         apply_env_conventions(m)
+        assert [(r.url, r.ref) for r in m.git_repos] == [("https://github.com/o/a", "v1"), ("https://github.com/o/b", "")]
         assert m.pip_packages[0].packages == ["transformers[torch,sentencepiece]>=4.40", "torch>=2.4,<2.6"]
         assert [(d.url, d.dest) for d in m.downloads] == [("https://h/a.bin", "/m/a.bin"), ("https://h/b.bin", "/m/")]
 

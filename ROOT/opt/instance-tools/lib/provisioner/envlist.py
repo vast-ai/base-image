@@ -21,21 +21,28 @@ _VERSION_OPERATOR_STARTS = ("<", ">", "=", "!=", "~=")
 
 def split_entries(value: str) -> list[str]:
     """Return the stripped, non-empty entries of *value*."""
+    return [e.strip() for e in _split(value, brackets=True) if e.strip()]
+
+
+def _split(value: str, brackets: bool) -> list[str]:
     entries: list[str] = []
     current: list[str] = []
     depth = 0
     for i, ch in enumerate(value):
-        if ch == "[":
+        if brackets and ch == "[":
             depth += 1
-        elif ch == "]" and depth:
+        elif brackets and ch == "]" and depth:
             depth -= 1
         elif ch == ";" or (ch == "," and depth == 0 and not _before_operator(value, i + 1)):
             entries.append("".join(current))
             current = []
             continue
         current.append(ch)
-    entries.append("".join(current))
-    return [e.strip() for e in entries if e.strip()]
+    tail = "".join(current)
+    # A "[" never closed is a typo or a raw bracket in a URL, not pip extras: split
+    # what followed it normally rather than gluing the rest of the value together.
+    entries.extend(_split(tail, brackets=False) if depth else [tail])
+    return entries
 
 
 def _before_operator(value: str, start: int) -> bool:

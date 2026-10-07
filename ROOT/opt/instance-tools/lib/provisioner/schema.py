@@ -144,6 +144,10 @@ class Manifest:
     on_failure: OnFailure = field(default_factory=OnFailure)
 
 
+# list[str] fields whose entries are shell commands (ADR 0053).
+_COMMAND_FIELDS = frozenset({"post_commands", "pre_commands"})
+
+
 def _build_nested(cls, data):
     """Recursively build a dataclass from a dict, ignoring unknown keys."""
     if data is None:
@@ -175,8 +179,9 @@ def _build_nested(cls, data):
                 filtered[f.name] = v
         elif origin is list and isinstance(v, str) and getattr(resolved_type, "__args__", ()) == (str,):
             # A list field written as one string, usually `packages: "${PIP_PACKAGES}"`:
-            # without this the installers iterate it one character at a time.
-            filtered[f.name] = split_entries(v)
+            # without this the installers iterate it one character at a time. A command
+            # field's string is shell already (`cd /x; make`), so it stays one command.
+            filtered[f.name] = [v] if f.name in _COMMAND_FIELDS else split_entries(v)
         else:
             filtered[f.name] = v
     return cls(**filtered)

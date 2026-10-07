@@ -73,6 +73,21 @@ def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
     return entries
 
 
+def _safe_url(url: str) -> str:
+    """A URL for the log: no credentials, query or fragment, where tokens travel."""
+    import urllib.parse as up
+    parts = up.urlsplit(url)
+    if not parts.scheme:
+        return url
+    host = (parts.hostname or "") + (f":{parts.port}" if parts.port else "")
+    return up.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _describe_downloads(entries: list[DownloadEntry]) -> str:
+    """Each parsed entry, so a value split where the user did not mean it shows in the log."""
+    return ", ".join(f"{_safe_url(e.url)} -> {e.dest}" for e in entries)
+
+
 def apply_env_merge(manifest: Manifest) -> None:
     """Merge download entries from environment variables into the manifest.
 
@@ -88,7 +103,7 @@ def apply_env_merge(manifest: Manifest) -> None:
             continue
         entries = _parse_env_merge_entries(value)
         if entries:
-            log.info("env_merge: added %d downloads from $%s", len(entries), env_var)
+            log.info("env_merge: added %d downloads from $%s: %s", len(entries), env_var, _describe_downloads(entries))
             manifest.downloads.extend(entries)
 
 
@@ -232,37 +247,38 @@ def apply_env_conventions(manifest: Manifest) -> None:
         if target == "downloads":
             entries = _parse_env_merge_entries(value)
             if entries:
-                log.info("env convention: added %d downloads from $%s", len(entries), env_var)
+                log.info("env convention: added %d downloads from $%s: %s", len(entries), env_var, _describe_downloads(entries))
                 manifest.downloads.extend(entries)
 
         elif target == "git_repos":
             repos = _parse_env_git_repos(value)
             if repos:
-                log.info("env convention: added %d git repos from $%s", len(repos), env_var)
+                log.info("env convention: added %d git repos from $%s: %s", len(repos), env_var,
+                         ", ".join(_safe_url(r.url) for r in repos))
                 manifest.git_repos.extend(repos)
 
         elif target == "apt_packages":
             pkgs = _parse_env_flat_list(value)
             if pkgs:
-                log.info("env convention: added %d apt packages from $%s", len(pkgs), env_var)
+                log.info("env convention: added %d apt packages from $%s: %s", len(pkgs), env_var, pkgs)
                 manifest.apt_packages.extend(pkgs)
 
         elif target == "pip_packages":
             pkgs = _parse_env_flat_list(value)
             if pkgs:
-                log.info("env convention: added %d pip packages from $%s", len(pkgs), env_var)
+                log.info("env convention: added %d pip packages from $%s: %s", len(pkgs), env_var, pkgs)
                 manifest.pip_packages.append(PipPackages(packages=pkgs))
 
         elif target == "conda_packages":
             pkgs = _parse_env_flat_list(value)
             if pkgs:
-                log.info("env convention: added %d conda packages from $%s", len(pkgs), env_var)
+                log.info("env convention: added %d conda packages from $%s: %s", len(pkgs), env_var, pkgs)
                 manifest.conda_packages.append(CondaPackages(packages=pkgs))
 
         elif target == "post_commands":
             cmds = _parse_env_flat_list(value)
             if cmds:
-                log.info("env convention: added %d post commands from $%s", len(cmds), env_var)
+                log.info("env convention: added %d post commands from $%s: %s", len(cmds), env_var, cmds)
                 manifest.post_commands.extend(cmds)
 
 

@@ -89,19 +89,28 @@ normalize_entry() {
 }
 
 # Split an env var into entries with the provisioner's splitter (ADR 0053): "," or ";"
-# between entries, as for every PROVISIONING_* var. Images built before it have no
-# splitter and split on ";" only.
+# between entries, as for every PROVISIONING_* var.
 split_env_entries() {
     local splitter=/opt/instance-tools/lib/provisioner/envlist.py
     local python=/opt/instance-tools/provisioner/venv/bin/python
+    local out
     [[ -x $python ]] || python=python3
     if [[ -f $splitter ]]; then
-        "$python" "$splitter" "$1"
-    else
-        local -a parts=()
-        IFS=';' read -ra parts <<< "$1"
-        [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
+        out=$(mktemp)
+        if "$python" "$splitter" "$1" > "$out"; then
+            cat "$out"
+            rm -f "$out"
+            return 0
+        fi
+        rm -f "$out"
+        echo "[WARN] the provisioner's list splitter failed; splitting on ',' and ';'" >&2
     fi
+    # Images built before the splitter, or a failed run. These lists hold URL|PATH
+    # entries and extension URLs, which never contain a pip range, so a plain split on
+    # both separators is safe here.
+    local -a parts=()
+    IFS=',;' read -ra parts <<< "$1"
+    [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
 }
 
 # Parse a multi-entry env var into an array, filtering out comments and empty entries

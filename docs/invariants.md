@@ -1641,8 +1641,13 @@ template never arrived.
   images built before it.
 - A manifest `list[str]` field that arrives as one string (`packages: "${PIP_PACKAGES}"`)
   is split by the same rule; it used to reach pip one character at a time.
-- **Gated by L107:** no direct `.split(";")` in the provisioner or an extension, and no
-  `IFS=';'` in a provisioning script outside `split_env_entries`. Exempt by name:
+- A command field written as one string (`post_commands`, `pre_commands`) stays one command.
+- Callers outside the base survive an older pinned base: the ComfyUI extension falls back to
+  `;` if `provisioner.envlist` is missing (a failed import aborts every ComfyUI instance's
+  provisioning), and sd-forge splits on `,` and `;` if the splitter is missing or fails.
+- **Gated by L107:** no `;` split (`.split`, `.rsplit`, `split(sep=...)`, `re.split`) in the
+  provisioner or an extension outside an extension's `split_entries` fallback, and no
+  `IFS=';'` in any provisioning script outside `split_env_entries`. Exempt by name:
   `downloaders/wget.py` (an HTTP header). Held by `test_envlist.py`, `test_manifest.py`,
   the ComfyUI extension's tests and `test_sdforge_env_lists.py`.
 

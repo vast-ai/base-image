@@ -186,7 +186,7 @@ jobs:
         working-directory: ROOT/opt/instance-tools/lib
         run: python -m pytest -q provisioner/tests
       # The ComfyUI extension imports the provisioner, so both lib dirs go on the path.
-      # Its 49 tests never ran in CI until this step.
+      # Its tests never ran in CI until this step.
       - name: Run ComfyUI provisioner extension test suite
         working-directory: derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/lib
         run: PYTHONPATH="$GITHUB_WORKSPACE/ROOT/opt/instance-tools/lib:." python -m pytest -q provisioner_comfyui/tests

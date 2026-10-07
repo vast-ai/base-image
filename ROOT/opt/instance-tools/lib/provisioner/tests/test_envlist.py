@@ -17,11 +17,15 @@ from provisioner.envlist import split_entries
     # A pip range keeps its comma, with or without a space after it.
     ("torch>=2.4,<2.6,numpy", ["torch>=2.4,<2.6", "numpy"]),
     ("numpy!=1.0, >=0.9,scipy~=1.11,==1.11.4", ["numpy!=1.0, >=0.9", "scipy~=1.11,==1.11.4"]),
+    ("a>1,!=1.5,b", ["a>1,!=1.5", "b"]),
+    ("a>1, ~=1.4,b", ["a>1, ~=1.4", "b"]),
     # "~" and "!" alone are not operators: a home path or a command still splits.
     ("chmod +x a,~/bin/run", ["chmod +x a", "~/bin/run"]),
     # pip extras keep theirs.
     ("transformers[torch,sentencepiece]>=4.40,accelerate",
      ["transformers[torch,sentencepiece]>=4.40", "accelerate"]),
+    # An unclosed "[" does not swallow the rest of the value.
+    ("x[a,b,https://h/c|/m/", ["x[a", "b", "https://h/c|/m/"]),
     # A URL's own comma is written %2C; url|dest fields are untouched.
     ("https://h/a%2Cb.bin|/m/,https://h/c.bin|/m/c.bin", ["https://h/a%2Cb.bin|/m/", "https://h/c.bin|/m/c.bin"]),
 ])
