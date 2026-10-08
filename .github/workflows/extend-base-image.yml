@@ -40,6 +40,7 @@ jobs:
       merge-matrix: ${{ steps.matrix.outputs.merge-matrix }}
       mini-build-matrix: ${{ steps.matrix.outputs.mini-build-matrix }}
       mini-merge-matrix: ${{ steps.matrix.outputs.mini-merge-matrix }}
+      has-mini: ${{ steps.matrix.outputs.has-mini }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
       # Needed for configs/base-image.json — this job previously ran with no checkout.
@@ -148,6 +149,13 @@ jobs:
             echo "{\"include\":${MINI_MERGE_MATRIX}}"
             echo "MINI_MERGE_MATRIX_EOF"
           } >> $GITHUB_OUTPUT
+          # A FILTER can match no mini config. GitHub cannot create a job from an empty
+          # matrix and fails the whole run, so the mini jobs read this and skip (L108).
+          if [[ $(echo "$MINI_BUILD_MATRIX" | jq length) -gt 0 ]]; then
+            echo "has-mini=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-mini=false" >> $GITHUB_OUTPUT
+          fi
 
           echo "Build matrix entries: $(echo $BUILD_MATRIX | jq length)"
           echo "Mini build matrix entries: $(echo $MINI_BUILD_MATRIX | jq length)"
@@ -287,7 +295,7 @@ jobs:
 
   extend-mini:
     needs: [generate-matrix]
-    if: ${{ !inputs.DRY_RUN }}
+    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}
     runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
@@ -349,6 +357,7 @@ jobs:
 
   merge-mini-manifests:
     needs: [generate-matrix, extend-mini]
+    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
