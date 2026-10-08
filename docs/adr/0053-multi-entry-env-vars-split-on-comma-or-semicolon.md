@@ -83,10 +83,11 @@ The documentation recommends `,` for templates and says why. `;` keeps working u
 One kind of existing value does change meaning: a value with **no** `;` holding a single
 entry that contains a bare comma, such as a lone `PROVISIONING_POST_COMMANDS` command
 with a comma in it, or a single download URL with a raw comma. It now splits. This is
-accepted as an edge case. Set from onstart, such an entry can end with `;` to stay whole.
-Set in a template it cannot, because the platform drops the `;`; it has to move to a
-manifest's `post_commands`, a script, or (for a URL) `%2C`. No such value was found in
-this repo's templates and manifests or in the published template sources.
+accepted as an edge case, because the escape stays inside the template: such an entry
+can end with `;` to stay whole when it is exported from the template's onstart (before
+`entrypoint.sh`), which the platform does not filter. Only a template env var cannot
+carry the `;`. No such value was found in this repo's templates and manifests or in the
+published template sources.
 
 A value written by two parties follows the same rule: a template's `a,b` with `;c`
 appended from onstart has a `;`, so it splits on `;` alone and `a,b` stays one entry. The

@@ -641,7 +641,7 @@ The same rule applies to every multi-entry variable here, to `env_merge` variabl
 - A comma followed by a version operator (`<`, `>`, `=`, `!=`, `~=`) does not separate, so version ranges stay whole: `torch>=2.4,<2.6`.
 - Write a comma inside a URL as `%2C`.
 - In the `PROVISIONING_*` variables, `env_merge` variables and sd-forge's lists, `#` at the start of an entry disables that entry only, not the rest of the value.
-- In a comma-separated value, a shell command that itself contains a comma cannot go in `PROVISIONING_POST_COMMANDS`, and a comma before `>` keeps a redirect joined to the previous entry. From onstart, separate such commands with `;` (a single one can end with `;` to stay whole). A template cannot carry `;`, so there such a command goes in a manifest's `post_commands` list or a script.
+- In a comma-separated value, a shell command that itself contains a comma cannot go in `PROVISIONING_POST_COMMANDS`, and a comma before `>` keeps a redirect joined to the previous entry. Separate such commands with `;`, or end a single one with `;` to keep it whole, and export the value from the template's onstart (before `entrypoint.sh`): the platform drops `;` only from template env vars, not from onstart. A manifest's `post_commands` list or a script also works.
 - The provisioning log lists each variable's parsed entries, so a split you didn't mean is visible there. URLs on those lines are shown without credentials or query strings, but other log lines show URLs, packages and commands as you wrote them, so don't treat the log as free of secrets.
 - **Commas need an image built after this rule was added** (ADR 0053). Older images split on `;` only and read a comma-separated value as one entry.
 
