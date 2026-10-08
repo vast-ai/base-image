@@ -5284,3 +5284,45 @@ def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
     text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n",
                   "# venv-mirror build used to run here\n", _real_convert())
     assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+# --- L108: optional generated matrices skip when empty ----------------------------- #
+
+def _l108_tree(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    (work / ".github/workflows").mkdir(parents=True)
+    for name in ("build-base-image.yml", "build-pytorch.yml"):
+        text = (repo / ".github/workflows" / name).read_text()
+        new = mutate(text) if name == "build-base-image.yml" else text
+        if name == "build-base-image.yml" and mutate is not _keep:
+            assert new != text, "mutation did not apply"
+        (work / ".github/workflows" / name).write_text(new)
+    return [f.path for f in L.check_optional_matrix_jobs_are_guarded(work)]
+
+
+def _keep(text):
+    return text
+
+
+def test_L108_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_optional_matrix_jobs_are_guarded(repo)) == []
+
+
+def test_L108_main_build_matrix_is_out_of_scope(tmp_path):
+    """An empty main list means FILTER matched nothing; failing the run is right there,
+    so the unguarded build and merge-manifests jobs are not flagged."""
+    assert _l108_tree(tmp_path, _keep) == []
+
+
+@pytest.mark.parametrize("job,old", [
+    ("build-mini", "    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}\n"),
+    ("merge-mini-manifests", "    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' }}\n"),
+])
+def test_L108_catches_an_unguarded_mini_job(tmp_path, job, old):
+    """The incident: FILTER=cuda-12.9-24 left the mini matrix empty, and build-mini (no
+    guard) failed every filtered base build whose images had all pushed."""
+    repl = "    if: ${{ !inputs.DRY_RUN }}\n" if job == "build-mini" else ""
+    where = _l108_tree(tmp_path, lambda t: t.replace(old, repl, 1))
+    assert where == [f".github/workflows/build-base-image.yml:{job}"], where
