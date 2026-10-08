@@ -58,13 +58,16 @@ Every multi-entry variable listed above splits with one function,
   (`transformers[torch,sentencepiece]`).
 - A comma followed, after any spaces, by a version operator (`<`, `>`, `=`, `!=`, `~=`)
   does not separate, so version ranges stay whole (`torch>=2.4,<2.6`).
-- A `[` that is never closed (a typo, or a raw bracket in a URL) does not count: what
-  follows it splits normally.
+- A `[` that is never closed within its entry (a typo, or a raw bracket in a URL) does
+  not count: the text after it splits normally, and the text before it stays whole.
 - Entries are trimmed, and empty entries are dropped. Callers that skipped `#` comments
   still do.
 - The provisioner logs the parsed entries, not just how many, so a value split where the
-  user did not mean it shows in the provisioning log. URLs are logged without credentials,
-  query or fragment, where tokens travel.
+  user did not mean it shows in the provisioning log. On these lines a download or git URL
+  is shown without credentials, query or fragment; a URL the line cannot parse is shown as
+  `<unparseable URL>` and fails its own download later, never the run. This does not make
+  the log token-free: the downloaders and installers already log URLs, packages and
+  commands as given.
 
 The documentation recommends `,` and says why. `;` keeps working. One kind of existing
 value does change meaning: a single entry that contains a bare comma, such as a lone
@@ -76,16 +79,17 @@ A manifest field typed `list[str]` that arrives as a string is split by the same
 except the command fields (`post_commands`, a git repo's `post_commands`, a service's
 `pre_commands`). A command string is shell already, so splitting it could only break it:
 `cd /x; make` would run `make` outside `/x`. A command field written as one string runs as
-one command. The `PROVISIONING_POST_COMMANDS` variable still splits, because it is defined
+one command, and an empty one is no command. The `PROVISIONING_POST_COMMANDS` variable still splits, because it is defined
 as a list of commands. The ComfyUI extension's `workflows:` setting is split like an item
 field.
 
 The rule ships in the base image, and derivatives pin a dated base, so two callers outside
 the base must survive an older one:
 
-- **The ComfyUI extension** ships in the derivative. If `provisioner.envlist` is missing it
-  falls back to the old `;` split, rather than failing to import, which would abort
-  provisioning on every ComfyUI and AIO Studio instance.
+- **The ComfyUI extension** ships in the derivative (AIO Studio copies it, and both
+  images' built-in manifests load it). If `provisioner.envlist` is missing it falls back
+  to the old `;` split and logs that it did, rather than failing to import, which would
+  abort provisioning on every ComfyUI and AIO Studio instance.
 - **sd-forge's bash parser** runs the same file rather than repeating the rule. The scripts
   are fetched by URL. Where the splitter is missing or fails, they split on `,` and `;`
   plainly, which is safe for their lists of `URL|PATH` entries and extension URLs.
@@ -94,7 +98,8 @@ the base must survive an older one:
 
 1. **One implementation.** Lint rule L107 refuses a `;` split (`.split`, `.rsplit`,
    `split(sep=...)`, `re.split`) in the provisioner or a provisioner extension, outside an
-   extension's `split_entries` fallback for older bases, and an `IFS=';'` in any
+   extension's `def split_entries` fallback within `except ImportError:` (the old-base
+   fallback above), and an `IFS=';'` in any
    provisioning script outside its `split_env_entries` fallback. `downloaders/wget.py` is
    exempt, by name: it splits an HTTP `Content-Disposition` header. A split written some
    other way is not caught; the rule is a fast check, not a proof.
@@ -106,7 +111,9 @@ the base must survive an older one:
 3. **Released after the base.** Base and pytorch are built, QA'd and promoted from the
    branch before merging. Each derivative gets commas when its base pin moves to a base
    that has the splitter; until then a comma-separated value is read as one entry. The
-   documentation says so.
+   documentation says so. The exception is sd-forge's scripts: they are fetched by URL,
+   so their change goes live for every sd-forge image at merge, and is reverted by
+   reverting it on main.
 
 ## Consequences
 

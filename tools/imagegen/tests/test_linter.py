@@ -5337,6 +5337,32 @@ def test_L107_catches_a_semicolon_only_parser(tmp_path, rel, mutate):
     assert where and all(w.startswith(rel) for w in where), where
 
 
+def test_L107_fallback_exemption_is_only_an_extensions_import_fallback(tmp_path):
+    """A `def split_entries` named like the fallback, but in the base provisioner or
+    outside `except ImportError:`, gets no exemption."""
+    bad = 'def split_entries(value):\n    return value.split(";")\n'
+    cases = {
+        "ROOT/opt/instance-tools/lib/provisioner/x.py": "try:\n    import y\nexcept ImportError:\n    " + bad.replace("\n    ", "\n        "),
+        "derivatives/a/ROOT/opt/instance-tools/lib/provisioner_a/__init__.py": bad,
+    }
+    for rel, text in cases.items():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True)
+        f.write_text(text)
+    assert sorted(f.path.split(":")[0] for f in L.check_env_lists_use_the_splitter(tmp_path)) == sorted(cases)
+
+
+@pytest.mark.parametrize("rel,line", [
+    ("ROOT/opt/instance-tools/lib/provisioner/x.py", 'parts = value.split(sep=";")'),
+    ("external/e/provisioning_scripts/s.sh", "IFS=';' read -ra parts <<< \"$V\""),
+])
+def test_L107_catches_other_spellings_and_places(tmp_path, rel, line):
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True)
+    f.write_text(line + "\n")
+    assert [x.path for x in L.check_env_lists_use_the_splitter(tmp_path)] == [f"{rel}:1"]
+
+
 def test_L107_reaches_scripts_in_subdirectories(tmp_path):
     """provisioning_scripts/serverless/ and the top-level provisioning_scripts/ are scanned too."""
     for rel in ("derivatives/x/provisioning_scripts/serverless/s.sh", "provisioning_scripts/t.sh"):

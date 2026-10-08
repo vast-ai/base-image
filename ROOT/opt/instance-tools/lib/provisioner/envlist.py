@@ -28,20 +28,33 @@ def _split(value: str, brackets: bool) -> list[str]:
     entries: list[str] = []
     current: list[str] = []
     depth = 0
+    opened = 0  # where in `current` the outermost "[" that is still open began
+
+    def finish() -> None:
+        text = "".join(current)
+        if not depth:
+            entries.append(text)
+            return
+        # A "[" never closed is a typo or a raw bracket in a URL, not pip extras: split
+        # what followed it normally, keeping the text before it (closed extras
+        # included) on the first piece.
+        parts = _split(text[opened:], brackets=False)
+        parts[0] = text[:opened] + parts[0]
+        entries.extend(parts)
+
     for i, ch in enumerate(value):
         if brackets and ch == "[":
+            if not depth:
+                opened = len(current)
             depth += 1
         elif brackets and ch == "]" and depth:
             depth -= 1
         elif ch == ";" or (ch == "," and depth == 0 and not _before_operator(value, i + 1)):
-            entries.append("".join(current))
-            current = []
+            finish()
+            current, depth = [], 0
             continue
         current.append(ch)
-    tail = "".join(current)
-    # A "[" never closed is a typo or a raw bracket in a URL, not pip extras: split
-    # what followed it normally rather than gluing the rest of the value together.
-    entries.extend(_split(tail, brackets=False) if depth else [tail])
+    finish()
     return entries
 
 

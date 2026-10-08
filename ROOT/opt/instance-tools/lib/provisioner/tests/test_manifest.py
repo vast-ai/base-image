@@ -333,16 +333,21 @@ class TestLoadManifest:
         assert m.pip_packages[0].packages == ["torch>=2.4,<2.6", "numpy"]
 
     def test_command_field_from_one_string_is_one_command(self, tmp_manifest, monkeypatch):
-        """A command string is shell already: splitting it would run `make` outside /x."""
+        """A command string is shell already: splitting it would run `make` outside /x.
+        An empty one is no command at all."""
         monkeypatch.setenv("MY_SETUP", "cd /x; python -c 'print(1,2)'")
         path = tmp_manifest({
             "version": 1,
             "post_commands": "${MY_SETUP}",
-            "git_repos": [{"url": "https://github.com/o/r", "dest": "/r", "post_commands": "make, install"}],
+            "git_repos": [{"url": "https://github.com/o/r", "dest": "/r", "post_commands": "make, install"},
+                          {"url": "https://github.com/o/s", "dest": "/s", "post_commands": "${UNSET_12345}"}],
+            "services": [{"name": "svc", "command": "run", "pre_commands": "cd /x; ./prep, now"}],
         })
         m = load_manifest(path)
         assert m.post_commands == ["cd /x; python -c 'print(1,2)'"]
         assert m.git_repos[0].post_commands == ["make, install"]
+        assert m.git_repos[1].post_commands == []
+        assert m.services[0].pre_commands == ["cd /x; ./prep, now"]
 
     def test_empty_file_raises(self, tmp_path):
         path = tmp_path / "empty.yaml"
@@ -562,12 +567,25 @@ class TestApplyEnvConventions:
         assert m.post_commands == ["chmod +x /opt/run.sh", "ln -s /a /b"]
 
     def test_parsed_downloads_are_logged_without_tokens(self, monkeypatch, caplog):
-        """The entries are logged so an unintended split is visible; a token in the URL is not."""
-        monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://u:p@h/a.bin?token=SECRET#x|/m/a.bin,https://h/b.bin|/m/")
+        """The entries are logged so an unintended split is visible; a token in the URL is
+        not. A URL this line cannot parse fails its own download later, not the run here."""
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS",
+                           "https://u:p@h:8080/a.bin?token=SECRET#x|/m/a.bin,https://[::1]:9/b|/m/,"
+                           "https://h:abc/c|/m/,https://h:99999/d|/m/,http://[bad/e|/m/")
         with caplog.at_level("INFO", logger="provisioner"):
-            apply_env_conventions(self._manifest())
-        assert "https://h/a.bin -> /m/a.bin, https://h/b.bin -> /m/" in caplog.text
+            m = self._manifest()
+            apply_env_conventions(m)
+        assert len(m.downloads) == 5
+        assert ("https://h:8080/a.bin -> /m/a.bin, https://[::1]:9/b -> /m/, https://h:abc/c -> /m/, "
+                "https://h:99999/d -> /m/, <unparseable URL> -> /m/") in caplog.text
         assert "SECRET" not in caplog.text and "u:p" not in caplog.text
+
+    def test_env_merge_downloads_are_logged_without_tokens(self, monkeypatch, caplog):
+        monkeypatch.setenv("MY_MODELS", "https://h/a.bin?token=SECRET|/m/a.bin")
+        m = self._manifest(env_merge={"MY_MODELS": "downloads"})
+        with caplog.at_level("INFO", logger="provisioner"):
+            apply_env_merge(m)
+        assert "https://h/a.bin -> /m/a.bin" in caplog.text and "SECRET" not in caplog.text
 
     def test_comma_separated_conventions(self, monkeypatch):
         """Vast drops any template variable containing ";", so commas separate too (ADR 0053)."""

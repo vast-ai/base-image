@@ -181,7 +181,10 @@ def _build_nested(cls, data):
             # A list field written as one string, usually `packages: "${PIP_PACKAGES}"`:
             # without this the installers iterate it one character at a time. A command
             # field's string is shell already (`cd /x; make`), so it stays one command.
-            filtered[f.name] = [v] if f.name in _COMMAND_FIELDS else split_entries(v)
+            if f.name in _COMMAND_FIELDS:
+                filtered[f.name] = [v] if v.strip() else []
+            else:
+                filtered[f.name] = split_entries(v)
         else:
             filtered[f.name] = v
     return cls(**filtered)

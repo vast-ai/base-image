@@ -404,10 +404,12 @@ def test_loads_on_a_base_without_the_splitter(monkeypatch):
     import importlib
     import sys
     monkeypatch.setitem(sys.modules, "provisioner.envlist", None)
-    old = importlib.reload(ext)
+    fallback_ext = importlib.reload(ext)
     try:
-        assert old._parse_workflow_urls("https://a/1.json;https://b/2.json") == ["https://a/1.json", "https://b/2.json"]
-        assert old.as_list("https://a/1.json") == ["https://a/1.json"]
+        assert fallback_ext._parse_workflow_urls(" https://a/1.json ;;https://b/2.json") == [
+            "https://a/1.json", "https://b/2.json"]
+        assert fallback_ext.as_list("https://a/1.json;https://b/2.json") == [
+            "https://a/1.json", "https://b/2.json"]
     finally:
         monkeypatch.delitem(sys.modules, "provisioner.envlist")
         importlib.reload(ext)

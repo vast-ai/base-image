@@ -1646,7 +1646,8 @@ template never arrived.
   `;` if `provisioner.envlist` is missing (a failed import aborts every ComfyUI instance's
   provisioning), and sd-forge splits on `,` and `;` if the splitter is missing or fails.
 - **Gated by L107:** no `;` split (`.split`, `.rsplit`, `split(sep=...)`, `re.split`) in the
-  provisioner or an extension outside an extension's `split_entries` fallback, and no
+  provisioner or an extension outside an extension's `def split_entries` fallback within
+  `except ImportError:`, and no
   `IFS=';'` in any provisioning script outside `split_env_entries`. Exempt by name:
   `downloaders/wget.py` (an HTTP header). Held by `test_envlist.py`, `test_manifest.py`,
   the ComfyUI extension's tests and `test_sdforge_env_lists.py`.

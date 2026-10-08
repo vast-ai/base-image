@@ -74,12 +74,17 @@ def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
 
 
 def _safe_url(url: str) -> str:
-    """A URL for the log: no credentials, query or fragment, where tokens travel."""
+    """A URL for this log line: no credentials, query or fragment, where tokens travel.
+    It only describes the URL, so it never fails: a typo in one entry must fail that
+    download, not the whole run."""
     import urllib.parse as up
-    parts = up.urlsplit(url)
+    try:
+        parts = up.urlsplit(url)
+    except ValueError:
+        return "<unparseable URL>"
     if not parts.scheme:
         return url
-    host = (parts.hostname or "") + (f":{parts.port}" if parts.port else "")
+    host = parts.netloc.rpartition("@")[2]
     return up.urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 

@@ -17,14 +17,17 @@ from provisioner.manifest import expand_env
 
 try:
     from provisioner.envlist import as_list, split_entries
+    _OLD_BASE = False
 except ImportError:
     # The extension ships in the derivative; the provisioner comes from the pinned
     # base, which may predate envlist.py (ADR 0053). Split on ";" there, as before.
+    _OLD_BASE = True
+
     def split_entries(value: str) -> list[str]:
         return [t.strip() for t in value.split(";") if t.strip()]
 
     def as_list(value) -> list:
-        return [value] if isinstance(value, str) else value
+        return split_entries(value) if isinstance(value, str) else value
 from provisioner.schema import DownloadEntry, FileWrite, GitRepo
 
 REGISTRY_URL = "https://api.comfy.org/nodes/{cnr_id}"
@@ -47,6 +50,9 @@ def _parse_workflow_urls(value: str) -> list[str]:
 def run(config: dict, context, dry_run: bool = False) -> None:
     """Extension entry point called by the provisioner."""
     log = context.log
+    if _OLD_BASE:
+        log.info("comfyui: this base's provisioner predates the shared list splitter; "
+                 "workflow lists split on ';' only (ADR 0053)")
     workflows = list(as_list(config.get("workflows", [])))
     comfyui_dir = expand_env(
         config.get("comfyui_dir", "${WORKSPACE:-/workspace}/ComfyUI")

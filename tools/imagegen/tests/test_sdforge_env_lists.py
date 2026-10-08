@@ -47,5 +47,6 @@ def test_image_without_the_splitter_still_splits(script):
 def test_a_failing_splitter_does_not_empty_the_list(script, tmp_path):
     """A process substitution hides the splitter's exit status; the list must not vanish."""
     broken = tmp_path / "envlist.py"
-    broken.write_text("raise SystemExit(1)\n")
+    # It gets part of the way first: a partial list must not mix with the fallback's.
+    broken.write_text("import sys\nsys.stdout.write('https://h/a|/m/\\0')\nraise SystemExit(1)\n")
     assert parse(script, "https://h/a|/m/,https://h/b|/m/", str(broken)) == ["https://h/a|/m/", "https://h/b|/m/"]

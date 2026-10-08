@@ -26,6 +26,8 @@ from provisioner.envlist import split_entries
      ["transformers[torch,sentencepiece]>=4.40", "accelerate"]),
     # An unclosed "[" does not swallow the rest of the value.
     ("x[a,b,https://h/c|/m/", ["x[a", "b", "https://h/c|/m/"]),
+    ("x[a,b;c,d", ["x[a", "b", "c", "d"]),
+    ("pkg[a,b]x[c,d", ["pkg[a,b]x[c", "d"]),
     # A URL's own comma is written %2C; url|dest fields are untouched.
     ("https://h/a%2Cb.bin|/m/,https://h/c.bin|/m/c.bin", ["https://h/a%2Cb.bin|/m/", "https://h/c.bin|/m/c.bin"]),
 ])

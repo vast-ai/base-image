@@ -641,6 +641,7 @@ The same rule applies to every multi-entry variable here, to `env_merge` variabl
 - Write a comma inside a URL as `%2C`.
 - `#` at the start of an entry disables that entry only, not the rest of the value.
 - A shell command that itself contains a comma cannot go in `PROVISIONING_POST_COMMANDS`, and a comma before `>` keeps a redirect joined to the previous entry. Put such commands in a manifest's `post_commands` list or a script.
+- The provisioning log lists each variable's parsed entries, so a split you didn't mean is visible there. URLs on those lines are shown without credentials or query strings, but other log lines show URLs, packages and commands as you wrote them, so don't treat the log as free of secrets.
 - **Commas need an image built after this rule was added** (ADR 0053). Older images split on `;` only and read a comma-separated value as one entry.
 
 A manifest list field written as one string, such as `apt_packages: "${APT_PACKAGES}"` or `packages: "${PIP_PACKAGES}"`, is split by the same rule. A command field written as one string (`post_commands`, a git repo's `post_commands`, a service's `pre_commands`) runs as a single shell command, so `cd /x; make` works as written; use a YAML list for separate commands.
