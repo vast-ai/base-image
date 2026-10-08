@@ -6,9 +6,11 @@
 # Vast drops any template variable whose value contains ";", so a ";"-separated list
 # never arrived. base-qa sets these as real template env vars, so they take the same
 # path through the platform as a customer's:
-#   PROVISIONING_PIP            a version range (its comma must not split) and a second package
+#   PROVISIONING_PIP            a version range (its commas must not split), extras, a third package
 #   PROVISIONING_POST_COMMANDS  two commands, each of which must run on its own
 #   PROVISIONING_DOWNLOADS      two url|dest entries
+# The provisioning log prints each list as parsed, so this compares those lines with the
+# expected split, then checks the commands ran and the files arrived.
 # 12-provisioning runs first and blocks until provisioning has finished.
 source "$(dirname "$0")/../lib.sh"
 
@@ -17,27 +19,29 @@ source "$(dirname "$0")/../lib.sh"
 [[ "${PROVISIONING_POST_COMMANDS:-}" == *qa-envlist* ]] \
     || test_skip "no qa-envlist PROVISIONING_* values (base-qa sets them)"
 
-[[ -f /.provisioning_complete ]] || test_fatal "provisioning did not complete; see /var/log/portal/provisioning.log"
+PROV_LOG=/var/log/portal/provisioning.log
+[[ -f /.provisioning_complete ]] || test_fatal "provisioning did not complete; see ${PROV_LOG}"
+
+# ── Each list parsed into exactly the expected entries ───────────────
+expect_parsed() {
+    local name=$1 line=$2
+    if grep -qF -- "$line" "$PROV_LOG"; then
+        echo "  parsed as expected: \$${name}"
+    else
+        fail_later "parse-${name}" "no '${line}' in ${PROV_LOG}; it logged: $(grep -F "from \$${name}:" "$PROV_LOG" | tail -1)"
+    fi
+}
+expect_parsed PROVISIONING_PIP \
+    "added 3 pip packages from \$PROVISIONING_PIP: ['packaging>=20,!=21.0,<999', 'huggingface-hub[cli]', 'wheel']"
+expect_parsed PROVISIONING_POST_COMMANDS \
+    "added 2 post commands from \$PROVISIONING_POST_COMMANDS: ['touch /tmp/qa-envlist-a', 'touch /tmp/qa-envlist-b']"
+expect_parsed PROVISIONING_DOWNLOADS "added 2 downloads from \$PROVISIONING_DOWNLOADS: "
 
 # ── Two post commands, each run on its own ───────────────────────────
 for f in /tmp/qa-envlist-a /tmp/qa-envlist-b; do
     [[ -e "$f" ]] && echo "  post command ran: $f" \
         || fail_later "post-${f##*-}" "${f} missing: PROVISIONING_POST_COMMANDS was not split into two commands"
 done
-
-# ── pip: the range stayed one requirement, the second package installed ──
-py=/venv/main/bin/python
-[[ -x "$py" ]] || py=python3
-six_version=$("$py" -c 'import six; print(six.__version__)' 2>/dev/null)
-if [[ -z "$six_version" ]]; then
-    fail_later "pip-range" "six is not importable: the 'six>=1.16,<2' entry did not install"
-elif [[ "${six_version%%.*}" -ge 2 ]]; then
-    fail_later "pip-range" "six ${six_version} installed: the '<2' half of the range was split off"
-else
-    echo "  pip range honoured: six ${six_version}"
-fi
-"$py" -c 'import tomli_w' 2>/dev/null && echo "  second pip package installed: tomli-w" \
-    || fail_later "pip-second" "tomli_w is not importable: the second PROVISIONING_PIP entry was lost"
 
 # ── Two downloads ────────────────────────────────────────────────────
 for f in /tmp/qa-envlist/LICENSE.md /tmp/qa-envlist/README.md; do

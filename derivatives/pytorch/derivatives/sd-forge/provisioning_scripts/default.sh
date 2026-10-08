@@ -22,8 +22,8 @@ PIP_PACKAGES=(
 )
 
 # Extensions to install: "REPO_URL"
-# Can also be set via EXTENSIONS env var (comma-separated)
-# Example: EXTENSIONS="https://github.com/org/ext1,https://github.com/org/ext2"
+# This array has the same name as the EXTENSIONS env var and replaces it, so the env
+# var is not read.
 EXTENSIONS=(
     #"https://github.com/example/extension-name"
 )
@@ -88,32 +88,33 @@ normalize_entry() {
     echo "$entry"
 }
 
-# Split an env var into entries with the provisioner's splitter (ADR 0053): a value with ";"
-# splits on ";" only, as always; otherwise on ",", as for every PROVISIONING_* var.
+# Split an env var into entries (ADR 0053). A value containing ";" splits on ";" only,
+# with the same `read` as before the change, so existing lists keep their meaning
+# exactly. Otherwise it splits on "," with the provisioner's splitter, as every
+# PROVISIONING_* var does.
 split_env_entries() {
     local splitter=/opt/instance-tools/lib/provisioner/envlist.py
     local python=/opt/instance-tools/provisioner/venv/bin/python
     local out
+    local -a parts=()
+    if [[ $1 == *";"* ]]; then
+        IFS=';' read -ra parts <<< "$1"
+        [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
+        return 0
+    fi
     [[ -x $python ]] || python=python3
-    if [[ -f $splitter ]]; then
-        out=$(mktemp)
+    if [[ -f $splitter ]] && out=$(mktemp); then
         if "$python" "$splitter" "$1" > "$out"; then
             cat "$out"
             rm -f "$out"
             return 0
         fi
         rm -f "$out"
-        echo "[WARN] the provisioner's list splitter failed; splitting on ',' and ';'" >&2
+        echo "[WARN] the provisioner's list splitter failed; splitting on ','" >&2
     fi
-    # Images built before the splitter, or a failed run: the same rule plainly. A value
-    # containing ";" splits on ";" only, as it always has; otherwise on ",". These lists
-    # hold URL|PATH entries and extension URLs, which never contain a pip range.
-    local -a parts=()
-    if [[ $1 == *";"* ]]; then
-        IFS=';' read -ra parts <<< "$1"
-    else
-        IFS=',' read -ra parts <<< "$1"
-    fi
+    # Images built before the splitter, or a failed run. These lists hold URL|PATH
+    # entries and extension URLs, which never contain a pip range.
+    IFS=',' read -ra parts <<< "$1"
     [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
 }
 

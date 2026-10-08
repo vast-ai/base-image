@@ -1639,7 +1639,8 @@ template never arrived.
   containing `;` splits on `;` only, exactly as before (live templates export `;` lists
   from onstart, past the platform filter); otherwise on `,`, except a comma inside `[...]`
   (pip extras) or followed by a version operator (pip ranges). A test pins every `;` value
-  to the old split. sd-forge's scripts call the same file, falling back to `;` on
+  to the old split. sd-forge's scripts split a `;` value with their original `read` and
+  call the same file only for a value without `;`, falling back to a plain `,` split on
   images built before it.
 - A manifest `list[str]` field that arrives as one string (`packages: "${PIP_PACKAGES}"`)
   is split by the same rule; it used to reach pip one character at a time.

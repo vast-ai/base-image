@@ -72,10 +72,12 @@ env:
   INSTANCE_TEST_REQUIRE_PASS: "base/36-home-env-sync base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
   # Comma-separated lists, set as real template env vars so they take the customer's
   # path through the platform (which drops any value containing ";"). base/58-env-lists
-  # checks each was split and applied (ADR 0053).
-  PROVISIONING_PIP: "six>=1.16,<2,tomli-w"
+  # checks each was split and applied (ADR 0053). The pip entries are all installed in
+  # the base already, so uv checks them without the index; the downloads are pinned to
+  # a commit, so only a GitHub outage can fail them.
+  PROVISIONING_PIP: "packaging>=20,!=21.0,<999,huggingface-hub[cli],wheel"
   PROVISIONING_POST_COMMANDS: "touch /tmp/qa-envlist-a,touch /tmp/qa-envlist-b"
-  PROVISIONING_DOWNLOADS: "https://raw.githubusercontent.com/vast-ai/base-image/main/LICENSE.md|/tmp/qa-envlist/LICENSE.md,https://raw.githubusercontent.com/vast-ai/base-image/main/README.md|/tmp/qa-envlist/README.md"
+  PROVISIONING_DOWNLOADS: "https://raw.githubusercontent.com/vast-ai/base-image/7899fdbef2b2911a3e374dbab485762bc0bb7d41/LICENSE.md|/tmp/qa-envlist/LICENSE.md,https://raw.githubusercontent.com/vast-ai/base-image/7899fdbef2b2911a3e374dbab485762bc0bb7d41/README.md|/tmp/qa-envlist/README.md"
   # Promote the exposure scan from advisory to gating, for base only (ADR 0006
   # condition 2 always intended this flip once a clean baseline existed; base is
   # the image that OWNS exposure-allowlist/00-base.conf, so its baseline is the

@@ -636,12 +636,12 @@ The same rule applies to every multi-entry variable here, to `env_merge` variabl
 
 - A value containing `;` is split on `;` only, exactly as before, commas inside entries included. Existing `;` lists (for example exported from an onstart script) keep their meaning.
 - A value without `;` is split on `,`. `|` separates fields within an entry either way.
-- **Use `,` in templates.** Vast currently drops any template variable whose value contains `;`, so a `;`-separated list never reaches the instance. Don't mix the two in one value: a value with any `;` splits on `;` alone.
+- **Use `,` in templates.** Vast currently drops any template variable whose value contains `;`, so a `;`-separated list never reaches the instance. Don't mix the two in one value, including by appending with `;` from onstart to a comma-separated template value: a value with any `;` splits on `;` alone.
 - A comma inside `[...]` does not separate, so pip extras stay whole: `transformers[torch,sentencepiece]`.
 - A comma followed by a version operator (`<`, `>`, `=`, `!=`, `~=`) does not separate, so version ranges stay whole: `torch>=2.4,<2.6`.
 - Write a comma inside a URL as `%2C`.
-- `#` at the start of an entry disables that entry only, not the rest of the value.
-- In a comma-separated value, a shell command that itself contains a comma cannot go in `PROVISIONING_POST_COMMANDS`, and a comma before `>` keeps a redirect joined to the previous entry. Separate such commands with `;` (from onstart; a single one can end with `;` to stay whole), or put them in a manifest's `post_commands` list or a script.
+- In the `PROVISIONING_*` variables, `env_merge` variables and sd-forge's lists, `#` at the start of an entry disables that entry only, not the rest of the value.
+- In a comma-separated value, a shell command that itself contains a comma cannot go in `PROVISIONING_POST_COMMANDS`, and a comma before `>` keeps a redirect joined to the previous entry. From onstart, separate such commands with `;` (a single one can end with `;` to stay whole). A template cannot carry `;`, so there such a command goes in a manifest's `post_commands` list or a script.
 - The provisioning log lists each variable's parsed entries, so a split you didn't mean is visible there. URLs on those lines are shown without credentials or query strings, but other log lines show URLs, packages and commands as you wrote them, so don't treat the log as free of secrets.
 - **Commas need an image built after this rule was added** (ADR 0053). Older images split on `;` only and read a comma-separated value as one entry.
 

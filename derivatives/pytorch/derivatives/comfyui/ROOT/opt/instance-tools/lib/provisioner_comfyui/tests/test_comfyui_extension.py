@@ -418,9 +418,10 @@ def test_loads_on_a_base_without_the_splitter(monkeypatch):
 class TestRun:
     def test_workflows_config_written_as_one_string(self):
         """`workflows: "${PROVISIONING_COMFYUI_WORKFLOWS}"` expands to one string; it used
-        to be iterated one character at a time."""
+        to be iterated one character at a time. It splits like any list value."""
         ctx = FakeContext()
-        config = {"workflows": "https://example.com/my-workflow.json", "comfyui_dir": COMFYUI_DIR}
+        config = {"workflows": "https://example.com/my-workflow.json, https://example.com/other.json",
+                  "comfyui_dir": COMFYUI_DIR}
         registry = {
             "comfyui-ipadapter-plus": {"repository": "https://github.com/user/ComfyUI-IPAdapter-Plus"},
             "comfyui-impact-pack": {"repository": "https://github.com/user/ComfyUI-Impact-Pack.git"},
@@ -428,7 +429,8 @@ class TestRun:
         with patch("urllib.request.urlopen", side_effect=_make_urlopen_mock(SAMPLE_GUI_WORKFLOW, registry)):
             ext.run(config, ctx)
         assert [f.path for f in ctx.manifest.write_files_late] == [
-            f"{COMFYUI_DIR}/user/default/workflows/my-workflow.json"]
+            f"{COMFYUI_DIR}/user/default/workflows/my-workflow.json",
+            f"{COMFYUI_DIR}/user/default/workflows/other.json"]
 
     def test_full_integration(self):
         ctx = FakeContext()

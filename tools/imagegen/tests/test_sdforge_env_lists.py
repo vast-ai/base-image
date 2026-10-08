@@ -36,12 +36,53 @@ def test_commas_separate_entries(script):
         "https://h/a.safetensors|/m/a.safetensors", "https://h/b.safetensors|/m/"]
 
 
+# parse_env_array as it was before ADR 0053, verbatim. The shipped parser must give the
+# same entries for any value containing ";".
+BEFORE = r"""
+parse_env_array() {
+    local env_var_name="$1"
+    local env_value="${!env_var_name:-}"
+
+    if [[ -n "$env_value" ]]; then
+        local -a result=()
+        IFS=';' read -ra entries <<< "$env_value"
+        for entry in "${entries[@]}"; do
+            entry=$(normalize_entry "$entry")
+            # Skip empty entries and comments
+            [[ -z "$entry" || "$entry" == \#* ]] && continue
+            result+=("$entry")
+        done
+        # Return array elements, null-terminated
+        if [[ ${#result[@]} -gt 0 ]]; then
+            printf '%s\0' "${result[@]}"
+        fi
+    fi
+}
+"""
+
+SEMICOLON_VALUES = [
+    "https://h/f?ids=1,2|/m/f;https://h/g|/m/g",
+    "a|/m/;\nb|/m/",
+    "a|/m/;b|/m/\nc|/m/;d|/m/",
+    "a\xa0;b\u2003|/m/",
+    " ;#off|/m/; x , y |/m/;;",
+    "\n;a",
+]
+
+
+def parse_before(script: Path, value: str) -> list[str]:
+    text = script.read_text()
+    normalize = re.search(r"^normalize_entry\(\) \{\n.*?^\}\n", text, re.S | re.M).group(0)
+    out = subprocess.run(["bash", "-c", normalize + BEFORE + "\nparse_env_array V"], env={"V": value, "PATH": "/usr/bin:/bin"},
+                         capture_output=True, check=True).stdout
+    return out.decode().split("\0")[:-1]
+
+
+@pytest.mark.parametrize("value", SEMICOLON_VALUES)
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
-def test_a_semicolon_value_splits_exactly_as_before(script):
-    """Existing ";" lists keep their meaning: a URL's own comma stays put."""
-    value = "https://h/f?ids=1,2|/m/f;https://h/g|/m/g"
-    assert parse(script, value, str(REPO / "ROOT" / SPLITTER.lstrip("/"))) == [
-        "https://h/f?ids=1,2|/m/f", "https://h/g|/m/g"]
+def test_a_semicolon_value_splits_exactly_as_before(script, value):
+    """Existing ";" lists keep their meaning, multi-line and odd whitespace included."""
+    assert parse(script, value, str(REPO / "ROOT" / SPLITTER.lstrip("/"))) == parse_before(script, value)
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)

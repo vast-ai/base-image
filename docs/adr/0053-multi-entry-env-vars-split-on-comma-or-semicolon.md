@@ -13,14 +13,16 @@ Several environment variables hold a list. The provisioner splits all of them on
 - any variable a manifest names in `env_merge`;
 - `PROVISIONING_COMFYUI_WORKFLOWS`, read by the ComfyUI extension.
 
-sd-forge's provisioning scripts split `HF_MODELS`, `CIVITAI_MODELS`, `WGET_DOWNLOADS` and
-`EXTENSIONS` on `;` in their own bash parser.
+sd-forge's provisioning scripts split `HF_MODELS`, `CIVITAI_MODELS` and `WGET_DOWNLOADS` on
+`;` in their own bash parser. (Their in-script `EXTENSIONS` array has the env var's name and
+replaces it, so that variable is never read. This change leaves that alone.)
 
 Vast drops any template variable whose value contains `;`. The platform stores the value,
 then leaves it out of the container's environment, with no error. Verified on 2026-10-07:
 `T_SEMI=a;b` was stored on the instance but absent from PID 1's environment. `a^b`, `a,b`
-and `a|b` all arrived intact. So every list with two or more entries set in a template has
-been silently missing, and only single-entry values worked. The platform fix is tracked
+and `a|b` all arrived intact, and so did `six>=1.16,<2,tomli-w` on 2026-10-08. So every
+list with two or more entries set in a template has been silently missing, and only
+single-entry values worked. The platform fix is tracked
 separately, and may take time.
 
 A second defect sat next to it. A manifest list field written as one string, such as
@@ -81,8 +83,14 @@ The documentation recommends `,` for templates and says why. `;` keeps working u
 One kind of existing value does change meaning: a value with **no** `;` holding a single
 entry that contains a bare comma, such as a lone `PROVISIONING_POST_COMMANDS` command
 with a comma in it, or a single download URL with a raw comma. It now splits. This is
-accepted as an edge case: a multi-entry list needed `;`, and a lone entry with a bare
-comma can be written with a trailing `;` to keep it whole.
+accepted as an edge case. Set from onstart, such an entry can end with `;` to stay whole.
+Set in a template it cannot, because the platform drops the `;`; it has to move to a
+manifest's `post_commands`, a script, or (for a URL) `%2C`. No such value was found in
+this repo's templates and manifests or in the published template sources.
+
+A value written by two parties follows the same rule: a template's `a,b` with `;c`
+appended from onstart has a `;`, so it splits on `;` alone and `a,b` stays one entry. The
+documentation says not to mix the two in one value.
 
 A manifest field typed `list[str]` that arrives as a string is split by the same rule,
 except the command fields (`post_commands`, a git repo's `post_commands`, a service's
@@ -99,9 +107,11 @@ the base must survive an older one:
   images' built-in manifests load it). If `provisioner.envlist` is missing it falls back
   to the old `;` split and logs that it did, rather than failing to import, which would
   abort provisioning on every ComfyUI and AIO Studio instance.
-- **sd-forge's bash parser** runs the same file rather than repeating the rule. The scripts
-  are fetched by URL. Where the splitter is missing or fails, they split on `,` and `;`
-  plainly, which is safe for their lists of `URL|PATH` entries and extension URLs.
+- **sd-forge's bash parser** splits a value containing `;` with its original `read`,
+  unchanged, so those values keep their exact meaning (multi-line values included). It
+  runs the same file as the provisioner only for a value without `;`. The scripts are
+  fetched by URL; where the splitter is missing or fails, they split on `,` plainly,
+  which is safe for their lists of `URL|PATH` entries.
 
 ## Binding conditions
 
@@ -109,18 +119,22 @@ the base must survive an older one:
    `split(sep=...)`, `re.split`) in the provisioner or a provisioner extension, outside an
    extension's `def split_entries` fallback within `except ImportError:` (the old-base
    fallback above), and an `IFS=';'` in any
-   provisioning script outside its `split_env_entries` fallback. `downloaders/wget.py` is
+   provisioning script outside its `split_env_entries` function. `downloaders/wget.py` is
    exempt, by name: it splits an HTTP `Content-Disposition` header. A split written some
    other way is not caught; the rule is a fast check, not a proof.
 2. **Tested where it ships.** The splitter, each convention variable's parser, the
    `${VAR}` item and command fields, the ComfyUI extension (including loading on a base
    without the splitter) and sd-forge's shipped parser (including a missing or failing
-   splitter) each have tests, and each fix has a mutation that fails them. The ComfyUI
-   extension's suite runs in CI (it had never run there). On a live instance,
-   `base/58-env-lists` checks that base-qa's comma-separated `PROVISIONING_PIP`,
-   `PROVISIONING_POST_COMMANDS` and `PROVISIONING_DOWNLOADS`, set as real template env
-   vars, were each split and applied; it is required in all three copies of base-qa's
-   required list.
+   splitter, and its `;` values compared with the parser from before this change) each
+   have tests, and each fix has a mutation that fails them. The ComfyUI extension's suite
+   runs in CI (it had never run there). On a live instance, `base/58-env-lists` checks
+   that base-qa's comma-separated `PROVISIONING_PIP`, `PROVISIONING_POST_COMMANDS` and
+   `PROVISIONING_DOWNLOADS`, set as real template env vars, were each parsed into the
+   expected entries (from the provisioning log) and applied; it is required in all three
+   copies of base-qa's required list. Its pip entries are already installed in the base,
+   so they need no package index. Its two downloads come from GitHub, pinned to a
+   commit: this required test accepts a GitHub outage as a reason to hold a base release,
+   unlike `13-provisioner-selftest`, which stays off the network.
 3. **Released after the base.** Base and pytorch are built, QA'd and promoted from the
    branch before merging. Each derivative gets commas when its base pin moves to a base
    that has the splitter; until then a comma-separated value is read as one entry. The
