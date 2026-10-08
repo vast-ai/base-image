@@ -107,7 +107,11 @@ the base must survive an older one:
    `${VAR}` item and command fields, the ComfyUI extension (including loading on a base
    without the splitter) and sd-forge's shipped parser (including a missing or failing
    splitter) each have tests, and each fix has a mutation that fails them. The ComfyUI
-   extension's suite runs in CI (it had never run there).
+   extension's suite runs in CI (it had never run there). On a live instance,
+   `base/58-env-lists` checks that base-qa's comma-separated `PROVISIONING_PIP`,
+   `PROVISIONING_POST_COMMANDS` and `PROVISIONING_DOWNLOADS`, set as real template env
+   vars, were each split and applied; it is required in all three copies of base-qa's
+   required list.
 3. **Released after the base.** Base and pytorch are built, QA'd and promoted from the
    branch before merging. Each derivative gets commas when its base pin moves to a base
    that has the splitter; until then a comma-separated value is read as one entry. The
