@@ -683,7 +683,9 @@ login shells and supervisor scripts all source, and pam_env and linux-desktop's
 `export_env.sh` parse without a shell. Each value gets the quoting every reader agrees
 on: `NAME='value'` without a `'`; `NAME="value"` with a `'` but none of `$` `` ` `` `"`
 `\`; otherwise a form only bash reads (`'it'\''s'`, or `$'...'` for a control
-character). Sourcing restores exactly what Docker passed. Nothing is expanded (a generated secret
+character: pam_env gets the raw quoted text, the desktop parser skips it). pam_env cuts
+any value at its first `#`, whatever the quoting. Sourcing restores exactly what Docker
+passed. Nothing is expanded (a generated secret
 like `p4$sW0rd` stays intact) and nothing in a value runs. Each variable stays on one
 `^NAME=` line, which ADR 0014's `_vast_user_set` depends on. Names that are not shell
 identifiers are skipped. `tools/imagegen/tests/test_prep_env_sh.py` sources the

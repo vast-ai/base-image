@@ -15,8 +15,10 @@ Docker handed to PID 1.
 
 Two other readers parse the same file without a shell. `pam_env` builds the environment
 for non-interactive SSH sessions (`ssh host cmd`, rsync, scp, remote IDEs) and for `sudo`;
-linux-desktop's `export_env.sh` builds the desktop session's. Both strip one pair of
-surrounding quotes and keep everything else as written: no expansion, no escapes.
+linux-desktop's `export_env.sh` builds the desktop session's. Neither expands or
+unescapes anything. pam_env strips a pair of surrounding quotes and cuts the line at its
+first `#`. The desktop parser exports a value only if it is wholly `'...'` or `"..."`
+with no inner quote of the same kind, or bare, and skips any other line.
 
 The dump wrote each variable as `NAME="value"`, with the value unescaped. Inside
 double quotes bash still evaluates `$`, backticks and `\`, and a `"` ends the string:
@@ -73,12 +75,15 @@ reach this dump, which needs to be correct before that happens.
 
 `_vast_dump_env` picks, per value, the quoting every reader of the file agrees on:
 
-| Value | Written as | bash | pam_env, desktop parser |
-|---|---|---|---|
-| no `'` | `NAME='value'` | exact | exact |
-| a `'`, but no `$` `` ` `` `"` `\` | `NAME="value"` | exact | exact |
-| a `'` with one of `$` `` ` `` `"` `\` | `NAME='it'\''s'` | exact | raw text |
-| a control character (newline, tab) | `NAME=$'...'` | exact | raw text |
+| Value | Written as | bash | pam_env | desktop parser |
+|---|---|---|---|---|
+| no `'` | `NAME='value'` | exact | exact | exact |
+| a `'`, but no `$` `` ` `` `"` `\` | `NAME="value"` | exact | exact | exact |
+| a `'` with one of `$` `` ` `` `"` `\` | `NAME='it'\''s'` | exact | raw quoted text | not set |
+| a control character (newline, tab) | `NAME=$'...'` | exact | raw quoted text | not set |
+
+pam_env also cuts every value at its first `#`, whatever the quoting; the old format had
+the same cut, and no quoting avoids it.
 
 Bash, which boots the instance and starts every service, restores every value exactly
 as Docker passed it: nothing is expanded and nothing runs. The other readers get every
@@ -98,12 +103,15 @@ skip a stage by setting one.
   generated secrets containing `$` included, and nothing in a value runs.
   `tools/imagegen/tests/test_prep_env_sh.py` checks this against the shipped file. It
   catches the old `"%s"` quoting, the `$NAME`-expanding variant (option 2), and an
-  unescaped embedded `'`. It also reads the file the way pam_env does and through the
-  real linux-desktop parser (every value outside the last two rows must come back
-  exact), runs the dump under bash 3.2 and 4.2 where docker is available, and checks
-  that `boot_default.sh` unsets every stage's lib-only switch.
+  unescaped embedded `'`, all on the host bash. It also reads the file the way pam_env
+  does and through the real linux-desktop parser (every value outside the last two rows
+  must come back exact, and the desktop parser must skip the rest), runs the dump under
+  bash 3.2 and 4.2 in docker (a missing docker fails in CI rather than skipping), checks
+  that `boot_default.sh` unsets every stage's lib-only switch, and checks that the boot
+  log notice names variables and never prints a value.
 - On a live instance, `base/57-env-literal` reads probe values back from a fresh
-  shell, supervisord and caddy, and checks that none of them ran. It is required to
+  shell, supervisord and caddy (not caddy on a serverless worker, which does not start
+  it), and checks that none of them ran. It is required to
   pass in all three copies of base-qa's required list (the template, the promote
   workflow's QA job and its summary arbiter), which `test_promote_gate_wiring.py`
   holds together. base-qa exports the probes from its onstart, which runs before the image boots,
@@ -126,8 +134,9 @@ skip a stage by setting one.
   literal. That only changes values that were already broken.
 - pam_env and the desktop parser read every value the old format gave them correctly,
   except a value containing `'` together with `$` `` ` `` `"` or `\`, or a control
-  character. Those now arrive as the raw quoted text; in the old format they were
-  wrong for bash as well, and could run as code.
+  character. pam_env now gets the raw quoted text for those, and the desktop session
+  does not get the variable from this file; in the old format they were wrong for bash
+  as well, and could run as code. pam_env's cut at `#` is unchanged.
 - Not changed here: the dump's `grep -z` drops a value that is not valid UTF-8 when it
   runs under a UTF-8 locale.
 

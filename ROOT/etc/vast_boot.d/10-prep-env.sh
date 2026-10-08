@@ -9,8 +9,10 @@
 #   - no single quote: 'value' (literal to bash, and to the quote-stripping readers);
 #   - a single quote but no $ ` " \ : "value" (also literal to all of them);
 #   - a single quote with one of those, or a control character: a form only bash
-#     reads correctly ('it'\''s' or $'...'). The other readers see the raw text; no
-#     form serves both, and bash is what boots the instance.
+#     reads correctly ('it'\''s' or $'...'). pam_env sees the raw quoted text and the
+#     desktop parser skips the variable; no form serves both, and bash is what boots
+#     the instance.
+# pam_env also cuts any value at its first #, whatever the quoting.
 # Names that are not shell identifiers cannot be sourced, so they are skipped.
 _vast_dump_env() {
     local line name value
@@ -32,6 +34,19 @@ _vast_dump_env() {
             printf "%s='%s'\n" "$name" "${value//\'/$sq}"
         fi
     done
+}
+
+# $VAR in a template value used to be expanded here by accident; it is now kept as
+# written (ADR 0052). Say so where it would bite, for the variables the dump wrote,
+# naming the variable only: values can be secrets.
+_vast_note_unexpanded() {
+    local line
+    while IFS= read -r -d '' line; do
+        [[ "${line%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        if [[ "${line#*=}" =~ \$\{?[A-Za-z_] ]]; then
+            echo "prep-env: ${line%%=*} contains \$NAME text; it is kept literally, not expanded (ADR 0052)"
+        fi
+    done < <(env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA")
 }
 
 # Load the function only (the test sources the shipped file this way).
@@ -75,14 +90,7 @@ if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment;
     echo 'PATH="/opt/instance-tools/bin:/opt/sys-venv/shim:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
         >> /etc/environment
     _vast_dump_env >> /etc/environment
-    # $VAR in a template value used to be expanded here by accident; it is now kept as
-    # written (ADR 0052). Say so where it would bite, naming the variable only: values
-    # can be secrets.
-    while IFS= read -r -d '' line; do
-        if [[ "${line#*=}" =~ \$\{?[A-Za-z_] ]]; then
-            echo "prep-env: ${line%%=*} contains \$NAME text; it is kept literally, not expanded (ADR 0052)"
-        fi
-    done < <(env -0)
+    _vast_note_unexpanded
 fi
 
 # Source the file at /etc/environment - We can now edit environment variables in a running instance

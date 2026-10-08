@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from _docker_gate import assert_docker_present_under_ci, requires_docker
+
 REPO = Path(__file__).resolve().parents[3]
 HOOK = REPO / "ROOT/etc/vast_boot.d/10-prep-env.sh"
 
@@ -43,6 +45,9 @@ VALUES = {
     "DQUOTE": 'say "hi there"',
     "SQUOTE": "it's",
     "SQUOTES": "''a'b''",
+    # A single quote with something bash expands: the only values written 'it'\\''s'.
+    "SQUOTE_DOLLAR": "it's $BASE",
+    "SQUOTE_SUBST": "a'$(touch {canary})'",
     "BACKSLASH": "a\\b\\",
     "NEWLINE": "line1\nFAKE=injected\n$BASE",
     "TAB": "a\t$BASE",
@@ -52,6 +57,7 @@ VALUES = {
     "SPACES": "  padded  ",
     "EQUALS": "a=b=c",
     "GLOB": "*",
+    "HASH": "p@ss#word",
 }
 
 
@@ -134,28 +140,34 @@ def test_excluded_variables_are_not_dumped() -> None:
 # needs a form that only bash reads correctly.
 
 def _readers_agree(value: str) -> bool:
+    """Written as 'value' or "value", which pam_env and the desktop parser read as bash
+    does. The rest (a single quote with $ ` " \\, or a control character) is written in
+    a form only bash reads."""
     return not any(c < " " or c == "\x7f" for c in value) and not (
         "'" in value and any(c in value for c in '$`"\\'))
 
 
 def _pam_env_read(line: str) -> tuple[str, str]:
-    """pam_env's reading of a `NAME=value` line (modules/pam_env/pam_env.c,
-    _parse_env_file): it drops a leading quote and a quote that ends the line, and
-    keeps everything else as written."""
-    name, raw = line.split("=", 1)
+    """pam_env's reading of a `NAME=value` line (Linux-PAM modules/pam_env/pam_env.c,
+    _assemble_line and _parse_env_file, checked against libpam-modules 1.5.3): the line
+    is cut at its first `#`, and a quote is stripped from each end only when the value
+    starts with one. Nothing is unescaped or expanded."""
+    name, raw = line.split("#", 1)[0].split("=", 1)
     if raw[:1] in ("'", '"'):
         raw = raw[1:]
-    if raw[-1:] in ("'", '"'):
-        raw = raw[:-1]
+        if raw[-1:] in ("'", '"'):
+            raw = raw[:-1]
     return name, raw
 
 
 def test_pam_env_reads_every_value_it_can(launch: dict[str, str]) -> None:
     got = dict(_pam_env_read(line) for line in _dump(launch).splitlines())
-    agree = {k: v for k, v in launch.items() if _readers_agree(v)}
+    agree = {k: v for k, v in launch.items() if _readers_agree(v) and "#" not in v}
     assert {k: got[k] for k in agree} == agree
     # The one regression the old format did not have: a lone quote reads back intact.
     assert got["SQUOTE"] == "it's"
+    # pam_env cuts at #, whatever the quoting (so did the old format); documented.
+    assert got["HASH"] == "p@ss"
 
 
 DESKTOP_PARSER = REPO / "derivatives/linux-desktop/ROOT/opt/instance-tools/bin/export_env.sh"
@@ -173,6 +185,8 @@ def test_linux_desktop_parser_reads_every_value_it_can(launch: dict[str, str], t
     got = dict(zip(names, out.split("\0")[:-1]))
     agree = {k: v for k, v in launch.items() if _readers_agree(v)}
     assert {k: got[k] for k in agree} == agree
+    # The bash-only forms match none of its patterns: the variable is skipped, not mangled.
+    assert {k for k, v in got.items() if k not in agree and v != "<unset>"} == set()
 
 
 # --- Old bash --------------------------------------------------------------------- #
@@ -186,21 +200,26 @@ env -i bash -c "$out"$'\n''for n in "$@"; do printf "%s\0" "${!n}"; done' _ "$@"
 '''
 
 
+def test_docker_is_available_under_ci():
+    """A SKIP IS NOT A PASS: the old-bash test below needs docker."""
+    assert_docker_present_under_ci()
+
+
+@requires_docker
 @pytest.mark.parametrize("version", ["4.2", "3.2"])
 def test_old_bash_writes_the_same_literal_file(version: str, canary: Path, tmp_path: Path) -> None:
     """Inside a double-quoted ${//}, bash 4.2 and older keep the backslashes of the
-    replacement text, which reopened the quote: `a'; touch x; #` ran `touch x`.
-    Needs docker; skipped where it is missing."""
-    if not shutil.which("docker"):
-        pytest.skip("docker not available")
-    values = {"Q": "it's", "INJECT": f"a'; touch /work/{canary.name}; #", "MIX": "x'$y`z\\"}
+    replacement text, which reopened the quote: `a'; touch x; #` ran `touch x`."""
+    pull = subprocess.run(["docker", "pull", "-q", f"bash:{version}"], capture_output=True)
+    if pull.returncode != 0:
+        pytest.skip(f"bash:{version} could not be pulled: {pull.stderr.decode().strip()}")
+    values = {"Q": "it's", "INJECT": f"a'; touch /work/{canary.name}; #", "MIX": "x'$y`z\\",
+              "CNTRL": f"a'\tb\nC=$(touch /work/{canary.name})"}
     args = ["docker", "run", "--rm", "-v", f"{HOOK}:/hook.sh:ro", "-v", f"{tmp_path}:/work"]
     for k, v in values.items():
         args += ["-e", f"{k}={v}"]
     proc = subprocess.run(args + [f"bash:{version}", "bash", "-c", OLD_BASH_SCRIPT, "_", *values],
                           capture_output=True)
-    if proc.returncode != 0 and b"Unable to find image" in proc.stderr:
-        pytest.skip(f"bash:{version} image unavailable")
     assert proc.returncode == 0, proc.stderr.decode()
     assert dict(zip(values, proc.stdout.decode().split("\0")[:-1])) == values
     assert not canary.exists()
@@ -210,10 +229,22 @@ def test_boot_never_honours_a_stage_lib_only_switch() -> None:
     """A stage that returns early on a `_VAST_*_LIB_ONLY` variable (so its tests can
     load its functions) would be skipped by a template that set it, because the boot
     shell inherits the launch environment. boot_default.sh unsets every one first."""
-    stages = (REPO / "ROOT/etc/vast_boot.d").glob("*.sh")
+    stages = [s for s in REPO.glob("**/ROOT*/etc/vast_boot.d/*.sh") if "pcl" not in s.parts]
     switches = {m for s in stages for m in re.findall(r"\b(_VAST_\w+_LIB_ONLY)\b", s.read_text())}
     assert switches, "no stage defines a lib-only switch; drop this test"
     boot = (REPO / "ROOT/opt/instance-tools/bin/boot_default.sh").read_text()
     before_loop = boot[: boot.index("for script in /etc/vast_boot.d/")]
-    unset = set(re.findall(r"\bunset ([\w ]+)", before_loop)[-1].split()) if "unset " in before_loop else set()
+    unset = {n for names in re.findall(r"\bunset ([\w ]+)", before_loop) for n in names.split()}
     assert switches <= unset, f"not unset before the stage loop: {sorted(switches - unset)}"
+
+
+def test_unexpanded_notice_names_variables_never_values() -> None:
+    """The boot log flags values with $NAME text (no longer expanded), naming only the
+    variable: values can be secrets. It covers what the dump writes, nothing else."""
+    env = {"MODEL_DIR": "$WORKSPACE/models", "PASS": "p4$sW0rd", "PRICE": "cost $5",
+           "HOME": "$HOME", "CONDA_X": "$Y"}
+    script = f'_VAST_PREP_ENV_LIB_ONLY=1 . "{HOOK}"; unset _VAST_PREP_ENV_LIB_ONLY; _vast_note_unexpanded'
+    out = subprocess.run(["/bin/bash", "-c", script], env=env, check=True,
+                         capture_output=True).stdout.decode()
+    assert sorted(line.split()[1] for line in out.splitlines()) == ["MODEL_DIR", "PASS"]
+    assert "WORKSPACE" not in out and "sW0rd" not in out

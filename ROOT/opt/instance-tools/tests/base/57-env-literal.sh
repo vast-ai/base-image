@@ -65,9 +65,17 @@ done
 wait_for_supervisor "$SUPERVISOR_READY_TIMEOUT" >/dev/null \
     || fail_later "supervisord" "supervisord RPC socket never came up"
 sup_pid=$(pgrep -o -f 'supervisord .*-c /etc/supervisor/supervisord.conf')
-deadline=$(( SECONDS + CADDY_READY_TIMEOUT ))
-until caddy_pid=$(pgrep -o -f '(^|/)caddy run') || (( SECONDS >= deadline )); do sleep 2; done
-for proc in "supervisord:${sup_pid}" "caddy:${caddy_pid}"; do
+procs=("supervisord:${sup_pid}")
+# A serverless worker exits caddy.sh before starting caddy (exit_serverless.sh), so
+# there is no caddy to read; supervisord and the fresh shell still cover the file.
+if is_serverless; then
+    echo "  serverless: no caddy to read, checking supervisord and a fresh shell"
+else
+    deadline=$(( SECONDS + CADDY_READY_TIMEOUT ))
+    until caddy_pid=$(pgrep -o -f '(^|/)caddy run') || (( SECONDS >= deadline )); do sleep 2; done
+    procs+=("caddy:${caddy_pid}")
+fi
+for proc in "${procs[@]}"; do
     label=${proc%%:*} pid=${proc#*:}
     if [[ -z "$pid" || ! -r "/proc/${pid}/environ" ]]; then
         fail_later "$label" "no readable ${label} process"
