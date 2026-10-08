@@ -1,13 +1,22 @@
 #!/bin/bash
 
-# Print the current environment as /etc/environment lines, one per variable.
-# Values are single-quoted so sourcing the file gives back exactly what Docker
-# passed (ADR 0052): `;`, `$`, backticks, quotes and `\` stay literal, and
-# nothing in a value is expanded or run. A value with a control character
-# (newline, tab) uses bash's $'...' form so it stays on one line. Names that are
-# not shell identifiers cannot be sourced, so they are skipped.
+# Print the current environment as /etc/environment lines, one per variable (ADR 0052).
+# Bash sources the file at boot and in every supervisor script and login shell, so a
+# value must come back exactly as Docker passed it: nothing expanded, nothing run. The
+# file is also read by pam_env (non-interactive SSH, sudo) and by linux-desktop's
+# export_env.sh, which strip one pair of surrounding quotes and do nothing else. So
+# each value gets the quoting every reader agrees on:
+#   - no single quote: 'value' (literal to bash, and to the quote-stripping readers);
+#   - a single quote but no $ ` " \ : "value" (also literal to all of them);
+#   - a single quote with one of those, or a control character: a form only bash
+#     reads correctly ('it'\''s' or $'...'). The other readers see the raw text; no
+#     form serves both, and bash is what boots the instance.
+# Names that are not shell identifiers cannot be sourced, so they are skipped.
 _vast_dump_env() {
     local line name value
+    # The replacement lives in a variable: in a double-quoted ${//} bash 4.2 and older
+    # keep its backslashes, which would reopen the quote.
+    local sq="'\\''"
     env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA" | while IFS= read -r -d '' line; do
         name=${line%%=*}
         value=${line#*=}
@@ -15,8 +24,12 @@ _vast_dump_env() {
         if [[ "$value" == *[[:cntrl:]]* ]]; then
             printf -v value '%q' "$value"
             printf '%s=%s\n' "$name" "$value"
+        elif [[ "$value" != *"'"* ]]; then
+            printf "%s='%s'\n" "$name" "$value"
+        elif [[ "$value" != *[\$\`\"\\]* ]]; then
+            printf '%s="%s"\n' "$name" "$value"
         else
-            printf "%s='%s'\n" "$name" "${value//\'/\'\\\'\'}"
+            printf "%s='%s'\n" "$name" "${value//\'/$sq}"
         fi
     done
 }
@@ -62,6 +75,14 @@ if [[ -z "${instance_identifier:-}" ]] || ! grep -q "$message" /etc/environment;
     echo 'PATH="/opt/instance-tools/bin:/opt/sys-venv/shim:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
         >> /etc/environment
     _vast_dump_env >> /etc/environment
+    # $VAR in a template value used to be expanded here by accident; it is now kept as
+    # written (ADR 0052). Say so where it would bite, naming the variable only: values
+    # can be secrets.
+    while IFS= read -r -d '' line; do
+        if [[ "${line#*=}" =~ \$\{?[A-Za-z_] ]]; then
+            echo "prep-env: ${line%%=*} contains \$NAME text; it is kept literally, not expanded (ADR 0052)"
+        fi
+    done < <(env -0)
 fi
 
 # Source the file at /etc/environment - We can now edit environment variables in a running instance

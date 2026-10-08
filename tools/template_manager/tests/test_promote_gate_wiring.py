@@ -191,8 +191,10 @@ def test_every_copy_of_the_required_set_agrees(raw, wf):
     # --sync-environment: boot stages 35 and 37 relink /root and /venv, and
     # nothing exercised them, so a change there first ran on a customer. It
     # self-skips when the flags are off, which is correct everywhere else and
-    # would be a hole here — hence required.
-    required = {"base/36-home-env-sync", "base/60-gpu-cuda",
+    # would be a hole here — hence required. 57 reads base-qa's probe values back from
+    # /etc/environment, supervisord and caddy (ADR 0052); it skips without the probes,
+    # which only base-qa's onstart exports.
+    required = {"base/36-home-env-sync", "base/57-env-literal", "base/60-gpu-cuda",
                 "base/61-cuda-compute", "base/62-gpu-libraries"}
 
     cell = set(_job(wf, "qa")["with"]["require_tests"].split())

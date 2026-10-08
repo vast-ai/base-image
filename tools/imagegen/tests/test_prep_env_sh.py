@@ -12,6 +12,8 @@ that ships.
 """
 from __future__ import annotations
 
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -120,3 +122,98 @@ def test_non_identifier_names_are_skipped(canary: Path, tmp_path: Path) -> None:
 def test_excluded_variables_are_not_dumped() -> None:
     out = _dump({"HOME": "/root", "SHLVL": "1", "CONDA_PREFIX": "/c", "KEEP": "1"})
     assert out == "KEEP='1'\n"
+
+
+# --- Readers that are not bash ---------------------------------------------------- #
+#
+# pam_env (non-interactive SSH, sudo) and linux-desktop's export_env.sh read the same
+# file. Neither expands anything: each strips one pair of surrounding quotes and keeps
+# the rest. So a value both they and bash read the same way is one written 'value'
+# (no single quote inside) or "value" (a single quote, but nothing bash expands inside
+# double quotes). Only a single quote together with $ ` " \, or a control character,
+# needs a form that only bash reads correctly.
+
+def _readers_agree(value: str) -> bool:
+    return not any(c < " " or c == "\x7f" for c in value) and not (
+        "'" in value and any(c in value for c in '$`"\\'))
+
+
+def _pam_env_read(line: str) -> tuple[str, str]:
+    """pam_env's reading of a `NAME=value` line (modules/pam_env/pam_env.c,
+    _parse_env_file): it drops a leading quote and a quote that ends the line, and
+    keeps everything else as written."""
+    name, raw = line.split("=", 1)
+    if raw[:1] in ("'", '"'):
+        raw = raw[1:]
+    if raw[-1:] in ("'", '"'):
+        raw = raw[:-1]
+    return name, raw
+
+
+def test_pam_env_reads_every_value_it_can(launch: dict[str, str]) -> None:
+    got = dict(_pam_env_read(line) for line in _dump(launch).splitlines())
+    agree = {k: v for k, v in launch.items() if _readers_agree(v)}
+    assert {k: got[k] for k in agree} == agree
+    # The one regression the old format did not have: a lone quote reads back intact.
+    assert got["SQUOTE"] == "it's"
+
+
+DESKTOP_PARSER = REPO / "derivatives/linux-desktop/ROOT/opt/instance-tools/bin/export_env.sh"
+
+
+def test_linux_desktop_parser_reads_every_value_it_can(launch: dict[str, str], tmp_path: Path) -> None:
+    """The desktop's own parser of /etc/environment, run on the dumped file."""
+    envfile = tmp_path / "environment"
+    envfile.write_text(_dump(launch))
+    parser = DESKTOP_PARSER.read_text().replace("/etc/environment", str(envfile))
+    names = list(launch)
+    script = parser + '\nfor n in "$@"; do printf "%s\\0" "${!n-<unset>}"; done'
+    out = subprocess.run(["/bin/bash", "-c", script, "_", *names], env={},
+                         check=True, capture_output=True).stdout.decode()
+    got = dict(zip(names, out.split("\0")[:-1]))
+    agree = {k: v for k, v in launch.items() if _readers_agree(v)}
+    assert {k: got[k] for k in agree} == agree
+
+
+# --- Old bash --------------------------------------------------------------------- #
+
+OLD_BASH_SCRIPT = r'''
+grep() { cat; }   # busybox grep has no -z; the filter is not under test here
+_VAST_PREP_ENV_LIB_ONLY=1 . /hook.sh
+unset _VAST_PREP_ENV_LIB_ONLY
+out=$(_vast_dump_env)
+env -i bash -c "$out"$'\n''for n in "$@"; do printf "%s\0" "${!n}"; done' _ "$@"
+'''
+
+
+@pytest.mark.parametrize("version", ["4.2", "3.2"])
+def test_old_bash_writes_the_same_literal_file(version: str, canary: Path, tmp_path: Path) -> None:
+    """Inside a double-quoted ${//}, bash 4.2 and older keep the backslashes of the
+    replacement text, which reopened the quote: `a'; touch x; #` ran `touch x`.
+    Needs docker; skipped where it is missing."""
+    if not shutil.which("docker"):
+        pytest.skip("docker not available")
+    values = {"Q": "it's", "INJECT": f"a'; touch /work/{canary.name}; #", "MIX": "x'$y`z\\"}
+    args = ["docker", "run", "--rm", "-v", f"{HOOK}:/hook.sh:ro", "-v", f"{tmp_path}:/work"]
+    for k, v in values.items():
+        args += ["-e", f"{k}={v}"]
+    proc = subprocess.run(args + [f"bash:{version}", "bash", "-c", OLD_BASH_SCRIPT, "_", *values],
+                          capture_output=True)
+    if proc.returncode != 0 and b"Unable to find image" in proc.stderr:
+        pytest.skip(f"bash:{version} image unavailable")
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert dict(zip(values, proc.stdout.decode().split("\0")[:-1])) == values
+    assert not canary.exists()
+
+
+def test_boot_never_honours_a_stage_lib_only_switch() -> None:
+    """A stage that returns early on a `_VAST_*_LIB_ONLY` variable (so its tests can
+    load its functions) would be skipped by a template that set it, because the boot
+    shell inherits the launch environment. boot_default.sh unsets every one first."""
+    stages = (REPO / "ROOT/etc/vast_boot.d").glob("*.sh")
+    switches = {m for s in stages for m in re.findall(r"\b(_VAST_\w+_LIB_ONLY)\b", s.read_text())}
+    assert switches, "no stage defines a lib-only switch; drop this test"
+    boot = (REPO / "ROOT/opt/instance-tools/bin/boot_default.sh").read_text()
+    before_loop = boot[: boot.index("for script in /etc/vast_boot.d/")]
+    unset = set(re.findall(r"\bunset ([\w ]+)", before_loop)[-1].split()) if "unset " in before_loop else set()
+    assert switches <= unset, f"not unset before the stage loop: {sorted(switches - unset)}"

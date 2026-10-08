@@ -13,6 +13,11 @@ login shell (`45-user-write-bashrc.sh`) and every supervisor script (`utils/envi
 The file is therefore the environment most of the instance actually sees, not the one
 Docker handed to PID 1.
 
+Two other readers parse the same file without a shell. `pam_env` builds the environment
+for non-interactive SSH sessions (`ssh host cmd`, rsync, scp, remote IDEs) and for `sudo`;
+linux-desktop's `export_env.sh` builds the desktop session's. Both strip one pair of
+surrounding quotes and keep everything else as written: no expansion, no escapes.
+
 The dump wrote each variable as `NAME="value"`, with the value unescaped. Inside
 double quotes bash still evaluates `$`, backticks and `\`, and a `"` ends the string:
 
@@ -50,31 +55,58 @@ reach this dump, which needs to be correct before that happens.
    out with backslash escapes (`a\;b`, `my\ value`), which is hard to read in a file
    users are told they can edit. Rejected as the default; used for the
    control-character case.
-4. **`${value@Q}`.** Exactly the right output, but it needs bash 4.4 or newer.
-   `Dockerfile.extend` wraps third-party bases whose bash we don't control. Rejected.
-5. **Single quotes, with `%q` for control characters (chosen).** `NAME='value'`, with
-   each `'` written as `'\''`. A value without a control character comes back
-   byte-for-byte. A value with a newline or tab is written as `$'...'` on one line.
-   This is portable to any bash.
+4. **`${value@Q}`.** Right for bash, but it needs bash 4.4 or newer, and external
+   images run these stages on upstream bases whose bash we don't pick
+   (`tools/convert-non-vast-image.sh`). It also writes every value containing `'` in
+   a form the non-shell readers misread. Rejected.
+5. **Single quotes for every value.** Right for bash, but a value containing `'` (for
+   example `it's`) is written `'it'\''s'`, which pam_env and the desktop parser read
+   back as `it'\''s`. The old double-quoted format gave them `it's`. Rejected: it
+   regresses those readers for an ordinary value.
+6. **A second file in shell syntax, `/etc/environment` left for the other readers.**
+   Rejected: `/etc/environment` is a documented interface. Users edit it on a running
+   instance and restart services, and `12-cpu-thread-limits.sh` edits lines in it. Two
+   files would drift apart on the first edit, and nothing would bring them back in line.
+7. **One file, with each value quoted the way every reader agrees on (chosen).**
 
 ## Decision
 
-`_vast_dump_env` writes each launch variable as `NAME='value'`, or as `NAME=$'...'`
-when the value contains a control character. Sourcing the file restores every value
-exactly as Docker passed it: nothing is expanded and nothing runs. Names that are not
-shell identifiers are skipped, because sourcing cannot assign them and their text
-would be run as a command.
+`_vast_dump_env` picks, per value, the quoting every reader of the file agrees on:
+
+| Value | Written as | bash | pam_env, desktop parser |
+|---|---|---|---|
+| no `'` | `NAME='value'` | exact | exact |
+| a `'`, but no `$` `` ` `` `"` `\` | `NAME="value"` | exact | exact |
+| a `'` with one of `$` `` ` `` `"` `\` | `NAME='it'\''s'` | exact | raw text |
+| a control character (newline, tab) | `NAME=$'...'` | exact | raw text |
+
+Bash, which boots the instance and starts every service, restores every value exactly
+as Docker passed it: nothing is expanded and nothing runs. The other readers get every
+value right except the last two rows, which no single form can serve for both; those
+values were already broken in the old format, for bash as well. The `'` replacement is
+held in a variable, so bash 3.2 and 4.2, which keep a replacement's backslashes inside
+a double-quoted `${//}`, write the same file. Names that are not shell identifiers are
+skipped, because sourcing cannot assign them and their text would be run as a command.
+
+The `_VAST_*_LIB_ONLY` variables that let tests load a stage's functions without
+running it are unset by `boot_default.sh` before the stages run, so a template cannot
+skip a stage by setting one.
 
 ## Binding conditions
 
-- Every value round-trips byte-for-byte in both the boot shell and a fresh login
-  shell, generated secrets containing `$` included, and nothing in a value runs.
+- Every value round-trips exactly in both the boot shell and a fresh login shell,
+  generated secrets containing `$` included, and nothing in a value runs.
   `tools/imagegen/tests/test_prep_env_sh.py` checks this against the shipped file. It
   catches the old `"%s"` quoting, the `$NAME`-expanding variant (option 2), and an
-  unescaped embedded `'`.
-- On a live instance, `base/57-env-literal` (required to pass in base-qa) reads probe
-  values back from a fresh shell, supervisord and caddy, and checks that none of them
-  ran. base-qa exports the probes from its onstart, which runs before the image boots,
+  unescaped embedded `'`. It also reads the file the way pam_env does and through the
+  real linux-desktop parser (every value outside the last two rows must come back
+  exact), runs the dump under bash 3.2 and 4.2 where docker is available, and checks
+  that `boot_default.sh` unsets every stage's lib-only switch.
+- On a live instance, `base/57-env-literal` reads probe values back from a fresh
+  shell, supervisord and caddy, and checks that none of them ran. It is required to
+  pass in all three copies of base-qa's required list (the template, the promote
+  workflow's QA job and its summary arbiter), which `test_promote_gate_wiring.py`
+  holds together. base-qa exports the probes from its onstart, which runs before the image boots,
   so they reach the dump the way template env vars do, without the platform's env
   character filter.
 - Each variable stays on one line starting `NAME=`. ADR 0014's `_vast_user_set`
@@ -84,15 +116,20 @@ would be run as a command.
 
 - Template values reach every process as written, matching what Docker gives PID 1.
 - **Behaviour change:** a value containing `$VAR` is no longer expanded when the file
-  is sourced. No template or doc that relies on this was found (the
+  is sourced. No template or doc in this repo relies on this (the
   `-e HF_TOKEN=$HF_TOKEN` examples are expanded by the user's local shell before the
-  request is sent). Users who want it put the line in `${WORKSPACE}/.env`, which is
+  request is sent), but templates outside it can't be searched. So the boot log names
+  each variable whose value contains `$NAME` text (the name only; values can be
+  secrets). Users who want expansion put the line in `${WORKSPACE}/.env`, which is
   still sourced as shell. The README says so.
 - Values that used to run code or break (`$(...)`, backticks, `"`, newlines) are now
   literal. That only changes values that were already broken.
-- `pam_env` also reads `/etc/environment`. It strips one pair of matching quotes, so
-  ordinary values read the same as before. A value containing `'` or a control
-  character was already garbled there and still is.
+- pam_env and the desktop parser read every value the old format gave them correctly,
+  except a value containing `'` together with `$` `` ` `` `"` or `\`, or a control
+  character. Those now arrive as the raw quoted text; in the old format they were
+  wrong for bash as well, and could run as code.
+- Not changed here: the dump's `grep -z` drops a value that is not valid UTF-8 when it
+  runs under a UTF-8 locale.
 
 ## What would reverse this
 
