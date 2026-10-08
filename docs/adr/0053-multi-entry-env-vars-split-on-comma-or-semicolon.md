@@ -46,14 +46,22 @@ and a shell command in `PROVISIONING_POST_COMMANDS` (`cd x; make`). No test cove
    or git ref. Rejected: not a recognised list separator, and it reads badly in a template.
 5. **`|`.** Rejected: it already separates fields within an entry (`url|dest|ref`). Moving
    the field separator would break every existing value.
-6. **`,` or `;` everywhere, with two comma exceptions shared by every variable.** Chosen.
+6. **`,` or `;` in the same value, with two comma exceptions.** The first version of this
+   change. Rejected in review: a value exported from an onstart script bypasses the
+   platform filter, so live templates do pass `;` lists, and any entry in one with a bare
+   comma (`echo a,b;touch y`, `awk -F, ...`, `mkdir /w/{a,b}`, a URL's own comma) would
+   have split differently.
+7. **`;` if present, otherwise `,` with two comma exceptions, the same for every
+   variable.** Chosen: every existing `;` value keeps its exact meaning.
 
 ## Decision
 
 Every multi-entry variable listed above splits with one function,
 `provisioner/envlist.py` `split_entries`:
 
-- `,` or `;` separates entries. `|` still separates fields within an entry.
+- A value containing `;` is split on `;` only, exactly as before. Every existing `;` list
+  keeps its meaning, commas inside entries included.
+- A value without `;` is split on `,`. `|` still separates fields within an entry.
 - A comma inside `[...]` does not separate, so pip extras stay whole
   (`transformers[torch,sentencepiece]`).
 - A comma followed, after any spaces, by a version operator (`<`, `>`, `=`, `!=`, `~=`)
@@ -69,11 +77,12 @@ Every multi-entry variable listed above splits with one function,
   the log token-free: the downloaders and installers already log URLs, packages and
   commands as given.
 
-The documentation recommends `,` and says why. `;` keeps working. One kind of existing
-value does change meaning: a single entry that contains a bare comma, such as a lone
-`PROVISIONING_POST_COMMANDS` command with a comma in it, or a download URL with a raw
-comma. It now splits. Values with `;` never reached instances from templates, so these
-single entries are the only ones that worked before and behave differently now.
+The documentation recommends `,` for templates and says why. `;` keeps working unchanged.
+One kind of existing value does change meaning: a value with **no** `;` holding a single
+entry that contains a bare comma, such as a lone `PROVISIONING_POST_COMMANDS` command
+with a comma in it, or a single download URL with a raw comma. It now splits. This is
+accepted as an edge case: a multi-entry list needed `;`, and a lone entry with a bare
+comma can be written with a trailing `;` to keep it whole.
 
 A manifest field typed `list[str]` that arrives as a string is split by the same rule,
 except the command fields (`post_commands`, a git repo's `post_commands`, a service's

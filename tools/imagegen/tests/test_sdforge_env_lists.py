@@ -31,16 +31,26 @@ def parse(script: Path, value: str, splitter: str) -> list[str]:
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 def test_commas_separate_entries(script):
-    value = "https://h/a.safetensors|/m/a.safetensors, #comment,https://h/b.safetensors|/m/;https://h/c|/m/"
+    value = "https://h/a.safetensors|/m/a.safetensors, #comment,https://h/b.safetensors|/m/"
     assert parse(script, value, str(REPO / "ROOT" / SPLITTER.lstrip("/"))) == [
-        "https://h/a.safetensors|/m/a.safetensors", "https://h/b.safetensors|/m/", "https://h/c|/m/"]
+        "https://h/a.safetensors|/m/a.safetensors", "https://h/b.safetensors|/m/"]
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_a_semicolon_value_splits_exactly_as_before(script):
+    """Existing ";" lists keep their meaning: a URL's own comma stays put."""
+    value = "https://h/f?ids=1,2|/m/f;https://h/g|/m/g"
+    assert parse(script, value, str(REPO / "ROOT" / SPLITTER.lstrip("/"))) == [
+        "https://h/f?ids=1,2|/m/f", "https://h/g|/m/g"]
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 def test_image_without_the_splitter_still_splits(script):
     """The scripts are fetched by URL, so they also run on images built before ADR 0053."""
-    assert parse(script, "https://h/a|/m/;https://h/b|/m/,https://h/c|/m/", "/nonexistent/envlist.py") == [
-        "https://h/a|/m/", "https://h/b|/m/", "https://h/c|/m/"]
+    missing = "/nonexistent/envlist.py"
+    assert parse(script, "https://h/a|/m/,https://h/b|/m/", missing) == ["https://h/a|/m/", "https://h/b|/m/"]
+    assert parse(script, "https://h/f?ids=1,2|/m/f;https://h/g|/m/g", missing) == [
+        "https://h/f?ids=1,2|/m/f", "https://h/g|/m/g"]
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)

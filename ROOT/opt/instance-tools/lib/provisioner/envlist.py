@@ -1,13 +1,14 @@
 """Split a multi-entry environment variable value into its entries (ADR 0053).
 
-Entries are separated by ``,`` or ``;``. A comma does not separate when it is
-inside ``[...]`` (pip extras: ``transformers[torch,sentencepiece]``) or when what
-follows, after any spaces, is a version operator (``<``, ``>``, ``=``, ``!=``, ``~=``;
-pip ranges: ``torch>=2.4,<2.6``).
-Write a literal comma in a URL as ``%2C``.
+A value containing ``;`` is split on ``;`` only, exactly as before this module
+existed, so every existing ``;`` list (onstart scripts export them) keeps its meaning,
+commas inside entries included.
 
-Both separators are accepted everywhere because Vast drops any template variable
-whose value contains ``;``, so a ``;``-only list never reaches the instance.
+A value without ``;`` is split on ``,``. Vast drops any template variable whose value
+contains ``;``, so a template can only use commas. A comma does not separate when it
+is inside ``[...]`` (pip extras: ``transformers[torch,sentencepiece]``) or when what
+follows, after any spaces, is a version operator (``<``, ``>``, ``=``, ``!=``, ``~=``;
+pip ranges: ``torch>=2.4,<2.6``). Write a literal comma in a URL as ``%2C``.
 
 Run as a module to split for shell callers: one entry per NUL-terminated record.
 """
@@ -21,7 +22,8 @@ _VERSION_OPERATOR_STARTS = ("<", ">", "=", "!=", "~=")
 
 def split_entries(value: str) -> list[str]:
     """Return the stripped, non-empty entries of *value*."""
-    return [e.strip() for e in _split(value, brackets=True) if e.strip()]
+    parts = value.split(";") if ";" in value else _split(value, brackets=True)
+    return [e.strip() for e in parts if e.strip()]
 
 
 def _split(value: str, brackets: bool) -> list[str]:
@@ -49,7 +51,7 @@ def _split(value: str, brackets: bool) -> list[str]:
             depth += 1
         elif brackets and ch == "]" and depth:
             depth -= 1
-        elif ch == ";" or (ch == "," and depth == 0 and not _before_operator(value, i + 1)):
+        elif ch == "," and depth == 0 and not _before_operator(value, i + 1):
             finish()
             current, depth = [], 0
             continue

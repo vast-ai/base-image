@@ -1635,9 +1635,11 @@ the instance, absent from PID 1's environment). The provisioner split every
 alone, and so did sd-forge's bash parser, so any list of two or more entries set in a
 template never arrived.
 
-- Every multi-entry env var is split by `provisioner/envlist.py` `split_entries`: `,` or `;`
-  between entries, except a comma inside `[...]` (pip extras) or followed by a version
-  operator (pip ranges). sd-forge's scripts call the same file, falling back to `;` on
+- Every multi-entry env var is split by `provisioner/envlist.py` `split_entries`. A value
+  containing `;` splits on `;` only, exactly as before (live templates export `;` lists
+  from onstart, past the platform filter); otherwise on `,`, except a comma inside `[...]`
+  (pip extras) or followed by a version operator (pip ranges). A test pins every `;` value
+  to the old split. sd-forge's scripts call the same file, falling back to `;` on
   images built before it.
 - A manifest `list[str]` field that arrives as one string (`packages: "${PIP_PACKAGES}"`)
   is split by the same rule; it used to reach pip one character at a time.
