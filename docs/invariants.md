@@ -1303,6 +1303,23 @@ Until then (b) is a REVIEW obligation, not a gated one: when a change patches a 
 upstream, the `Modifications:` note is the author's job and the reviewer's check. Anyone
 tempted to trust the linter here should read this paragraph first.
 
+### `update-portal` works the same from either download source — **GATED (L104)**
+
+`update-portal` installs the portal from the GitHub release (the first-boot path) or from
+`PORTAL_DOWNLOAD_URL`. Until 2026-10-06 the temp download path, its cleanup and the argument
+parse lived inside the GitHub branch only, so the override path wrote the archive to `/`,
+ignored `-v`, and overwrote `/opt/portal-aio/VERSION` with an empty string. Found while
+installing a pre-release portal on a live instance for verification.
+
+- Setup, cleanup and the argument parse are at top level; only the release lookup is
+  branch-specific.
+- A requested `-v` names the installed version; otherwise the archive's own VERSION stands
+  (release-portal.yml checks it equals the tag). The installer refuses to finish with an empty
+  VERSION: `10-update-instance-portal.sh` treats a missing or empty VERSION as "portal not
+  installed" and skips every later update.
+- `PORTAL_INSTALL_ROOT` (default `/opt`) exists so `tools/imagegen/tests/test_update_portal.py`
+  can run the real script against a local archive through the override.
+
 ### Portal "not ready" interstitial is CDN-safe (200 for Cloudflare only) — **enforced by portal-aio tests (ADR 0017)**
 
 When a proxied backing service has not started yet, Caddy's `handle_errors 502 503
