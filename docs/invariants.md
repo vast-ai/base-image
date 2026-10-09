@@ -1627,6 +1627,34 @@ spot as the `find -type f` mirror bug in ADR 0036, where presence was asserted a
 behaviour was what mattered. Not gated by QA and cannot be: the export path runs after
 every cell has closed, so the build-time assertion is the only control (ADR 0036 amendment).
 
+### Multi-entry env vars split on `,` or `;`, in one place (ADR 0053, L107)
+
+Vast drops any template variable whose value contains `;` (verified 2026-10-07: stored on
+the instance, absent from PID 1's environment). The provisioner split every
+`PROVISIONING_*` list, `env_merge` variable and `PROVISIONING_COMFYUI_WORKFLOWS` on `;`
+alone, and so did sd-forge's bash parser, so any list of two or more entries set in a
+template never arrived.
+
+- Every multi-entry env var is split by `provisioner/envlist.py` `split_entries`. A value
+  containing `;` splits on `;` only, exactly as before (live templates export `;` lists
+  from onstart, past the platform filter); otherwise on `,`, except a comma inside `[...]`
+  (pip extras) or followed by a version operator (pip ranges). A test pins every `;` value
+  to the old split. sd-forge's scripts split a `;` value with their original `read` and
+  call the same file only for a value without `;`, falling back to a plain `,` split on
+  images built before it.
+- A manifest `list[str]` field that arrives as one string (`packages: "${PIP_PACKAGES}"`)
+  is split by the same rule; it used to reach pip one character at a time.
+- A command field written as one string (`post_commands`, `pre_commands`) stays one command.
+- Callers outside the base survive an older pinned base: the ComfyUI extension falls back to
+  `;` if `provisioner.envlist` is missing (a failed import aborts every ComfyUI instance's
+  provisioning), and sd-forge splits on `,` and `;` if the splitter is missing or fails.
+- **Gated by L107:** no `;` split (`.split`, `.rsplit`, `split(sep=...)`, `re.split`) in the
+  provisioner or an extension outside an extension's `def split_entries` fallback within
+  `except ImportError:`, and no
+  `IFS=';'` in any provisioning script outside `split_env_entries`. Exempt by name:
+  `downloaders/wget.py` (an HTTP header). Held by `test_envlist.py`, `test_manifest.py`,
+  the ComfyUI extension's tests and `test_sdforge_env_lists.py`.
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

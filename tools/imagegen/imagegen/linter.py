@@ -106,6 +106,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L086", ERROR, "`service_running` is not the guard of a compound that also waits for a port — use `assert_service_serving NAME PORT`. `service_running` reports a supervisord STATE, and `if service_running x && wait_for_port p; then … else skip; fi` collapses three different worlds into one silent pass: not configured, RUNNING but never bound, and supervisord has never heard of it. A jupyter that hangs without exiting — a blocked server extension, a stuck workspace mount — is RUNNING, binds nothing, and the suite reported ALL TESTS PASSED. `autorestart=unexpected` catches CRASHES, so the hang is precisely the state nothing else covers. Whether a service is EXPECTED must be decided positively (a supervisor conf, a portal entry), never inferred from the status word, because every failure also produces a non-RUNNING word"),
     ("L087", ERROR, "A CUDA label for an UPSTREAM image is read from the artifact, never inferred from that image's tag name (ADR 0035). We do not control the vocabulary and upstream can re-point a name without renaming it: `vllm/vllm-omni`'s bare tag moved from CUDA 12.9 to 13.0 at v0.20.0 with no rename and no -cu130 to signal it, so five published tags said `-cuda-12.9` and contained 13.0.2; `lmsysorg/sglang:dev` did the same, mislabelling every nightly. The failure is not always a wrong label — the sglang RELEASE rule read `bare tag is 13.0 only when no -cu130 exists`, so for the pre-v0.5.11 shape (bare plus -cu130, no -cu129) the genuine 12.9 image matched no branch and was DROPPED, quieter still. Read `CUDA_VERSION` out of the image config (`docker buildx imagetools inspect`) and fail rather than guess when it is absent or ambiguous. Scoped to workflows that resolve someone else's image by tag (they consume `check-dockerhub-release`); a matrix like build-comfyui's `{cuda: \"12.9\", py: \"py312\"}` selects OUR pytorch base and is a build input we control, not a claim about a foreign artifact. Checked PER STEP, not per file: build-vllm-omni.yml had its release path converted and its nightly path left hardcoded in the same file, which a file-level check would have called clean"),
     ("L088", ERROR, "A test script that reaches for a sibling helper must SHIP it. `12-<engine>-contract.sh` resolves its assertions from `$(dirname \"$0\")/contract_check.py`, and `base/28` does the same for `exposure_scan.py` — a suite copied file-by-file rather than directory-by-directory arrives without them. Measured 2026-09-02: the vllm-omni gate was assembled by copying the two `.sh` files out of `vllm.d` and shipped without the 811-line `contract_check.py` beside them. The test failed correctly and loudly (`contract_check.py missing beside this test — the assertions cannot run`), but only after a full image build and a rented GPU had been spent to discover something that is visible in the repo. This is a STATIC fact — the reference and the file are both in the tree — so it belongs in the fast gate, not the correctness gate (ADR 0001). Scoped to `$(dirname \"$0\")/NAME` where NAME is a filename rather than a path segment, so the ubiquitous `$(dirname \"$0\")/../lib.sh` is not swept in"),
+    ("L107", ERROR, "Provisioning code splits a multi-entry env var with the provisioner's splitter (`provisioner/envlist.py`: a value with `;` splits on `;` only, as before; otherwise on `,`, where a comma inside `[...]` or before a version operator does not split). Checked: no `;` split (`.split(\";\")`, `.rsplit`, `split(sep=\";\")`, `re.split` on `;`) in the provisioner or a provisioner extension outside an extension's `def split_entries` fallback within `except ImportError:`, and no `IFS=';'` in a provisioning script (any depth under `provisioning_scripts/`, and `provisioning/`) outside its `split_env_entries` function (where a value containing `;` keeps its original split). A `;` split written another way is not caught. Vast drops any template variable whose value contains `;`, so a `;`-only parser makes every multi-entry value set in a template disappear before the instance starts. Exempt: `downloaders/wget.py`, which splits an HTTP Content-Disposition header (ADR 0053)"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -4238,8 +4239,63 @@ def check_convert_builds_the_mirror(repo: Path) -> Iterable[Finding]:
                       "mirror the engine's site-packages")
 
 
+# Splits on ";" that are not env lists, with the reason (L107).
+_L107_EXEMPT = {
+    "ROOT/opt/instance-tools/lib/provisioner/downloaders/wget.py": "Content-Disposition header parameters",
+}
+
+
+def check_env_lists_use_the_splitter(repo: Path) -> Iterable[Finding]:
+    """L107 (repo) — multi-entry env vars are split only by provisioner/envlist.py (ADR 0053)."""
+    py_split = re.compile(r"""\.r?split\(\s*(?:sep\s*=\s*)?r?['"];['"]|\bre\.split\(\s*r?['"]\[?;\]?['"]""")
+    sh_split = re.compile(r"""\bIFS=\$?['"\\]?;""")
+    py = sorted(repo.glob("ROOT/opt/instance-tools/lib/provisioner/**/*.py")) + sorted(
+        repo.glob("derivatives/**/lib/provisioner_*/**/*.py"))
+    for f in py:
+        rel = str(f.relative_to(repo))
+        if "/tests/" in rel or rel.endswith("/envlist.py") or rel in _L107_EXEMPT:
+            continue
+        # The one allowed `;` split: an extension's `def split_entries` fallback inside
+        # `except ImportError:`, for a pinned base that predates envlist.py.
+        extension = "/provisioner_" in rel
+        except_indent = None
+        fallback_indent = None
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            body = line.lstrip()
+            indent = len(line) - len(body)
+            if fallback_indent is not None and body and indent <= fallback_indent:
+                fallback_indent = None
+            if except_indent is not None and body and indent <= except_indent:
+                except_indent = None
+            if body.startswith("except ImportError"):
+                except_indent = indent
+                continue
+            if extension and except_indent is not None and body.startswith("def split_entries("):
+                fallback_indent = indent
+                continue
+            if fallback_indent is None and not body.startswith("#") and py_split.search(line):
+                yield Finding("L107", ERROR, "repo", f"{rel}:{n}",
+                              "splits on \";\" directly; Vast drops a template variable containing "
+                              "\";\", so use provisioner.envlist.split_entries (ADR 0053, L107)")
+    sh = sorted({*repo.glob("derivatives/**/provisioning_scripts/**/*.sh"),
+                 *repo.glob("external/**/provisioning_scripts/**/*.sh"),
+                 *repo.glob("provisioning_scripts/**/*.sh"), *repo.glob("provisioning/**/*.sh")})
+    for f in sh:
+        rel = str(f.relative_to(repo))
+        in_splitter = False
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            if line.startswith("split_env_entries()"):
+                in_splitter = True
+            elif in_splitter and line.startswith("}"):
+                in_splitter = False
+            if not in_splitter and not line.lstrip().startswith("#") and sh_split.search(line):
+                yield Finding("L107", ERROR, "repo", f"{rel}:{n}",
+                              "splits an env list on \";\" only; call split_env_entries, which uses "
+                              "the provisioner's splitter (ADR 0053, L107)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
-    check_adr_secrets, check_internal_ticket_ids, check_unguarded_listen_port,
+    check_adr_secrets, check_internal_ticket_ids, check_env_lists_use_the_splitter, check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
     check_no_template_declares_unsecured, check_bind_address_reads_the_local_field,
     check_fail_later_arity, check_curl_status_capture,

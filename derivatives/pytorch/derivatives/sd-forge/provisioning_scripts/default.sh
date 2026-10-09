@@ -22,18 +22,18 @@ PIP_PACKAGES=(
 )
 
 # Extensions to install: "REPO_URL"
-# Can also be set via EXTENSIONS env var (semicolon-separated)
-# Example: EXTENSIONS="https://github.com/org/ext1;https://github.com/org/ext2"
+# This array has the same name as the EXTENSIONS env var and replaces it, so the env
+# var is not read.
 EXTENSIONS=(
     #"https://github.com/example/extension-name"
 )
 
 # Model downloads use "URL|OUTPUT_PATH" format
 # - If OUTPUT_PATH ends with /, filename is extracted via content-disposition
-# - Can also be set via environment variables (semicolon-separated entries)
+# - Can also be set via environment variables (comma-separated entries)
 #
 # Example env var format:
-#   HF_MODELS="https://huggingface.co/org/repo/resolve/main/model.safetensors|/workspace/models/model.safetensors;https://huggingface.co/org/repo2/resolve/main/model2.safetensors|/workspace/models/model2.safetensors"
+#   HF_MODELS="https://huggingface.co/org/repo/resolve/main/model.safetensors|/workspace/models/model.safetensors,https://huggingface.co/org/repo2/resolve/main/model2.safetensors|/workspace/models/model2.safetensors"
 #   CIVITAI_MODELS="https://civitai.com/api/download/models/12345|/workspace/models/Stable-diffusion/"
 #   WGET_DOWNLOADS="https://example.com/file.bin|/workspace/files/file.bin"
 
@@ -88,7 +88,39 @@ normalize_entry() {
     echo "$entry"
 }
 
-# Parse semicolon-separated string into array, filtering out comments and empty entries
+# Split an env var into entries (ADR 0053). A value containing ";" splits on ";" only,
+# with the same `read` as before the change, so existing lists keep their meaning
+# exactly. Otherwise it splits on "," with the provisioner's splitter, as every
+# PROVISIONING_* var does.
+split_env_entries() {
+    local splitter=/opt/instance-tools/lib/provisioner/envlist.py
+    local python=/opt/instance-tools/provisioner/venv/bin/python
+    local out
+    local -a parts=()
+    if [[ $1 == *";"* ]]; then
+        IFS=';' read -ra parts <<< "$1"
+        [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
+        return 0
+    fi
+    # Only the first line, as the old `read` took it, so both paths below agree.
+    local value=${1%%$'\n'*}
+    [[ -x $python ]] || python=python3
+    if [[ -f $splitter ]] && out=$(mktemp); then
+        if "$python" "$splitter" "$value" > "$out"; then
+            cat "$out"
+            rm -f "$out"
+            return 0
+        fi
+        rm -f "$out"
+        echo "[WARN] the provisioner's list splitter failed; splitting on ','" >&2
+    fi
+    # Images built before the splitter, or a failed run. These lists hold URL|PATH
+    # entries and extension URLs, which never contain a pip range.
+    IFS=',' read -ra parts <<< "$value"
+    [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
+}
+
+# Parse a multi-entry env var into an array, filtering out comments and empty entries
 # Usage: parse_env_array "ENV_VAR_NAME"
 # Output: null-terminated entries (use read -r -d '' to consume)
 parse_env_array() {
@@ -96,8 +128,8 @@ parse_env_array() {
     local env_value="${!env_var_name:-}"
 
     if [[ -n "$env_value" ]]; then
-        local -a result=()
-        IFS=';' read -ra entries <<< "$env_value"
+        local -a result=() entries=()
+        mapfile -d '' entries < <(split_env_entries "$env_value")
         for entry in "${entries[@]}"; do
             entry=$(normalize_entry "$entry")
             # Skip empty entries and comments

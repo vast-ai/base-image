@@ -40,6 +40,10 @@ on:
       # provisioner has to run it.
       - "ROOT/opt/instance-tools/lib/provisioner/**"
       - "ROOT/opt/instance-tools/lib/venv_mirror/**"
+      # Provisioner extensions and the provisioning scripts that share its env-list
+      # splitter (ADR 0053, L107).
+      - "derivatives/**/lib/provisioner_*/**"
+      - "derivatives/**/provisioning_scripts/**"
       - "tools/convert-non-vast-image.sh"
       # cuda-driver-version and the boot script that calls it are covered by
       # test_cuda_driver_version.py and by L063/L064 — the tests are worthless
@@ -89,6 +93,10 @@ on:
       # provisioner has to run it.
       - "ROOT/opt/instance-tools/lib/provisioner/**"
       - "ROOT/opt/instance-tools/lib/venv_mirror/**"
+      # Provisioner extensions and the provisioning scripts that share its env-list
+      # splitter (ADR 0053, L107).
+      - "derivatives/**/lib/provisioner_*/**"
+      - "derivatives/**/provisioning_scripts/**"
       - "tools/convert-non-vast-image.sh"
       # cuda-driver-version and the boot script that calls it are covered by
       # test_cuda_driver_version.py and by L063/L064 — the tests are worthless
@@ -177,6 +185,11 @@ jobs:
       - name: Run provisioner test suite
         working-directory: ROOT/opt/instance-tools/lib
         run: python -m pytest -q provisioner/tests
+      # The ComfyUI extension imports the provisioner, so both lib dirs go on the path.
+      # Its tests never ran in CI until this step.
+      - name: Run ComfyUI provisioner extension test suite
+        working-directory: derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/lib
+        run: PYTHONPATH="$GITHUB_WORKSPACE/ROOT/opt/instance-tools/lib:." python -m pytest -q provisioner_comfyui/tests
       # venv_mirror builds an external image's /venv/main (ADR 0048). Its integration proof is
       # the image build (venv-mirror verify runs before env-hash) and the QA cell's
       # base/46-venv-mirror; these are the ownership and link-safety rules on temporary trees.

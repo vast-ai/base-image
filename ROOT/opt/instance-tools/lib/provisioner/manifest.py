@@ -11,6 +11,7 @@ import urllib.request
 
 import yaml
 
+from .envlist import split_entries
 from .schema import CondaPackages, DownloadEntry, GitRepo, Manifest, PipPackages, validate_manifest
 
 log = logging.getLogger("provisioner")
@@ -53,15 +54,13 @@ def _expand_recursive(obj):
 
 
 def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
-    """Parse semicolon-separated 'url|path' entries from an env var value.
+    """Parse 'url|path' entries from an env var value.
 
-    Format: "url1|path1;url2|path2"
-    This matches the convention used in existing provisioning scripts.
+    Format: "url1|path1,url2|path2" (``,`` or ``;`` between entries, see envlist).
     """
     entries = []
-    for raw in env_value.split(";"):
-        raw = raw.strip()
-        if not raw or raw.startswith("#"):
+    for raw in split_entries(env_value):
+        if raw.startswith("#"):
             continue
         if "|" not in raw:
             log.warning("Skipping malformed env_merge entry (no '|'): %s", raw)
@@ -74,11 +73,31 @@ def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
     return entries
 
 
+def _safe_url(url: str) -> str:
+    """A URL for this log line: no credentials, query or fragment, where tokens travel.
+    It only describes the URL, so it never fails: a typo in one entry must fail that
+    download, not the whole run."""
+    import urllib.parse as up
+    try:
+        parts = up.urlsplit(url)
+    except ValueError:
+        return "<unparseable URL>"
+    if not parts.scheme:
+        return url
+    host = parts.netloc.rpartition("@")[2]
+    return up.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _describe_downloads(entries: list[DownloadEntry]) -> str:
+    """Each parsed entry, so a value split where the user did not mean it shows in the log."""
+    return ", ".join(f"{_safe_url(e.url)} -> {e.dest}" for e in entries)
+
+
 def apply_env_merge(manifest: Manifest) -> None:
     """Merge download entries from environment variables into the manifest.
 
     For each entry in env_merge, read the named env var, parse its
-    semicolon-separated url|path values, and append to the downloads list.
+    url|path entries, and append to the downloads list.
     """
     for env_var, target in manifest.env_merge.items():
         value = os.environ.get(env_var, "")
@@ -89,7 +108,7 @@ def apply_env_merge(manifest: Manifest) -> None:
             continue
         entries = _parse_env_merge_entries(value)
         if entries:
-            log.info("env_merge: added %d downloads from $%s", len(entries), env_var)
+            log.info("env_merge: added %d downloads from $%s: %s", len(entries), env_var, _describe_downloads(entries))
             manifest.downloads.extend(entries)
 
 
@@ -164,11 +183,10 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
 
 
 def _parse_env_flat_list(value: str) -> list[str]:
-    """Parse a semicolon-separated flat list, stripping whitespace and skipping empties/comments."""
+    """Parse a flat list (see envlist), skipping comments."""
     items = []
-    for raw in value.split(";"):
-        raw = raw.strip()
-        if not raw or raw.startswith("#"):
+    for raw in split_entries(value):
+        if raw.startswith("#"):
             continue
         items.append(raw)
     return items
@@ -189,15 +207,14 @@ def _repo_dest_from_url(url: str) -> str:
 
 
 def _parse_env_git_repos(value: str) -> list[GitRepo]:
-    """Parse semicolon-separated 'url|dest|ref' entries (dest and ref optional).
+    """Parse 'url|dest|ref' entries (dest and ref optional; see envlist).
 
     When *dest* is omitted the repo is cloned into
     ``${WORKSPACE:-/workspace}/{repo_name}``.
     """
     repos = []
-    for raw in value.split(";"):
-        raw = raw.strip()
-        if not raw or raw.startswith("#"):
+    for raw in split_entries(value):
+        if raw.startswith("#"):
             continue
         parts = raw.split("|")
         url = parts[0].strip()
@@ -235,37 +252,38 @@ def apply_env_conventions(manifest: Manifest) -> None:
         if target == "downloads":
             entries = _parse_env_merge_entries(value)
             if entries:
-                log.info("env convention: added %d downloads from $%s", len(entries), env_var)
+                log.info("env convention: added %d downloads from $%s: %s", len(entries), env_var, _describe_downloads(entries))
                 manifest.downloads.extend(entries)
 
         elif target == "git_repos":
             repos = _parse_env_git_repos(value)
             if repos:
-                log.info("env convention: added %d git repos from $%s", len(repos), env_var)
+                log.info("env convention: added %d git repos from $%s: %s", len(repos), env_var,
+                         ", ".join(_safe_url(r.url) for r in repos))
                 manifest.git_repos.extend(repos)
 
         elif target == "apt_packages":
             pkgs = _parse_env_flat_list(value)
             if pkgs:
-                log.info("env convention: added %d apt packages from $%s", len(pkgs), env_var)
+                log.info("env convention: added %d apt packages from $%s: %s", len(pkgs), env_var, pkgs)
                 manifest.apt_packages.extend(pkgs)
 
         elif target == "pip_packages":
             pkgs = _parse_env_flat_list(value)
             if pkgs:
-                log.info("env convention: added %d pip packages from $%s", len(pkgs), env_var)
+                log.info("env convention: added %d pip packages from $%s: %s", len(pkgs), env_var, pkgs)
                 manifest.pip_packages.append(PipPackages(packages=pkgs))
 
         elif target == "conda_packages":
             pkgs = _parse_env_flat_list(value)
             if pkgs:
-                log.info("env convention: added %d conda packages from $%s", len(pkgs), env_var)
+                log.info("env convention: added %d conda packages from $%s: %s", len(pkgs), env_var, pkgs)
                 manifest.conda_packages.append(CondaPackages(packages=pkgs))
 
         elif target == "post_commands":
             cmds = _parse_env_flat_list(value)
             if cmds:
-                log.info("env convention: added %d post commands from $%s", len(cmds), env_var)
+                log.info("env convention: added %d post commands from $%s: %s", len(cmds), env_var, cmds)
                 manifest.post_commands.extend(cmds)
 
 

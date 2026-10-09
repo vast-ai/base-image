@@ -14,6 +14,20 @@ import urllib.parse
 import urllib.request
 
 from provisioner.manifest import expand_env
+
+try:
+    from provisioner.envlist import as_list, split_entries
+    _OLD_BASE = False
+except ImportError:
+    # The extension ships in the derivative; the provisioner comes from the pinned
+    # base, which may predate envlist.py (ADR 0053). Split on ";" there, as before.
+    _OLD_BASE = True
+
+    def split_entries(value: str) -> list[str]:
+        return [t.strip() for t in value.split(";") if t.strip()]
+
+    def as_list(value) -> list:
+        return split_entries(value) if isinstance(value, str) else value
 from provisioner.schema import DownloadEntry, FileWrite, GitRepo
 
 REGISTRY_URL = "https://api.comfy.org/nodes/{cnr_id}"
@@ -21,16 +35,13 @@ _WORKFLOWS_ENV_VAR = "PROVISIONING_COMFYUI_WORKFLOWS"
 
 
 def _parse_workflow_urls(value: str) -> list[str]:
-    """Parse a semicolon-delimited string of workflow URLs.
-
-    Splits on ``;``, consistent with all other ``PROVISIONING_*`` env vars.
-    Empty tokens and duplicates are discarded while preserving order.
+    """Parse a list of workflow URLs (``,`` or ``;`` between them, as for every
+    ``PROVISIONING_*`` env var). Duplicates are discarded while preserving order.
     """
     urls: list[str] = []
     seen: set[str] = set()
-    for token in value.split(";"):
-        token = token.strip()
-        if token and token not in seen:
+    for token in split_entries(value):
+        if token not in seen:
             urls.append(token)
             seen.add(token)
     return urls
@@ -39,7 +50,10 @@ def _parse_workflow_urls(value: str) -> list[str]:
 def run(config: dict, context, dry_run: bool = False) -> None:
     """Extension entry point called by the provisioner."""
     log = context.log
-    workflows = list(config.get("workflows", []))
+    if _OLD_BASE:
+        log.info("comfyui: this base's provisioner predates the shared list splitter; "
+                 "workflow lists split on ';' only (ADR 0053)")
+    workflows = list(as_list(config.get("workflows", [])))
     comfyui_dir = expand_env(
         config.get("comfyui_dir", "${WORKSPACE:-/workspace}/ComfyUI")
     )

@@ -39,7 +39,8 @@ Local counterparts to CI. Model: **staging namespace → prod namespace via reta
     `provisioner`, `vast-capabilities`, `env-hash`, `jupyter`, etc.
   - `opt/instance-tools/lib/provisioner/` — **Python** package (`python -m provisioner`):
     phased, idempotent manifest runner (apt/git/pip/conda installers, HF/wget
-    downloaders, schema/state/concurrency). Has its own `tests/`.
+    downloaders, schema/state/concurrency). Has its own `tests/`. `envlist.py` is the one
+    splitter for multi-entry env vars, also run by sd-forge's bash scripts (ADR 0053).
   - `opt/instance-tools/lib/venv_mirror/` — **Python** (stdlib) package behind
     `bin/venv-mirror` (ADR 0048): builds an external image's `/venv/main` as a per-file
     symlink mirror of the declared engine interpreter's site-packages (`build`, once, in the

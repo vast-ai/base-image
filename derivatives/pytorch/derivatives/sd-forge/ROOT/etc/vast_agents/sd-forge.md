@@ -36,6 +36,7 @@ under `${WORKSPACE}/stable-diffusion-webui-forge/models/` — `Stable-diffusion/
 `derivatives/pytorch/derivatives/sd-forge/provisioning_scripts/default.sh` (SD baseline) and
 `flux.sh` (sets up Flux — pulls gated FLUX.1-dev with a valid `HF_TOKEN`, else open
 FLUX.1-schnell, plus the CLIP/T5 encoders). Both take `HF_MODELS` / `CIVITAI_MODELS` /
-`WGET_DOWNLOADS` (semicolon-separated `URL|PATH` pairs) and `HF_TOKEN` / `CIVITAI_TOKEN`.
+`WGET_DOWNLOADS` (comma-separated `URL|PATH` pairs; `;` also works but Vast drops
+template variables that contain it) and `HF_TOKEN` / `CIVITAI_TOKEN`.
 **The service waits for provisioning (`/.provisioning`) to finish before starting**, so during
 boot it may be intentionally down — check that flag before assuming a fault.
