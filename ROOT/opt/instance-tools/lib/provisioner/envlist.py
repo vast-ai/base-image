@@ -10,7 +10,7 @@ is inside ``[...]`` (pip extras: ``transformers[torch,sentencepiece]``) or when 
 follows, after any spaces, is a version operator (``<``, ``>``, ``=``, ``!=``, ``~=``;
 pip ranges: ``torch>=2.4,<2.6``). Write a literal comma in a URL as ``%2C``.
 
-Run as a module to split for shell callers: one entry per NUL-terminated record.
+Run directly (by file path) to split for shell callers: one entry per NUL-terminated record.
 """
 
 from __future__ import annotations

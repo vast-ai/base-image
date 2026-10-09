@@ -86,8 +86,9 @@ with a comma in it, or a single download URL with a raw comma. It now splits. Th
 accepted as an edge case, because the escape stays inside the template: such an entry
 can end with `;` to stay whole when it is exported from the template's onstart (before
 `entrypoint.sh`), which the platform does not filter. Only a template env var cannot
-carry the `;`. No such value was found in this repo's templates and manifests or in the
-published template sources.
+carry the `;`. The same goes for a leading `#`: `#a,b` used to disable the whole value
+and now disables only `a`. No such value was found in this repo's templates and manifests
+or in the published template sources.
 
 A value written by two parties follows the same rule: a template's `a,b` with `;c`
 appended from onstart has a `;`, so it splits on `;` alone and `a,b` stays one entry. The
@@ -147,7 +148,7 @@ the base must survive an older one:
 
 - Lists set in templates reach the provisioner with commas, on images built after this
   change.
-- `${VAR}` in a manifest list field works as people already wrote it.
+- `${VAR}` written as a manifest list field's whole value (`packages: "${PIP}"`) works as people already wrote it. Inside a YAML list (`packages: ["${PIP}"]`) it stays one entry, as before.
 - Accepted limits: a URL's own comma must be written `%2C`. A shell command that itself
   contains a comma cannot go in `PROVISIONING_POST_COMMANDS`; it belongs in a manifest's
   `post_commands` list or a script. A pip marker still cannot go in `PROVISIONING_PIP`,

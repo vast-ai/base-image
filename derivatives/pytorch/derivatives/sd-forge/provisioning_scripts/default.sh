@@ -102,9 +102,11 @@ split_env_entries() {
         [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
         return 0
     fi
+    # Only the first line, as the old `read` took it, so both paths below agree.
+    local value=${1%%$'\n'*}
     [[ -x $python ]] || python=python3
     if [[ -f $splitter ]] && out=$(mktemp); then
-        if "$python" "$splitter" "$1" > "$out"; then
+        if "$python" "$splitter" "$value" > "$out"; then
             cat "$out"
             rm -f "$out"
             return 0
@@ -114,7 +116,7 @@ split_env_entries() {
     fi
     # Images built before the splitter, or a failed run. These lists hold URL|PATH
     # entries and extension URLs, which never contain a pip range.
-    IFS=',' read -ra parts <<< "$1"
+    IFS=',' read -ra parts <<< "$value"
     [[ ${#parts[@]} -eq 0 ]] || printf '%s\0' "${parts[@]}"
 }
 

@@ -1,5 +1,5 @@
-"""sd-forge's provisioning scripts split HF_MODELS, CIVITAI_MODELS, WGET_DOWNLOADS and
-EXTENSIONS with the provisioner's splitter, like every PROVISIONING_* var (ADR 0053).
+"""sd-forge's provisioning scripts split HF_MODELS, CIVITAI_MODELS and WGET_DOWNLOADS with
+the provisioner's splitter, like every PROVISIONING_* var (ADR 0053).
 
 The functions are cut from the shipped scripts, so the text under test is the text
 that ships.
@@ -101,3 +101,22 @@ def test_a_failing_splitter_does_not_empty_the_list(script, tmp_path):
     # It gets part of the way first: a partial list must not mix with the fallback's.
     broken.write_text("import sys\nsys.stdout.write('https://h/a|/m/\\0')\nraise SystemExit(1)\n")
     assert parse(script, "https://h/a|/m/,https://h/b|/m/", str(broken)) == ["https://h/a|/m/", "https://h/b|/m/"]
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_the_shipped_splitter_is_the_one_used(script):
+    """Only the provisioner's splitter keeps `,>=x` joined; the plain ',' fallback cuts it,
+    so this fails if the scripts stop reaching the baked splitter."""
+    value = "https://h/a|/m/,>=x|/m/"
+    assert parse(script, value, str(REPO / "ROOT" / SPLITTER.lstrip("/"))) == [value]
+    assert parse(script, value, "/nonexistent/envlist.py") == ["https://h/a|/m/", ">=x|/m/"]
+
+
+@pytest.mark.parametrize("value", ["a|/m/\nb|/m/", "a|/m/,\nb|/m/"])
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_a_multiline_value_without_semicolon_reads_its_first_line(script, value):
+    """As before, only the first line counts, and the splitter and the fallback agree."""
+    splitter = str(REPO / "ROOT" / SPLITTER.lstrip("/"))
+    want = parse(script, value.split("\n")[0], splitter)
+    assert parse(script, value, splitter) == want
+    assert parse(script, value, "/nonexistent/envlist.py") == want
