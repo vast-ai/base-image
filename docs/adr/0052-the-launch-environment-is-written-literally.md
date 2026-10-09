@@ -113,7 +113,9 @@ skip a stage by setting one.
 - The provisioner expands variables in env-value destination paths and not in URLs.
   `provisioner/tests/test_manifest.py` checks `${WORKSPACE}`, `$WORKSPACE` and
   `${NAME:-default}` destinations for `PROVISIONING_DOWNLOADS`, `env_merge` and
-  `PROVISIONING_GIT_REPOS`, and that a URL's `$` is left alone.
+  `PROVISIONING_GIT_REPOS`, the shell cases (empty, unset, one pass), a local
+  `PROVISIONING_MANIFEST`/`PROVISIONING_SCRIPT` path, and that a URL's `$NAME` and
+  `${NAME}` are left alone even when those variables are set.
 - On a live instance, `base/57-env-literal` reads probe values back from a fresh
   shell, supervisord and caddy (not caddy on a serverless worker, which does not start
   it), and checks that none of them ran. It also checks that base-qa's
@@ -136,13 +138,16 @@ skip a stage by setting one.
   request is sent). The published recommended templates do: SD Forge and A1111 set
   `PROVISIONING_DOWNLOADS` to `url|${WORKSPACE}/...`, and the provisioner read that
   value already expanded. So the provisioner now expands variables in the destination
-  paths of `PROVISIONING_DOWNLOADS`, `env_merge` variables and `PROVISIONING_GIT_REPOS`
-  as a shell would (`$NAME`, `${NAME}`, `${NAME:-default}`). URLs are not expanded,
+  paths of `PROVISIONING_DOWNLOADS`, `env_merge` variables and `PROVISIONING_GIT_REPOS`,
+  and in a local path given as `PROVISIONING_MANIFEST` or `PROVISIONING_SCRIPT`, as a
+  shell would: `$NAME`, `${NAME}`, `${NAME:-default}` (default when unset or empty),
+  `${NAME-default}` (default when unset), unset as empty, in one pass. URLs are not expanded,
   because a URL can carry a literal `$` in a token; commands in
   `PROVISIONING_POST_COMMANDS` are expanded by the shell that runs them, as before.
   Templates users built for themselves can't be searched, and may use `$VAR` in other
   variables. So the boot log names each variable whose value contains `$NAME` text
-  (the name only; values can be secrets). Users who want expansion put the line in
+  (the name only; values can be secrets), and for the four provisioning variables above
+  it says the provisioner expands their paths. Users who want expansion put the line in
   `${WORKSPACE}/.env`, which is still sourced as shell. The README says so.
 - **Behaviour change:** a `"` or a backslash escape (`\\`, `` \` ``) inside a value is
   now kept. The old file removed them: `--dir "/w/m"` became `--dir /w/m`, which worked

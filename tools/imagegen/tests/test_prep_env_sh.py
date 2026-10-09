@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from _docker_gate import assert_docker_present_under_ci, requires_docker
+from _docker_gate import assert_docker_present_under_ci, ci_is_set, requires_docker
 
 REPO = Path(__file__).resolve().parents[3]
 HOOK = REPO / "ROOT/etc/vast_boot.d/10-prep-env.sh"
@@ -170,14 +170,17 @@ def test_pam_env_reads_every_value_it_can(launch: dict[str, str]) -> None:
     assert got["HASH"] == "p@ss"
 
 
-DESKTOP_PARSER = REPO / "derivatives/linux-desktop/ROOT/opt/instance-tools/bin/export_env.sh"
+DESKTOP_PARSERS = [REPO / "derivatives/linux-desktop/ROOT/opt/instance-tools/bin/export_env.sh",
+                   REPO / "derivatives/pytorch/derivatives/aio-studio/ROOT_BASE/opt/instance-tools/bin/export_env.sh"]
 
 
-def test_linux_desktop_parser_reads_every_value_it_can(launch: dict[str, str], tmp_path: Path) -> None:
-    """The desktop's own parser of /etc/environment, run on the dumped file."""
+@pytest.mark.parametrize("desktop_parser", DESKTOP_PARSERS, ids=lambda p: p.parts[-6])
+def test_linux_desktop_parser_reads_every_value_it_can(launch: dict[str, str], tmp_path: Path,
+                                                       desktop_parser: Path) -> None:
+    """Each desktop session's own parser of /etc/environment, run on the dumped file."""
     envfile = tmp_path / "environment"
     envfile.write_text(_dump(launch))
-    parser = DESKTOP_PARSER.read_text().replace("/etc/environment", str(envfile))
+    parser = desktop_parser.read_text().replace("/etc/environment", str(envfile))
     names = list(launch)
     script = parser + '\nfor n in "$@"; do printf "%s\\0" "${!n-<unset>}"; done'
     out = subprocess.run(["/bin/bash", "-c", script, "_", *names], env={},
@@ -212,7 +215,10 @@ def test_old_bash_writes_the_same_literal_file(version: str, canary: Path, tmp_p
     replacement text, which reopened the quote: `a'; touch x; #` ran `touch x`."""
     pull = subprocess.run(["docker", "pull", "-q", f"bash:{version}"], capture_output=True)
     if pull.returncode != 0:
-        pytest.skip(f"bash:{version} could not be pulled: {pull.stderr.decode().strip()}")
+        msg = f"bash:{version} could not be pulled: {pull.stderr.decode().strip()}"
+        if ci_is_set():
+            pytest.fail(msg)  # a skip in CI would pass silently
+        pytest.skip(msg)
     values = {"Q": "it's", "INJECT": f"a'; touch /work/{canary.name}; #", "MIX": "x'$y`z\\",
               "CNTRL": f"a'\tb\nC=$(touch /work/{canary.name})"}
     args = ["docker", "run", "--rm", "-v", f"{HOOK}:/hook.sh:ro", "-v", f"{tmp_path}:/work"]
@@ -244,11 +250,15 @@ def test_unexpanded_notice_names_variables_never_values() -> None:
     only the variable: values can be secrets. It covers what the dump writes, nothing else."""
     env = {"MODEL_DIR": "$WORKSPACE/models", "PASS": "p4$sW0rd", "PRICE": "cost $5",
            "HOME": "$HOME", "CONDA_X": "$Y", "ARGS": '--dir "/w/m"', "ESC": "a\\\\b",
-           "TICK": "a\\`b", "WIN": "C:\\path"}
+           "TICK": "a\\`b", "WIN": "C:\\path", "PROVISIONING_DOWNLOADS": "u|${WORKSPACE}/m"}
     script = f'_VAST_PREP_ENV_LIB_ONLY=1 . "{HOOK}"; unset _VAST_PREP_ENV_LIB_ONLY; _vast_note_unexpanded'
     out = subprocess.run(["/bin/bash", "-c", script], env=env, check=True,
                          capture_output=True).stdout.decode()
-    assert sorted(line.split()[1] for line in out.splitlines()) == ["ARGS", "ESC", "MODEL_DIR", "PASS", "TICK"]
+    assert sorted(line.split()[1] for line in out.splitlines()) == [
+        "ARGS", "ESC", "MODEL_DIR", "PASS", "PROVISIONING_DOWNLOADS", "TICK"]
+    # The provisioner expands paths in this one, so it must not be called unexpanded.
+    assert [line for line in out.splitlines() if "PROVISIONING_DOWNLOADS" in line][0].endswith(
+        "the provisioner expands it in paths, not in URLs (ADR 0052)")
     assert "WORKSPACE" not in out and "sW0rd" not in out
 
 

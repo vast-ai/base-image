@@ -44,7 +44,12 @@ _vast_note_unexpanded() {
     while IFS= read -r -d '' line; do
         [[ "${line%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         if [[ "${line#*=}" =~ \$\{?[A-Za-z_] ]]; then
-            echo "prep-env: ${line%%=*} contains \$NAME text; it is kept literally, not expanded (ADR 0052)"
+            case "${line%%=*}" in
+                PROVISIONING_DOWNLOADS|PROVISIONING_GIT_REPOS|PROVISIONING_MANIFEST|PROVISIONING_SCRIPT)
+                    echo "prep-env: ${line%%=*} contains \$NAME text; the provisioner expands it in paths, not in URLs (ADR 0052)" ;;
+                *)
+                    echo "prep-env: ${line%%=*} contains \$NAME text; it is kept literally, not expanded (ADR 0052)" ;;
+            esac
         elif [[ "${line#*=}" =~ [\"]|\\[\\\`] ]]; then
             echo "prep-env: ${line%%=*} contains a quote or backslash escape; it is kept literally, not removed (ADR 0052)"
         fi
