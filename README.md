@@ -242,7 +242,7 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 | Argument | Description |
 |----------|-------------|
 | `--no-user-keys` | Skip SSH key propagation to the `user` account |
-| `--no-export-env` | Don't export environment variables to `/etc/environment` |
+| `--no-export-env` | Don't load `/etc/environment` and `${WORKSPACE}/.env` into the boot shell or users' `.bashrc`. The file is still written at first boot, and Supervisor services still load it |
 | `--no-cert-gen` | Skip TLS certificate generation |
 | `--no-update-portal` | Don't check for Instance Portal updates |
 | `--no-update-vast` | Don't check for Vast CLI updates |
@@ -274,6 +274,14 @@ The default boot script (`/opt/instance-tools/bin/boot_default.sh`) accepts thes
 3. Normal boot sequence (environment setup, workspace sync, TLS certs, Supervisor)
 4. `PROVISIONING_MANIFEST` (runs after Supervisor, declarative setup via provisioner)
 5. `PROVISIONING_SCRIPT` (runs after manifest, imperative customizations)
+
+### Template Environment Values Are Literal
+
+At first boot the template's environment variables are written to `/etc/environment`, which login shells, Supervisor services and provisioning scripts all load. They get every value exactly as you wrote it, whatever characters it contains: `;`, `$`, quotes, backticks, `\`, newlines. Nothing is expanded or run, so a generated password like `p4$sW0rd` stays intact. The boot log names any variable whose value contains `$NAME` text, since that is no longer expanded.
+
+Non-interactive SSH commands (`ssh host cmd`, rsync, scp) and `sudo` read the same file without a shell. They get every value right too, with two exceptions: a value is cut at its first `#`, and one that contains a single quote together with `$`, a backtick, `"` or `\`, or a newline or tab, arrives as the quoted text from the file.
+
+To build one value from another (for example `MODEL_DIR=$WORKSPACE/models`), put the line in `${WORKSPACE}/.env`, which is loaded as a shell script after `/etc/environment`, or set it in a provisioning script.
 
 ### Custom Boot Scripts
 
