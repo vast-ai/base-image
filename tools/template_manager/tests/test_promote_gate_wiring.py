@@ -182,7 +182,8 @@ def test_qa_summary_runs_even_when_a_cell_failed(raw):
 def test_every_copy_of_the_required_set_agrees(raw, wf):
     """There are three independent copies of the required set: the QA template's
     INSTANCE_TEST_REQUIRE_PASS, the qa job's require_tests input and qa-summary's
-    REQUIRE_TESTS. qa-summary's copy is the ACTUAL
+    REQUIRE_TESTS. (The linter's _REQUIRED_GPU_TESTS is a GPU-only subset, not a
+    fourth copy.) qa-summary's copy is the ACTUAL
     arbiter — it re-classifies every cell and decides flip/hold — and it was the
     one nothing pinned. Emptying it makes a GPU-required self-skip classify as a pass
     and flip the tag, with the whole suite green."""

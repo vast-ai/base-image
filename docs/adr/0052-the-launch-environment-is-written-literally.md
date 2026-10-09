@@ -108,10 +108,17 @@ skip a stage by setting one.
   must come back exact, and the desktop parser must skip the rest), runs the dump under
   bash 3.2 and 4.2 in docker (a missing docker fails in CI rather than skipping), checks
   that `boot_default.sh` unsets every stage's lib-only switch, and checks that the boot
-  log notice names variables and never prints a value.
+  log notice names variables and never prints a value. It also checks that test 57's
+  expected values match base-qa's onstart.
+- The provisioner expands variables in env-value destination paths and not in URLs.
+  `provisioner/tests/test_manifest.py` checks `${WORKSPACE}`, `$WORKSPACE` and
+  `${NAME:-default}` destinations for `PROVISIONING_DOWNLOADS`, `env_merge` and
+  `PROVISIONING_GIT_REPOS`, and that a URL's `$` is left alone.
 - On a live instance, `base/57-env-literal` reads probe values back from a fresh
   shell, supervisord and caddy (not caddy on a serverless worker, which does not start
-  it), and checks that none of them ran. It is required to
+  it), and checks that none of them ran. It also checks that base-qa's
+  `PROVISIONING_DOWNLOADS`, a template env var with `${WORKSPACE}` in its destination,
+  landed in the workspace and not in a literal `${WORKSPACE}` directory. It is required to
   pass in all three copies of base-qa's required list (the template, the promote
   workflow's QA job and its summary arbiter), which `test_promote_gate_wiring.py`
   holds together. base-qa exports the probes from its onstart, which runs before the image boots,
@@ -126,12 +133,27 @@ skip a stage by setting one.
 - **Behaviour change:** a value containing `$VAR` is no longer expanded when the file
   is sourced. No template or doc in this repo relies on this (the
   `-e HF_TOKEN=$HF_TOKEN` examples are expanded by the user's local shell before the
-  request is sent), but templates outside it can't be searched. So the boot log names
-  each variable whose value contains `$NAME` text (the name only; values can be
-  secrets). Users who want expansion put the line in `${WORKSPACE}/.env`, which is
-  still sourced as shell. The README says so.
-- Values that used to run code or break (`$(...)`, backticks, `"`, newlines) are now
-  literal. That only changes values that were already broken.
+  request is sent). The published recommended templates do: SD Forge and A1111 set
+  `PROVISIONING_DOWNLOADS` to `url|${WORKSPACE}/...`, and the provisioner read that
+  value already expanded. So the provisioner now expands variables in the destination
+  paths of `PROVISIONING_DOWNLOADS`, `env_merge` variables and `PROVISIONING_GIT_REPOS`
+  as a shell would (`$NAME`, `${NAME}`, `${NAME:-default}`). URLs are not expanded,
+  because a URL can carry a literal `$` in a token; commands in
+  `PROVISIONING_POST_COMMANDS` are expanded by the shell that runs them, as before.
+  Templates users built for themselves can't be searched, and may use `$VAR` in other
+  variables. So the boot log names each variable whose value contains `$NAME` text
+  (the name only; values can be secrets). Users who want expansion put the line in
+  `${WORKSPACE}/.env`, which is still sourced as shell. The README says so.
+- **Behaviour change:** a `"` or a backslash escape (`\\`, `` \` ``) inside a value is
+  now kept. The old file removed them: `--dir "/w/m"` became `--dir /w/m`, which worked
+  for a service that word-splits its arguments (forge, oobabooga, aio-studio's
+  comfyui, ollama), and `p4\$x` became `p4$x`. Now the service gets the quote
+  characters as part of the argument. The boot log names these variables too. In a
+  template env var this rarely arises, because the platform's parser of the template
+  env string already mangles values with quotes; it can arise for a value exported
+  from onstart.
+- Values that used to run code or break (`$(...)`, backticks, a `"` around spaces,
+  newlines) are now literal.
 - pam_env and the desktop parser read every value the old format gave them correctly,
   except a value containing `'` together with `$` `` ` `` `"` or `\`, or a control
   character. pam_env now gets the raw quoted text for those, and the desktop session
@@ -143,5 +165,6 @@ skip a stage by setting one.
 ## What would reverse this
 
 Evidence that templates in use depend on in-container `$VAR` expansion of launch env
-values. Even then, it would come back as an explicit opt-in, never as the default,
-because of the secret-truncation case in option 2.
+values outside the provisioner's destination paths, which are already expanded (see
+Consequences). Even then, it would come back as an explicit opt-in, never as the
+default, because of the secret-truncation case in option 2.

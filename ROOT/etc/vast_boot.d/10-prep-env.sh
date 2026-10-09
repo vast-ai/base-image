@@ -45,6 +45,8 @@ _vast_note_unexpanded() {
         [[ "${line%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         if [[ "${line#*=}" =~ \$\{?[A-Za-z_] ]]; then
             echo "prep-env: ${line%%=*} contains \$NAME text; it is kept literally, not expanded (ADR 0052)"
+        elif [[ "${line#*=}" =~ [\"]|\\[\\\`] ]]; then
+            echo "prep-env: ${line%%=*} contains a quote or backslash escape; it is kept literally, not removed (ADR 0052)"
         fi
     done < <(env -0 | grep -zEv "^(HOME=|SHLVL=)|CONDA")
 }

@@ -90,6 +90,22 @@ for proc in "${procs[@]}"; do
         && fail_later "${label}-inject" "QA_ENV_FAKE present in ${label}'s environment"
 done
 
+# ── A ${WORKSPACE} download destination still lands in the workspace ──
+# base-qa sets PROVISIONING_DOWNLOADS with a literal ${WORKSPACE} in the
+# destination, as live templates do; the provisioner expands it.
+if [[ "${PROVISIONING_DOWNLOADS:-}" == *qa-envexp* ]]; then
+    ws=${WORKSPACE:-/workspace}
+    if [[ ! -f /.provisioning_complete ]]; then
+        fail_later "workspace-dest" "provisioning did not complete; see /var/log/portal/provisioning.log"
+    elif [[ -s "${ws}/qa-envexp/LICENSE.md" ]]; then
+        echo "  \${WORKSPACE} destination expanded: ${ws}/qa-envexp/LICENSE.md"
+    else
+        fail_later "workspace-dest" "${ws}/qa-envexp/LICENSE.md missing; a destination with \${WORKSPACE} was not expanded"
+    fi
+    [[ -e "${ws}/\${WORKSPACE}" ]] \
+        && fail_later "workspace-literal" "${ws}/\${WORKSPACE} exists: a download went to a literal \${WORKSPACE} directory"
+fi
+
 # ── Nothing in a value ran ───────────────────────────────────────────
 [[ -e "$canary" ]] && fail_later "canary" "${canary} exists: a QA_ENV_* value was run as a command"
 

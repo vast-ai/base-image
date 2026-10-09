@@ -52,6 +52,16 @@ def _expand_recursive(obj):
     return obj
 
 
+def _expand_dest(dest: str) -> str:
+    """Expand variables in a destination path from an env value, as a shell would.
+
+    The launch environment is written literally (ADR 0052), so a value such as
+    `url|${WORKSPACE}/models/m.safetensors` reaches the provisioner unexpanded. Only
+    destination paths are expanded: a URL can carry a literal `$` in a token.
+    """
+    return os.path.expandvars(expand_env(dest))
+
+
 def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
     """Parse semicolon-separated 'url|path' entries from an env var value.
 
@@ -68,7 +78,7 @@ def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
             continue
         url, dest = raw.split("|", 1)
         url = url.strip()
-        dest = dest.strip()
+        dest = _expand_dest(dest.strip())
         if url and dest:
             entries.append(DownloadEntry(url=url, dest=dest))
     return entries
@@ -201,7 +211,7 @@ def _parse_env_git_repos(value: str) -> list[GitRepo]:
             continue
         parts = raw.split("|")
         url = parts[0].strip()
-        dest = parts[1].strip() if len(parts) > 1 else ""
+        dest = _expand_dest(parts[1].strip()) if len(parts) > 1 else ""
         ref = parts[2].strip() if len(parts) > 2 else ""
         if url:
             if not dest:

@@ -498,6 +498,33 @@ class TestApplyEnvConventions:
         apply_env_conventions(m)
         assert m.git_repos[0].dest == "/data/my-app"
 
+    @pytest.mark.parametrize("dest", ["${WORKSPACE}/models/m.bin", "$WORKSPACE/models/m.bin",
+                                      "${UNSET_DIR:-/data}/models/m.bin"])
+    def test_download_dest_variables_expand(self, monkeypatch, dest):
+        """The launch env is literal (ADR 0052): a template's `url|${WORKSPACE}/...` reaches
+        the provisioner unexpanded and must still land under the workspace."""
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.delenv("UNSET_DIR", raising=False)
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", f"https://a.com/m.bin?sig=a$b|{dest}")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.downloads[0].dest == "/data/models/m.bin"
+        assert m.downloads[0].url == "https://a.com/m.bin?sig=a$b"
+
+    def test_env_merge_dest_variables_expand(self, monkeypatch):
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.setenv("HF_MODELS", "https://hf.co/a|${WORKSPACE}/a")
+        m = self._manifest(env_merge={"HF_MODELS": "downloads"})
+        apply_env_merge(m)
+        assert m.downloads[0].dest == "/data/a"
+
+    def test_git_repo_dest_variables_expand(self, monkeypatch):
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo|${WORKSPACE}/repo|v2.0")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.git_repos[0].dest == "/data/repo"
+
     def test_provisioning_git_repos_url_and_dest(self, monkeypatch):
         monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo|/workspace/repo")
         m = self._manifest()

@@ -696,6 +696,11 @@ checks that `boot_default.sh` unsets every stage's `_VAST_*_LIB_ONLY` switch so 
 template can't skip a stage. On a live instance, `base/57-env-literal` (required to pass
 in base-qa in all three copies of the list, whose onstart exports the `QA_ENV_*`
 probes) checks the same values in a fresh shell, supervisord and caddy.
+Because the file no longer expands `$VAR`, the provisioner expands variables in
+env-value destination paths itself (`PROVISIONING_DOWNLOADS`, `env_merge`,
+`PROVISIONING_GIT_REPOS`; not URLs): the SD Forge and A1111 recommended templates set
+`url|${WORKSPACE}/...` and relied on the old expansion. `provisioner/tests/test_manifest.py`
+covers it, and test 57 checks base-qa's `${WORKSPACE}` download landed in the workspace.
 Not statically gated: the property is about what bash does with the output, so only
 executing it proves it.
 

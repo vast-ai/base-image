@@ -66,6 +66,10 @@ ports:
   # how the empty-port defect survived (ADR 0028).
   - "72299:72299"                 # Syncthing sync protocol
 env:
+  # A template value with ${WORKSPACE} in a download destination, as the SD Forge and
+  # A1111 recommended templates set. The launch env is literal (ADR 0052), so the
+  # provisioner expands it; base/57-env-literal checks the file landed in the workspace.
+  PROVISIONING_DOWNLOADS: "https://raw.githubusercontent.com/vast-ai/base-image/7899fdbef2b2911a3e374dbab485762bc0bb7d41/LICENSE.md|${WORKSPACE}/qa-envexp/LICENSE.md"
   OPEN_BUTTON_PORT: "1111"
   OPEN_BUTTON_TOKEN: "1"
   JUPYTER_DIR: "/"

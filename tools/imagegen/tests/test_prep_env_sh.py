@@ -239,12 +239,31 @@ def test_boot_never_honours_a_stage_lib_only_switch() -> None:
 
 
 def test_unexpanded_notice_names_variables_never_values() -> None:
-    """The boot log flags values with $NAME text (no longer expanded), naming only the
-    variable: values can be secrets. It covers what the dump writes, nothing else."""
+    """The boot log flags values whose meaning changed (ADR 0052): $NAME text, which is no
+    longer expanded, and a `"` or backslash escape, which is no longer removed. It names
+    only the variable: values can be secrets. It covers what the dump writes, nothing else."""
     env = {"MODEL_DIR": "$WORKSPACE/models", "PASS": "p4$sW0rd", "PRICE": "cost $5",
-           "HOME": "$HOME", "CONDA_X": "$Y"}
+           "HOME": "$HOME", "CONDA_X": "$Y", "ARGS": '--dir "/w/m"', "ESC": "a\\\\b",
+           "TICK": "a\\`b", "WIN": "C:\\path"}
     script = f'_VAST_PREP_ENV_LIB_ONLY=1 . "{HOOK}"; unset _VAST_PREP_ENV_LIB_ONLY; _vast_note_unexpanded'
     out = subprocess.run(["/bin/bash", "-c", script], env=env, check=True,
                          capture_output=True).stdout.decode()
-    assert sorted(line.split()[1] for line in out.splitlines()) == ["MODEL_DIR", "PASS"]
+    assert sorted(line.split()[1] for line in out.splitlines()) == ["ARGS", "ESC", "MODEL_DIR", "PASS", "TICK"]
     assert "WORKSPACE" not in out and "sW0rd" not in out
+
+
+def test_live_probes_match_the_base_qa_onstart() -> None:
+    """base/57-env-literal's expected values are a second copy of base-qa's onstart
+    exports; a probe changed in one and not the other fails every live run."""
+    import yaml
+    test = (REPO / "ROOT/opt/instance-tools/tests/base/57-env-literal.sh").read_text()
+    want = re.search(r"^declare -A want=\(\n.*?^\)\n", test, re.S | re.M).group(0)
+    onstart = yaml.safe_load((REPO / "templates/base-qa/template.yml").read_text())["onstart"]
+    exports = "\n".join(line for line in onstart.splitlines() if line.startswith("export QA_ENV_"))
+    script = exports + "\n" + want + r'''
+names=$(compgen -e | grep '^QA_ENV_' | grep -vx QA_ENV_PROBE | sort)
+[[ "$names" == "$(printf '%s\n' "${!want[@]}" | sort)" ]] || { echo "names differ"; exit 1; }
+for n in "${!want[@]}"; do [[ "${!n}" == "${want[$n]}" ]] || { echo "value differs: $n"; exit 1; }; done
+'''
+    out = subprocess.run(["/bin/bash", "-c", script], env={"PATH": "/usr/bin:/bin"}, capture_output=True)
+    assert out.returncode == 0, out.stdout.decode()
