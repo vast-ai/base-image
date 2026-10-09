@@ -144,6 +144,10 @@ skip a stage by setting one.
   `${NAME-default}` (default when unset), unset as empty, in one pass. URLs are not expanded,
   because a URL can carry a literal `$` in a token; commands in
   `PROVISIONING_POST_COMMANDS` are expanded by the shell that runs them, as before.
+  sd-forge's provisioning scripts read `HF_MODELS`, `CIVITAI_MODELS` and
+  `WGET_DOWNLOADS` themselves, not through the provisioner, so a `$VAR` in their paths
+  is no longer expanded. The SD Forge recommended template does not use these scripts,
+  and no public template was found setting these variables with a `$`.
   Templates users built for themselves can't be searched, and may use `$VAR` in other
   variables. So the boot log names each variable whose value contains `$NAME` text
   (the name only; values can be secrets), and for the four provisioning variables above
