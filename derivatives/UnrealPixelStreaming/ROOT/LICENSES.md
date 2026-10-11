@@ -6,10 +6,9 @@ the vendor's source or LICENSE file is shipped inside this image at a known
 location, the path is given. Otherwise, the upstream repository is referenced
 as the canonical source for the license text.
 
-## llama.cpp
+## Pixel Streaming Infrastructure
 
 - **License:** MIT
-- **Upstream:** https://github.com/unslothai/llama.cpp
-- **License file in image:** `/opt/llama.cpp/LICENSE` (shipped in the release bundle)
-- **Notes:** A fork of https://github.com/ggml-org/llama.cpp, under the same
-  license; the image installs the fork's pre-built release binaries.
+- **Upstream:** https://github.com/EpicGamesExt/PixelStreamingInfrastructure
+- **License file in image:** `/opt/PixelStreamingInfrastructure/LICENSE.md`
+- **Notes:** Unreal Engine itself is not part of this image.

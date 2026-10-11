@@ -5284,3 +5284,67 @@ def test_L101_real_convert_script_without_the_mirror_fires(tmp_path):
     text = re.sub(r"/opt/instance-tools/bin/venv-mirror build[^\n]*\\\n[^\n]*\n",
                   "# venv-mirror build used to run here\n", _real_convert())
     assert any("venv-mirror build" in f.msg for f in _codes(_convert_repo(tmp_path, text), "L101"))
+
+
+# ---- L102/L103: the README's licences and the Dockerfile's sources are backed by LICENSES.md ----
+
+
+def _real_copy(tmp_path, name):
+    """A real image copied to tmp, so a mutation never touches the tree."""
+    repo, img = _real(name)
+    dst = tmp_path / name
+    shutil.copytree(img.dir, dst)
+    return repo, replace(img, dir=dst, root=dst / "ROOT", dockerfile=dst / "Dockerfile",
+                         text=(dst / "Dockerfile").read_text())
+
+
+def _edit(path, old, new):
+    text = path.read_text()
+    assert old in text, (path, old)
+    path.write_text(text.replace(old, new, 1))
+
+
+def test_mut_L102_readme_states_a_licence_licenses_md_does_not(tmp_path):
+    """THE defect: wan2gp's README said Apache-2.0 for five months while LICENSES.md said
+    the WanGP Community License - a public misstatement of a licence that restricts paid
+    hosting."""
+    repo, img = _real_copy(tmp_path, "wan2gp")
+    _edit(img.dir / "README.md", "— WanGP Community License 2.0 (custom) (", "— Apache-2.0 (")
+    assert has(img, repo, "L102", "LICENSES.md records WanGP Community License")
+
+
+def test_mut_L102_table_row_drifts(tmp_path):
+    """aio-studio states its licences as a table, not bullets; a drift there must not hide."""
+    repo, img = _real_copy(tmp_path, "aio-studio")
+    _edit(img.dir / "README.md", "| Voicebox | MIT |", "| Voicebox | Apache-2.0 |")
+    assert has(img, repo, "L102", "`Voicebox` is stated as Apache-2.0")
+
+
+def test_mut_L102_readme_claims_an_upstream_licenses_md_lacks(tmp_path):
+    repo, img = _real_copy(tmp_path, "fluxgym")
+    lm = img.root / "LICENSES.md"
+    lm.write_text(re.sub(r"## Kohya sd-scripts\n.*?(?=\n## |\Z)", "", lm.read_text(), flags=re.S))
+    assert has(img, repo, "L102", "no entry for that upstream")
+
+
+def test_mut_L103_fetched_repo_missing_from_licenses_md(tmp_path):
+    """comfyui shipped ComfyUI-Manager (GPL-3.0) without ever declaring it."""
+    repo, img = _real_copy(tmp_path, "comfyui")
+    lm = img.root / "LICENSES.md"
+    lm.write_text(re.sub(r"## ComfyUI-Manager\n.*?(?=\n## |\Z)", "", lm.read_text(), flags=re.S))
+    assert has(img, repo, "L103", "Comfy-Org/ComfyUI-Manager")
+
+
+def test_mut_L103_image_fetches_sources_but_ships_no_licenses_md(tmp_path):
+    """voicebox and UnrealPixelStreaming shipped no LICENSES.md at all."""
+    repo, img = _real_copy(tmp_path, "voicebox")
+    (img.root / "LICENSES.md").unlink()
+    assert has(img, repo, "L103", "ships no ROOT/LICENSES.md")
+
+
+def test_L103_a_url_in_a_comment_is_not_a_fetch(tmp_path):
+    """Dockerfiles cite upstream issues and repos in comments; only executed instructions
+    ship anything."""
+    repo, img = _real_copy(tmp_path, "comfyui")
+    img = replace(img, text=img.text + "\n# see https://github.com/example/not-fetched\n")
+    assert not has(img, repo, "L103")

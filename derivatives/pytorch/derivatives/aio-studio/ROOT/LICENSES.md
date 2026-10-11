@@ -105,3 +105,22 @@ as the canonical source for the license text.
 - **Upstream:** https://www.blender.org/
 - **License file in image:** `/opt/blender-*/copyright.txt` (and the full GPL
   text under `/opt/blender-*/`)
+
+## ComfyUI-Manager
+
+- **License:** GPL-3.0
+- **Upstream:** https://github.com/Comfy-Org/ComfyUI-Manager
+- **License file in image:** `/opt/workspace-internal/ComfyUI/custom_nodes/ComfyUI-Manager/LICENSE.txt`
+
+## ComfyUI workflow-to-API converter
+
+- **License:** Unlicense
+- **Upstream:** https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint
+- **License file in image:** `/opt/workspace-internal/ComfyUI/custom_nodes/comfyui-workflow-to-api-converter-endpoint/LICENSE`
+
+## llama.cpp
+
+- **License:** MIT
+- **Upstream:** https://github.com/unslothai/llama.cpp
+- **License file in image:** `/opt/llama-cpp/LICENSE` (shipped in the release bundle)
+- **Notes:** A fork of https://github.com/ggml-org/llama.cpp, under the same license.

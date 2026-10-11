@@ -27,3 +27,23 @@ as the canonical source for the license text.
 - **Upstream:** https://www.blender.org/
 - **License file in image:** `/opt/blender-*/copyright.txt` (and the full GPL
   text under `/opt/blender-*/`)
+
+## VirtualGL
+
+- **License:** wxWindows Library Licence 3.1 (LGPL-2.1 with an exception for binary distribution)
+- **Upstream:** https://github.com/VirtualGL/virtualgl
+- **License file in image:** `/usr/share/doc/virtualgl-*/LICENSE.txt` (installed by
+  the release `.deb`)
+
+## nvidia-vaapi-driver
+
+- **License:** MIT
+- **Upstream:** https://github.com/elFarto/nvidia-vaapi-driver
+- **License file in image:** Not shipped - the driver is built from source and the
+  source tree is removed. See `COPYING` in the upstream repository.
+
+## guacamole-auth-noauth extension
+
+- **License:** None declared - the upstream repository ships no LICENSE file
+- **Upstream:** https://github.com/GauriSpears/guacamole-noauth
+- **License file in image:** None

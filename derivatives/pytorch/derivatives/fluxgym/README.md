@@ -97,7 +97,7 @@ Fork this repository and use the included GitHub Actions workflow to build and p
 
 This image ships vendor application(s) under the following license(s):
 
-- **FluxGym** — Apache-2.0 ([upstream](https://github.com/cocktailpeanut/fluxgym))
+- **FluxGym** — MIT ([upstream](https://github.com/cocktailpeanut/fluxgym))
 - **Kohya sd-scripts** — Apache-2.0 ([upstream](https://github.com/kohya-ss/sd-scripts))
 
 See `/LICENSES.md` in the image for license details and file locations.
