@@ -24,11 +24,11 @@ settings:
 # the workflow contents and any entries already in the manifest.
 #
 # Workflow URLs can also be provided at runtime via the environment variable
-# PROVISIONING_COMFYUI_WORKFLOWS (semicolon-delimited, consistent with all
-# other PROVISIONING_* env vars).
+# PROVISIONING_COMFYUI_WORKFLOWS (comma-separated, like every other
+# PROVISIONING_* env var).
 # These are appended to the workflows list below, with duplicates removed.
 #
-#   PROVISIONING_COMFYUI_WORKFLOWS="https://example.com/wf1.json;https://example.com/wf2.json"
+#   PROVISIONING_COMFYUI_WORKFLOWS="https://example.com/wf1.json,https://example.com/wf2.json"
 extensions:
   - module: provisioner_comfyui
     config:

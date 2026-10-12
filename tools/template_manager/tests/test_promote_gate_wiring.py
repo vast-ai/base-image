@@ -195,7 +195,9 @@ def test_every_copy_of_the_required_set_agrees(raw, wf):
     # would be a hole here — hence required. 57 reads base-qa's probe values back from
     # /etc/environment, supervisord and caddy (ADR 0052); it skips without the probes,
     # which only base-qa's onstart exports.
-    required = {"base/36-home-env-sync", "base/57-env-literal", "base/60-gpu-cuda",
+    # 58 checks base-qa's comma-separated PROVISIONING_* values were split and applied
+    # (ADR 0053); it skips without them, which only base-qa sets.
+    required = {"base/36-home-env-sync", "base/57-env-literal", "base/58-env-lists", "base/60-gpu-cuda",
                 "base/61-cuda-compute", "base/62-gpu-libraries"}
 
     cell = set(_job(wf, "qa")["with"]["require_tests"].split())
