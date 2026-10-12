@@ -1627,6 +1627,18 @@ spot as the `find -type f` mirror bug in ADR 0036, where presence was asserted a
 behaviour was what mattered. Not gated by QA and cannot be: the export path runs after
 every cell has closed, so the build-time assertion is the only control (ADR 0036 amendment).
 
+### A job fed an optional generated matrix skips when it is empty — **gated by L108**
+
+GitHub cannot create a job from an empty matrix (`{"include":[]}`): it fails the whole run
+and does not list the job. The base workflows fed their mini lists straight into
+`build-mini` / `extend-mini` and `merge-mini-manifests`, so any `FILTER` that matched no
+mini config (`cuda-12.9-24`, `stock`) reported failure on builds whose every image pushed.
+`generate-matrix` now sets `has-mini`, and the mini jobs skip on `false`, as the pytorch
+workflows already did with `has-mini` / `has-multi`. L108 requires a job whose matrix is
+`fromJson(needs.<job>.outputs.<name>)` with `mini` or `multi` in the name to read
+`needs.<job>.outputs` in its `if:`. The main build and merge lists are out of scope: an
+empty one means `FILTER` matched nothing, and failing the run is right.
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model
