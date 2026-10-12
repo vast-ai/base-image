@@ -676,6 +676,35 @@ nothing. It self-skips when the flags are off, which is correct for every other
 image, so `base-qa` names it in `INSTANCE_TEST_REQUIRE_PASS` where that would be
 a hole (ADR 0019).
 
+### The launch environment is written to /etc/environment literally — **enforced by test (ADR 0052)**
+
+`10-prep-env.sh` dumps the launch env into `/etc/environment`, which the boot shell,
+login shells and supervisor scripts all source, and pam_env and linux-desktop's
+`export_env.sh` parse without a shell. Each value gets the quoting every reader agrees
+on: `NAME='value'` without a `'`; `NAME="value"` with a `'` but none of `$` `` ` `` `"`
+`\`; otherwise a form only bash reads (`'it'\''s'`, or `$'...'` for a control
+character: pam_env gets the raw quoted text, the desktop parser skips it). pam_env cuts
+any value at its first `#`, whatever the quoting. Sourcing restores exactly what Docker
+passed. Nothing is expanded (a generated secret
+like `p4$sW0rd` stays intact) and nothing in a value runs. Each variable stays on one
+`^NAME=` line, which ADR 0014's `_vast_user_set` depends on. Names that are not shell
+identifiers are skipped. `tools/imagegen/tests/test_prep_env_sh.py` sources the
+shipped function in a boot-like and a fresh shell, and catches the old `"%s"`
+quoting, the `$NAME`-expanding variant and an unescaped embedded `'`, reads the file as
+pam_env and the desktop parser do, runs the dump under bash 3.2 and 4.2 (docker), and
+checks that `boot_default.sh` unsets every stage's `_VAST_*_LIB_ONLY` switch so a
+template can't skip a stage. On a live instance, `base/57-env-literal` (required to pass
+in base-qa in all three copies of the list, whose onstart exports the `QA_ENV_*`
+probes) checks the same values in a fresh shell, supervisord and caddy.
+Because the file no longer expands `$VAR`, the provisioner expands variables in
+env-value destination paths itself (`PROVISIONING_DOWNLOADS`, `env_merge`,
+`PROVISIONING_GIT_REPOS`, and a local `PROVISIONING_MANIFEST`/`PROVISIONING_SCRIPT`
+path; not URLs), with shell semantics in one pass: the SD Forge and A1111 recommended templates set
+`url|${WORKSPACE}/...` and relied on the old expansion. `provisioner/tests/test_manifest.py`
+covers it, and test 57 checks base-qa's `${WORKSPACE}` download landed in the workspace.
+Not statically gated: the property is about what bash does with the output, so only
+executing it proves it.
+
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
 
 Auditing the whole image surface for the pattern behind L069 and L071 —

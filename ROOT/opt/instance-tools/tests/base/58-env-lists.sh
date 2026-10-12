@@ -8,7 +8,7 @@
 # path through the platform as a customer's:
 #   PROVISIONING_PIP            a version range (its commas must not split), extras, a third package
 #   PROVISIONING_POST_COMMANDS  two commands, each of which must run on its own
-#   PROVISIONING_DOWNLOADS      two url|dest entries
+#   PROVISIONING_DOWNLOADS      three url|dest entries (57 checks the ${WORKSPACE} one)
 # The provisioning log prints each list as parsed, so this compares those lines with the
 # expected split, then checks the commands ran and the files arrived.
 # 12-provisioning runs first and blocks until provisioning has finished.
@@ -35,7 +35,7 @@ expect_parsed PROVISIONING_PIP \
     "added 3 pip packages from \$PROVISIONING_PIP: ['packaging>=20,!=21.0,<999', 'huggingface-hub[cli]', 'wheel']"
 expect_parsed PROVISIONING_POST_COMMANDS \
     "added 2 post commands from \$PROVISIONING_POST_COMMANDS: ['touch /tmp/qa-envlist-a', 'touch /tmp/qa-envlist-b']"
-expect_parsed PROVISIONING_DOWNLOADS "added 2 downloads from \$PROVISIONING_DOWNLOADS: "
+expect_parsed PROVISIONING_DOWNLOADS "added 3 downloads from \$PROVISIONING_DOWNLOADS: "
 
 # ── Two post commands, each run on its own ───────────────────────────
 for f in /tmp/qa-envlist-a /tmp/qa-envlist-b; do
@@ -46,7 +46,7 @@ done
 # ── Two downloads ────────────────────────────────────────────────────
 for f in /tmp/qa-envlist/LICENSE.md /tmp/qa-envlist/README.md; do
     [[ -s "$f" ]] && echo "  downloaded: $f" \
-        || fail_later "download-$(basename "$f")" "${f} missing: PROVISIONING_DOWNLOADS was not split into two entries"
+        || fail_later "download-$(basename "$f")" "${f} missing: PROVISIONING_DOWNLOADS was not split into separate entries"
 done
 
 report_failures
