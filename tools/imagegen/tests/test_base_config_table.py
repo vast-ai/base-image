@@ -145,10 +145,10 @@ def test_matrix_job_checks_out_the_repo(name):
 
 
 def test_config_count_matches_the_documented_fleet(cfg):
-    """A tripwire, not a rule: the fleet is 12 configs + 2 mini. Changing it is
+    """A tripwire, not a rule: the fleet is 13 configs + 2 mini. Changing it is
     fine and expected — update this number deliberately so the change is noticed
     in review rather than slipping in."""
-    assert len(cfg["configs"]) == 12
+    assert len(cfg["configs"]) == 13
     assert len(cfg["mini"]) == 2
 
 

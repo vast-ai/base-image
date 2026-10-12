@@ -144,6 +144,16 @@
         "linux/arm64"
       ],
       "default_python": "3.12"
+    },
+    {
+      "key": "cuda-13.4-24",
+      "base_image": "nvidia/cuda:13.4.2-cudnn-devel-ubuntu24.04",
+      "tag_template": "cuda-13.4.2-cudnn-devel-ubuntu24.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.12"
     }
   ],
   "mini": [
