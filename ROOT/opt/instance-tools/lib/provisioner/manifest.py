@@ -52,6 +52,31 @@ def _expand_recursive(obj):
     return obj
 
 
+# $NAME, ${NAME}, ${NAME:-default}, ${NAME-default} (and the := / = spellings)
+_PATH_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?)[-=]([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _expand_path_var(match: re.Match) -> str:
+    name = match.group(1) or match.group(4)
+    value = os.environ.get(name)
+    if match.group(3) is not None:
+        # ${NAME:-d} uses d when NAME is unset or empty; ${NAME-d} only when unset.
+        if value is None or (match.group(2) and value == ""):
+            return match.group(3)
+    return value or ""
+
+
+def _expand_dest(path: str) -> str:
+    """Expand variables in a path taken from an env value, as a shell would.
+
+    The launch environment is written literally (ADR 0052), so a value such as
+    `url|${WORKSPACE}/models/m.safetensors` reaches the provisioner unexpanded. One
+    pass, so a value that itself contains `$NAME` is not expanded again. Only paths
+    are expanded: a URL can carry a literal `$` in a token.
+    """
+    return _PATH_VAR.sub(_expand_path_var, path)
+
+
 def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
     """Parse semicolon-separated 'url|path' entries from an env var value.
 
@@ -68,7 +93,7 @@ def _parse_env_merge_entries(env_value: str) -> list[DownloadEntry]:
             continue
         url, dest = raw.split("|", 1)
         url = url.strip()
-        dest = dest.strip()
+        dest = _expand_dest(dest.strip())
         if url and dest:
             entries.append(DownloadEntry(url=url, dest=dest))
     return entries
@@ -129,7 +154,7 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
     """Resolve a manifest source (file path or URL) to a local file path.
 
     If *source* is a URL, download it to *cache_path* and return that path.
-    If *source* is already a local path, return it unchanged.
+    If *source* is a local path, return it with variables expanded (ADR 0052).
 
     *label* is used in log messages (e.g. "manifest", "script").
 
@@ -137,7 +162,7 @@ def resolve_manifest_source(source: str, cache_path: str = _DEFAULT_MANIFEST_CAC
     can re-attempt.
     """
     if not _is_url(source):
-        return source
+        return _expand_dest(source)
 
     log.info("Downloading %s from %s", label, source)
     try:
@@ -201,7 +226,7 @@ def _parse_env_git_repos(value: str) -> list[GitRepo]:
             continue
         parts = raw.split("|")
         url = parts[0].strip()
-        dest = parts[1].strip() if len(parts) > 1 else ""
+        dest = _expand_dest(parts[1].strip()) if len(parts) > 1 else ""
         ref = parts[2].strip() if len(parts) > 2 else ""
         if url:
             if not dest:

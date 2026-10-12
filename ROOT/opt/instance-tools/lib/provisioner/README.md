@@ -638,6 +638,7 @@ This replaces the legacy `75-provisioning-script.sh` boot script. Existing scrip
 - Pip packages are appended as a single `PipPackages` block using the default venv
 - Conda packages are appended as a single `CondaPackages` block
 - Git repos: `url` is required; `dest` and `ref` are optional (omit trailing `|`). When `dest` is omitted, the repo is cloned to `${WORKSPACE:-/workspace}/{repo_name}`
+- Destination paths (downloads, `env_merge` variables, git repos), and a local path in `PROVISIONING_MANIFEST` or `PROVISIONING_SCRIPT`, expand variables as a shell would: `$NAME`, `${NAME}`, `${NAME:-default}` (default when unset or empty), `${NAME-default}` (default when unset); an unset variable is empty. The launch environment reaches the instance literally (ADR 0052), so `url|${WORKSPACE}/models/m.safetensors` is expanded here. URLs are not expanded, since a URL can carry a literal `$`.
 
 **Examples:**
 

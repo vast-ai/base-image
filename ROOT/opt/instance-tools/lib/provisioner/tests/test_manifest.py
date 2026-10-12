@@ -389,6 +389,13 @@ class TestResolveManifestSource:
         result = resolve_manifest_source("manifest.yaml")
         assert result == "manifest.yaml"
 
+    def test_local_path_variables_expand(self, monkeypatch):
+        """PROVISIONING_MANIFEST / PROVISIONING_SCRIPT reach the provisioner literally
+        (ADR 0052); a local path like ${WORKSPACE}/provisioning.yaml must still resolve."""
+        monkeypatch.setenv("WORKSPACE", "/data")
+        assert resolve_manifest_source("${WORKSPACE}/provisioning.yaml") == "/data/provisioning.yaml"
+        assert resolve_manifest_source("$WORKSPACE/setup.sh", label="script") == "/data/setup.sh"
+
     @patch("provisioner.manifest.urllib.request.urlopen")
     def test_url_downloaded_to_cache_path(self, mock_urlopen, tmp_path):
         yaml_content = b"version: 1\napt_packages:\n  - vim\n"
@@ -497,6 +504,62 @@ class TestApplyEnvConventions:
         m = self._manifest()
         apply_env_conventions(m)
         assert m.git_repos[0].dest == "/data/my-app"
+
+    @pytest.mark.parametrize("dest", ["${WORKSPACE}/models/m.bin", "$WORKSPACE/models/m.bin",
+                                      "${UNSET_DIR:-/data}/models/m.bin"])
+    def test_download_dest_variables_expand(self, monkeypatch, dest):
+        """The launch env is literal (ADR 0052): a template's `url|${WORKSPACE}/...` reaches
+        the provisioner unexpanded and must still land under the workspace."""
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.delenv("UNSET_DIR", raising=False)
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", f"https://a.com/m.bin|{dest}")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.downloads[0].dest == "/data/models/m.bin"
+
+    def test_download_url_is_not_expanded(self, monkeypatch):
+        """A URL can carry a literal `$` in a token; only the destination expands."""
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.setenv("b", "EXPANDED")
+        monkeypatch.setenv("TOKEN", "EXPANDED")
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", "https://a.com/m.bin?sig=a$b&t=${TOKEN}|${WORKSPACE}/m.bin")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.downloads[0].url == "https://a.com/m.bin?sig=a$b&t=${TOKEN}"
+        assert m.downloads[0].dest == "/data/m.bin"
+
+    @pytest.mark.parametrize("dest, want", [
+        ("${EMPTY:-/d}/m", "/d/m"),       # :- uses the default when set but empty
+        ("${EMPTY-/d}/m", "/m"),          # - only when unset
+        ("${UNSET-/d}/m", "/d/m"),
+        ("$UNSET/m", "/m"),               # unset is empty, braces or not
+        ("${UNSET}/m", "/m"),
+        ("$NESTED/m", "$WORKSPACE/m"),    # one pass: a value is not expanded again
+        ("/a/$5/b$", "/a/$5/b$"),         # not a variable reference
+    ])
+    def test_download_dest_expands_like_a_shell(self, monkeypatch, dest, want):
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.setenv("EMPTY", "")
+        monkeypatch.setenv("NESTED", "$WORKSPACE")
+        monkeypatch.delenv("UNSET", raising=False)
+        monkeypatch.setenv("PROVISIONING_DOWNLOADS", f"https://a.com/m.bin|{dest}")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.downloads[0].dest == want
+
+    def test_env_merge_dest_variables_expand(self, monkeypatch):
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.setenv("HF_MODELS", "https://hf.co/a|${WORKSPACE}/a")
+        m = self._manifest(env_merge={"HF_MODELS": "downloads"})
+        apply_env_merge(m)
+        assert m.downloads[0].dest == "/data/a"
+
+    def test_git_repo_dest_variables_expand(self, monkeypatch):
+        monkeypatch.setenv("WORKSPACE", "/data")
+        monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo|${WORKSPACE}/repo|v2.0")
+        m = self._manifest()
+        apply_env_conventions(m)
+        assert m.git_repos[0].dest == "/data/repo"
 
     def test_provisioning_git_repos_url_and_dest(self, monkeypatch):
         monkeypatch.setenv("PROVISIONING_GIT_REPOS", "https://github.com/org/repo|/workspace/repo")
