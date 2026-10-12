@@ -128,6 +128,10 @@ sends, and neither should be chosen without a log excerpt from a live llama.cpp
 instance showing what is actually written. Whoever next holds a llama.cpp box under
 the qa-fix loop should capture that and reopen this.
 
+Update, 2026-10-12: llama.cpp now answers the truncated body with a 4xx, so its
+declared deviation expired and was deleted (`docs/invariants.md`). Whether it still
+writes an error line to the log is unverified, so this case stays open.
+
 ## Consequences
 
 - Re-running a suite is idempotent with respect to the unknown-model probe on the

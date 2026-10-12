@@ -97,14 +97,6 @@ ENGINE = {
             "rather than refused. UPSTREAM. BOUNDED: `token-arithmetic` and "
             "`finish-reason` both pass, so the response reports what was actually "
             "produced and a caller can see it got fewer tokens than it asked for.",
-        "error-malformed-body":
-            "A truncated JSON body gives HTTP 500 where the spec says 4xx. UPSTREAM. "
-            "BOUND IS WEAK, and saying so is the point: nothing else in this file "
-            "covers it. The only mitigation is that it fails LOUDLY — the caller gets "
-            "a 5xx, never a wrong answer — so a malformed request is never silently "
-            "mis-served. Declared on that basis rather than argued to be harmless, "
-            "and recorded in docs/invariants.md. If llama.cpp ever returns 4xx here "
-            "the self-expiry turns this into a violation and the entry goes.",
     },
 }
 

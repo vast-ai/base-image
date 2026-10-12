@@ -243,26 +243,26 @@ the entry cannot outlive the defect.
 | deviation | vLLM | SGLang | llama.cpp |
 |---|---|---|---|
 | unknown `model` refused with 4xx | yes | **no — 200** | **no — 200** |
-| malformed JSON refused with 4xx | yes | yes | **no — 500** |
+| malformed JSON refused with 4xx | yes | yes | yes (was 500; fixed upstream, see below) |
 | `max_tokens` > context refused with 4xx | yes | yes | **no — 200, clamped** |
 
 **vLLM is the only one that implements all three.** That is worth knowing when
 choosing an engine for a customer who integrates against error codes.
 
-Each declaration must state UPSTREAM and BOUNDED, and two of the three are properly
+Each declaration must state UPSTREAM and BOUNDED, and both remaining ones are properly
 bounded: the unknown-model case by `identity` (which asserts `/v1/models` advertises
 exactly the requested name, so a client can always tell what it is talking to), and
 the context-overflow case by `token-arithmetic` and `finish-reason` (which report
 what was actually produced, so a caller can see it got fewer tokens than it asked
 for).
 
-**llama.cpp's malformed-body deviation is the one with a WEAK bound, recorded here
-because it was accepted knowingly rather than because it is harmless.** Nothing else
-in the suite covers it. Its only mitigation is that it fails LOUDLY — the caller
-receives a 5xx, never a wrong answer — so a malformed request is never silently
-mis-served. It is the single place in the contract suite where an assertion is
-switched off without another assertion standing behind it, and it should be the first
-thing revisited if llama.cpp's error handling changes.
+**llama.cpp's malformed-body deviation EXPIRED, which is the self-expiry working as
+designed.** It was the one declaration with a weak bound (nothing else in the suite
+covered it; its only mitigation was that a 500 fails loudly). From the scheduled build
+of 2026-10-06 onward, llama.cpp answers a truncated body with a 4xx, the declared
+deviation turned into a violation on every QA cell, and the build stopped promoting
+until the entry was deleted. The check now asserts the 4xx like it does for vLLM and
+SGLang.
 
 ### Ray's public listeners are an OPEN defect, not a declared exception
 
@@ -1499,9 +1499,10 @@ The exclusion must be the sentinel string, not a broad pattern — a loose
 Excusing upstream log *noise* is a separate judgement outside L093.
 
 **Not closed by this rule:** llama.cpp's malformed-body probe is the same shape —
-`check_malformed_body` runs every time and llama.cpp answers **500** (see the table
-above) — but a malformed body carries no sentinel to exclude, so it is left open
-pending a log excerpt from a live instance rather than fixed blind. See ADR 0039.
+`check_malformed_body` runs every time — but a malformed body carries no sentinel to
+exclude, so it is left open pending a log excerpt from a live instance rather than
+fixed blind. See ADR 0039. llama.cpp now answers it with a 4xx rather than a 500 (see
+the table above), which may mean it no longer logs an error, but that is unverified.
 
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 
