@@ -38,6 +38,8 @@ def real_auto_versions():
     cfg = json.loads((REPO / "configs/base-image.json").read_text())
     out = []
     for c in cfg["configs"]:
+        if c.get("auto_tag") is False:
+            continue
         m = re.match(r"^cuda-([0-9.]*)-", c["tag_template"])
         if m and m.group(1):
             out.append(m.group(1))

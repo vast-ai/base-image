@@ -250,11 +250,12 @@ DATE = "2026-08-07"
 
 # Two cuda configs is the minimum that exercises the interesting cases: one
 # flipping and one holding in the same run, plus a distinct Phase A anchor.
+# auto_version is what generate-configs derives; the steps under test read it.
 CONFIGS = [
     {"key": "cuda-12.9-24", "tag_template": "cuda-12.9.2-cudnn-devel-ubuntu24.04",
-     "default_python": "3.12"},
+     "default_python": "3.12", "auto_version": "12.9.2"},
     {"key": "cuda-13.3-24", "tag_template": "cuda-13.3.1-cudnn-devel-ubuntu24.04",
-     "default_python": "3.12"},
+     "default_python": "3.12", "auto_version": "13.3.1"},
 ]
 
 
@@ -289,7 +290,7 @@ def manifest(target_digests: dict, current_digests: dict) -> dict:
         {"key": c["key"], "tag_template": c["tag_template"],
          "default_py": f"py{c['default_python'].replace('.', '')}",
          "default_python": c["default_python"],
-         "auto_version": c["tag_template"].split("-")[1],
+         "auto_version": c["auto_version"],
          "target_digest": target_digests[c["key"]],
          "current_digest": current_digests.get(c["key"], ""),
          "py_digests": py_digests(c, target_digests[c["key"]])}
@@ -302,7 +303,7 @@ def decisions(verdicts: dict, target_digests: dict) -> list:
         out.append({
             "key": c["key"], "tag_template": c["tag_template"],
             "default_python": c["default_python"],
-            "auto_version": c["tag_template"].split("-")[1],
+            "auto_version": c["auto_version"],
             "target_digest": target_digests[c["key"]],
             "decision": verdicts[c["key"]],
             "reason": "synthetic",

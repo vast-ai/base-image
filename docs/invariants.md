@@ -1375,6 +1375,16 @@ one. It has been disarmed three times, each time with the whole suite green:
 | the `continue` was deleted from the hold branch | the test asserted the `if` line exists, not that it skips |
 | five assignments were deleted from the `dry-run` loop | nothing asserted anything about `dry-run` |
 
+### Each auto tag has one config, and it is never Ubuntu 26.04 — **enforced by executed tests (ADR 0054)**
+
+The auto tag is keyed by CUDA version alone, and 26.04 configs share CUDA versions
+with 24.04 ones. A config sets `"auto_tag": false` to take no auto tag (and so no QA
+cell). promote derives `auto_version` once, in `generate-configs`, and fails the run
+if two configs claim the same tag. 24.04 stays the default because it is the newest
+host OS. Held by `test_base_config_table.py` (one config per tag, `auto_tag` only
+`false`, no 26.04 config auto-tagged, a single derivation) and
+`test_promote_auto_tag_optout.py` (the real steps, run against a fake registry).
+
 ### A failing cell redraws before it blocks (ADR 0029)
 
 `qa-gate.yml` is shared by base, comfyui and vllm (and imagegen-tests), none

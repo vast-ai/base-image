@@ -201,8 +201,12 @@ RUN \
             echo "Unsupported TARGETARCH: ${TARGETARCH}. Cannot configure Nvidia CUDA repository." >&2; \
             exit 1; \
         fi && \
-        curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/3bf863cc.pub | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda.gpg && \
-        echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH} /" > /etc/apt/sources.list.d/cuda.list && \
+        # NVIDIA's keyring package carries the repo's current signing key (26.04's differs
+        # from 22.04/24.04's) and writes the source list, as NVIDIA's own images do. Its
+        # apt pin is removed so stock images keep resolving packages as they did.
+        curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/cuda-keyring_1.1-1_all.deb && \
+        dpkg -i /tmp/cuda-keyring.deb && \
+        rm -f /tmp/cuda-keyring.deb /etc/apt/preferences.d/cuda-repository-pin-600 && \
         apt-get update && \
         apt-get clean && \
         rm -rf /var/lib/apt/lists/*; \

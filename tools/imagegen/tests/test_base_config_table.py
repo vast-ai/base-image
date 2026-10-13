@@ -8,7 +8,8 @@ These tests pin three properties:
   1. the workflows read the file rather than carrying their own copy;
   2. the table can still express every field each workflow needs;
   3. the auto-tag name remains DERIVABLE from tag_template, because that name is
-     customer-facing and a second stored copy is how one silently stops updating.
+     customer-facing and a second stored copy is how one silently stops updating;
+  4. at most one config claims each auto tag, and Ubuntu 26.04 never does (ADR 0054).
 """
 
 from __future__ import annotations
@@ -88,7 +89,7 @@ def test_auto_tag_version_is_derivable_for_every_cuda_config(cfg):
     field: one source of truth, derived at the point of use.
     """
     for c in cfg["configs"]:
-        if not c["tag_template"].startswith("cuda-"):
+        if not c["tag_template"].startswith("cuda-") or c.get("auto_tag") is False:
             continue
         m = _AUTO_RE.match(c["tag_template"])
         assert m and m.group(1), (
@@ -107,11 +108,47 @@ def test_stock_configs_yield_no_auto_tag(cfg):
 
 
 def test_promote_still_derives_the_auto_tag_with_this_expression():
-    """If promote's sed changes, the assertions above stop describing reality."""
+    """If promote's sed changes, the assertions above stop describing reality.
+    It runs once, in generate-configs; every later step reads .auto_version, so an
+    `"auto_tag": false` cannot be honoured in one place and missed in another."""
     t = WORKFLOWS["promote"].read_text()
-    assert r"sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p'" in t, (
-        "promote's auto-tag derivation changed — update _AUTO_RE to match"
+    sed = r"sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p'"
+    assert t.count(sed) == 1, (
+        f"promote derives the auto-tag version {t.count(sed)} times; derive it once "
+        "in generate-configs and read .auto_version elsewhere"
     )
+    gen = t.split("generate-configs:", 1)[1].split("\n  preflight:", 1)[0]
+    assert sed in gen, "the auto-tag derivation moved out of generate-configs"
+
+
+def _auto_tagged(cfg):
+    return [c for c in cfg["configs"]
+            if c.get("auto_tag") is not False and _AUTO_RE.match(c["tag_template"])]
+
+
+def test_auto_tag_is_only_ever_set_to_false(cfg):
+    """promote tests `.auto_tag != false`, so a string "false" (or 0) would leave the
+    tag on. The only meaningful value is the JSON literal false."""
+    for c in cfg["configs"]:
+        if "auto_tag" in c:
+            assert c["auto_tag"] is False, f"{c['key']}: auto_tag must be false or absent"
+
+
+def test_at_most_one_config_claims_each_auto_tag(cfg):
+    """Two configs on one cuda-X.Y.Z-auto would race in the auto-tag dance: the one
+    pushed last wins, silently moving customers to the other config."""
+    versions = [_AUTO_RE.match(c["tag_template"]).group(1) for c in _auto_tagged(cfg)]
+    dupes = sorted({v for v in versions if versions.count(v) > 1})
+    assert not dupes, f"more than one auto-tagged config for {dupes}; set auto_tag false on all but one"
+
+
+def test_ubuntu_26_04_never_takes_an_auto_tag(cfg):
+    """24.04 is the newest host OS, so it stays the default for every CUDA version;
+    26.04 is opt-in by explicit tag (ADR 0054)."""
+    for c in _auto_tagged(cfg):
+        assert "ubuntu24" in c["tag_template"] or "ubuntu22" in c["tag_template"], (
+            f"{c['key']} ({c['tag_template']}) would take cuda-*-auto"
+        )
 
 
 # --- the workflows must consume the table, not carry a copy ------------------
@@ -145,10 +182,10 @@ def test_matrix_job_checks_out_the_repo(name):
 
 
 def test_config_count_matches_the_documented_fleet(cfg):
-    """A tripwire, not a rule: the fleet is 13 configs + 2 mini. Changing it is
+    """A tripwire, not a rule: the fleet is 15 configs + 2 mini. Changing it is
     fine and expected — update this number deliberately so the change is noticed
     in review rather than slipping in."""
-    assert len(cfg["configs"]) == 13
+    assert len(cfg["configs"]) == 15
     assert len(cfg["mini"]) == 2
 
 

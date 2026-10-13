@@ -8,7 +8,10 @@
     "on it. Append new configs; do not reorder to tidy.",
     "The cuda-X.Y.Z-auto tag name is DERIVED from tag_template at promote time, never",
     "stored here - a second source of truth for a customer-facing tag name is how one",
-    "silently stops being updated."
+    "silently stops being updated.",
+    "\"auto_tag\": false gives a config no auto tag (and so no QA cell): Ubuntu 26.04",
+    "configs are opt-in, and cuda-X.Y.Z-auto stays on 24.04 (ADR 0054). Promote derives",
+    "auto_version once, in generate-configs; at most one auto-tagged config per CUDA version."
   ],
   "python_versions": [
     "3.10",
@@ -154,6 +157,27 @@
         "linux/arm64"
       ],
       "default_python": "3.12"
+    },
+    {
+      "key": "stock-26",
+      "base_image": "ubuntu:26.04",
+      "tag_template": "stock-ubuntu26.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.14"
+    },
+    {
+      "key": "cuda-13.4-26",
+      "base_image": "nvidia/cuda:13.4.2-cudnn-devel-ubuntu26.04",
+      "tag_template": "cuda-13.4.2-cudnn-devel-ubuntu26.04",
+      "arches": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "default_python": "3.14",
+      "auto_tag": false
     }
   ],
   "mini": [

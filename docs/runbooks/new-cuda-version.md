@@ -22,6 +22,7 @@ the failure mode was silent before it was caught.
 | An unmapped major **fails the run**; it never defaults | `test_the_floor_case_fails_closed_on_an_unmapped_major` |
 | `cuda_max_good` floors are LOWER bounds — never an `lte` | `test_set_filter.py`, template comments |
 | An auto tag only moves to a digest that passed QA **this run, at that digest** | `test_promote_behaviour.py` (executed against a fake registry) |
+| At most one config claims each auto tag; Ubuntu 26.04 never does (ADR 0054) | `test_at_most_one_config_claims_each_auto_tag`, `test_ubuntu_26_04_never_takes_an_auto_tag`, `test_promote_auto_tag_optout.py` |
 | There is no QA bypass | `test_no_qa_bypass_input_exists`, `test_there_is_no_way_to_proceed_without_the_qa_key` |
 | Every promoted artifact is copied **by digest**, never by a mutable staging tag | `test_no_prod_tag_is_ever_copied_from_a_mutable_staging_tag` |
 
@@ -76,7 +77,13 @@ Notes that bite:
 - **`tag_template` determines the auto tag name.** It is parsed with
   `sed 's/^cuda-\([0-9.]*\)-.*/\1/p'`, so `cuda-13.4.0-...` yields
   `cuda-13.4.0-auto` — **patch-versioned**. The auto version is derived, never
-  stored. A typo here silently creates a tag nobody is watching.
+  stored, once, in promote's `generate-configs`. A typo here silently creates a
+  tag nobody is watching.
+- **A 26.04 config sets `"auto_tag": false`.** It shares its CUDA version with the
+  24.04 config, and the auto tag is keyed by CUDA version alone, so without it the
+  two would race for `cuda-X.Y.Z-auto`. promote refuses a run where two configs
+  claim one tag. An opted-out config gets no auto tag and no QA cell, like stock
+  (ADR 0054).
 - **Verify the upstream tag exists first.** `crane digest nvidia/cuda:<tag>`. A
   missing base surfaces much later as a build failure.
 - **`default_python`** is the artifact the auto tag points at and the only python
