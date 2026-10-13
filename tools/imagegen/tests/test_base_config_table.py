@@ -151,6 +151,18 @@ def test_ubuntu_26_04_never_takes_an_auto_tag(cfg):
         )
 
 
+@pytest.mark.parametrize("name", sorted(WORKFLOWS))
+def test_no_dispatch_input_is_pasted_into_a_script(name):
+    """FILTER is free text from whoever dispatches the run; `${{ inputs.X }}` inside a
+    `run:` splices it into bash before the shell sees it. It reaches the script
+    through `env:` instead."""
+    import yaml
+    wf = yaml.safe_load(WORKFLOWS[name].read_text())
+    bad = [f"{job}/{s.get('name')}" for job, j in wf["jobs"].items() for s in j.get("steps", [])
+           if re.search(r"\$\{\{\s*inputs\.", s.get("run") or "")]
+    assert not bad, f"{name} pastes a dispatch input into: {bad}"
+
+
 # --- the workflows must consume the table, not carry a copy ------------------
 
 @pytest.mark.parametrize("name", sorted(WORKFLOWS))

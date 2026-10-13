@@ -1418,7 +1418,9 @@ cell). promote derives `auto_version` once, in `generate-configs`, and fails the
 if two configs claim the same tag. 24.04 stays the default because it is the newest
 host OS. Held by `test_base_config_table.py` (one config per tag, `auto_tag` only
 `false`, no 26.04 config auto-tagged, a single derivation) and
-`test_promote_auto_tag_optout.py` (the real steps, run against a fake registry).
+`test_promote_auto_tag_optout.py` (the real steps, run against a fake registry). The
+manual tag move refuses an image whose Ubuntu label is not 22.04 or 24.04
+(`test_move_auto_tag_behaviour.py`).
 
 ### A failing cell redraws before it blocks (ADR 0029)
 

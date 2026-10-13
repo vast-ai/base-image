@@ -169,6 +169,22 @@ jobs:
             exit 1
           fi
 
+          # Auto tags stay on the newest host OS's Ubuntu (ADR 0054): a 26.04 build of
+          # the same CUDA minor passes the check above and would silently move every
+          # instance on this tag to a new userland. The Ubuntu base sets this label.
+          img_os=$(crane config --platform linux/amd64 "$SRC" 2>/dev/null \
+            | jq -r '.config.Labels["org.opencontainers.image.version"] // ""')
+          case "$img_os" in
+            22.04|24.04) ;;
+            "")
+              echo "Could not read the Ubuntu version of ${SRC}. Refusing to guess." >&2
+              exit 1 ;;
+            *)
+              echo "REFUSING: ${SRC} is an Ubuntu ${img_os} image. Auto tags stay on 22.04/24.04;" >&2
+              echo "Ubuntu ${img_os} is published under explicit tags only (ADR 0054)." >&2
+              exit 1 ;;
+          esac
+
           # Phase A of the auto-tag dance needs an anchor whose digest differs from
           # both the current and the intended content, so the registry records a
           # genuine push ordering (ADR 0013 / the dance in promote-base-image.yml:
