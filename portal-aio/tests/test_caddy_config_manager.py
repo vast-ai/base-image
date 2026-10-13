@@ -156,6 +156,29 @@ def test_reverse_proxy_strips_upstream_marker():
     assert "header_down -X-Portal-Placeholder" in block
 
 
+# --- CADDY_HOST_PASSTHROUGH: the app's own Origin check must keep working (ADR 0050) ---
+
+def test_host_passthrough_forwards_browser_host_only_for_listed_ports(monkeypatch):
+    """Selkies compares Origin with Host; Caddy's Host rewrite made it refuse every
+    browser WebSocket. A listed port forwards Host unchanged; every other port keeps
+    the rewrite."""
+    monkeypatch.setenv("CADDY_HOST_PASSTHROUGH", "16100")
+    assert "header_up Host" not in ccm.get_reverse_proxy_block("localhost", 16100, "-1")
+    assert "header_up Host {upstream_hostport}" in ccm.get_reverse_proxy_block("localhost", 18080, "-1")
+
+
+def test_host_passthrough_beats_localhost_rewrite_and_has_no_true_form(monkeypatch):
+    """The localhost rewrite also rewrites Origin, which would let any site's
+    WebSocket through the app's same-origin check; passthrough must win. `true`
+    must not turn passthrough on for every app."""
+    monkeypatch.setenv("CADDY_HEADER_UP_LOCALHOST", "true")
+    monkeypatch.setenv("CADDY_HOST_PASSTHROUGH", "16100")
+    block = ccm.get_reverse_proxy_block("localhost", 16100, "-1")
+    assert "header_up Host" not in block and "header_up Origin" not in block
+    monkeypatch.setenv("CADDY_HOST_PASSTHROUGH", "true")
+    assert "header_up Origin" in ccm.get_reverse_proxy_block("localhost", 16100, "-1")
+
+
 # --- load_config: a present-but-unusable /etc/portal.yaml is ABSENT, never a crash ---
 #
 # caddy.sh `touch`es /etc/portal.yaml when PORTAL_CONFIG is unset, leaving a zero-byte

@@ -243,26 +243,26 @@ the entry cannot outlive the defect.
 | deviation | vLLM | SGLang | llama.cpp |
 |---|---|---|---|
 | unknown `model` refused with 4xx | yes | **no — 200** | **no — 200** |
-| malformed JSON refused with 4xx | yes | yes | **no — 500** |
+| malformed JSON refused with 4xx | yes | yes | yes (was 500; fixed upstream, see below) |
 | `max_tokens` > context refused with 4xx | yes | yes | **no — 200, clamped** |
 
 **vLLM is the only one that implements all three.** That is worth knowing when
 choosing an engine for a customer who integrates against error codes.
 
-Each declaration must state UPSTREAM and BOUNDED, and two of the three are properly
+Each declaration must state UPSTREAM and BOUNDED, and both remaining ones are properly
 bounded: the unknown-model case by `identity` (which asserts `/v1/models` advertises
 exactly the requested name, so a client can always tell what it is talking to), and
 the context-overflow case by `token-arithmetic` and `finish-reason` (which report
 what was actually produced, so a caller can see it got fewer tokens than it asked
 for).
 
-**llama.cpp's malformed-body deviation is the one with a WEAK bound, recorded here
-because it was accepted knowingly rather than because it is harmless.** Nothing else
-in the suite covers it. Its only mitigation is that it fails LOUDLY — the caller
-receives a 5xx, never a wrong answer — so a malformed request is never silently
-mis-served. It is the single place in the contract suite where an assertion is
-switched off without another assertion standing behind it, and it should be the first
-thing revisited if llama.cpp's error handling changes.
+**llama.cpp's malformed-body deviation EXPIRED, which is the self-expiry working as
+designed.** It was the one declaration with a weak bound (nothing else in the suite
+covered it; its only mitigation was that a 500 fails loudly). From the scheduled build
+of 2026-10-06 onward, llama.cpp answers a truncated body with a 4xx, the declared
+deviation turned into a violation on every QA cell, and the build stopped promoting
+until the entry was deleted. The check now asserts the 4xx like it does for vLLM and
+SGLang.
 
 ### Ray's public listeners are an OPEN defect, not a declared exception
 
@@ -675,6 +675,35 @@ actually executes, because a relink to a half-copied tree resolves fine and runs
 nothing. It self-skips when the flags are off, which is correct for every other
 image, so `base-qa` names it in `INSTANCE_TEST_REQUIRE_PASS` where that would be
 a hole (ADR 0019).
+
+### The launch environment is written to /etc/environment literally — **enforced by test (ADR 0052)**
+
+`10-prep-env.sh` dumps the launch env into `/etc/environment`, which the boot shell,
+login shells and supervisor scripts all source, and pam_env and linux-desktop's
+`export_env.sh` parse without a shell. Each value gets the quoting every reader agrees
+on: `NAME='value'` without a `'`; `NAME="value"` with a `'` but none of `$` `` ` `` `"`
+`\`; otherwise a form only bash reads (`'it'\''s'`, or `$'...'` for a control
+character: pam_env gets the raw quoted text, the desktop parser skips it). pam_env cuts
+any value at its first `#`, whatever the quoting. Sourcing restores exactly what Docker
+passed. Nothing is expanded (a generated secret
+like `p4$sW0rd` stays intact) and nothing in a value runs. Each variable stays on one
+`^NAME=` line, which ADR 0014's `_vast_user_set` depends on. Names that are not shell
+identifiers are skipped. `tools/imagegen/tests/test_prep_env_sh.py` sources the
+shipped function in a boot-like and a fresh shell, and catches the old `"%s"`
+quoting, the `$NAME`-expanding variant and an unescaped embedded `'`, reads the file as
+pam_env and the desktop parser do, runs the dump under bash 3.2 and 4.2 (docker), and
+checks that `boot_default.sh` unsets every stage's `_VAST_*_LIB_ONLY` switch so a
+template can't skip a stage. On a live instance, `base/57-env-literal` (required to pass
+in base-qa in all three copies of the list, whose onstart exports the `QA_ENV_*`
+probes) checks the same values in a fresh shell, supervisord and caddy.
+Because the file no longer expands `$VAR`, the provisioner expands variables in
+env-value destination paths itself (`PROVISIONING_DOWNLOADS`, `env_merge`,
+`PROVISIONING_GIT_REPOS`, and a local `PROVISIONING_MANIFEST`/`PROVISIONING_SCRIPT`
+path; not URLs), with shell semantics in one pass: the SD Forge and A1111 recommended templates set
+`url|${WORKSPACE}/...` and relied on the old expansion. `provisioner/tests/test_manifest.py`
+covers it, and test 57 checks base-qa's `${WORKSPACE}` download landed in the workspace.
+Not statically gated: the property is about what bash does with the output, so only
+executing it proves it.
 
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
 
@@ -1516,9 +1545,10 @@ The exclusion must be the sentinel string, not a broad pattern — a loose
 Excusing upstream log *noise* is a separate judgement outside L093.
 
 **Not closed by this rule:** llama.cpp's malformed-body probe is the same shape —
-`check_malformed_body` runs every time and llama.cpp answers **500** (see the table
-above) — but a malformed body carries no sentinel to exclude, so it is left open
-pending a log excerpt from a live instance rather than fixed blind. See ADR 0039.
+`check_malformed_body` runs every time — but a malformed body carries no sentinel to
+exclude, so it is left open pending a log excerpt from a live instance rather than
+fixed blind. See ADR 0039. llama.cpp now answers it with a 4xx rather than a 500 (see
+the table above), which may mean it no longer logs an error, but that is unverified.
 
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 
@@ -1643,6 +1673,46 @@ script that imports a sibling package must have it fetched alongside — and the
 spot as the `find -type f` mirror bug in ADR 0036, where presence was asserted and
 behaviour was what mattered. Not gated by QA and cannot be: the export path runs after
 every cell has closed, so the build-time assertion is the only control (ADR 0036 amendment).
+
+### Multi-entry env vars split on `,` or `;`, in one place (ADR 0053, L107)
+
+Vast drops any template variable whose value contains `;` (verified 2026-10-07: stored on
+the instance, absent from PID 1's environment). The provisioner split every
+`PROVISIONING_*` list, `env_merge` variable and `PROVISIONING_COMFYUI_WORKFLOWS` on `;`
+alone, and so did sd-forge's bash parser, so any list of two or more entries set in a
+template never arrived.
+
+- Every multi-entry env var is split by `provisioner/envlist.py` `split_entries`. A value
+  containing `;` splits on `;` only, exactly as before (live templates export `;` lists
+  from onstart, past the platform filter); otherwise on `,`, except a comma inside `[...]`
+  (pip extras) or followed by a version operator (pip ranges). A test pins every `;` value
+  to the old split. sd-forge's scripts split a `;` value with their original `read` and
+  call the same file only for a value without `;`, falling back to a plain `,` split on
+  images built before it.
+- A manifest `list[str]` field that arrives as one string (`packages: "${PIP_PACKAGES}"`)
+  is split by the same rule; it used to reach pip one character at a time.
+- A command field written as one string (`post_commands`, `pre_commands`) stays one command.
+- Callers outside the base survive an older pinned base: the ComfyUI extension falls back to
+  `;` if `provisioner.envlist` is missing (a failed import aborts every ComfyUI instance's
+  provisioning), and sd-forge splits on `,` and `;` if the splitter is missing or fails.
+- **Gated by L107:** no `;` split (`.split`, `.rsplit`, `split(sep=...)`, `re.split`) in the
+  provisioner or an extension outside an extension's `def split_entries` fallback within
+  `except ImportError:`, and no
+  `IFS=';'` in any provisioning script outside `split_env_entries`. Exempt by name:
+  `downloaders/wget.py` (an HTTP header). Held by `test_envlist.py`, `test_manifest.py`,
+  the ComfyUI extension's tests and `test_sdforge_env_lists.py`.
+
+### A job fed an optional generated matrix skips when it is empty — **gated by L108**
+
+GitHub cannot create a job from an empty matrix (`{"include":[]}`): it fails the whole run
+and does not list the job. The base workflows fed their mini lists straight into
+`build-mini` / `extend-mini` and `merge-mini-manifests`, so any `FILTER` that matched no
+mini config (`cuda-12.9-24`, `stock`) reported failure on builds whose every image pushed.
+`generate-matrix` now sets `has-mini`, and the mini jobs skip on `false`, as the pytorch
+workflows already did with `has-mini` / `has-multi`. L108 requires a job whose matrix is
+`fromJson(needs.<job>.outputs.<name>)` with `mini` or `multi` in the name to read
+`needs.<job>.outputs` in its `if:`. The main build and merge lists are out of scope: an
+empty one means `FILTER` matched nothing, and failing the run is right.
 
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
@@ -1845,6 +1915,33 @@ covered, if the body drifts, or if a declared port stops matching the image, and
 Dockerfiles. NOT gated: a new upstream origin check. No QA cell sends a WebSocket or
 POST through Caddy with a browser Origin, which is how aio-studio `2026-09-15` shipped
 with a broken Wan2GP.
+
+### An app that enforces same-origin itself gets the browser's Host, not a rewrite — ADR 0050, **config shape enforced by portal-aio test_caddy_config_manager.py; the app's Origin refusal by aio-studio-base QA (aio-base.d/25-selkies-live), not gated on linux-desktop**
+
+Selkies 2.0 compares the browser's `Origin` with `Host` and refuses a mismatch. Behind
+Caddy's default `Host: localhost:<port>` it refused every browser WebSocket (verified
+live). The ADR 0042/0043 localhost rewrite would make it work by rewriting `Origin`
+too, which turns the check off: a foreign Origin carrying valid Basic credentials got
+`101` with the rewrite and `403` without it.
+
+- Such an app's internal port goes in `CADDY_HOST_PASSTHROUGH` (a port list; there is
+  deliberately no `true` form). Caddy then omits `header_up Host`, so the browser's Host
+  reaches the app and the app's own check holds on direct, tunnel, and changed-IP paths.
+- Passthrough wins over `CADDY_HEADER_UP_LOCALHOST` for the same port.
+- **Why the Host rewrite stays the default.** It was introduced in 2025 with no recorded
+  reason, but it is load-bearing: an app that guards against DNS rebinding with a Host
+  allowlist refuses the browser's Host. Ollama bound to loopback (as it is behind Caddy)
+  returns 403 unless Host is loopback, a private IP, `localhost`, or a `.local`/`.internal`
+  name (its `allowedHostsMiddleware`; verified live on `vastai/ollama:0.34.0`: 200 with the
+  rewrite, 403 for a public-IP or tunnel Host with its port passed through); Vite dev servers
+  have the same kind of guard.
+  The base apps do not depend on it: Syncthing runs with `insecure-skip-host-check` and
+  Jupyter with `allow_remote_access`. No audit of the remaining apps exists, and the portal
+  reaches every image version at first boot, so flipping the default needs that audit first
+  (ADR 0050).
+- The portal reads it at first boot, so an image setting it needs a portal release that
+  understands it (portal v3.1.7 and later). An older portal ignores it and the app's
+  WebSockets fail as before.
 
 ### A vLLM-derived image ships the engine's audio extra — **GATED (L096)**
 

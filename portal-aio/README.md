@@ -180,6 +180,7 @@ localhost:8080:18080:/:Jupyter|localhost:8000:18000:/docs:vLLM API
 | `CADDY_FLUSH_INTERVAL` | HTTP flush interval for SSE | `-1` (immediate) |
 | `CADDY_CORS_ALLOWED_ORIGINS` | CORS allowed origins | Disabled |
 | `CADDY_HEADER_UP_LOCALHOST` | Forward Host header as localhost | — |
+| `CADDY_HOST_PASSTHROUGH` | Internal ports whose app checks Origin against Host itself; Caddy forwards the browser's Host unchanged (no `true` form; wins over `CADDY_HEADER_UP_LOCALHOST`) | — |
 
 #### Tunnels
 

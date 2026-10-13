@@ -5326,3 +5326,132 @@ def test_L104_real_tree_catches_each_way_the_override_path_broke(tmp_path, mutat
     work = _update_portal_tree(tmp_path, mutate)
     msgs = [f.msg for f in L.check_update_portal_paths_agree(work)]
     assert any(needle in m for m in msgs), msgs
+
+
+# --- L107: multi-entry env vars go through the provisioner's splitter ------------- #
+
+_L107_MANIFEST = "ROOT/opt/instance-tools/lib/provisioner/manifest.py"
+_L107_WGET = "ROOT/opt/instance-tools/lib/provisioner/downloaders/wget.py"
+_L107_SDFORGE = "derivatives/pytorch/derivatives/sd-forge/provisioning_scripts/default.sh"
+_L107_COMFY = "derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/lib/provisioner_comfyui/__init__.py"
+
+
+def _l107_tree(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    for rel in (_L107_MANIFEST, _L107_WGET, _L107_SDFORGE, _L107_COMFY):
+        dst = work / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (repo / rel).read_text()
+        new = mutate.get(rel, lambda t: t)(text)
+        if rel in mutate:
+            assert new != text, f"mutation did not apply to {rel}"
+        dst.write_text(new)
+    return [f.path for f in L.check_env_lists_use_the_splitter(work)]
+
+
+def test_L107_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_env_lists_use_the_splitter(repo)) == []
+
+
+def test_L107_exempt_header_split_stays_quiet(tmp_path):
+    """wget.py's Content-Disposition split is a header, not an env list, and the ComfyUI
+    extension's ImportError fallback for older bases is the one allowed `;` split."""
+    assert _l107_tree(tmp_path, {}) == []
+
+
+@pytest.mark.parametrize("rel,mutate", [
+    # The provisioner's flat-list parser back to ";" only.
+    (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in value.split(\";\"):", 1)),
+    # The ComfyUI extension's workflow parser back to ";" only, outside its fallback.
+    (_L107_COMFY, lambda t: t.replace("for token in split_entries(value):", "for token in value.split(\";\"):", 1)),
+    # The same, spelled differently.
+    (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in re.split(r\";\", value):", 1)),
+    (_L107_MANIFEST, lambda t: t.replace("for raw in split_entries(value):", "for raw in value.rsplit(\";\"):", 1)),
+    # sd-forge's parser back to its own IFS split, outside the splitter's fallback.
+    (_L107_SDFORGE, lambda t: t.replace('mapfile -d \'\' entries < <(split_env_entries "$env_value")',
+                                        "IFS=';' read -ra entries <<< \"$env_value\"", 1)),
+])
+def test_L107_catches_a_semicolon_only_parser(tmp_path, rel, mutate):
+    """The incident: every PROVISIONING_* list split on ";", which Vast drops."""
+    where = _l107_tree(tmp_path, {rel: mutate})
+    assert where and all(w.startswith(rel) for w in where), where
+
+
+def test_L107_fallback_exemption_is_only_an_extensions_import_fallback(tmp_path):
+    """A `def split_entries` named like the fallback, but in the base provisioner or
+    outside `except ImportError:`, gets no exemption."""
+    bad = 'def split_entries(value):\n    return value.split(";")\n'
+    cases = {
+        "ROOT/opt/instance-tools/lib/provisioner/x.py": "try:\n    import y\nexcept ImportError:\n    " + bad.replace("\n    ", "\n        "),
+        "derivatives/a/ROOT/opt/instance-tools/lib/provisioner_a/__init__.py": bad,
+    }
+    for rel, text in cases.items():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True)
+        f.write_text(text)
+    assert sorted(f.path.split(":")[0] for f in L.check_env_lists_use_the_splitter(tmp_path)) == sorted(cases)
+
+
+@pytest.mark.parametrize("rel,line", [
+    ("ROOT/opt/instance-tools/lib/provisioner/x.py", 'parts = value.split(sep=";")'),
+    ("external/e/provisioning_scripts/s.sh", "IFS=';' read -ra parts <<< \"$V\""),
+])
+def test_L107_catches_other_spellings_and_places(tmp_path, rel, line):
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True)
+    f.write_text(line + "\n")
+    assert [x.path for x in L.check_env_lists_use_the_splitter(tmp_path)] == [f"{rel}:1"]
+
+
+def test_L107_reaches_scripts_in_subdirectories(tmp_path):
+    """provisioning_scripts/serverless/ and the top-level provisioning_scripts/ are scanned too."""
+    for rel in ("derivatives/x/provisioning_scripts/serverless/s.sh", "provisioning_scripts/t.sh"):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True)
+        f.write_text("IFS=$';' read -ra parts <<< \"$V\"\n")
+    assert sorted(f.path for f in L.check_env_lists_use_the_splitter(tmp_path)) == [
+        "derivatives/x/provisioning_scripts/serverless/s.sh:1", "provisioning_scripts/t.sh:1"]
+
+
+# --- L108: optional generated matrices skip when empty ----------------------------- #
+
+def _l108_tree(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    work = tmp_path / "base-image"
+    (work / ".github/workflows").mkdir(parents=True)
+    for name in ("build-base-image.yml", "build-pytorch.yml"):
+        text = (repo / ".github/workflows" / name).read_text()
+        new = mutate(text) if name == "build-base-image.yml" else text
+        if name == "build-base-image.yml" and mutate is not _keep:
+            assert new != text, "mutation did not apply"
+        (work / ".github/workflows" / name).write_text(new)
+    return [f.path for f in L.check_optional_matrix_jobs_are_guarded(work)]
+
+
+def _keep(text):
+    return text
+
+
+def test_L108_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_optional_matrix_jobs_are_guarded(repo)) == []
+
+
+def test_L108_main_build_matrix_is_out_of_scope(tmp_path):
+    """An empty main list means FILTER matched nothing; failing the run is right there,
+    so the unguarded build and merge-manifests jobs are not flagged."""
+    assert _l108_tree(tmp_path, _keep) == []
+
+
+@pytest.mark.parametrize("job,old", [
+    ("build-mini", "    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' && !inputs.DRY_RUN }}\n"),
+    ("merge-mini-manifests", "    if: ${{ needs.generate-matrix.outputs.has-mini == 'true' }}\n"),
+])
+def test_L108_catches_an_unguarded_mini_job(tmp_path, job, old):
+    """The incident: FILTER=cuda-12.9-24 left the mini matrix empty, and build-mini (no
+    guard) failed every filtered base build whose images had all pushed."""
+    repl = "    if: ${{ !inputs.DRY_RUN }}\n" if job == "build-mini" else ""
+    where = _l108_tree(tmp_path, lambda t: t.replace(old, repl, 1))
+    assert where == [f".github/workflows/build-base-image.yml:{job}"], where

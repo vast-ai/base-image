@@ -492,14 +492,26 @@ def get_cors_block():
             header ?Access-Control-Allow-Methods "{allowed_methods}"
             header ?Access-Control-Allow-Headers "{allowed_headers}"'''
 
+def is_host_passthrough(internal_port):
+    # CADDY_HOST_PASSTHROUGH lists internal ports whose app checks Origin against Host
+    # itself (Selkies). Caddy then forwards the browser's Host unchanged so that check
+    # keeps working; there is deliberately no "true" form (ADR 0050).
+    passthrough = os.environ.get('CADDY_HOST_PASSTHROUGH', '')
+    return str(internal_port) in [p.strip() for p in passthrough.split(',') if p.strip()]
+
+
 def get_reverse_proxy_block(hostname, internal_port, flush_interval):
     use_localhost = False
     header_up_localhost = os.environ.get('CADDY_HEADER_UP_LOCALHOST', '')
     if header_up_localhost:
         ports_list = [p.strip() for p in header_up_localhost.split(',')]
         use_localhost = header_up_localhost.lower() == "true" or str(internal_port) in ports_list
-    
-    if use_localhost:
+
+    if is_host_passthrough(internal_port):
+        # Wins over the localhost rewrite, which also rewrites Origin and would
+        # defeat the app's own same-origin check.
+        host_header = ""
+    elif use_localhost:
         host_header = f'''
             header_up Host localhost:{internal_port}
             header_up Origin {{forwarded_protocol}}://localhost:{internal_port}

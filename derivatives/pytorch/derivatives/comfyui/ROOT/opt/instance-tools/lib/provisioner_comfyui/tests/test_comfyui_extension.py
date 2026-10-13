@@ -173,6 +173,11 @@ class TestParseWorkflowUrls:
         result = ext._parse_workflow_urls("https://a.com/wf1.json;https://b.com/wf2.json")
         assert result == ["https://a.com/wf1.json", "https://b.com/wf2.json"]
 
+    def test_comma_separated(self):
+        """Vast drops any template variable containing ";" (ADR 0053)."""
+        result = ext._parse_workflow_urls("https://a.com/wf1.json,https://b.com/wf2.json")
+        assert result == ["https://a.com/wf1.json", "https://b.com/wf2.json"]
+
     def test_whitespace_trimmed(self):
         result = ext._parse_workflow_urls("  https://a.com/wf1.json ; https://b.com/wf2.json  ")
         assert result == ["https://a.com/wf1.json", "https://b.com/wf2.json"]
@@ -392,7 +397,41 @@ def _make_urlopen_mock(workflow_data, registry_responses=None):
     return side_effect
 
 
+def test_loads_on_a_base_without_the_splitter(monkeypatch):
+    """The extension ships in the derivative but imports the provisioner from the pinned
+    base, which can predate envlist.py. It must still load (a failed import aborts every
+    ComfyUI instance's provisioning) and split on ";" as before."""
+    import importlib
+    import sys
+    monkeypatch.setitem(sys.modules, "provisioner.envlist", None)
+    fallback_ext = importlib.reload(ext)
+    try:
+        assert fallback_ext._parse_workflow_urls(" https://a/1.json ;;https://b/2.json") == [
+            "https://a/1.json", "https://b/2.json"]
+        assert fallback_ext.as_list("https://a/1.json;https://b/2.json") == [
+            "https://a/1.json", "https://b/2.json"]
+    finally:
+        monkeypatch.delitem(sys.modules, "provisioner.envlist")
+        importlib.reload(ext)
+
+
 class TestRun:
+    def test_workflows_config_written_as_one_string(self):
+        """`workflows: "${PROVISIONING_COMFYUI_WORKFLOWS}"` expands to one string; it used
+        to be iterated one character at a time. It splits like any list value."""
+        ctx = FakeContext()
+        config = {"workflows": "https://example.com/my-workflow.json, https://example.com/other.json",
+                  "comfyui_dir": COMFYUI_DIR}
+        registry = {
+            "comfyui-ipadapter-plus": {"repository": "https://github.com/user/ComfyUI-IPAdapter-Plus"},
+            "comfyui-impact-pack": {"repository": "https://github.com/user/ComfyUI-Impact-Pack.git"},
+        }
+        with patch("urllib.request.urlopen", side_effect=_make_urlopen_mock(SAMPLE_GUI_WORKFLOW, registry)):
+            ext.run(config, ctx)
+        assert [f.path for f in ctx.manifest.write_files_late] == [
+            f"{COMFYUI_DIR}/user/default/workflows/my-workflow.json",
+            f"{COMFYUI_DIR}/user/default/workflows/other.json"]
+
     def test_full_integration(self):
         ctx = FakeContext()
         config = {
