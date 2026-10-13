@@ -78,6 +78,9 @@ A stock 26.04 image was built and booted on two hosts:
   tag. `test_base_config_table.py` checks both against the table. The same file checks
   that `auto_tag` is only ever the JSON literal `false`, because promote tests
   `.auto_tag != false` and a string `"false"` would leave the tag on.
+- The manual tag move (`move-base-auto-tag.yml`, the rollback path) refuses an image
+  whose Ubuntu label (`org.opencontainers.image.version`) is not 22.04 or 24.04, or is
+  missing. `test_move_auto_tag_behaviour.py` checks both.
 - Promote derives the auto version exactly once. `test_base_config_table.py` counts
   the derivations in `promote-base-image.yml`. `test_promote_auto_tag_optout.py` runs
   the real `generate-configs` step against the real table and the real tag-ordering
@@ -97,7 +100,13 @@ A stock 26.04 image was built and booted on two hosts:
   configs inherit NVIDIA's from their base image). For 22.04 and 24.04 the key
   (`3BF863CC`) and the repo are unchanged; the keyring and source-list file names
   change. The package also installs an apt pin giving NVIDIA's repo priority 600; the
-  Dockerfile removes it so stock images resolve packages as before.
+  Dockerfile removes it so stock images resolve packages as before. A downstream
+  Dockerfile that adds the same repo with a different `signed-by` path now gets apt's
+  "Conflicting values set for option Signed-By"; none in this repo does.
+- The Dockerfile checks the fingerprint of the key the keyring package installed
+  against the one expected for that release (`...A4B469963BF863CC` for 22.04 and 24.04,
+  `...05FBB6DA60DF8A40` for 26.04). If NVIDIA rotates a key, the stock builds fail
+  until the expected value is updated.
 
 ## What would reverse this
 
