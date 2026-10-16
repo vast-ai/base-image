@@ -61,9 +61,9 @@
     },
     "amd64_only": []
   },
-  "2.14.0": {
+  "2.14.1": {
     "packages": {
-      "torchvision": "0.29.0",
+      "torchvision": "0.29.1",
       "torchcodec": "0.16.0"
     },
     "amd64_only": []
