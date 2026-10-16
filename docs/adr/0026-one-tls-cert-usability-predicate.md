@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-13
+- **Amended by:** [ADR 0049](0049-a-console-certificate-follows-the-machine-address.md) — a console-signed pair is re-signed when its SAN no longer names the machine's address, outside this predicate
 
 ## Context
 

@@ -10,8 +10,9 @@
 # Adding a $VAST_CERT_DIR knob to production boot code to avoid that would be
 # putting a test seam in the customer's TLS path; a throwaway root is free.
 #
-# The shim is `curl`: each scenario writes /shim/mode, and the fake curl behaves
-# accordingly. Nothing here reaches console.vast.ai.
+# The shim is `curl`: each scenario writes /shim/mode (the signer) and /shim/api
+# (the instance API), and the fake curl behaves accordingly. Nothing here
+# reaches console.vast.ai.
 set -u
 
 # Refuse to run outside a container: this overwrites /etc/instance.{crt,key},
@@ -32,29 +33,69 @@ cp /src-cert-usable /opt/instance-tools/bin/cert-usable
 chmod 755 /opt/instance-tools/bin/cert-usable
 
 mkdir -p /shim
+# A fake Vast CA. A console certificate is CA-signed and names an IP, which is
+# what tells it apart from the self-signed fallback (issuer == subject, 0.0.0.0).
+openssl req -newkey rsa:2048 -nodes -subj "/CN=fake-vast-ca" -keyout /shim/ca.key \
+    -x509 -days 3650 -out /shim/ca.crt 2>/dev/null
 cat > /shim/curl <<'SHIM'
 #!/bin/bash
-# Args are the real script's; we only care about -o <file> and the mode.
-out=""
+# Args are the real script's. Dispatch on the URL: the instance API or the
+# signer. Every call is counted in /shim/calls and its argv kept in /shim/argv.
+echo "$*" >> /shim/argv
+out="" url="" data="" cfg="" wcode=""
 while [[ $# -gt 0 ]]; do
-    [[ "$1" == "-o" ]] && { out="$2"; shift 2; continue; }
-    shift
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -K) [[ "$2" == - ]] && cfg=$(cat); shift 2 ;;
+        -w) wcode=1; shift 2 ;;
+        --data-binary) data="${2#@}"; shift 2 ;;
+        --header|-H|-X|-A|--max-time|--retry|--retry-delay) shift 2 ;;
+        https://*) url="$1"; shift ;;
+        *) shift ;;
+    esac
 done
+code() { [[ -n "$wcode" ]] && printf '%s' "$1"; }   # what -w '%{http_code}' prints
+if [[ "$url" == */api/v0/instances/* ]]; then
+    echo GET >> /shim/calls
+    echo "$cfg" > /shim/last_auth
+    api=$(cat /shim/api 2>/dev/null)
+    case "$api" in
+        ip=*)    printf '{"instances": {"id": 1, "public_ipaddr": "%s", "extra_env": [["SECRET_TOKEN", "do-not-log"]]}}\n' "${api#ip=}" ;;
+        null)    echo '{"instances": {"public_ipaddr": null}}' ;;
+        garbage) echo '<html>oops</html>' ;;
+        http-*)  exit 22 ;;                      # curl -f on an HTTP error
+        *)       exit 7 ;;
+    esac
+    exit 0
+fi
+echo POST >> /shim/calls
 mode=$(cat /shim/mode 2>/dev/null)
 case "$mode" in
-    unreachable)  exit 7 ;;                       # curl's "couldn't connect"
-    html)         echo "<html>502</html>" > "$out"; exit 0 ;;
-    wrong-key)    cat /shim/wrong.crt > "$out";    exit 0 ;;
+    unreachable)  code 000; exit 7 ;;             # curl's "couldn't connect"
+    reject)       code 429; exit 22 ;;            # the shared rate limit
+    html)         echo "<html>502</html>" > "$out"; code 200; exit 0 ;;
+    wrong-key)    cat /shim/wrong.crt > "$out";    code 200; exit 0 ;;
+    wrong-key-right-ip)                           # the right address, somebody else's key
+        openssl req -new -key /shim/wrong.key -subj "/CN=someone-else" 2>/dev/null \
+            | openssl x509 -req -CA /shim/ca.crt -CAkey /shim/ca.key -CAserial /shim/ca.srl \
+                -days 365 -extfile <(printf 'subjectAltName=IP:%s\n' "$(cat /shim/api | cut -d= -f2)") \
+                2>/dev/null > "$out"
+        code 200; exit 0 ;;
     good)
-        # Sign the CSR the script just wrote, with the key it just wrote —
-        # this is what a healthy console does.
-        openssl x509 -req -in /etc/instance.csr -signkey /etc/instance.key \
-            -days 365 -sha256 2>/dev/null > "$out"
-        exit 0 ;;
+        # Sign the CSR the script sent, for the address the console currently
+        # holds for this machine: what a healthy console does.
+        ip=$(cat /shim/sign_ip 2>/dev/null || echo 11.0.0.7)
+        openssl x509 -req -in "${data:-/etc/instance.csr}" -CA /shim/ca.crt -CAkey /shim/ca.key \
+            -CAcreateserial -CAserial /shim/ca.srl -days 365 -sha256 \
+            -extfile <(printf 'subjectAltName=IP:%s\n' "$ip") 2>/dev/null > "$out"
+        code 200; exit 0 ;;
 esac
 exit 7
 SHIM
 chmod +x /shim/curl
+# The boot script sleeps (2 s at the top, and a random spread before a refresh
+# request). Nothing here depends on wall time, so sleeping is skipped.
+printf '#!/bin/bash\nexit 0\n' > /shim/sleep; chmod +x /shim/sleep
 export PATH=/shim:$PATH
 
 # A well-formed certificate for a key that is NOT the instance key. This is the
@@ -71,7 +112,10 @@ check() { # desc, expected, actual
     fi
 }
 
-reset_state() { rm -f /etc/instance.{crt,key,csr} /etc/.instance-cert-selfsigned; }
+reset_state() {
+    rm -f /etc/instance.{crt,key,csr} /etc/.instance-cert-{selfsigned,console,ip-refresh} \
+          /shim/{calls,argv,api,sign_ip,last_auth}
+}
 
 boot() { # mode -> runs one boot, echoes nothing
     echo "$1" > /shim/mode
@@ -336,6 +380,166 @@ for _broken in 'syntax' 'silent'; do
 done
 cp /tmp/cert-usable-real /opt/instance-tools/bin/cert-usable
 chmod 755 /opt/instance-tools/bin/cert-usable
+
+# ── ADR 0049: the certificate follows the machine's address ──────────────────
+# Addresses are global ones: the console never names a private or documentation
+# address, so the refresh ignores those (scenario 20).
+
+KEY=sekrit-instance-key
+boot_ip() { # signer mode, then extra env assignments -> all output; ENABLE_HTTPS in /shim/https
+    echo "$1" > /shim/mode; shift
+    ( export generate_tls_cert=true CONTAINER_ID=1 CONTAINER_API_KEY=$KEY "$@"
+      ENABLE_HTTPS=true
+      source "$BOOT" 2>&1
+      echo "$ENABLE_HTTPS" > /shim/https )
+}
+calls() { local n; n=$(grep -c "^$1\$" /shim/calls 2>/dev/null); echo "${n:-0}"; }
+sans() { openssl x509 -in /etc/instance.crt -noout -ext subjectAltName 2>/dev/null \
+             | grep -oE 'IP Address:[0-9.]+' | cut -d: -f2 | paste -sd, -; }
+pairfp() { cat /etc/instance.crt /etc/instance.key 2>/dev/null | sha256sum | cut -c1-16; }
+attempts() { cat /etc/.instance-cert-ip-refresh 2>/dev/null || echo -; }
+console_pair() { # a console-signed pair for $1, installed by the script itself
+    reset_state; echo "$1" > /shim/sign_ip; echo "ip=$1" > /shim/api
+    boot_ip good >/dev/null; : > /shim/calls
+}
+
+echo "=== 17. the live address is in the SAN: one read, nothing signed ==="
+console_pair 11.0.0.7
+check "provenance recorded" "$(openssl x509 -in /etc/instance.crt -noout -fingerprint -sha256)" \
+      "$(cat /etc/.instance-cert-console 2>/dev/null)"
+fp=$(pairfp)
+out=$(boot_ip good)
+check "one read of the live address" "1" "$(calls GET)"
+check "no signing request"           "0" "$(calls POST)"
+check "pair unchanged"               "$fp" "$(pairfp)"
+check "says so"                      "matched" "$(grep -o 'matched' <<< "$out")"
+
+echo "=== 18. the machine moved: re-signed once, with the SAME key ==="
+k=$(keyfp)
+echo 11.0.1.9 > /shim/sign_ip; echo "ip=11.0.1.9" > /shim/api
+out=$(boot_ip good)
+check "one signing request"  "1"  "$(calls POST)"
+check "key unchanged"        "$k" "$(keyfp)"
+check "SAN is the new address" "11.0.1.9" "$(sans)"
+check "says so"              "re-signed" "$(grep -o 're-signed' <<< "$out")"
+check "provenance follows the new certificate" \
+      "$(openssl x509 -in /etc/instance.crt -noout -fingerprint -sha256)" "$(cat /etc/.instance-cert-console)"
+: > /shim/calls; boot_ip good >/dev/null
+check "settled: no request on the next boot" "0" "$(calls POST)"
+
+echo "=== 19. the console keeps naming the old address: bounded, key and cert kept ==="
+# THE CHURN CASE. Without the per-address bound this re-signs on every boot.
+echo "ip=11.0.1.20" > /shim/api                  # signer still says 11.0.1.9
+fp=$(pairfp); : > /shim/calls
+for i in 1 2 3 4 5; do out=$(boot_ip good); done
+check "three answers for this address, then no more requests" "3" "$(calls POST)"
+check "pair unchanged"   "$fp" "$(pairfp)"
+check "says it gave up"  "giving up" "$(grep -o 'giving up' <<< "$out")"
+check "self-signed marker untouched" "-" "$(marker)"
+echo 11.0.1.21 > /shim/sign_ip; echo "ip=11.0.1.21" > /shim/api; : > /shim/calls
+boot_ip good >/dev/null
+check "a new address gets a fresh budget" "11.0.1.21" "$(sans)"
+check "and success clears the count"      "-" "$(attempts)"
+
+echo "=== 20. a rejected request does not use up the budget ==="
+# A busy host rebooting onto a new address loses most requests to the rate
+# limit its containers share. Counted, that would leave instances stuck.
+console_pair 11.0.0.7; echo 11.0.1.30 > /shim/sign_ip; echo "ip=11.0.1.30" > /shim/api
+for i in 1 2 3 4 5; do out=$(boot_ip reject); done
+check "one request per boot, never given up" "5" "$(calls POST)"
+check "nothing counted"                      "-" "$(attempts)"
+check "names the status"                     "HTTP 429" "$(grep -o 'HTTP 429' <<< "$out")"
+boot_ip good >/dev/null
+check "the next good answer is installed"    "11.0.1.30" "$(sans)"
+
+echo "=== 21. the live address is unknown, or one the console would not name ==="
+for api in unreachable http-401 null "ip=2001:db8::1" "ip=11.999.1.1" \
+           "ip=0.1.2.3" "ip=10.0.0.5" "ip=100.64.1.1" "ip=127.0.0.1" "ip=169.254.1.1" \
+           "ip=172.16.5.5" "ip=192.0.2.1" "ip=192.168.1.1" "ip=198.18.0.1" \
+           "ip=198.51.100.9" "ip=203.0.113.9" "ip=224.0.0.1"; do
+    console_pair 11.0.0.7
+    echo "$api" > /shim/api; fp=$(pairfp)
+    boot_ip good >/dev/null
+    check "$api: no signing request" "0"   "$(calls POST)"
+    check "$api: pair unchanged"     "$fp" "$(pairfp)"
+done
+console_pair 11.0.0.70; echo 1.0.0.7 > /shim/sign_ip; echo "ip=1.0.0.7" > /shim/api
+boot_ip good >/dev/null
+check "an address inside the SAN text is not a match" "1.0.0.7" "$(sans)"
+
+echo "=== 22. a failed or wrong answer keeps the old pair, HTTPS stays on ==="
+for mode in reject unreachable html wrong-key wrong-key-right-ip; do
+    console_pair 11.0.0.7
+    echo "ip=11.0.1.40" > /shim/api; fp=$(pairfp)
+    out=$(boot_ip "$mode")
+    check "$mode: one attempt"        "1"   "$(calls POST)"
+    check "$mode: pair unchanged"     "$fp" "$(pairfp)"
+    check "$mode: not self-signed"    "-"   "$(marker)"
+    check "$mode: https on"           "true" "$(cat /shim/https)"
+    check "$mode: says it kept it"    "keeping the current certificate" \
+          "$(grep -o 'keeping the current certificate' <<< "$out")"
+done
+check "an answer is counted" "11.0.1.40 1" "$(attempts)"
+
+echo "=== 23. a customer's own pair is never touched ==="
+reset_state
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=customer" \
+    -keyout /etc/instance.key -out /tmp/cust.csr 2>/dev/null
+openssl x509 -req -in /tmp/cust.csr -CA /shim/ca.crt -CAkey /shim/ca.key -CAserial /shim/ca.srl \
+    -days 365 -extfile <(printf 'subjectAltName=IP:11.0.2.50\n') -out /etc/instance.crt 2>/dev/null
+echo "ip=11.0.1.50" > /shim/api; fp=$(pairfp)
+boot_ip good >/dev/null
+check "IP-only customer pair: no read"    "0"   "$(calls GET)"
+check "IP-only customer pair: unchanged"  "$fp" "$(pairfp)"
+cp /etc/instance.crt /tmp/cust.crt; cp /etc/instance.key /tmp/cust.key
+console_pair 11.0.0.7                            # a console pair, then the customer swaps theirs in
+cp /tmp/cust.crt /etc/instance.crt; cp /tmp/cust.key /etc/instance.key
+echo "ip=11.0.1.50" > /shim/api; fp=$(pairfp)
+boot_ip good >/dev/null
+check "swapped-in customer pair: no read"   "0"   "$(calls GET)"
+check "swapped-in customer pair: unchanged" "$fp" "$(pairfp)"
+
+echo "=== 24. the self-signed fallback, or no pair at all, is not refreshed ==="
+reset_state; echo "ip=11.0.1.51" > /shim/api
+boot_ip unreachable >/dev/null
+check "self-signed: no read" "0" "$(calls GET)"
+# No usable pair and no marker: two empty fingerprints must not compare as ours.
+printf '#!/bin/bash\nif [[ "$1" == "x509" && "$*" == *-req*-signkey* ]]; then exit 1; fi\nexec /usr/bin/openssl "$@"\n' > /shim/openssl
+chmod +x /shim/openssl; hash -r
+reset_state; echo "ip=11.0.1.51" > /shim/api
+boot_ip unreachable >/dev/null
+check "no pair: no read" "0" "$(calls GET)"
+rm -f /shim/openssl; hash -r
+
+echo "=== 25. Jupyter direct mode is the platform's; proxy mode is ours ==="
+console_pair 11.0.0.7
+printf 'curl -s --data-binary @/etc/instance.csr "https://console.vast.ai/api/v0/sign_cert/?instance_id=1" > /etc/instance.crt\n' > /.launch
+echo "ip=11.0.1.52" > /shim/api
+boot_ip good >/dev/null
+check "direct mode (the launch script signs): no read" "0" "$(calls GET)"
+printf 'jupyter notebook --ip=127.0.0.1 --no-browser --allow-root\n' > /.launch
+echo 11.0.1.52 > /shim/sign_ip
+boot_ip good >/dev/null
+check "proxy mode (it does not): re-signed" "11.0.1.52" "$(sans)"
+rm -f /.launch
+
+echo "=== 26. switched off, or nothing to authenticate with ==="
+console_pair 11.0.0.7; echo "ip=11.0.1.53" > /shim/api
+for off in CERT_IP_REFRESH=false CERT_IP_REFRESH=False CONTAINER_API_KEY= generate_tls_cert=false; do
+    boot_ip good "$off" >/dev/null
+    check "$off: no read" "0" "$(calls GET)"
+done
+
+echo "=== 27. the key and the response stay private; both requests say who they are ==="
+console_pair 11.0.0.7; echo "ip=11.0.1.54" > /shim/api; echo 11.0.1.54 > /shim/sign_ip; : > /shim/argv
+out=$(boot_ip good)
+check "key not in any curl argv" "0" "$(grep -c "$KEY" /shim/argv)"
+check "key sent on stdin"        "header = \"Authorization: Bearer $KEY\"" "$(cat /shim/last_auth)"
+check "key not logged"           "" "$(grep -o "$KEY" <<< "$out")"
+check "response not logged"      "" "$(grep -o 'do-not-log' <<< "$out")"
+check "both requests carry the user agent" "2" "$(grep -c 'cert-ip-refresh' /shim/argv)"
+check "the address read is not retried" "0" "$(grep '/instances/' /shim/argv | grep -c -- '--retry')"
+check "the signing request is retried"  "1" "$(grep '/sign_cert/' /shim/argv | grep -c -- '--retry')"
 
 [[ $FAIL -eq 0 ]] && echo "ALL SCENARIOS OK" || echo "SCENARIOS FAILED"
 exit $FAIL

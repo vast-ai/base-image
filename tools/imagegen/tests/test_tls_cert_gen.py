@@ -15,7 +15,9 @@ Every defect this file has had was a multi-boot state machine, not a bad line:
     certificate at every restart;
   * and validating the signed certificate by PARSE alone let a certificate for
     somebody else's key be installed, which the guard then rejected on the next
-    boot — regenerating forever while printing "signed by the Vast console".
+    boot — regenerating forever while printing "signed by the Vast console";
+  * and a console certificate kept its address for a year after the machine's
+    changed (ADR 0049), which only a later boot with a different address shows.
 
 None of those is visible in a single execution. The harness runs the real script
 repeatedly against a persistent /etc with a shimmed curl, so "does this
@@ -84,3 +86,17 @@ def test_cert_generation_converges_across_boots():
 
     assert proc.returncode == 0, output
     assert "ALL SCENARIOS OK" in output, output
+
+
+def test_the_qa_warning_loads_the_boot_scripts_address_predicate():
+    """base/27-caddy-tls.sh loads `_cert_is_global_ipv4` alone from the shipped stage
+    rather than keeping its own copy, so the two cannot disagree on which addresses
+    count. If a rename or reformat broke that load, the warning would go quiet."""
+    test27 = (REPO / "ROOT/opt/instance-tools/tests/base/27-caddy-tls.sh").read_text()
+    load = "source <(sed -n '/^_cert_is_global_ipv4() {$/,/^}$/p' /etc/vast_boot.d/55-tls-cert-gen.sh)"
+    assert load in test27
+    probe = load.replace("/etc/vast_boot.d/55-tls-cert-gen.sh", str(BOOT)) + "\n" + (
+        'for ip in 8.8.8.8 203.0.113.5 224.1.1.1 10.0.0.1; do '
+        '_cert_is_global_ipv4 "$ip" && echo "$ip y" || echo "$ip n"; done')
+    out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True).stdout.split("\n")
+    assert out[:4] == ["8.8.8.8 y", "203.0.113.5 n", "224.1.1.1 n", "10.0.0.1 n"], out

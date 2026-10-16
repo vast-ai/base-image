@@ -50,6 +50,30 @@ if [[ -f /etc/.instance-cert-selfsigned ]]; then
     echo "        unreachable at boot, so the signing path is untested on this cell"
 fi
 
+# Surface a console certificate that does not name the machine's live address
+# (ADR 0049). It still encrypts, and every check above passes, so without this a
+# signer that names the wrong address reaches customers before it reaches a
+# cell. A WARN, not a failure: the address the console signs is its behaviour,
+# not the image's. Only for the pair 55-tls-cert-gen.sh installed itself, and
+# only for a global IPv4 address, the only kind the console names. The read is
+# repeated here on purpose rather than taken from the boot log, so this checks
+# the boot script instead of trusting it. "Global" is the boot script's own
+# predicate, loaded alone from the shipped stage so the two cannot disagree.
+source <(sed -n '/^_cert_is_global_ipv4() {$/,/^}$/p' /etc/vast_boot.d/55-tls-cert-gen.sh)
+if [[ -n "${CONTAINER_API_KEY:-}" && -s /etc/.instance-cert-console ]] \
+   && declare -F _cert_is_global_ipv4 >/dev/null \
+   && [[ "$(openssl x509 -in "$CERT_PATH" -noout -fingerprint -sha256)" == "$(cat /etc/.instance-cert-console)" ]]; then
+    cid=${CONTAINER_ID:-${VAST_CONTAINERLABEL:-}}
+    live_ip=$(printf 'header = "Authorization: Bearer %s"\n' "$CONTAINER_API_KEY" \
+        | curl -fsS --max-time 5 -K - "https://console.vast.ai/api/v0/instances/${cid#C.}/" 2>/dev/null \
+        | grep -oE '"public_ipaddr": *"[^"]*"' | head -1 | cut -d'"' -f4)
+    cert_ips=$(openssl x509 -in "$CERT_PATH" -noout -ext subjectAltName 2>/dev/null \
+        | grep -oE 'IP Address:[0-9]+(\.[0-9]+){3}' | cut -d: -f2)
+    if _cert_is_global_ipv4 "$live_ip" && ! grep -qxF "$live_ip" <<< "$cert_ips"; then
+        echo "  WARN: certificate names ${cert_ips//$'\n'/,}, but the machine's address is ${live_ip}"
+    fi
+fi
+
 # wait_for_caddy comes from lib.sh
 
 # ── Find a test port ──────────────────────────────────────────────────
