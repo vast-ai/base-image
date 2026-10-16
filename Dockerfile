@@ -201,8 +201,20 @@ RUN \
             echo "Unsupported TARGETARCH: ${TARGETARCH}. Cannot configure Nvidia CUDA repository." >&2; \
             exit 1; \
         fi && \
-        curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/3bf863cc.pub | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda.gpg && \
-        echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH} /" > /etc/apt/sources.list.d/cuda.list && \
+        # NVIDIA's keyring package carries the repo's current signing key (26.04's differs
+        # from 22.04/24.04's) and writes the source list, as NVIDIA's own images do. Its
+        # apt pin is removed so stock images keep resolving packages as they did. The key
+        # it installed must be the one expected for this release; a new key fails the
+        # build rather than being trusted unseen.
+        curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/${ARCH}/cuda-keyring_1.1-1_all.deb && \
+        dpkg -i /tmp/cuda-keyring.deb && \
+        rm -f /tmp/cuda-keyring.deb /etc/apt/preferences.d/cuda-repository-pin-600 && \
+        CUDA_KEY_FPR=$(gpg --show-keys --with-colons /usr/share/keyrings/cuda-archive-keyring.gpg | awk -F: '/^fpr/{print $10}' | tr '\n' ' ') && \
+        case "${UBUNTU_VERSION}:${CUDA_KEY_FPR% }" in \
+            2204:EB693B3035CD5710E231E123A4B469963BF863CC|2404:EB693B3035CD5710E231E123A4B469963BF863CC) ;; \
+            2604:14BAFBC7562AD710CA04E69905FBB6DA60DF8A40) ;; \
+            *) echo "Unexpected NVIDIA repo key for ubuntu${UBUNTU_VERSION}: ${CUDA_KEY_FPR}" >&2; exit 1 ;; \
+        esac && \
         apt-get update && \
         apt-get clean && \
         rm -rf /var/lib/apt/lists/*; \

@@ -38,6 +38,8 @@ def real_auto_versions():
     cfg = json.loads((REPO / "configs/base-image.json").read_text())
     out = []
     for c in cfg["configs"]:
+        if c.get("auto_tag") is False:
+            continue
         m = re.match(r"^cuda-([0-9.]*)-", c["tag_template"])
         if m and m.group(1):
             out.append(m.group(1))
@@ -64,12 +66,18 @@ def _registry(cuda_ver):
     }
 
 
+def _cfg(*env, ubuntu="24.04"):
+    """An image config as crane prints it; the Ubuntu base sets the version label."""
+    labels = {"org.opencontainers.image.version": ubuntu} if ubuntu else {}
+    return {"config": {"Env": list(env), "Labels": labels}}
+
+
 def _configs(cuda_ver):
     mm = _mm(cuda_ver)
     return {
-        PREV: {"config": {"Env": [f"CUDA_VERSION={mm}.1", "PATH=/usr/bin"]}},
-        CUR: {"config": {"Env": [f"CUDA_VERSION={mm}.2"]}},
-        OTHER: {"config": {"Env": ["CUDA_VERSION=99.9.0"]}},
+        PREV: _cfg(f"CUDA_VERSION={mm}.1", "PATH=/usr/bin"),
+        CUR: _cfg(f"CUDA_VERSION={mm}.2"),
+        OTHER: _cfg("CUDA_VERSION=99.9.0"),
     }
 
 
@@ -137,7 +145,7 @@ def test_an_image_of_a_different_cuda_minor_is_refused(tmp_path):
     """Putting a 12.4 image on cuda-12.9.2-auto changes the CUDA userland under
     every instance resolving that tag. It looks exactly like a correct command."""
     cfgs = _configs("12.9.2")
-    cfgs[PREV] = {"config": {"Env": ["CUDA_VERSION=12.4.1"]}}
+    cfgs[PREV] = _cfg("CUDA_VERSION=12.4.1")
     r = _run(tmp_path, "12.9.2",
              _dated("12.9.2"), configs=cfgs)
     assert r["code"] != 0, "a cross-minor rollback was permitted"
@@ -148,7 +156,7 @@ def test_a_different_patch_of_the_same_minor_is_allowed(tmp_path):
     """The guard must not be so tight that it blocks the normal case — rolling
     12.9.2 back to 12.9.1 is the whole point."""
     cfgs = _configs("12.9.2")
-    cfgs[PREV] = {"config": {"Env": ["CUDA_VERSION=12.9.1"]}}
+    cfgs[PREV] = _cfg("CUDA_VERSION=12.9.1")
     r = _run(tmp_path, "12.9.2",
              _dated("12.9.2"), configs=cfgs)
     assert r["code"] == 0, r["err"]
@@ -156,9 +164,27 @@ def test_a_different_patch_of_the_same_minor_is_allowed(tmp_path):
 
 def test_an_image_with_no_cuda_version_is_refused_rather_than_guessed(tmp_path):
     cfgs = _configs("12.9.2")
-    cfgs[PREV] = {"config": {"Env": ["PATH=/usr/bin"]}}
+    cfgs[PREV] = _cfg("PATH=/usr/bin")
     r = _run(tmp_path, "12.9.2",
              _dated("12.9.2"), configs=cfgs)
+    assert r["code"] != 0
+    assert "Refusing to guess" in r["out"] + r["err"]
+
+
+def test_an_ubuntu_26_04_image_of_the_same_minor_is_refused(tmp_path):
+    """A 26.04 build passes the CUDA-minor check; putting it on the auto tag would
+    move every instance on that tag to a new userland (ADR 0054)."""
+    cfgs = _configs("12.9.2")
+    cfgs[PREV] = _cfg("CUDA_VERSION=12.9.1", ubuntu="26.04")
+    r = _run(tmp_path, "12.9.2", _dated("12.9.2"), configs=cfgs)
+    assert r["code"] != 0, "a 26.04 image was put on an auto tag"
+    assert "Ubuntu 26.04" in r["out"] + r["err"]
+
+
+def test_an_image_with_no_ubuntu_label_is_refused_rather_than_guessed(tmp_path):
+    cfgs = _configs("12.9.2")
+    cfgs[PREV] = _cfg("CUDA_VERSION=12.9.1", ubuntu=None)
+    r = _run(tmp_path, "12.9.2", _dated("12.9.2"), configs=cfgs)
     assert r["code"] != 0
     assert "Refusing to guess" in r["out"] + r["err"]
 

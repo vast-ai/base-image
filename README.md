@@ -41,9 +41,11 @@ We build multiple variants to support different hardware and Python requirements
 
 | Type | Base Image | Ubuntu | Notes |
 |------|-----------|--------|-------|
-| **Stock** | `ubuntu:22.04`, `ubuntu:24.04` | 22.04, 24.04 | No CUDA/ROCm libraries, but NVIDIA drivers are still loaded at runtime |
-| **NVIDIA CUDA** | `nvidia/cuda:*-cudnn-devel-ubuntu*` | 22.04, 24.04 | Full CUDA toolkit + cuDNN (11.8, 12.1, 12.4, 12.6, 12.8, 12.9, 13.0, 13.1, 13.2, 13.3 — latest patch per minor) |
+| **Stock** | `ubuntu:22.04`, `ubuntu:24.04`, `ubuntu:26.04` | 22.04, 24.04, 26.04 | No CUDA/ROCm libraries, but NVIDIA drivers are still loaded at runtime |
+| **NVIDIA CUDA** | `nvidia/cuda:*-cudnn-devel-ubuntu*` | 22.04, 24.04, 26.04 | Full CUDA toolkit + cuDNN (11.8, 12.1, 12.4, 12.6, 12.8, 12.9, 13.0, 13.1, 13.2, 13.3, 13.4 — latest patch per minor; 26.04 for 13.4 only) |
 | **AMD ROCm** | `rocm/dev-ubuntu-*:6.2.4-complete` | 22.04, 24.04 | Complete ROCm 6.2.4 development environment |
+
+**Ubuntu 26.04 is opt-in.** Choose it by its explicit tag (for example `cuda-13.4.2-cudnn-devel-ubuntu26.04`). The automatic tags (`cuda-X.Y.Z-auto`) stay on 24.04, the newest host OS, so no existing template moves. 26.04 images need a host kernel of 5.6 or newer: its `tar` cannot extract archives on older kernels.
 
 **Note:** Stock images can still access NVIDIA GPUs—they simply don't include the heavier CUDA development libraries. Use these when you want a lighter image and will install specific CUDA components yourself.
 
@@ -52,6 +54,7 @@ We build multiple variants to support different hardware and Python requirements
 Each base image variant is available with Python 3.7 through 3.14. The default Python version matches the Ubuntu release:
 - Ubuntu 22.04: Python 3.10
 - Ubuntu 24.04: Python 3.12
+- Ubuntu 26.04: Python 3.14
 
 ### Tag Format
 

@@ -48,11 +48,12 @@ jobs:
 
       - name: Generate matrices
         id: matrix
+        env:
+          FILTER: ${{ inputs.FILTER }}
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%d)
           echo "build-date=$BUILD_DATE" >> $GITHUB_OUTPUT
 
-          FILTER="${{ inputs.FILTER }}"
 
           # Same configs as build workflow (without base_image — we source from prod)
           # Config table lives in configs/base-image.json (ADR 0019) — it was inline in three workflows, so a patch bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.

@@ -50,22 +50,31 @@ jobs:
 
       - name: Generate filtered config list
         id: configs
+        env:
+          FILTER: ${{ inputs.FILTER }}
         run: |
-          FILTER="${{ inputs.FILTER }}"
           # Config table lives in configs/base-image.json (ADR 0019) — it was inline in three workflows, so a patch bump had to land three times and a miss was silent. jq preserves array order, which the auto-tag dance depends on.
-          mapfile -t ALL_CONFIGS < <(jq -r '.configs[] | "\(.key)|\(.tag_template)|\(.default_python)"' "$GITHUB_WORKSPACE/configs/base-image.json")
+          mapfile -t ALL_CONFIGS < <(jq -r '.configs[] | "\(.key)|\(.tag_template)|\(.default_python)|\(.auto_tag != false)"' "$GITHUB_WORKSPACE/configs/base-image.json")
 
           CONFIGS_JSON="[]"
           ALL_CONFIGS_JSON="[]"
 
           for config in "${ALL_CONFIGS[@]}"; do
-            IFS='|' read -r key tag_template default_python <<< "$config"
+            IFS='|' read -r key tag_template default_python auto_tag <<< "$config"
+
+            # The auto tag's CUDA version, derived here and nowhere else: every later
+            # step reads .auto_version. Empty means no cuda-X.Y.Z-auto tag and no QA
+            # cell: the stock configs (no cuda- prefix) and any config with
+            # "auto_tag": false, which is how Ubuntu 26.04 stays opt-in (ADR 0054).
+            auto_version=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            [[ "$auto_tag" == "false" ]] && auto_version=""
 
             ENTRY_JSON=$(jq -nc \
               --arg key "$key" \
               --arg tag_template "$tag_template" \
               --arg default_python "$default_python" \
-              '{key: $key, tag_template: $tag_template, default_python: $default_python}')
+              --arg auto_version "$auto_version" \
+              '{key: $key, tag_template: $tag_template, default_python: $default_python, auto_version: $auto_version}')
 
             ALL_CONFIGS_JSON=$(echo "$ALL_CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
 
@@ -75,6 +84,13 @@ jobs:
 
             CONFIGS_JSON=$(echo "$CONFIGS_JSON" | jq -c ". + [${ENTRY_JSON}]")
           done
+          # Two configs on one auto tag would race: whichever the dance pushed last
+          # would win, silently moving customers to the other config.
+          dup=$(echo "$ALL_CONFIGS_JSON" | jq -r '[.[] | select(.auto_version != "") | .auto_version] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")')
+          if [[ -n "$dup" ]]; then
+            echo "::error::more than one config claims cuda-<v>-auto for: ${dup}. Set \"auto_tag\": false on all but one (ADR 0054)."
+            exit 1
+          fi
           # Mini configs from the same table.
           mapfile -t MINI_CONFIGS < <(jq -r '.mini[] | "\(.key)|\(.mini_tag)"' "$GITHUB_WORKSPACE/configs/base-image.json")
 
@@ -213,7 +229,7 @@ jobs:
               d=$(crane digest "${NAMESPACE_STAGING}/base-image:${tpl}-${pt}-${STAGING_DATE}" 2>/dev/null || echo "")
               pys=$(jq -c --arg k "$pt" --arg v "$d" '.[$k]=$v' <<<"$pys")
             done
-            auto=$(echo "$tpl" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            auto=$(echo "$CONFIGS" | jq -r ".[$i].auto_version")
             current=""
             if [ -n "$auto" ]; then
               current=$(crane digest "${NAMESPACE_PROD}/base-image:cuda-${auto}-auto" 2>/dev/null || echo "")
@@ -730,7 +746,7 @@ jobs:
           ALL_COUNT=$(echo "$ALL_CONFIGS" | jq length)
           for ((i=0; i<ALL_COUNT; i++)); do
             at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
-            at_cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            at_cuda_ver=$(echo "$ALL_CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$at_cuda_ver" ]] && continue
             AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${at_cuda_ver}-auto"
             if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
@@ -843,7 +859,7 @@ jobs:
             key=$(echo "$CONFIGS" | jq -r ".[$i].key")
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
-            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            cuda_ver=$(echo "$CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$cuda_ver" ]] && continue
             # THE GATE (ADR 0019 cond 2). This is the only line that makes the whole
             # pipeline a gate: an auto tag moves ONLY to bits that passed live-GPU QA
@@ -886,7 +902,7 @@ jobs:
           echo "=== Auto-tag dance ==="
           for ((i=0; i<ALL_COUNT; i++)); do
             at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
-            cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            cuda_ver=$(echo "$ALL_CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$cuda_ver" ]] && continue
             TARGET_REF="${AUTO_TARGET_FINAL[$cuda_ver]:-}"
             [[ -z "$TARGET_REF" ]] && continue
@@ -905,7 +921,7 @@ jobs:
             for ((j=0; j<ALL_COUNT; j++)); do
               [[ "$j" -eq "$i" ]] && continue
               cj_template=$(echo "$ALL_CONFIGS" | jq -r ".[$j].tag_template")
-              cj_cuda_ver=$(echo "$cj_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+              cj_cuda_ver=$(echo "$ALL_CONFIGS" | jq -r ".[$j].auto_version")
               [[ -z "$cj_cuda_ver" ]] && continue
               cand_digest="${FINAL_DIGEST[$cj_cuda_ver]:-}"
               [[ -z "$cand_digest" ]] && continue
@@ -1121,7 +1137,7 @@ jobs:
           declare -A AUTO_TARGET_PRE
           for ((i=0; i<ALL_COUNT; i++)); do
             at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
-            at_cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            at_cuda_ver=$(echo "$ALL_CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$at_cuda_ver" ]] && continue
             AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${at_cuda_ver}-auto"
             if digest=$(crane digest "$AUTO_TAG_REF" 2>/dev/null); then
@@ -1137,7 +1153,7 @@ jobs:
           for ((i=0; i<CONFIG_COUNT; i++)); do
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
-            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            cuda_ver=$(echo "$CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$cuda_ver" ]] && continue
             dp_tag="${default_python//.}"
             AUTO_TARGET_FINAL[$cuda_ver]="${NAMESPACE_PROD}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
@@ -1152,7 +1168,7 @@ jobs:
           for ((i=0; i<CONFIG_COUNT; i++)); do
             tag_template=$(echo "$CONFIGS" | jq -r ".[$i].tag_template")
             default_python=$(echo "$CONFIGS" | jq -r ".[$i].default_python")
-            cuda_ver=$(echo "$tag_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            cuda_ver=$(echo "$CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$cuda_ver" ]] && continue
             dp_tag="${default_python//.}"
             staging_ref="${NAMESPACE_STAGING}/base-image:${tag_template}-py${dp_tag}-${STAGING_DATE}"
@@ -1170,7 +1186,7 @@ jobs:
 
           for ((i=0; i<ALL_COUNT; i++)); do
             at_template=$(echo "$ALL_CONFIGS" | jq -r ".[$i].tag_template")
-            cuda_ver=$(echo "$at_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+            cuda_ver=$(echo "$ALL_CONFIGS" | jq -r ".[$i].auto_version")
             [[ -z "$cuda_ver" ]] && continue
             TARGET_REF="${AUTO_TARGET_FINAL[$cuda_ver]:-}"
             AUTO_TAG_REF="${NAMESPACE_PROD}/base-image:cuda-${cuda_ver}-auto"
@@ -1203,7 +1219,7 @@ jobs:
             for ((j=0; j<ALL_COUNT; j++)); do
               [[ "$j" -eq "$i" ]] && continue
               cj_template=$(echo "$ALL_CONFIGS" | jq -r ".[$j].tag_template")
-              cj_cuda_ver=$(echo "$cj_template" | sed -n 's/^cuda-\([0-9.]*\)-.*/\1/p')
+              cj_cuda_ver=$(echo "$ALL_CONFIGS" | jq -r ".[$j].auto_version")
               [[ -z "$cj_cuda_ver" ]] && continue
               cand_digest="${FINAL_DIGEST[$cj_cuda_ver]:-}"
               [[ -z "$cand_digest" ]] && continue
