@@ -16,6 +16,8 @@ sup_status=$(supervisorctl status 2>/dev/null)
 for conf in /etc/supervisor/conf.d/*.conf; do
     [[ -f "$conf" ]] || continue
     name=$(basename "$conf" .conf)
+    # Socket override written by 65-supervisor-launch.sh on the fallback path, not a program.
+    [[ "$name" == vast-supervisor-socket ]] && continue
     if ! echo "$sup_status" | grep -q "^${name} "; then
         echo "  WARN: ${name}.conf exists but not in supervisorctl status"
     fi

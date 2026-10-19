@@ -28,9 +28,11 @@ promotion cycle, with the OLD one driving the exit code, before it decides anyth
 """
 from __future__ import annotations
 
+import contextlib
 import glob
 import os
 import re
+import socket
 import subprocess
 import sys
 
@@ -106,6 +108,29 @@ def read_proc_net(proto: str, root: str = "/proc/self/net") -> list[dict]:
         except OSError:
             continue
     return rows
+
+
+def ipv6_bindable() -> bool:
+    """True if an IPv6 socket can be bound, i.e. the v6 tables must exist."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+def missing_tables(root: str = "/proc/self/net", ipv6=ipv6_bindable) -> str:
+    """Non-empty if a table we depend on is absent.
+
+    gVisor serves /proc/self/net/tcp but not tcp6, so every dual-stack listener
+    vanished and read_proc_net skipped the table without a word. A v6 table is
+    only optional where IPv6 itself is unavailable.
+    """
+    names = ["tcp", "udp"] + (["tcp6", "udp6"] if ipv6() else [])
+    gone = [n for n in names if not os.path.isfile(os.path.join(root, n))]
+    return (f"listener tables missing from {root}: {', '.join(gone)} — "
+            "sockets of that family are invisible") if gone else ""
 
 
 # ───────────────────────────────────────────────────────────── ownership (message only)
@@ -432,6 +457,77 @@ def cross_check(rows, ss_text: str) -> str:
             + ", ".join(sorted(set(missing)))) if missing else ""
 
 
+def ss_listeners(runner=subprocess.run) -> tuple[str, str]:
+    """(`ss -ltun` output, undecided reason). A failed `ss` is not an empty one.
+
+    Without netlink `ss` prints "Cannot open netlink socket" and falls back to the
+    same /proc tables we read, so its output is no longer an independent check.
+    """
+    try:
+        r = runner(["ss", "-ltun"], capture_output=True, text=True)
+    except Exception as e:                                        # noqa: BLE001
+        return "", f"ss could not run ({e})"
+    err = (r.stderr or "").strip()
+    if r.returncode != 0 or "netlink" in err.lower():
+        return "", f"ss failed (exit {r.returncode}: {err or 'no message'})"
+    return r.stdout or "", ""
+
+
+@contextlib.contextmanager
+def sentinels(proto: str):
+    """Hold a loopback listener of each family this box can bind; yield (family, port).
+
+    IPv6 counts only where a ::1 bind succeeds. IPv4 must bind: a failure is yielded
+    with port None so it reads as invisible rather than as nothing to prove.
+    """
+    kind = socket.SOCK_STREAM if proto == "tcp" else socket.SOCK_DGRAM
+    held, socks = [], []
+    try:
+        for fam, host, v in ((socket.AF_INET, "127.0.0.1", "4"), (socket.AF_INET6, "::1", "6")):
+            try:
+                socks.append(socket.socket(fam, kind))
+                socks[-1].bind((host, 0))
+                if kind == socket.SOCK_STREAM:
+                    socks[-1].listen(1)
+                held.append((proto + v, socks[-1].getsockname()[1]))
+            except OSError:
+                if v == "4":
+                    held.append((proto + v, None))
+        yield held
+    finally:
+        for s in socks:
+            s.close()
+
+
+def ss_blind(proto: str, runner=subprocess.run, held=sentinels) -> str:
+    """Non-empty if `ss` cannot show a listener of every family this box binds for PROTO.
+
+    Under gVisor `ss -lun` exits 0 with "Cannot open netlink socket" on stderr and
+    lists nothing, while /proc/self/net/udp still holds the udp4 rows; tcp6 and udp6
+    have no table at all. An empty listing is only "nothing listens" once a sentinel
+    of each family has been seen in it.
+    """
+    flag = "-ltnH" if proto == "tcp" else "-lunH"
+    with held(proto) as fams:
+        try:
+            r = runner(["ss", flag], capture_output=True, text=True)
+        except Exception as e:                                    # noqa: BLE001
+            return f"ss {flag} could not run ({e})"
+        err = (r.stderr or "").strip()
+        if r.returncode != 0 or "netlink" in err.lower():
+            return f"ss {flag} failed (exit {r.returncode}: {err or 'no message'})"
+        seen = set()
+        for line in (r.stdout or "").splitlines():
+            for tok in line.split():
+                m = re.match(r"^(.+):(\d+)$", tok)              # first host:port is local
+                if m:
+                    seen.add((":" in m.group(1), int(m.group(2))))
+                    break
+        gone = [f for f, port in fams if (f.endswith("6"), port) not in seen]
+    return (f"ss {flag} does not show the {', '.join(gone)} sentinel listener — "
+            "that family is invisible to it") if gone else ""
+
+
 def caddy_socket_check(rows, owners, runner=subprocess.run) -> str:
     """Non-empty if caddy is running but holds none of the sockets we found.
 
@@ -480,13 +576,22 @@ def gather(proc_root="/proc/self/net"):
     return rows
 
 
-def main(argv=None, out=sys.stdout, env=None) -> int:
+def main(argv=None, out=sys.stdout, env=None, proc_root="/proc/self/net",
+         ipv6=ipv6_bindable, runner=subprocess.run, held=sentinels) -> int:
     """Print the resolved allowlist, then a verdict per public listener.
 
     Exit: 0 clean, 1 violations, 2 the scan decided nothing. The caller keeps the
     2-is-never-advisory rule that ADR 0006 condition 6 already established.
+
+    `--visible tcp|udp` runs only the `ss` sentinel check (lib.sh's
+    listeners_visible): exit 0 when every family is visible, else 2 with the reason.
     """
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["--visible"]:
+        reason = ss_blind(argv[1] if len(argv) > 1 else "tcp", runner, held)
+        if reason:
+            print(reason, file=out)
+        return 2 if reason else 0
     allow_dir = argv[0] if argv else ""
     env = dict(os.environ if env is None else env)
 
@@ -512,14 +617,13 @@ def main(argv=None, out=sys.stdout, env=None) -> int:
     for p in problems:
         print(f"     GRAMMAR {p}", file=out)
 
-    rows = gather()
+    rows = gather(proc_root)
     owners = inode_owners()
 
-    try:
-        ss_text = subprocess.run(["ss", "-ltun"], capture_output=True, text=True).stdout
-    except Exception:                                             # noqa: BLE001
-        ss_text = ""
-    for reason in (cross_check(rows, ss_text), caddy_socket_check(rows, owners)):
+    ss_text, ss_reason = ss_listeners(runner)
+    for reason in (missing_tables(proc_root, ipv6), ss_reason, ss_blind("tcp", runner, held),
+                   ss_blind("udp", runner, held), cross_check(rows, ss_text),
+                   caddy_socket_check(rows, owners, runner)):
         if reason:
             print(f"  SCAN UNDECIDED: {reason}", file=out)
             return 2

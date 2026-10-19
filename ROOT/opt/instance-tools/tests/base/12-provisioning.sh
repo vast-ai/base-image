@@ -76,20 +76,14 @@ get_log_mtime() {
 # matches here, including `local-path-provisioner`).
 #
 # Descendants are the honest signal: a provisioner that is working has spawned something
-# (pip, git, curl); one that is wedged has not. The pid is resolved from the pidfile the
-# provisioner writes, falling back to a cmdline match anchored on the module invocation
-# rather than the bare word.
+# (pip, git, curl); one that is wedged has not. The pid is resolved by a cmdline match
+# anchored on the module invocation rather than the bare word.
 #
 # NOTE this is a DIAGNOSTIC accelerator, not the safety net: the PROV_TIMEOUT branch
 # above still fails the cell. Its value is failing at the stall instead of ~57 minutes
 # later, with a message that names the cause.
 provisioner_pid() {
-    local pid=""
-    [[ -r /run/provisioner.pid ]] && pid=$(cat /run/provisioner.pid 2>/dev/null)
-    if [[ -z "$pid" || ! -d "/proc/$pid" ]]; then
-        pid=$(pgrep -f 'python[0-9.]* -m provisioner' 2>/dev/null | head -1)
-    fi
-    printf '%s' "$pid"
+    pgrep -f 'python[0-9.]* -m provisioner' 2>/dev/null | head -1
 }
 
 active_provisioning_processes() {
