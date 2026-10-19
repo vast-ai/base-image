@@ -32,6 +32,13 @@ import sys
 # /opt/portal-aio/portal, so its parent dir must be on sys.path).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from capabilities import assemble_live
+# cgroup v2, then v1, then none; outside this file so it tests without the
+# portal's runtime dependencies.
+from capabilities.container_metrics import (
+    get_container_cpu_usage,
+    get_container_memory_stats,
+    is_in_container,
+)
 from capabilities.models import (
     OpenAIEndpoint,
     ProvisionRequest,
@@ -405,190 +412,6 @@ def get_rocm_gpus() -> list:
         print(f"Error getting ROCm GPU info: {str(e)}")
         return []
     
-def is_in_container() -> bool:
-    """Check if we're running inside a container"""
-    return os.path.exists('/sys/fs/cgroup/memory/memory.limit_in_bytes') or os.path.exists('/sys/fs/cgroup/memory.max')
-
-def get_container_memory_limit() -> Optional[int]:
-    """Get memory limit allocated to the container.
-
-    Prefers the soft limit (memory.soft_limit_in_bytes / memory.low) when
-    set, as platforms like Vast.ai use the soft limit for the user's actual
-    RAM allocation while setting a much higher hard limit that includes
-    swap headroom.
-
-    Returns None when the limit looks like 'no real limit' — either the
-    sentinel value ``max`` (v2) or a value larger than the host's physical
-    RAM.
-    """
-    try:
-        host_ram = psutil.virtual_memory().total
-    except Exception:
-        host_ram = 0
-
-    def _is_real_limit(value: int) -> bool:
-        if value <= 0 or value >= 10**15:
-            return False
-        if host_ram and value >= host_ram:
-            return False
-        return True
-
-    # --- cgroups v1 ---
-    # Try soft limit first (the user's actual allocation on Vast.ai)
-    try:
-        with open('/sys/fs/cgroup/memory/memory.soft_limit_in_bytes', 'r') as f:
-            soft = int(f.read().strip())
-            if _is_real_limit(soft):
-                return soft
-    except Exception:
-        pass
-
-    try:
-        with open('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'r') as f:
-            limit = int(f.read().strip())
-            if _is_real_limit(limit):
-                return limit
-    except Exception:
-        pass
-
-    # --- cgroups v2 ---
-    # Try memory.low (soft) first, then memory.max (hard)
-    for path in ('/sys/fs/cgroup/memory.low', '/sys/fs/cgroup/memory.max'):
-        try:
-            with open(path, 'r') as f:
-                value = f.read().strip()
-                if value in ('max', '0'):
-                    continue
-                limit = int(value)
-                if _is_real_limit(limit):
-                    return limit
-        except Exception:
-            pass
-
-    return None
-
-def get_container_memory_usage() -> Optional[int]:
-    """Get current memory usage of the container"""
-    try:
-        # cgroups v1
-        with open('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'r') as f:
-            return int(f.read().strip())
-    except Exception:
-        try:
-            # cgroups v2
-            with open('/sys/fs/cgroup/memory.current', 'r') as f:
-                return int(f.read().strip())
-        except Exception:
-            return None
-
-def get_container_memory_stats() -> Optional[dict]:
-    """Get detailed memory stats for container including total, used and percentage"""
-    if not is_in_container():
-        # Not in a container, return None to fall back to psutil
-        return None
-        
-    limit = get_container_memory_limit()
-    usage = get_container_memory_usage()
-    
-    if limit is None or usage is None:
-        return None
-        
-    # Calculate percentage
-    percent = (usage / limit) * 100
-    
-    return {
-        'total': limit,
-        'used': usage,
-        'percent': percent
-    }
-
-
-# --- CPU metrics ---
-
-# State for delta-based CPU measurement (cgroups)
-_cpu_prev: dict = {'timestamp': 0.0, 'usage': 0, 'percent': 0.0}
-
-def get_cpu_quota_cores() -> float:
-    """Get the CPU quota in fractional cores from cgroups (for % normalization).
-    Returns the quota as a float (e.g. 19.2), or falls back to os.cpu_count()."""
-    try:
-        # cgroups v2: cpu.max → "quota period"
-        with open('/sys/fs/cgroup/cpu.max', 'r') as f:
-            parts = f.read().strip().split()
-            if parts[0] != 'max':
-                return max(0.01, int(parts[0]) / int(parts[1]))
-    except Exception:
-        pass
-    try:
-        # cgroups v1: cpu.cfs_quota_us / cpu.cfs_period_us
-        for prefix in ('/sys/fs/cgroup/cpu/', '/sys/fs/cgroup/cpu,cpuacct/'):
-            quota_path = prefix + 'cpu.cfs_quota_us'
-            period_path = prefix + 'cpu.cfs_period_us'
-            if os.path.exists(quota_path):
-                with open(quota_path, 'r') as f:
-                    quota = int(f.read().strip())
-                if quota == -1:
-                    break  # no limit
-                with open(period_path, 'r') as f:
-                    period = int(f.read().strip())
-                return max(0.01, quota / period)
-    except Exception:
-        pass
-    return float(os.cpu_count() or 1)
-
-
-def get_container_cpu_usage() -> Optional[dict]:
-    """Get CPU usage for the container using cgroups delta measurement."""
-    global _cpu_prev
-
-    now = time.monotonic()
-    usage_ns = None
-
-    # cgroups v2: cpu.stat contains usage_usec
-    try:
-        with open('/sys/fs/cgroup/cpu.stat', 'r') as f:
-            for line in f:
-                if line.startswith('usage_usec'):
-                    usage_ns = int(line.split()[1]) * 1000
-                    break
-    except Exception:
-        pass
-
-    # cgroups v1: cpuacct.usage in nanoseconds
-    if usage_ns is None:
-        for prefix in ('/sys/fs/cgroup/cpuacct/', '/sys/fs/cgroup/cpu,cpuacct/'):
-            path = prefix + 'cpuacct.usage'
-            try:
-                with open(path, 'r') as f:
-                    usage_ns = int(f.read().strip())
-                break
-            except Exception:
-                continue
-
-    if usage_ns is None:
-        return None
-
-    # Use quota (fractional cores) for both % normalization and the
-    # user-visible core count.  os.cpu_count() reports the host's total
-    # cores which is misleading inside a container with a CPU quota.
-    quota_cores = get_cpu_quota_cores()
-
-    elapsed = now - _cpu_prev['timestamp']
-    if _cpu_prev['timestamp'] > 0 and elapsed > 0.5:
-        delta_usage = usage_ns - _cpu_prev['usage']
-        delta_time_ns = elapsed * 1e9
-        percent = (delta_usage / delta_time_ns) * 100.0 / quota_cores
-        _cpu_prev['percent'] = max(0.0, min(percent, 100.0))
-
-    _cpu_prev['timestamp'] = now
-    _cpu_prev['usage'] = usage_ns
-
-    return {
-        'percent': round(_cpu_prev['percent'], 1),
-        'count': int(quota_cores)
-    }
-
-
 def get_cpu_stats() -> dict:
     """Get CPU usage, preferring container cgroup metrics when available."""
     if is_in_container():

@@ -78,7 +78,7 @@ main() {
     # Test-only switches that load a stage's functions without running it. The boot
     # shell inherits the launch environment, so a template setting one would silently
     # skip that stage; the boot never honours them.
-    unset _VAST_PREP_ENV_LIB_ONLY _VAST_THREAD_HOOK_LIB_ONLY
+    unset _VAST_PREP_ENV_LIB_ONLY _VAST_THREAD_HOOK_LIB_ONLY _VAST_RUN_DIRS_LIB_ONLY _VAST_SUPERVISOR_LAUNCH_LIB_ONLY
 
     # Source boot scripts
     for script in /etc/vast_boot.d/*.sh; do

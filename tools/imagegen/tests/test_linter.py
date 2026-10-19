@@ -1405,6 +1405,18 @@ def test_L064_extensionless_shipped_tools_are_scanned(tmp_path):
     assert "L064" in errs(img, tmp_path)
 
 
+def test_L064_the_aio_root_base_overlay_is_scanned(tmp_path):
+    """aio-studio's Dockerfile.base copies ROOT_BASE into the image, so it ships
+    like any ROOT overlay and was the one shipped tree the rules never read."""
+    img = make(tmp_path, cls="base")
+    p = (tmp_path / "derivatives/pytorch/derivatives/aio-studio/ROOT_BASE"
+         / "opt/supervisor-scripts/desktop.sh")
+    p.parent.mkdir(parents=True)
+    p.write_text('#!/bin/bash\nMAX=$(LD_LIBRARY_PATH="$d" '
+                 '/opt/instance-tools/bin/cuda-driver-version)\n')
+    assert "L064" in errs(img, tmp_path)
+
+
 def test_mut_L062_dropping_the_real_final_report_fires(tmp_path):
     """Mutation against the REAL file: base/60-gpu-cuda defers three failures and
     reports before each of its two exits. Remove either report and the exit below

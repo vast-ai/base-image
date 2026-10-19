@@ -1591,11 +1591,13 @@ def _shipped_scripts(repo: Path):
     ROOT/opt/instance-tools/bin are extensionless by convention, including the
     CUDA helper itself, so an `*.sh`/`*.py` glob silently exempts the directory
     most likely to re-introduce these bugs. Derivative and external overlays
-    ship into images too and are included for the same reason.
+    ship into images too and are included for the same reason, as is the aio
+    image's ROOT_BASE (copied in by its Dockerfile.base).
     """
     roots = [repo / "ROOT", repo / "portal-aio"]
     roots += sorted((repo / "derivatives").glob("*/ROOT"))
     roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT"))
+    roots += sorted((repo / "derivatives").glob("*/derivatives/*/ROOT_BASE"))
     roots += sorted((repo / "external").glob("*/ROOT"))
     for root in roots:
         if not root.is_dir():
