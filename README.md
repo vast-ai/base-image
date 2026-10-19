@@ -127,6 +127,31 @@ All applications are managed by [Supervisor](https://supervisord.readthedocs.io/
 - **Shared permissions**: umask 002 for collaborative file access
 - **SSH key propagation**: Keys automatically set up for both root and user accounts
 
+## Container Runtimes
+
+Instances of this image can run under the standard container runtime (runc) or under
+[gVisor](https://gvisor.dev) (`runsc`), a sandbox that runs the container on its own
+user-space kernel. The image detects what it needs at boot and works under both; you do not
+choose a tag for either. To check which one you have, `/opt/instance-tools/bin/is-gvisor`
+exits 0 under gVisor.
+
+Under gVisor some things behave differently:
+
+- **Not available:** 32-bit programs (they stay installed and run under runc), anything
+  that opens `/dev/dri` (VA-API, GBM, Wayland/KMS sessions), kernel profilers, `io_uring`,
+  FUSE mounts, and `nvidia-smi topo`.
+- **Degraded:** small-file I/O and process start-up are slower; X11 round trips are slower;
+  NCCL cannot see the PCI/NUMA topology; `ss` and `/proc/net` may not list every listening
+  socket (IPv6 and UDP in particular).
+- **`sudo` for the non-root user** works only where the sandbox allows setuid programs.
+- **supervisord's control socket** normally lives at `/var/run/supervisor.sock`. Where that
+  directory cannot hold it, the boot puts the socket in a root-only directory under
+  `/dev/shm` and leaves a symlink at the usual path, so `supervisorctl` and the portal work
+  unchanged. Clearing `/dev/shm` (`rm -rf /dev/shm/*`) then removes the socket until the
+  next restart.
+- The cgroup filesystem may be v1, v2 or absent, `nproc` reflects the CPU quota, and
+  `MemTotal` reflects the memory limit.
+
 ## Instance Portal
 
 The Instance Portal is a web-based dashboard for managing applications running on your instance. It provides secure access through TLS, authentication, and Cloudflare tunnels.

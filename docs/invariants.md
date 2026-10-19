@@ -432,6 +432,30 @@ with the boot script instead of checking it — and only a manual review caught 
 Behaviour is pinned in both directions by
 `tools/imagegen/tests/test_cuda_driver_version.py`.
 
+### One NVIDIA driver-version helper; GPU presence never from the /proc file — **enforced by tests (lint rule pending)**
+
+Images must work under runc and gVisor. Under gVisor the GPU works through the
+device nodes and `nvidia-smi` answers, but `/proc/driver/nvidia/` holds only
+`params`: there is no `version` file. Code that read it got nothing; code that
+tested for it decided there was no GPU (the portal manifest dropped its whole GPU
+section). `/opt/instance-tools/bin/nvidia-driver-version` is the one reader: the
+`/proc` file first (proprietary and open-module spellings; a file that does not
+parse falls through), then `nvidia-smi --query-gpu=driver_version
+--format=csv,noheader` (first line, trimmed, time-bounded, never the table —
+L063); it prints nothing and exits non-zero when neither answers. GPU presence is
+the helper answering or `/dev/nvidiactl` existing. `install-display-drivers` uses
+it and fails loudly when `nvidia-smi` exists but no version comes back (no
+`nvidia-smi` at all is still a quiet no-op). The portal manifest prefers the
+helper and falls back in-process to the same `nvidia-smi` query, because the
+latest portal is installed at first boot on images built before the helper
+existed; it never reads the `/proc` file. `/opt/instance-tools/bin/is-gvisor`
+(`[ -d /proc/gvisor ]`) is the one runtime check, for where no capability can be
+probed. Pinned by `tools/imagegen/tests/test_nvidia_driver_version.py` and the
+GPU tests in `portal-aio/tests/test_capabilities.py`. The lint rule banning other
+readers of the `/proc` file is **not yet in force**: the aio-studio display-driver
+script and UnrealPixelStreaming's `pixel-streaming.sh` still read it, and the rule
+lands with their fix.
+
 ### One TLS cert-usability predicate, not one per caller — **GATED (L066)**
 
 "Can Caddy serve TLS with this pair?" is asked in three places — the boot script
@@ -722,6 +746,29 @@ path; not URLs), with shell semantics in one pass: the SD Forge and A1111 recomm
 covers it, and test 57 checks base-qa's `${WORKSPACE}` download landed in the workspace.
 Not statically gated: the property is about what bash does with the output, so only
 executing it proves it.
+
+### supervisord's control socket stays at its shipped path wherever it can — **enforced by test**
+
+supervisord binds a temporary name and hard-links it to `/var/run/supervisor.sock`. Some
+root filesystems (gVisor with a host-served root) refuse `link()` on a unix socket, and
+supervisord then retries forever and starts nothing. `65-supervisor-launch.sh`, every
+boot: removes `/var/run/supervisor.sock` (socket or symlink) and
+`/etc/supervisor/conf.d/vast-supervisor-socket.conf`; probes bind-then-link in that
+directory. If it works the layout is the shipped one: a plain socket, no include. If not,
+it `mkdir`s (no `-p`) `/dev/shm/vast-supervisor`, refuses it unless root-owned, 0700 and
+not a symlink, probes it, writes the include (only `[unix_http_server] file=`) and links
+the usual path to the socket there. `serverurl` stays literal. If nothing works
+supervisord is not launched, and `95-supervisor-wait.sh` keeps the boot (the container's
+main process) alive instead of returning, so SSH and Jupyter stay up. The chosen path is
+logged as `[supervisor-launch] control socket: ...`. `13-run-dirs.sh` recreates
+`/run/user/1001` (0700, 1001:0) and `/run/dbus` before that, non-recursively, refusing a
+symlink at the path or its parent, and is a no-op where they are already right.
+`tools/imagegen/tests/test_supervisor_socket_sh.py` and `test_run_dirs_sh.py` drive the
+shipped functions against temporary paths. On a live instance `base/10-supervisor`
+re-probes independently: where the probe works the socket must be plain (`[ -S ] && [ ! -L ]`)
+with no include, otherwise the symlink, directory and include are checked; in both cases
+`env -i /usr/local/bin/supervisorctl status` must work. The fallback socket is lost to an
+`rm -rf /dev/shm/*` until the next boot.
 
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
 
@@ -1160,6 +1207,23 @@ match is anchored too so `118888` is not a listener on `18888`.
 (`grep -q ":${port} "`) or a pid is unambiguous across columns and is deliberately not
 caught — over-firing would push authors toward `awk` for cases that never needed it.
 
+**A listener the source cannot see is undecided, not absent** (behavioural; tested
+off-box, not linted). Under gVisor `ss` prints "Cannot open netlink socket" yet exits 0,
+`/proc/self/net/tcp6` and `udp6` do not exist, and `ss -lun` lists no udp4 although
+`/proc/self/net/udp` holds it, so a dual-stack or UDP listener vanishes from the listing.
+`listeners_visible tcp|udp` (one copy, in `exposure_scan.py --visible`) binds a loopback
+sentinel per family (v6 only where a `::1` bind succeeds) and requires `ss` to show it; an
+`ss` that exits non-zero or reports netlink on stderr sees nothing. `listener_is_public`,
+`listener_local_addr` and `listener_owner` fail the test as "cannot determine" when a TCP
+family is invisible, instead of answering "not public" or "nothing holds it".
+`base/28-inadvertent-exposure` fails as "undecided" when either protocol's sentinel is
+invisible, whatever `EXPOSURE_ENFORCE` says, like a scan that could not run. That is the
+only part of `exposure_scan.py`'s exit 2 it applies: the scan's other exit-2 causes and its
+violations stay shadow until ADR 0028's flip. `exposure_scan.py` itself exits 2 for a
+missing v4 table, a missing v6 table while IPv6 binds, a failing `ss`, or a sentinel `ss`
+cannot show. Nothing else in the repo checks UDP listeners. The positive checks
+(`wait_for_port`, the `ss -tln | grep` port probes) are not wired yet.
+
 ### A supervisor state is not a functional verdict, and "expected" is decided positively — **GATED (L086)**
 
 `service_running` reports a supervisord STATE. Using it as an `if` guard —
@@ -1366,6 +1430,22 @@ installing a pre-release portal on a live instance for verification.
   installed" and skips every later update.
 - `PORTAL_INSTALL_ROOT` (default `/opt`) exists so `tools/imagegen/tests/test_update_portal.py`
   can run the real script against a local archive through the override.
+
+### Portal container metrics and port list hold under every cgroup layout — **enforced by portal-aio tests**
+
+Container metrics (`portal-aio/capabilities/container_metrics.py`) try cgroup v2, then v1, then
+none. A memory limit is real unless it is <= 0, the v1 "unlimited" sentinel (>= 1e15), or
+strictly greater than `/proc/meminfo` MemTotal; a limit equal to MemTotal is real (a sandboxed
+kernel reports the limit as MemTotal). Limit and usage come from the same cgroup version; with
+nothing readable the portal falls back to psutil. Tests: `test_container_metrics.py` (a v2 host, a
+v1 sandbox with `pids.max` = `max` and MemTotal equal to the limit, no cgroup).
+
+The capability manifest decides a TCP port is in use from `/proc/net/tcp` and `tcp6`; only when
+the `tcp6` table is ABSENT (not empty) does it also connect-probe 127.0.0.1 and ::1 (150 ms, no
+data), so hosts with full tables are never probed. A UDP port that looks free while `udp6` is
+absent carries `in_use_verified: false`. The manifest reports supervisord's control socket at
+`supervisor.control_socket`; a symlink at `/var/run/supervisor.sock` means the `/dev/shm`
+fallback is in use. Tests: `test_capabilities.py`.
 
 ### Portal "not ready" interstitial is CDN-safe (200 for Cloudflare only) — **enforced by portal-aio tests (ADR 0017)**
 

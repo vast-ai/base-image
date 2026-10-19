@@ -20,6 +20,14 @@ manage long-running services with **supervisor** (§4/§7) instead of Docker, an
 userspace profilers. If a task genuinely needs kernel-level access, Vast also
 offers **VM instances**; that's the exception, not the default.
 
+**gVisor.** The container may run under the gVisor sandbox instead of the standard
+runtime (`/opt/instance-tools/bin/is-gvisor` exits 0 if so). There, 32-bit programs,
+`/dev/dri`, FUSE mounts, `io_uring` and `nvidia-smi topo` do not work; `sudo` for a
+non-root user may fail; and `ss` / `/proc/net` may not list every listening socket, so
+confirm a port by connecting to it rather than trusting an empty listing. If
+`/var/run/supervisor.sock` is a symlink into `/dev/shm`, do not clear `/dev/shm`: that
+removes supervisord's control socket until the next restart.
+
 ## 1. Orient yourself
 
 ```
