@@ -24,6 +24,7 @@
 #   portal_has_entry — predicate (return 0/1)
 #   service_running NAME — predicate (return 0/1)
 #   version_gt A B   — predicate: version A > B (dotted integers)
+#   listeners_visible tcp|udp — predicate: ss shows a sentinel of every bindable family
 #   find_caddy_ports — populate REPLY with active Caddy external ports
 #   caddy_port_proto PORT — echo "https" or "http" for a Caddyfile port
 #   http_check LABEL EXPECTED [curl_args...] — HTTP status check via fail_later
@@ -369,8 +370,33 @@ wait_for_caddy_ports() {
 # two host redraws reproducing a test bug on fresh hardware. Field 4 is the address under
 # test; this helper exists so no caller has to remember that (L082).
 listener_local_addr() {
-    local port="$1"
-    ss -tlnH 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {print $4}'
+    _require_tcp_visible "$1" || return 1
+    _listener_addrs "$1"
+}
+
+_listener_addrs() {
+    ss -tlnH 2>/dev/null | awk -v p=":${1}\$" '$4 ~ p {print $4}'
+}
+
+# Predicate: `ss` shows a sentinel listener of each family this box can bind for PROTO
+# (tcp4/tcp6 or udp4/udp6; v6 only where a ::1 bind succeeds). Echoes why not. Under
+# gVisor `ss` loses netlink (yet exits 0) and there is no tcp6 table, so a dual-stack
+# listener is simply absent from its output, and `ss -lun` lists no udp4 at all. The
+# check lives in base/exposure_scan.py so the scan and these helpers share one copy.
+listeners_visible() {
+    local why
+    why=$(/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/base/exposure_scan.py" \
+          --visible "${1:-tcp}" 2>&1) && return 0
+    echo "${why:-sentinel probe failed}"
+    return 1
+}
+
+# A listener that `ss` cannot see reads as absent, which turns "not public" or "nothing
+# holds it" into a guess. Fail the test as undecided rather than let that pass or skip.
+_require_tcp_visible() {
+    local gap
+    gap=$(listeners_visible tcp) && return 0
+    test_fail "cannot determine the listener on port ${1}: ${gap} (undecided, not passed)" >&2
 }
 
 # True when a TCP port is bound to a WILDCARD interface rather than a specific address.
@@ -392,7 +418,8 @@ listener_is_public() {
     while IFS= read -r addr; do
         [[ -z "$addr" ]] && continue
         [[ "$addr" =~ ^(0\.0\.0\.0|\*|\[::\]|::): ]] && return 0
-    done < <(listener_local_addr "$1")
+    done < <(_listener_addrs "$1")
+    _require_tcp_visible "$1"
     return 1
 }
 
@@ -406,7 +433,7 @@ listener_is_public() {
 listener_owner() {
     local port="$1" row pid
     row=$(ss -tlnpH 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {print; exit}')
-    [[ -n "$row" ]] || return 1
+    [[ -n "$row" ]] || { _require_tcp_visible "$port"; return 1; }
     pid=$(grep -oE 'pid=[0-9]+' <<< "$row" | head -1 | cut -d= -f2)
     [[ -n "$pid" ]] || return 1
     printf '%s/%s\n' "$pid" "$(ps -o comm= -p "$pid" 2>/dev/null || echo unknown)"
