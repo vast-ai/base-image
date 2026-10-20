@@ -26,7 +26,9 @@ runtime (`/opt/instance-tools/bin/is-gvisor` exits 0 if so). There, 32-bit progr
 non-root user may fail; and `ss` / `/proc/net` may not list every listening socket, so
 confirm a port by connecting to it rather than trusting an empty listing. Where the root
 filesystem is host-served, `df` shows the host's filesystem, not this instance's disk; the
-portal's metrics then mark disk `"available": false`. If
+portal's metrics then mark disk `"available": false`. File-heavy work (installs, imports,
+many small files) is several times slower there; `strace` and `gdb` work, `perf` and `iotop`
+do not. If
 `/var/run/supervisor.sock` is a symlink into `/dev/shm`, do not clear `/dev/shm`: that
 removes supervisord's control socket until the next restart.
 

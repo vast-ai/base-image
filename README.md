@@ -140,9 +140,14 @@ Under gVisor some things behave differently:
 - **Not available:** 32-bit programs (they stay installed and run under runc), anything
   that opens `/dev/dri` (VA-API, GBM, Wayland/KMS sessions), kernel profilers, `io_uring`,
   FUSE mounts, and `nvidia-smi topo`.
-- **Degraded:** small-file I/O and process start-up are slower; X11 round trips are slower;
-  NCCL cannot see the PCI/NUMA topology; `ss` and `/proc/net` may not list every listening
-  socket (IPv6 and UDP in particular).
+- **Degraded:** anything that touches many files or starts many processes is slower. Measured
+  against the same instance under runc: small-file create/stat/delete about 4x, process
+  start-up about 4.7x, `pip`/`apt` 1.5-5x, Python imports 1.4-2.6x, so an app restart (ComfyUI,
+  A1111, Fooocus, Forge, Unsloth) takes 1.4-2.6x as long. Single-thread CPU and GPU compute run
+  at the same speed, and model weights already in the page cache load onto the GPU at nearly
+  the same speed. X11 round trips are slower; NCCL cannot see the PCI/NUMA topology; `ss` and
+  `/proc/net` may not list every listening socket (IPv6 and UDP in particular).
+- **Tools:** `strace` and `gdb` work; `perf`, eBPF tools and `iotop` do not.
 - **`sudo` for the non-root user** works only where the sandbox allows setuid programs.
 - **supervisord's control socket** normally lives at `/var/run/supervisor.sock`. Where that
   directory cannot hold it, the boot puts the socket in a root-only directory under
