@@ -35,6 +35,7 @@ from capabilities import assemble_live
 # cgroup v2, then v1, then none; outside this file so it tests without the
 # portal's runtime dependencies.
 from capabilities.container_metrics import (
+    disk_usage,
     get_container_cpu_usage,
     get_container_memory_stats,
     is_in_container,
@@ -436,13 +437,7 @@ def get_workspace_volume_info() -> Optional[dict]:
         # Different st_dev means a separate filesystem / mount
         if os.stat('/').st_dev == os.stat(workspace).st_dev:
             return None
-        usage = psutil.disk_usage(workspace)
-        return {
-            'path': workspace,
-            'total': usage.total,
-            'used': usage.used,
-            'percent': usage.percent
-        }
+        return {'path': workspace, **disk_usage(workspace)}
     except Exception:
         return None
 
@@ -1392,11 +1387,7 @@ async def _collect_metrics() -> dict:
             'used': psutil.virtual_memory().used,
             'percent': psutil.virtual_memory().percent
         },
-        'disk': {
-            'total': psutil.disk_usage('/').total,
-            'used': psutil.disk_usage('/').used,
-            'percent': psutil.disk_usage('/').percent
-        }
+        'disk': disk_usage('/')
     }
     
     # Add container detection info

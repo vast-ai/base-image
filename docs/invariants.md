@@ -1440,6 +1440,12 @@ kernel reports the limit as MemTotal). Limit and usage come from the same cgroup
 nothing readable the portal falls back to psutil. Tests: `test_container_metrics.py` (a v2 host, a
 v1 sandbox with `pids.max` = `max` and MemTotal equal to the limit, no cgroup).
 
+Disk figures (`disk_usage`, for the container disk and the `$WORKSPACE` volume) are never the
+host's: when the mount holding the path is host-served (`9p`, gVisor with a host-served root),
+`statfs` describes the host's filesystem, so the figure is `available: false` with a reason and
+null numbers, and the portal shows "Not reported under this runtime". Tests:
+`test_container_metrics.py` (9p root, overlay root, longest mount match, unreadable mounts).
+
 The capability manifest decides a TCP port is in use from `/proc/net/tcp` and `tcp6`; only when
 the `tcp6` table is ABSENT (not empty) does it also connect-probe 127.0.0.1 and ::1 (150 ms, no
 data), so hosts with full tables are never probed. A UDP port that looks free while `udp6` is

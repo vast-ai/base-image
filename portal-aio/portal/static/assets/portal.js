@@ -1429,7 +1429,13 @@ window.InstancePortal = (function() {
             }
 
             // Update Disk metrics
-            if (this.data.disk) {
+            if (this.data.disk && this.data.disk.available === false) {
+                // Host-served root (gVisor): statfs describes the host's filesystem, not this disk.
+                const diskEl = document.getElementById(this.elements.diskFill);
+                diskEl.style.width = '0%';
+                diskEl.removeAttribute('data-level');
+                document.getElementById(this.elements.diskTooltip).textContent = 'Not reported under this runtime';
+            } else if (this.data.disk) {
                 const diskPercent = this.data.disk.percent;
                 const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // GiB to match df -h
                 const diskTotal = this.data.disk.total / (1024 * 1024 * 1024);
@@ -1454,7 +1460,13 @@ window.InstancePortal = (function() {
 
             // Update Volume metrics (shown only when $WORKSPACE is a mounted volume)
             const volumeStatEl = document.getElementById(this.elements.volumeStat);
-            if (this.data.volume) {
+            if (this.data.volume && this.data.volume.available === false) {
+                volumeStatEl.style.display = '';
+                const volEl = document.getElementById(this.elements.volumeFill);
+                volEl.style.width = '0%';
+                volEl.removeAttribute('data-level');
+                document.getElementById(this.elements.volumeTooltip).textContent = 'Not reported under this runtime';
+            } else if (this.data.volume) {
                 volumeStatEl.style.display = '';
                 const volPercent = this.data.volume.percent;
                 const volUsed = this.data.volume.used / (1024 * 1024 * 1024); // GiB to match df -h
