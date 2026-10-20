@@ -2623,12 +2623,14 @@ upstream-read variables marked).
   once their base pin moves to a base that ships the helper (see Rollout).
 - The base image sets `ENV UV_COMPILE_BYTECODE=1`: each uv install compiles what it adds (current
   uv compiles only the installed packages, about 0.03 s per small install).
-- The helper compiles each venv's site-packages with that venv's interpreter and each
-  `/opt/workspace-internal/<app>` with `/venv/main`'s, in explicit timestamp mode, tolerating
+- The helper compiles the site-packages of every venv under `/venv` and every venv found by its
+  `pyvenv.cfg` under `/opt`, each with its own interpreter, and each `/opt/workspace-internal/<app>`
+  once per distinct Python version among them (an app may run in any of the venvs), in explicit
+  timestamp mode, tolerating
   per-file failures but failing the build below 95% of a tree. It records trees and interpreters
   in `/etc/vast-bytecode.tsv`. On an external image it compiles the `/venv/main` mirror (real
   bytecode files in its `__pycache__` directories, which `venv-mirror verify` accepts), never the
-  engine's own site-packages (an unused second copy).
+  engine's own site-packages or an engine venv under `/opt` (an unused second copy).
 - Boot stage 36 copies app trees with `--preserve=timestamps`; without it every copied app's
   bytecode is discarded on first boot.
 
