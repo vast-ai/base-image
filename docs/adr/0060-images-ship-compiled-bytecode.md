@@ -71,8 +71,12 @@ with `cp -ru`, which gives every copied source a new mtime, so bytecode compiled
 
 ## Decision
 `ROOT/opt/instance-tools/bin/compile-bytecode` compiles, in the image's final RUN before
-`env-hash`, every venv's site-packages under `/venv` (and the portal's venv) with that venv's
-own interpreter, and every app tree under `/opt/workspace-internal` with `/venv/main`'s.
+`env-hash`, the site-packages of every venv under `/venv` and of every venv found by its
+`pyvenv.cfg` under `/opt` (the portal's, the provisioner's, an external image's model UI), each
+with its own interpreter; and every app tree under `/opt/workspace-internal` once per distinct
+Python version among those venvs. Images such as aio-studio run each app in its own venv; with
+one Python version (every image today) that is a single compile per tree, and with several each
+app has bytecode for whichever venv runs it, with no mapping of apps to venvs to maintain.
 The base image also sets `ENV UV_COMPILE_BYTECODE=1`, so every uv install compiles what it adds.
 Invalidation mode is timestamp, explicitly (SOURCE_DATE_EPOCH would otherwise switch it to
 hash checking). Files that fail to compile are tolerated; the build fails if less than 95% of a
@@ -94,7 +98,8 @@ On an external image the helper compiles `/venv/main`, the per-file symlink mirr
 engine's site-packages (ADR 0048): the bytecode lands as real files in the mirror's `__pycache__`
 directories, where Python writes it at runtime anyway. It runs before `venv-mirror verify` in the
 final RUN, so the verify proves the mirror still holds. The engine's own site-packages are not
-compiled. Measured on vLLM: 100% of every tree compiled in 38 s, and the verify passed.
+compiled, nor an engine that is itself a venv under `/opt` (sglang): it is imported through the
+mirror too. Measured on vLLM: 100% of every tree compiled in 38 s, and the verify passed.
 
 ## Binding conditions
 1. Every image runs `compile-bytecode` in its final RUN, before `env-hash` (and on an external
