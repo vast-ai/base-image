@@ -5467,3 +5467,55 @@ def test_L108_catches_an_unguarded_mini_job(tmp_path, job, old):
     repl = "    if: ${{ !inputs.DRY_RUN }}\n" if job == "build-mini" else ""
     where = _l108_tree(tmp_path, lambda t: t.replace(old, repl, 1))
     assert where == [f".github/workflows/build-base-image.yml:{job}"], where
+
+
+# ---- L109: build-time bytecode in the final RUN (ADR 0057) ----
+
+def _base():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    return repo, next(i for i in discover(repo) if i.cls == "base")
+
+
+def test_mut_L109_base_without_compile_bytecode():
+    repo, img = _base()
+    assert "compile-bytecode && \\" in img.text
+    mut = replace(img, text=img.text.replace("compile-bytecode && \\\n", "", 1))
+    assert "L109" in errs(mut, repo)
+
+
+def test_mut_L109_base_compiles_after_env_hash():
+    repo, img = _base()
+    mut = replace(img, text=img.text.replace("compile-bytecode && \\\n    env-hash > /.env_hash",
+                                             "env-hash > /.env_hash && \\\n    compile-bytecode", 1))
+    assert mut.text != img.text
+    assert "L109" in errs(mut, repo)
+
+
+def test_mut_L109_external_compiles_after_the_mirror_verify():
+    repo, img = _real("vllm")
+    mut = replace(img, text=img.text.replace("&& env-hash > /.env_hash", "&& compile-bytecode && env-hash > /.env_hash", 1))
+    assert mut.text != img.text
+    assert "L109" in errs(mut, repo)
+
+
+def test_L109_external_compiling_before_the_mirror_verify_is_clean():
+    repo, img = _real("vllm")
+    mut = replace(img, text=img.text.replace("RUN venv-mirror verify", "RUN compile-bytecode && venv-mirror verify", 1))
+    assert mut.text != img.text
+    assert "L109" not in errs(mut, repo)
+
+
+def test_L109_derivative_may_not_compile_before_its_last_install(tmp_path):
+    df = VALID_DF.replace("RUN env-hash > /.env_hash", "RUN compile-bytecode\nRUN uv pip install x\nRUN env-hash > /.env_hash")
+    assert df != VALID_DF
+    assert "L109" in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L109_derivative_compiling_in_the_final_run_is_clean(tmp_path):
+    df = VALID_DF.replace("RUN env-hash > /.env_hash", "RUN compile-bytecode && env-hash > /.env_hash")
+    assert df != VALID_DF
+    assert "L109" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L109_derivative_not_yet_compiling_is_clean(tmp_path):
+    assert "L109" not in errs(make(tmp_path), tmp_path)

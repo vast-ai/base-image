@@ -37,7 +37,8 @@ Local counterparts to CI. Model: **staging namespace → prod namespace via reta
     instance-test → manifests → supervisor-wait. `first_boot/` runs once.
   - `opt/instance-tools/bin/` — PATH executables: `entrypoint.sh`, `boot_default.sh`,
     `provisioner`, `vast-capabilities`, `env-hash`, `jupyter`, `cuda-driver-version`,
-    `nvidia-driver-version` (the one NVIDIA driver-version reader), `is-gvisor`, etc.
+    `nvidia-driver-version` (the one NVIDIA driver-version reader), `is-gvisor`,
+    `compile-bytecode` (build-time only, in the final RUN before `env-hash`; ADR 0057), etc.
   - `opt/instance-tools/lib/provisioner/` — **Python** package (`python -m provisioner`):
     phased, idempotent manifest runner (apt/git/pip/conda installers, HF/wget
     downloaders, schema/state/concurrency). Has its own `tests/`. `envlist.py` is the one

@@ -109,6 +109,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L104", ERROR, "`update-portal` works the same whichever source it downloads from: the temp download path (`TEMP_DIR=`, `DOWNLOAD_FILE=`) and the argument parse are set up at top level, not inside the branch that resolves a GitHub release, and the script refuses to finish with an empty installed `portal-aio/VERSION`. With `PORTAL_DOWNLOAD_URL` set, all three lived only in the other branch: curl wrote the archive to `/` and the script overwrote VERSION with an empty string, and an empty VERSION makes every later first boot report \"No portal VERSION file found\" and skip portal updates for the life of the instance. Found while verifying portal v3.1.7 through that override"),
     ("L107", ERROR, "Provisioning code splits a multi-entry env var with the provisioner's splitter (`provisioner/envlist.py`: a value with `;` splits on `;` only, as before; otherwise on `,`, where a comma inside `[...]` or before a version operator does not split). Checked: no `;` split (`.split(\";\")`, `.rsplit`, `split(sep=\";\")`, `re.split` on `;`) in the provisioner or a provisioner extension outside an extension's `def split_entries` fallback within `except ImportError:`, and no `IFS=';'` in a provisioning script (any depth under `provisioning_scripts/`, and `provisioning/`) outside its `split_env_entries` function (where a value containing `;` keeps its original split). A `;` split written another way is not caught. Vast drops any template variable whose value contains `;`, so a `;`-only parser makes every multi-entry value set in a template disappear before the instance starts. Exempt: `downloaders/wget.py`, which splits an HTTP Content-Disposition header (ADR 0053)"),
     ("L108", ERROR, "A workflow job whose matrix is an optional generated list -- `fromJson(needs.<job>.outputs.<name>)` where the name contains `mini` or `multi` -- has a job-level `if:` that reads `needs.<job>.outputs`, so an empty list skips the job. GitHub cannot create a job from an empty matrix: it fails the whole run without listing the job. A FILTER legitimately leaves these lists empty (`FILTER=cuda-12.9-24` builds no mini image), so build-base-image reported failure on builds whose every image pushed, and a red run stopped meaning anything. The main build and merge lists are out of scope: an empty one means FILTER matched nothing, and failing the run is the right result"),
+    ("L109", ERROR, "Every image compiles its bytecode in its final RUN, `compile-bytecode` BEFORE `env-hash > /.env_hash` and, on an external image, before `venv-mirror verify` so the verify proves the mirror still holds (ADR 0057); only the final RUN may compile (anything installed after it ships uncompiled). Enforced on the base image now; derivatives and external images are required to once their base pin moves to a base that ships the helper (the pin-bump change widens this rule), because before that the helper is not in their base"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -2854,8 +2855,33 @@ def check_engine_python_declared(img: Image) -> Iterable[Finding]:
                           "it: install with `--python /venv/main/bin/python` (ADR 0048)")
 
 
+def check_compile_bytecode(img: Image) -> Iterable[Finding]:
+    """L109 — bytecode is compiled in the final RUN, before venv-mirror verify and env-hash (ADR 0057)."""
+    instrs = parse(img.text)
+    runs = [i for i in instrs if i.cmd == "RUN"]
+    call = re.compile(r"(?<![\w/-])compile-bytecode(?![\w-])")
+    calls = [i for i in runs if call.search(i.exec)]
+    last = runs[-1].exec if runs else ""
+    for i in calls:
+        if i is not runs[-1]:
+            yield Finding("L109", ERROR, img.name, f"Dockerfile:{i.line}",
+                          "`compile-bytecode` must run in the FINAL RUN: anything installed after it "
+                          "ships uncompiled")
+    if img.cls == "base" or calls:
+        m = call.search(last)
+        e = last.find("env-hash > /.env_hash")
+        if not m or e < 0 or m.start() > e:
+            yield Finding("L109", ERROR, img.name, "Dockerfile",
+                          "the final RUN must run `compile-bytecode` BEFORE `env-hash > /.env_hash` "
+                          "(ADR 0057)")
+        v = re.search(r"venv-mirror\s+verify\b", last)
+        if m and v and m.start() > v.start():
+            yield Finding("L109", ERROR, img.name, "Dockerfile",
+                          "run `compile-bytecode` BEFORE `venv-mirror verify`, so the verify proves the "
+                          "mirror still holds after compiling (ADR 0057, ADR 0048)")
+
 IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
-    check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
+    check_labels, check_env_hash, check_compile_bytecode, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
     check_external_env, check_llama_cuda_assert, check_llama_sass_coverage,

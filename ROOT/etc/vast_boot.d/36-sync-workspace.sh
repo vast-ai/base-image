@@ -24,12 +24,13 @@ sync_workspace() {
             fi
             
             if [[ -d "$item" && ! -e "$target" ]]; then
-                # Copy directory recursively
-                cp -ru "$item" "${workspace}/"
+                # Copy directory recursively. Keep timestamps: the image ships bytecode compiled
+                # against these sources (ADR 0057), and Python discards it when a source's mtime changes.
+                cp -r --preserve=timestamps "$item" "${workspace}/"
                 # Apply ownership and permissions to the copied directory and its contents
             elif [[ -f "$item" && ! -e "$target" ]]; then
                 # Copy file
-                cp -f "$item" "${workspace}/"
+                cp -f --preserve=timestamps "$item" "${workspace}/"
             fi
             
         ) 9>"$lockfile"
