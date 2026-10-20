@@ -53,7 +53,7 @@ def _world(tmp: Path, *, bad_app_files: int = 0):
     for k in range(bad_app_files):
         _module(app / "templates", f"t{k}", "def broken(:\n")
     env = dict(os.environ, COMPILE_BYTECODE_VENVS=str(venvs), COMPILE_BYTECODE_APPS=str(apps),
-               COMPILE_BYTECODE_EXTRA_VENVS="", COMPILE_BYTECODE_MARKER=str(tmp / "etc/vast-bytecode.tsv"))
+               COMPILE_BYTECODE_VENV_SEARCH=str(tmp / "opt"), COMPILE_BYTECODE_MARKER=str(tmp / "etc/vast-bytecode.tsv"))
     env.pop("VAST_ENGINE_PYTHON", None)
     return env, site, app
 
@@ -112,6 +112,52 @@ def test_on_an_external_image_the_mirror_is_compiled_not_the_engine(tmp_path):
     assert r.returncode == 0, r.stderr
     assert list(site.rglob("*.pyc"))
     assert not list(engine_site.rglob("*.pyc"))
+
+
+def test_a_venv_outside_venv_is_found_by_its_pyvenv_cfg(tmp_path):
+    # The portal's and the provisioner's venvs live under /opt, not /venv.
+    env, _, _ = _world(tmp_path)
+    tool_site = _venv(tmp_path / "opt/instance-tools/provisioner/venv")
+    _module(tool_site / "prov", "p0")
+    assert _run(env).returncode == 0
+    assert list(tool_site.rglob("*.pyc"))
+    assert str(tool_site) in (tmp_path / "etc/vast-bytecode.tsv").read_text()
+
+
+def test_an_engine_venv_under_opt_is_not_compiled(tmp_path):
+    # sglang's engine is itself a venv under /opt; it is imported through the /venv/main mirror.
+    env, _, _ = _world(tmp_path)
+    engine_site = _venv(tmp_path / "opt/sglang")
+    _module(engine_site / "sglang", "s0")
+    env["VAST_ENGINE_PYTHON"] = str(tmp_path / "opt/sglang/bin/python")
+    assert _run(env).returncode == 0
+    assert not list(engine_site.rglob("*.pyc"))
+
+
+def _helper_module():
+    import importlib.machinery, importlib.util
+    loader = importlib.machinery.SourceFileLoader("compile_bytecode", str(HELPER))
+    spec = importlib.util.spec_from_loader("compile_bytecode", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def test_app_trees_get_one_interpreter_per_python_version():
+    # aio-studio runs each app in its own venv; with mixed versions every app needs each tag.
+    cb = _helper_module()
+    main, a, b, c = (Path(f"/venv/{n}/bin/python") for n in ("main", "a", "b", "c"))
+    assert cb.app_interpreters({a: "3.11", main: "3.12", b: "3.12", c: "3.11"}, main) == [a, main]
+    assert cb.app_interpreters({main: "3.12", b: "3.12"}, main) == [main]
+    assert cb.app_interpreters({b: "3.12"}, None) == [b]
+
+
+def test_a_single_python_version_compiles_each_app_tree_once(tmp_path):
+    env, _, app = _world(tmp_path)
+    _venv(tmp_path / "venv/comfyui")                       # a second venv, same version
+    assert _run(env).returncode == 0
+    marker = (tmp_path / "etc/vast-bytecode.tsv").read_text().splitlines()
+    assert [l for l in marker if l.endswith(f"\t{app}")] == [f"{tmp_path / 'venv/main/bin/python'}\t{app}"]
 
 
 # ---- boot stage 36: the first-boot copy keeps the sources' timestamps ----
