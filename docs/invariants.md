@@ -2476,3 +2476,11 @@ the engine interpreter's own site directories (ADR 0048). Verified against the i
 Exemptions: base and pytorch images (their conda `/venv/main` owns its packages and never
 inherited); `VAST_ENGINE_PYTHON=none` images have no mirror and nothing to verify.
 Runtime check: `base/46-venv-mirror.sh`.
+
+### No image takes automatic venv backups (ADR 0056) — **not gated yet**
+
+The boot stage `48-venv-backup.sh` and `venv-backup.sh` are gone. No user-facing doc may describe
+automatic venv backups, `.venv-backups` or `VENV_BACKUP_COUNT`; the move between instances takes
+the package list by hand on the source at transfer time (`pip freeze > /workspace/venv-main.txt`).
+Gate: pending a decision on a lint rule (a documented env var must be read by the image, with
+upstream-read variables marked).

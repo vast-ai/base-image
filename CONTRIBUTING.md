@@ -95,7 +95,6 @@ Scripts in `ROOT/etc/vast_boot.d/` run in numeric order:
 45-user-write-bashrc.sh # User shell config
 46-user-propagate-ssh-keys.sh
 47-user-git-safe-dirs.sh
-48-venv-backup.sh       # Venv state backup
 55-tls-cert-gen.sh      # TLS certificate generation
 65-supervisor-launch.sh # Start supervisor
 75-provisioning-script.sh # Run PROVISIONING_SCRIPT (if set)
