@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+[[ -r /opt/instance-tools/lib/trust-env.sh ]] && . /opt/instance-tools/lib/trust-env.sh
 
 # Everything below the release lookup runs for both sources: a GitHub release (default) or
 # PORTAL_DOWNLOAD_URL. Setup, cleanup and the argument parse therefore live at top level

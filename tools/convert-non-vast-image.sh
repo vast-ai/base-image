@@ -125,13 +125,21 @@ if [[ ! -x /usr/bin/python3 ]]; then
     apt-get install --no-install-recommends -y python3
 fi
 
-# Ensure uv python is available
-if ! which uv > /dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
-    chmod +x /tmp/uv-install.sh
-    UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
-    rm -f /tmp/uv-install.sh 
-fi
+# The CA distrust must have landed before anything below fetches over TLS: the apt install
+# above upgrades ca-certificates to the distro's current list, which drops the roots behind
+# the compromised eMudhra intermediates (Ubuntu 20260816ubuntu0.*, Debian 20250419~deb12u2).
+for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+    if [[ -e "/etc/ssl/certs/${root}.pem" ]]; then
+        echo "FATAL: ${root} is still trusted after the ca-certificates upgrade" >&2; exit 1
+    fi
+done
+
+# Install our uv even when the upstream image ships one: uv compiles its root store in, so an
+# older upstream uv keeps trusting whatever its release trusted (fixed from 0.13.4).
+curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+chmod +x /tmp/uv-install.sh
+UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
+rm -f /tmp/uv-install.sh
 
 # Install Instance Portal
 chown -R 0:0 /opt/portal-aio
@@ -232,13 +240,19 @@ if [[ ! -d /venv/main ]]; then
             su -l user -c "/opt/miniforge3/bin/conda config --set env_prompt '({name}) '"
             su -l user -c "/opt/miniforge3/bin/conda init"
         fi
-        /opt/miniforge3/bin/conda clean -ay
+        # Current CA data, then an empty package cache (same as base image).
+        /opt/miniforge3/bin/conda install -y -n base ca-certificates certifi pip
+        /opt/miniforge3/bin/conda clean --all --force-pkgs-dirs -y
 
         mkdir -p /venv
         # No --seed: on python < 3.12 it installs setuptools/wheel into the venv, where they
         # would win over the engine's own (setuptools >= 81 has no pkg_resources).
         uv venv --relocatable -p "$SYS_PYTHON" /venv/main
         if [[ "$VAST_ENGINE_PYTHON" != none ]]; then
+            # The engine's certifi (a data-only CA bundle) and pip (which vendors its own) are
+            # as old as the upstream image. Upgrade them BEFORE the mirror is built, so the
+            # mirror links the new files.
+            uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages --no-deps -U certifi pip
             /opt/instance-tools/bin/venv-mirror build --venv /venv/main \
                 --engine-python "$VAST_ENGINE_PYTHON"
         fi
@@ -273,6 +287,19 @@ if id -u user > /dev/null 2>&1; then
     chown -R user:root /opt/syncthing
 fi
 rm -f /opt/syncthing.tar.gz
+
+# CA data that does not follow the OS store on its own, wherever it landed (engine, sys-venv,
+# our venvs): grpcio's bundled roots.pem is pointed at the OS store, as Debian does for
+# certifi; uv-managed interpreters get a current pip; stale uv caches would reinstall old
+# certifi into any new env.
+for f in $(find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f 2>/dev/null); do
+    ln -sf /etc/ssl/certs/ca-certificates.crt "$f"
+done
+for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
+    [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
+done
+uv cache clean >/dev/null 2>&1 || true
+rm -rf /root/.cache/uv
 
 # Clean up
 apt-get clean && \

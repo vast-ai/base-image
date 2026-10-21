@@ -6,6 +6,8 @@
 
 . /opt/instance-tools/provisioner/venv/bin/activate 2>/dev/null
 
+[[ -r /opt/instance-tools/lib/trust-env.sh ]] && . /opt/instance-tools/lib/trust-env.sh
+
 # Add the provisioner library to the Python path
 export PYTHONPATH="/opt/instance-tools/lib:${PYTHONPATH:-}"
 

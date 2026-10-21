@@ -138,7 +138,9 @@ check_http_redirect() {
     local redirect_status
     redirect_status=$(curl -s --max-time "${HTTP_CHECK_MAX_TIME:-20}" -o /dev/null -w '%{http_code}' \
         "http://127.0.0.1:${port}/" 2>/dev/null)
-    if [[ "$redirect_status" =~ ^(301|302|307|308)$ ]]; then
+    # Exactly 307 (ADR 0057). Browsers cache a 308 for the ip:port indefinitely, and Vast reuses
+    # ip:port across instances with HTTPS sometimes off, so a 308 strands the next tenant.
+    if [[ "$redirect_status" == "307" ]]; then
         # Verify the redirect Location points to https
         local redirect_loc
         redirect_loc=$(curl -s --max-time "${HTTP_CHECK_MAX_TIME:-20}" -D- -o /dev/null \
@@ -148,15 +150,17 @@ check_http_redirect() {
         if ! echo "$redirect_loc" | grep -qi "https://"; then
             fail_later "tls-redirect-target${label}" "redirect Location does not point to https"
         fi
+    elif [[ "$redirect_status" =~ ^(301|302|308)$ ]]; then
+        fail_later "tls-http-redirect${label}" "http://127.0.0.1:${port} redirected with ${redirect_status}; it must be 307 (a cached permanent redirect strands the next instance on this ip:port, ADR 0057) -- check the caddy_builder patch"
     elif [[ "$redirect_status" == "000" ]]; then
         # 000 means curl got NO HTTP status — which is exactly what a raw TLS listener
         # with no http_redirect wrapper does to a plaintext GET. That is the regression
         # this check exists to detect, so accepting it made the fail_later below
-        # unreachable: neither the healthy config (301/302) nor the broken one (000)
+        # unreachable: neither the healthy config (307) nor the broken one (000)
         # could reach it. A port the Caddyfile declares `https` must answer the redirect.
         fail_later "tls-http-redirect${label}" "http://127.0.0.1:${port} gave no HTTP response (000) — a plaintext request to a declared https port must be redirected, so the http_redirect wrapper is missing"
     else
-        fail_later "tls-http-redirect${label}" "http://127.0.0.1:${port} returned ${redirect_status}, expected 301/302/307/308 redirect to HTTPS"
+        fail_later "tls-http-redirect${label}" "http://127.0.0.1:${port} returned ${redirect_status}, expected a 307 redirect to HTTPS"
     fi
 }
 

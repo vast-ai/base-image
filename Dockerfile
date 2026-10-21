@@ -1,18 +1,38 @@
 # Choose a base image.  Sensible options include ubuntu:xx.xx, nvidia/cuda:xx-cuddnx
 ARG BASE_IMAGE
 
-### Build Caddy with single port TLS redirect
-FROM --platform=$BUILDPLATFORM golang:1.23.4-bookworm AS caddy_builder
+### Build Caddy: upstream at a pinned release, plus one patch (ADR 0057)
+# The single-port TLS listener answers plain HTTP with a redirect to https://. Upstream sends a
+# 308, which browsers cache permanently for that ip:port; Vast reuses ip:port across instances
+# and HTTPS can be off, so a cached 308 strands the next tenant. We send a 307. That one line is
+# the whole patch, and the build fails unless it applied.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132 AS caddy_builder
 
-# Install xcaddy for the current architecture
-RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+ARG CADDY_VERSION=v2.11.7
+ARG CADDY_COMMIT=72dd0fb067f6d7826c7f79907670ba4a713bfe37
+ARG XCADDY_VERSION=v0.4.7
+ARG REPLACE_RESPONSE_COMMIT=80962887e4c680abfd1b11ce1403fa8cc0fdd3d6
+# x/net above Caddy's own requirement clears five reachable advisories (GO-2026-6603/6610/6611/6612/6617).
+ARG XNET_VERSION=v0.60.0
 
-# Build Caddy
+# The clone is checked against CADDY_COMMIT, so its integrity does not rest on this image's CA
+# store; Go modules are checked against sumdb.
+RUN set -eu && \
+    apt-get update && apt-get install -y --only-upgrade ca-certificates && \
+    go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION} && \
+    git clone --depth 1 --branch "${CADDY_VERSION}" https://github.com/caddyserver/caddy /src/caddy && \
+    [ "$(git -C /src/caddy rev-parse HEAD)" = "${CADDY_COMMIT}" ] && \
+    f=/src/caddy/modules/caddyhttp/httpredirectlistener.go && \
+    sed -i 's/"308 Permanent Redirect"/"307 Temporary Redirect"/; s/StatusCode: 308,/StatusCode: 307,/' "$f" && \
+    grep -q '"307 Temporary Redirect"' "$f" && grep -q 'StatusCode: 307,' "$f" && ! grep -q '308' "$f"
+
 ENV CGO_ENABLED=0
 ARG TARGETARCH
-RUN GOOS=linux GOARCH=$TARGETARCH xcaddy build \
-    --with github.com/caddyserver/caddy/v2=github.com/ai-dock/caddy/v2@httpredirect \
-    --with github.com/caddyserver/replace-response
+RUN cd /src && GOOS=linux GOARCH=$TARGETARCH xcaddy build "${CADDY_VERSION}" \
+    --output /go/caddy \
+    --with github.com/caddyserver/caddy/v2=/src/caddy \
+    --with github.com/caddyserver/replace-response@${REPLACE_RESPONSE_COMMIT} \
+    --replace golang.org/x/net=golang.org/x/net@${XNET_VERSION}
 
 ### Main Build ###
 
@@ -256,6 +276,11 @@ RUN \
     source /opt/nvm/nvm.sh && \
     nvm install --lts
 
+# Node trusts the OS store instead of its compiled-in roots, so an Ubuntu CA distrust reaches
+# it with the next apt upgrade instead of waiting for a Node release (ADR 0058).
+# --use-system-ca would ADD the OS store to the compiled-in roots and keep a distrusted root.
+ENV NODE_OPTIONS=--use-openssl-ca
+
 # Add the 'instance portal' web app into this container to avoid needing to specify in onstart.  
 # We will launch each component with supervisor - Not the standalone launch script.
 COPY ./portal-aio /opt/portal-aio
@@ -291,7 +316,9 @@ RUN \
     uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11 && \
     . /opt/instance-tools/provisioner/venv/bin/activate && \
     uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt && \
-    deactivate
+    deactivate && \
+    # uv's managed interpreters carry the pip (and its vendored certifi) of their build date.
+    for py in "${UV_PYTHON_INSTALL_DIR}"/*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done
 
 # Populate the system Python environment with useful tools.  Add jupyter to speed up instance creation and install tensorboard as it is quite useful if training
 # These are in the system and not the venv because we want that to be as clean as possible
@@ -304,11 +331,21 @@ RUN \
         -O /usr/local/share/ca-certificates/jvastai.crt \
         https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
+    # The distrust must have landed: Ubuntu's fixed ca-certificates (20260816ubuntu0.*) drops
+    # emSign ECC Root CA - G3, which anchors the compromised eMudhra intermediates.
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816 && \
+    [ ! -e /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem ] && \
     pip install --no-cache-dir --ignore-installed \
+        certifi \
         jupyter \
         supervisor \
         tensorboard \
         magic-wormhole && \
+    # grpcio (via tensorboard) ships its own root bundle and ignores SSL_CERT_FILE; point it at
+    # the OS store, as Debian does for certifi, so it cannot go stale on its own.
+    for f in $(find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f 2>/dev/null); do \
+        ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; \
+    done && \
     mkdir -p /var/log/supervisor
 
 # Install Syncthing
@@ -395,7 +432,12 @@ RUN \
     mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
     echo 'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
         > /venv/main/etc/conda/activate.d/environment.sh && \
-    /opt/miniforge3/bin/conda clean -ay && \
+    # The installer bundles ca-certificates/certifi/pip as of its release; take the current
+    # ones (install, not update: update refuses a package the prefix lacks), then empty the
+    # package cache, whose stale copies would seed every new env.
+    /opt/miniforge3/bin/conda install -y -n base ca-certificates certifi pip && \
+    /opt/miniforge3/bin/conda install -y -p /venv/main ca-certificates pip && \
+    /opt/miniforge3/bin/conda clean --all --force-pkgs-dirs -y && \
     rm -rf /tmp/*
 
 # Add venv-like activation script for conda env
