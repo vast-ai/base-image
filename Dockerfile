@@ -274,12 +274,11 @@ RUN \
     git clone https://github.com/nvm-sh/nvm.git /opt/nvm && \
     (cd /opt/nvm/ && git checkout `git describe --abbrev=0 --tags --match "v[0-9]*" $(git rev-list --tags --max-count=1)`) && \
     source /opt/nvm/nvm.sh && \
-    nvm install --lts
-
-# Node trusts the OS store instead of its compiled-in roots, so an Ubuntu CA distrust reaches
-# it with the next apt upgrade instead of waiting for a Node release (ADR 0058).
-# --use-system-ca would ADD the OS store to the compiled-in roots and keep a distrusted root.
-ENV NODE_OPTIONS=--use-openssl-ca
+    nvm install --lts && \
+    # Node compiles in its own roots, so its trust only moves with a Node release. These are the
+    # first releases that block the compromised eMudhra intermediates (nodejs/node#66871); an
+    # LTS line not listed here fails the build until it has one (ADR 0058).
+    node -e 'const [M,m,p]=process.versions.node.split(".").map(Number);const f={22:[23,4],24:[22,1],26:[12,1]}[M];if(!f||m<f[0]||(m===f[0]&&p<f[1])){console.error(`Node ${process.version} predates the eMudhra block (need 22.23.4 / 24.22.1 / 26.12.1)`);process.exit(1)}'
 
 # Add the 'instance portal' web app into this container to avoid needing to specify in onstart.  
 # We will launch each component with supervisor - Not the standalone launch script.

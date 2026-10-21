@@ -6,8 +6,9 @@
 
 ## Context
 In October 2026 the private keys of eight eMudhra intermediate CAs were found to be recoverable.
-Ubuntu, Debian, certifi, Go and Electron shipped distrust updates within days; Node merged a fix
-that is not yet in a release. An image carries many CA stores besides the OS one, and each went
+Ubuntu, Debian, certifi, pip, uv, Go and Electron shipped distrust updates within days; Node
+released its fix (nodejs/node#66871, which blocks the eight intermediates by public key) on
+2026-10-21 in 22.23.4, 24.22.1 and 26.12.1. An image carries many CA stores besides the OS one, and each went
 stale on its own schedule:
 
 - certifi in every venv we create, pinned in the portal's requirements;
@@ -35,6 +36,11 @@ rebuild, a pin bump or an upstream release.
   trusting whatever certifi they were built with until the next rebuild.
 - **`--use-system-ca` / `NODE_USE_SYSTEM_CA=1` for Node.** Rejected: tested on v24.21.0, it ADDS
   the OS store to Node's compiled-in roots, so a root the OS has distrusted stays trusted.
+- **`NODE_OPTIONS=--use-openssl-ca` image-wide**, so Node uses the OS store instead of its own
+  roots. Tested on v24.21.0 and adopted while Node had no released fix, then dropped once the
+  fixed releases shipped: it changes Node's trust semantics for every user process, a user's own
+  `NODE_OPTIONS` silently replaces it, and Node's own fix blocks the intermediates whichever root
+  a chain reaches, including through a user-supplied bundle.
 
 ## Decision
 1. **Every bundle we ship is current at build time.** The base Dockerfile and
@@ -49,28 +55,25 @@ rebuild, a pin bump or an upstream release.
    `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `UV_SYSTEM_CERTS` as defaults (a value the
    template or user set wins). Only the services we own source it: the portal, tunnel manager,
    provisioner, `update-portal` and model-ui. It is never in `/etc/environment`.
-4. **Node follows the OS store image-wide:** `ENV NODE_OPTIONS=--use-openssl-ca`. Node is a
-   feature the base image ships to every user and had no released fix. With this flag Node uses
-   the OS directory store instead of its compiled-in roots (verified by handshake: a CA present
-   only in a copy of that directory is trusted, and the same leaf is rejected without it).
-   This is a deliberate exception to point 3.
+4. **Node is a fixed release.** Node's trust only moves with a Node release, so the base build
+   asserts that the Node it installs is at or above the first release that blocks the
+   compromised intermediates on its line (22.23.4, 24.22.1, 26.12.1). A line without such a
+   release fails the build.
 
 ## Binding conditions
 - An image passes the trust probe before it is promoted. The probe finds bundles by content,
   checks the OS directory store, verifies Node by handshake, runs a positive control at a fixed
   check time, and fails rather than passes when it cannot run a check.
-- `--use-system-ca` is not a substitute for `--use-openssl-ca`.
+- The Node floor is raised when Node ships the next trust fix; the probe checks the same floor.
 
 ## Consequences
-- The next OS-level distrust reaches our services and Node with an `apt-get upgrade`, without
-  waiting for a pin bump or a Node release.
-- A user who sets their own `NODE_OPTIONS` replaces ours. Electron strips the flag with a warning
-  and is protected by its own releases. Bun ignores `NODE_OPTIONS`.
-- With the flag, Node also trusts the Vast root that the image adds to the OS store, as curl and
-  Python already do.
+- The next OS-level distrust reaches our services with an `apt-get upgrade`, without waiting for
+  a pin bump. Node still needs a Node release, which the build floor forces us to take.
+- Node versions a user installs with nvm are theirs to keep current. Bun and Electron ship their
+  own fixes.
 - Upstream CA files we cannot safely replace (botocore's bundle; botocore uses certifi when it is
   importable) are reported by the probe on a dated allowlist.
 
 ## What would reverse this
-Node shipping a release that tracks distrust without the flag, or a user-facing need to keep
-Node on its own root store that outweighs following the OS one.
+Node gaining a way to follow the OS store's distrust without changing its trust semantics for
+users, at which point the version floor could give way to that.
