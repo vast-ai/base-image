@@ -1757,6 +1757,45 @@ inline text and not a local composite action. L109 requires it first in every jo
 requires each copy to equal `linter.CA_REFRESH_STEP_RUN`; the generator's workflow template
 carries it too (ADR 0056).
 
+### The roots the image distrusts, and the Node trust floor, have one source — **GATED (L110)**
+
+`ROOT/opt/instance-tools/lib/distrusted-roots.txt` lists the roots no CA store may trust (name
+and SHA-256); `lib/node-trust-floor.txt` lists the first Node release on each line whose trust
+excludes them. `lib/assert-distrust.sh` reads the list and fails unless the OS store has dropped
+every root, by file and by bundle content. The base Dockerfile runs it right after its
+`apt-get upgrade`, and `convert-non-vast-image.sh` right after its apt install. The base Node
+check reads the floor file, and so does `tests/base/29-ca-trust.sh`. The CI runner step (L109)
+runs before checkout and cannot read the list, so it carries a copy, and L110 requires that copy
+to name exactly the listed roots. In 2026-10 the three copies had already drifted (ADR 0058).
+The pip trust floor (version, wheel URL, SHA-256) lives only in `lib/pip-trust-floor.env`; it is a
+FLOOR, raised only when a new distrust needs a newer pip, and `lib/refresh-ca-data.sh` and the
+test source it rather than define their own.
+
+### Only our own services follow the OS store through trust-env.sh — **GATED (L111)**
+
+`lib/trust-env.sh` sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `UV_SYSTEM_CERTS` as
+defaults. It is sourced, guarded, by the portal, tunnel manager, provisioner, `update-portal` and
+every external model-ui launcher, and never by `supervisor-scripts/utils/environment.sh`, which
+user apps source too. The provisioner's children (the user's provisioning script and manifest
+installs) inherit the defaults; a value the user set wins (ADR 0058).
+
+### The CA trust test gates promotion — **GATED (L112)**
+
+`tests/base/29-ca-trust.sh` verifies the published chains through the compromised eMudhra
+intermediates (`tests/ca-trust/`) against every CA bundle found by content and the OS directory
+store, after a positive control at a fixed check time, and checks bundled `ensurepip` pip
+wheels, Node and uv against their floors. It fails, never passes, when it cannot run a check.
+`base/29-ca-trust` is required in the base and pytorch QA templates and in both promotion
+workflows, so a skip fails the cell (ADR 0058).
+
+### An image's default base reference is a dated tag — **GATED (L113)**
+
+`ARG <NAME>=vastai/base-image:<tag>` in an external or derivative Dockerfile names a dated tag.
+The base promote writes dated tags and moves `-auto` ones and never touches an undated tag such
+as `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held.
+In 2026-10 all five externals defaulted to that tag and no workflow overrode it; its last write
+was in January, so every external shipped January's Caddy and base tooling (ADR 0058).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

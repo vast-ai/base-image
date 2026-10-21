@@ -1,0 +1,9 @@
+# Roots the image must not trust, one per line: <name under /etc/ssl/certs>|<SHA-256 fingerprint>
+# The single list read by lib/assert-distrust.sh (base build, convert-non-vast-image.sh) and
+# tests/base/29-ca-trust.sh. The CI runner step (linter.CA_REFRESH_STEP_RUN, L109) runs before
+# checkout and so cannot read this file; L110 keeps its names equal to the ones here.
+#
+# 2026-10: the private keys of eight eMudhra intermediates are recoverable. Both roots below
+# chain to them (ADR 0058).
+emSign_ECC_Root_CA_-_G3|86A1ECBA089C4A8D3BBE2734C612BA341D813E043CF9E8A862CD5C57A36BBE6B
+Comodo_AAA_Services_root|D7A7A0FB5D7E2731D771E9484EBCDEF71D5F0C3E0A2948782BC83EE0EA699EF4

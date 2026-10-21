@@ -4,6 +4,7 @@ utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/cleanup_generic.sh"
 . "${utils}/environment.sh"
+[[ -r /opt/instance-tools/lib/trust-env.sh ]] && . /opt/instance-tools/lib/trust-env.sh
 . "${utils}/exit_serverless.sh"
 . "${utils}/exit_portal.sh" "instance portal"
 

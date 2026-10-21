@@ -1,18 +1,38 @@
 # Choose a base image.  Sensible options include ubuntu:xx.xx, nvidia/cuda:xx-cuddnx
 ARG BASE_IMAGE
 
-### Build Caddy with single port TLS redirect
-FROM --platform=$BUILDPLATFORM golang:1.23.4-bookworm AS caddy_builder
+### Build Caddy: upstream at a pinned release, plus one patch (ADR 0057)
+# The single-port TLS listener answers plain HTTP with a redirect to https://. Upstream sends a
+# 308, which browsers cache permanently for that ip:port; Vast reuses ip:port across instances
+# and HTTPS can be off, so a cached 308 strands the next tenant. We send a 307. That one line is
+# the whole patch, and the build fails unless it applied.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132 AS caddy_builder
 
-# Install xcaddy for the current architecture
-RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+ARG CADDY_VERSION=v2.11.7
+ARG CADDY_COMMIT=72dd0fb067f6d7826c7f79907670ba4a713bfe37
+ARG XCADDY_VERSION=v0.4.7
+ARG REPLACE_RESPONSE_COMMIT=80962887e4c680abfd1b11ce1403fa8cc0fdd3d6
+# x/net above Caddy's own requirement clears five reachable advisories (GO-2026-6603/6610/6611/6612/6617).
+ARG XNET_VERSION=v0.60.0
 
-# Build Caddy
+# The clone is checked against CADDY_COMMIT, so its integrity does not rest on this image's CA
+# store; Go modules are checked against sumdb.
+RUN set -eu && \
+    apt-get update && apt-get install -y --only-upgrade ca-certificates && \
+    go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION} && \
+    git clone --depth 1 --branch "${CADDY_VERSION}" https://github.com/caddyserver/caddy /src/caddy && \
+    [ "$(git -C /src/caddy rev-parse HEAD)" = "${CADDY_COMMIT}" ] && \
+    f=/src/caddy/modules/caddyhttp/httpredirectlistener.go && \
+    sed -i 's/"308 Permanent Redirect"/"307 Temporary Redirect"/; s/StatusCode: 308,/StatusCode: 307,/' "$f" && \
+    grep -q '"307 Temporary Redirect"' "$f" && grep -q 'StatusCode: 307,' "$f" && ! grep -q '308' "$f"
+
 ENV CGO_ENABLED=0
 ARG TARGETARCH
-RUN GOOS=linux GOARCH=$TARGETARCH xcaddy build \
-    --with github.com/caddyserver/caddy/v2=github.com/ai-dock/caddy/v2@httpredirect \
-    --with github.com/caddyserver/replace-response
+RUN cd /src && GOOS=linux GOARCH=$TARGETARCH xcaddy build "${CADDY_VERSION}" \
+    --output /go/caddy \
+    --with github.com/caddyserver/caddy/v2=/src/caddy \
+    --with github.com/caddyserver/replace-response@${REPLACE_RESPONSE_COMMIT} \
+    --replace golang.org/x/net=golang.org/x/net@${XNET_VERSION}
 
 ### Main Build ###
 
@@ -184,6 +204,9 @@ RUN \
         vulkan-tools && \
     mkdir -p /etc/OpenCL/vendors && \
     echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd && \
+    # The upgrade above must have landed the distro's current distrust list before anything
+    # below fetches over TLS (ADR 0058).
+    /opt/instance-tools/lib/assert-distrust.sh && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -254,7 +277,11 @@ RUN \
     git clone https://github.com/nvm-sh/nvm.git /opt/nvm && \
     (cd /opt/nvm/ && git checkout `git describe --abbrev=0 --tags --match "v[0-9]*" $(git rev-list --tags --max-count=1)`) && \
     source /opt/nvm/nvm.sh && \
-    nvm install --lts
+    nvm install --lts && \
+    # Node compiles in its own roots, so its trust only moves with a Node release: the installed
+    # Node must be at or above the floor for its line in node-trust-floor.txt, and a line not
+    # listed there fails the build (ADR 0058).
+    node -e 'const fs=require("fs");const v=process.versions.node.split(".").map(Number);const floor=new Map(fs.readFileSync("/opt/instance-tools/lib/node-trust-floor.txt","utf8").split("\n").filter(l=>/^\d/.test(l)).map(l=>{const [M,f]=l.trim().split(/\s+/);return [Number(M),f.split(".").map(Number)]}));const f=floor.get(v[0]);const below=!f||v[1]<f[1]||(v[1]===f[1]&&v[2]<f[2]);if(below){console.error(`Node ${process.version} is below the trust floor for its line (node-trust-floor.txt)`);process.exit(1)}'
 
 # Add the 'instance portal' web app into this container to avoid needing to specify in onstart.  
 # We will launch each component with supervisor - Not the standalone launch script.
@@ -291,7 +318,9 @@ RUN \
     uv venv --seed /opt/instance-tools/provisioner/venv -p 3.11 && \
     . /opt/instance-tools/provisioner/venv/bin/activate && \
     uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt && \
-    deactivate
+    deactivate && \
+    # uv's managed interpreters carry the pip (and its vendored certifi) of their build date.
+    for py in "${UV_PYTHON_INSTALL_DIR}"/*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done
 
 # Populate the system Python environment with useful tools.  Add jupyter to speed up instance creation and install tensorboard as it is quite useful if training
 # These are in the system and not the venv because we want that to be as clean as possible
@@ -305,10 +334,16 @@ RUN \
         https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
     pip install --no-cache-dir --ignore-installed \
+        certifi \
         jupyter \
         supervisor \
         tensorboard \
         magic-wormhole && \
+    # This PyPI certifi shadows Debian's (which reads the OS store) for everything on the system
+    # Python. Point its bundle at the OS store too, so the next apt distrust reaches jupyter
+    # and tensorboard without waiting for a certifi release (ADR 0058).
+    find /usr/local/lib -path '*/dist-packages/certifi/cacert.pem' -type f \
+        -exec ln -sf /etc/ssl/certs/ca-certificates.crt {} \; && \
     mkdir -p /var/log/supervisor
 
 # Install Syncthing
@@ -395,7 +430,12 @@ RUN \
     mkdir -p /venv/main/etc/conda/{activate.d,deactivate.d} && \
     echo 'echo -e "\033[32mActivated conda/uv virtual environment at \033[36m$(realpath $CONDA_PREFIX)\033[0m"' \
         > /venv/main/etc/conda/activate.d/environment.sh && \
-    /opt/miniforge3/bin/conda clean -ay && \
+    # The installer bundles ca-certificates/certifi/pip as of its release; take the current
+    # ones (install, not update: update refuses a package the prefix lacks), then empty the
+    # package cache, whose stale copies would seed every new env.
+    /opt/miniforge3/bin/conda install -y -n base ca-certificates certifi pip && \
+    /opt/miniforge3/bin/conda install -y -p /venv/main ca-certificates pip && \
+    /opt/miniforge3/bin/conda clean --all --force-pkgs-dirs -y && \
     rm -rf /tmp/*
 
 # Add venv-like activation script for conda env
@@ -463,6 +503,10 @@ RUN \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
+
+# CA data that does not follow the OS store on its own (grpcio roots.pem, ensurepip's bundled
+# pip), after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN \

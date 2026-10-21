@@ -1,4 +1,4 @@
-ARG VAST_BASE=vastai/base-image:cuda-12.9.1-cudnn-devel-ubuntu24.04-py312
+ARG VAST_BASE=vastai/base-image:cuda-12.9-mini-py312-2026-10-21
 # Must match the Ubuntu version in VAST_BASE so guacd links against the right SONAMEs
 ARG UBUNTU_VERSION=24.04
 
@@ -559,6 +559,9 @@ ENV XIM=fcitx
 ENV XMODIFIERS="@im=fcitx"
 
 USER root
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

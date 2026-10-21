@@ -110,6 +110,10 @@ RULES: list[tuple[str, str, str]] = [
     ("L107", ERROR, "Provisioning code splits a multi-entry env var with the provisioner's splitter (`provisioner/envlist.py`: a value with `;` splits on `;` only, as before; otherwise on `,`, where a comma inside `[...]` or before a version operator does not split). Checked: no `;` split (`.split(\";\")`, `.rsplit`, `split(sep=\";\")`, `re.split` on `;`) in the provisioner or a provisioner extension outside an extension's `def split_entries` fallback within `except ImportError:`, and no `IFS=';'` in a provisioning script (any depth under `provisioning_scripts/`, and `provisioning/`) outside its `split_env_entries` function (where a value containing `;` keeps its original split). A `;` split written another way is not caught. Vast drops any template variable whose value contains `;`, so a `;`-only parser makes every multi-entry value set in a template disappear before the instance starts. Exempt: `downloaders/wget.py`, which splits an HTTP Content-Disposition header (ADR 0053)"),
     ("L108", ERROR, "A workflow job whose matrix is an optional generated list -- `fromJson(needs.<job>.outputs.<name>)` where the name contains `mini` or `multi` -- has a job-level `if:` that reads `needs.<job>.outputs`, so an empty list skips the job. GitHub cannot create a job from an empty matrix: it fails the whole run without listing the job. A FILTER legitimately leaves these lists empty (`FILTER=cuda-12.9-24` builds no mini image), so build-base-image reported failure on builds whose every image pushed, and a red run stopped meaning anything. The main build and merge lists are out of scope: an empty one means FILTER matched nothing, and failing the run is the right result"),
     ("L109", ERROR, "The first step of every workflow job that has steps is `Refresh runner CA trust store`, with exactly the text of `linter.CA_REFRESH_STEP_RUN`: upgrade ca-certificates (allowed to fail, so a mirror outage does not stop CI), print its version, then fail if a distrusted root is still linked in /etc/ssl/certs. A hosted runner image is built days before it serves jobs, so an Ubuntu CA distrust reaches it late: in 2026-10 the eMudhra distrust shipped on 20 Oct while runner image 20261018 kept serving jobs, and every job logged in to Docker Hub, pulled bases and called the Vast API through a store that still trusted the compromised roots. The step must come FIRST because checkout is itself a TLS fetch, which is also why it is inline text rather than a local composite action (those need a checkout). One canonical text, so adding a root is one edit re-applied everywhere, never a drifted copy. Reusable-workflow calls have no steps and are skipped; the called workflow's own jobs are checked (ADR 0056)"),
+    ("L110", ERROR, "The roots the image must not trust have ONE source, `ROOT/opt/instance-tools/lib/distrusted-roots.txt` (name and SHA-256), and so does the Node trust floor, `lib/node-trust-floor.txt`. The base Dockerfile, `Dockerfile.runtime` (the mini images) and `convert-non-vast-image.sh` all run `lib/assert-distrust.sh`, which reads the list; the base Node check reads the floor file; and the CI runner step (`linter.CA_REFRESH_STEP_RUN`, L109), which runs before checkout and so carries a copy, must name exactly the listed roots. The pip trust floor (version, wheel URL and SHA-256) likewise lives only in `lib/pip-trust-floor.env`, which `lib/refresh-ca-data.sh` and `tests/base/29-ca-trust.sh` source; neither may define its own `PIP_FLOOR`. In 2026-10 the base checked one root while convert and the runner checked two: a list kept in three places had already drifted (ADR 0058)"),
+    ("L111", ERROR, "Our own services, and only they, source `lib/trust-env.sh` (the portal, tunnel manager, provisioner, update-portal and every external model-ui launcher), with the guarded line `[[ -r ... ]] && . ...`. It must never be sourced from `supervisor-scripts/utils/environment.sh`, which every supervisor script sources, user apps included: set there it would override users' certifi, conda's OpenSSL and private-CA setups, which ADR 0058 rejects. A service that does not source it keeps trusting the certifi it was built with until the next rebuild"),
+    ("L112", ERROR, "`tests/base/29-ca-trust.sh` exists with its chain fixtures (`tests/ca-trust/`), and `base/29-ca-trust` is in the required-test list of the base and pytorch QA templates and of both promotion workflows, so a skipped or failing trust check blocks promotion. ADR 0058 made the trust probe a promotion condition; while it lived outside the repo, a green promote checked no CA bundle at all"),
+    ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -4389,6 +4393,102 @@ def check_jobs_refresh_runner_ca_first(repo: Path) -> Iterable[Finding]:
                               "edit the canonical text and re-apply it, never one copy (L109)")
 
 
+DISTRUSTED_ROOTS = "ROOT/opt/instance-tools/lib/distrusted-roots.txt"
+ASSERT_DISTRUST = "/opt/instance-tools/lib/assert-distrust.sh"
+
+
+def check_distrusted_roots_have_one_source(repo: Path) -> Iterable[Finding]:
+    """L110 (repo) — the distrusted-root list, and the Node trust floor, each have one source."""
+    lst = repo / DISTRUSTED_ROOTS
+    if not lst.is_file():
+        yield Finding("L110", ERROR, "repo", DISTRUSTED_ROOTS, "missing; it is the one list of roots the image must not trust (L110)")
+        return
+    names = [ln.split("|", 1)[0].strip() for ln in lst.read_text().splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")]
+    m = re.search(r"for root in ([^;]+);", CA_REFRESH_STEP_RUN)
+    runner = m.group(1).split() if m else []
+    if sorted(runner) != sorted(names):
+        yield Finding("L110", ERROR, "repo", "tools/imagegen/imagegen/linter.py:CA_REFRESH_STEP_RUN",
+                      f"runner step checks {runner} but {DISTRUSTED_ROOTS} lists {names}; the runner runs "
+                      "before checkout so it carries a copy, and the copy must match (L110)")
+    for rel in ("Dockerfile", "Dockerfile.runtime", "tools/convert-non-vast-image.sh"):
+        f = repo / rel
+        if f.is_file() and ASSERT_DISTRUST not in f.read_text():
+            yield Finding("L110", ERROR, "repo", rel, f"does not run {ASSERT_DISTRUST}; the OS store's distrust "
+                          "must be asserted from the one list before anything is fetched (L110)")
+    df = repo / "Dockerfile"
+    if df.is_file() and "node-trust-floor.txt" not in df.read_text():
+        yield Finding("L110", ERROR, "repo", "Dockerfile", "the Node check does not read node-trust-floor.txt, "
+                      "so the build and tests/base/29-ca-trust.sh can disagree about the floor (L110)")
+    for rel in ("ROOT/opt/instance-tools/lib/refresh-ca-data.sh", "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh"):
+        f = repo / rel
+        if not f.is_file():
+            continue
+        text = f.read_text()
+        if "pip-trust-floor.env" not in text or re.search(r"^\s*PIP_FLOOR=", text, re.M):
+            yield Finding("L110", ERROR, "repo", rel, "must take the pip trust floor from lib/pip-trust-floor.env "
+                          "and define no PIP_FLOOR of its own; a second copy drifts (L110)")
+
+
+TRUST_ENV_SOURCE = "[[ -r /opt/instance-tools/lib/trust-env.sh ]] && . /opt/instance-tools/lib/trust-env.sh"
+TRUST_ENV_SERVICES = ("ROOT/opt/supervisor-scripts/instance_portal.sh", "ROOT/opt/supervisor-scripts/tunnel_manager.sh",
+                      "ROOT/opt/instance-tools/bin/provisioner", "ROOT/opt/instance-tools/bin/update-portal")
+
+
+def check_trust_env_is_ours_only(repo: Path) -> Iterable[Finding]:
+    """L111 (repo) — our own services source trust-env.sh; nothing user-facing does."""
+    services = [repo / s for s in TRUST_ENV_SERVICES] + sorted(repo.glob("external/*/ROOT/opt/supervisor-scripts/model-ui.sh"))
+    for f in services:
+        if f.is_file() and TRUST_ENV_SOURCE not in f.read_text():
+            yield Finding("L111", ERROR, "repo", str(f.relative_to(repo)),
+                          "does not source lib/trust-env.sh, so this service keeps trusting whatever certifi it was "
+                          "built with until the next rebuild (ADR 0058, L111)")
+    env = repo / "ROOT/opt/supervisor-scripts/utils/environment.sh"
+    if env.is_file() and "trust-env" in env.read_text():
+        yield Finding("L111", ERROR, "repo", str(env.relative_to(repo)),
+                      "sources trust-env.sh, but every supervisor script sources environment.sh, including user "
+                      "apps; trust-env is for our own services only (ADR 0058, L111)")
+
+
+_BASE_DEFAULT = re.compile(r"^ARG\s+([A-Z_]+)=(vastai/base-image:\S+)\s*$", re.M)
+_DATED_TAG = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+
+def check_base_defaults_are_dated(repo: Path) -> Iterable[Finding]:
+    """L113 (repo) — an image's default vastai/base-image reference is a dated tag."""
+    for df in sorted(list(repo.glob("external/*/Dockerfile*")) + list(repo.glob("derivatives/*/Dockerfile*"))):
+        for m in _BASE_DEFAULT.finditer(df.read_text()):
+            if not _DATED_TAG.search(m.group(2)):
+                yield Finding("L113", ERROR, "repo", str(df.relative_to(repo)),
+                              f"ARG {m.group(1)}={m.group(2)} floats; promote never moves an undated tag, so this "
+                              "builds from whatever it last pointed at. Pin a dated tag (L113)")
+
+
+CA_TRUST_TEST = "base/29-ca-trust"
+CA_TRUST_REQUIRED_IN = (("templates/base-qa/template.yml", "INSTANCE_TEST_REQUIRE_PASS"),
+                        ("templates/pytorch-qa/template.yml", "INSTANCE_TEST_REQUIRE_PASS"),
+                        (".github/workflows/promote-base-image.yml", "REQUIRE_TESTS="),
+                        (".github/workflows/promote-pytorch.yml", "def base_req:"))
+
+
+def check_ca_trust_test_gates_promotion(repo: Path) -> Iterable[Finding]:
+    """L112 (repo) — the CA trust test exists, has its fixtures, and is required to promote."""
+    t = repo / "ROOT/opt/instance-tools/tests" / f"{CA_TRUST_TEST}.sh"
+    fx = repo / "ROOT/opt/instance-tools/tests/ca-trust"
+    if not t.is_file():
+        yield Finding("L112", ERROR, "repo", str(t.relative_to(repo)), "missing; nothing checks the image's CA stores (L112)")
+    if not (fx / "reference-roots.pem").is_file() or not list((fx / "chains").glob("*.pem")):
+        yield Finding("L112", ERROR, "repo", str(fx.relative_to(repo)), "chain fixtures missing; the test cannot run its checks (L112)")
+    for rel, key in CA_TRUST_REQUIRED_IN:
+        f = repo / rel
+        if not f.is_file():
+            continue
+        lines = [ln for ln in f.read_text().splitlines() if key in ln]
+        if not any(CA_TRUST_TEST in ln for ln in lines):
+            yield Finding("L112", ERROR, "repo", rel, f"{CA_TRUST_TEST} is not in its required-test list ({key}); "
+                          "a skipped trust test would then pass the promotion (L112)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
@@ -4407,7 +4507,9 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_qa_selection_is_validated,
     check_qa_override_is_the_pattern,
     check_convert_builds_the_mirror,
-    check_jobs_refresh_runner_ca_first]
+    check_jobs_refresh_runner_ca_first,
+    check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
+    check_ca_trust_test_gates_promotion, check_base_defaults_are_dated]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

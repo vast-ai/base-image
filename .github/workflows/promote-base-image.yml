@@ -405,7 +405,7 @@ jobs:
       template_dir: templates/base-qa
       label: base-image-qa-base
       require_key: true
-      require_tests: "base/36-home-env-sync base/57-env-literal base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+      require_tests: "base/29-ca-trust base/36-home-env-sync base/57-env-literal base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       # Base QA pulls a 10-20 GB image and downloads no model; observed passing
@@ -496,7 +496,7 @@ jobs:
       template_dir: templates/base-qa
       label: base-image-qa-serverless-detect
       require_key: true
-      require_tests: "base/15-boot-markers base/85-serverless-services"
+      require_tests: "base/15-boot-markers base/29-ca-trust base/85-serverless-services"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       poll_timeout: "900"
@@ -514,7 +514,7 @@ jobs:
         # the SDK looking up an unmapped VAST_TCP_PORT_3000, unnoticed, because L067
         # deliberately removed base's pyworker assertion. This cell tests the MODE SWITCH.
         SUPERVISOR_SKIP_PYWORKER=true
-        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/85-serverless-services
+        INSTANCE_TEST_REQUIRE_PASS=base/15-boot-markers base/29-ca-trust base/85-serverless-services
         PROV_TIMEOUT=900
         INSTANCE_TEST_DEFAULT_TIMEOUT=900
       # Deliberately OUTSIDE the `qa-evidence-*` namespace: qa-summary globs that pattern
@@ -576,7 +576,7 @@ jobs:
           # trusted from the payload, so the link is checked at the point of use.
           export STAGING_NS="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}"
           export RUN_ID="${{ github.run_id }}"
-          export REQUIRE_TESTS="base/36-home-env-sync base/57-env-literal base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+          export REQUIRE_TESTS="base/29-ca-trust base/36-home-env-sync base/57-env-literal base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
           python - <<'PY' > evidence.json
           import json, os, pathlib, subprocess, sys
           sys.path.insert(0, "tools/template_manager")

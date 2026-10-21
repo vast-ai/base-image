@@ -380,7 +380,7 @@ jobs:
 
           jq -c --arg dpy "py${DEFAULT_PY}" --arg audio "$AUDIO_VERSIONS" '
             ( $audio | split(" ") ) as $has_audio
-            | def base_req: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries "
+            | def base_req: "base/29-ca-trust base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries "
                           + "pytorch.d/05-venv-manifest pytorch.d/10-torch-core "
                           + "pytorch.d/20-torchvision pytorch.d/40-nccl-init";
               # ARCHITECTURE CEILING, the counterpart to the cuda_max_good FLOOR.

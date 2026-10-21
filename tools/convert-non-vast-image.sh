@@ -125,12 +125,21 @@ if [[ ! -x /usr/bin/python3 ]]; then
     apt-get install --no-install-recommends -y python3
 fi
 
-# Ensure uv python is available
-if ! which uv > /dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
-    chmod +x /tmp/uv-install.sh
-    UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
-    rm -f /tmp/uv-install.sh 
+# The CA distrust must have landed before anything below fetches over TLS: the apt install
+# above upgrades ca-certificates to the distro's current list (ADR 0058).
+/opt/instance-tools/lib/assert-distrust.sh
+
+# Install our uv even when the upstream image ships one: uv compiles its root store in, so an
+# older upstream uv keeps trusting whatever its release trusted (fixed from 0.13.4).
+curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+chmod +x /tmp/uv-install.sh
+UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
+rm -f /tmp/uv-install.sh
+# Ours must be the uv that runs, and new enough.
+uv_found=$(command -v uv)
+uv_version=$(uv --version | awk '{print $2}')
+if [[ "$uv_found" != /usr/local/bin/uv || "$(printf '%s\n0.13.4\n' "$uv_version" | sort -V | head -1)" != 0.13.4 ]]; then
+    echo "FATAL: uv on PATH is $uv_found ($uv_version); need /usr/local/bin/uv >= 0.13.4" >&2; exit 1
 fi
 
 # Install Instance Portal
@@ -232,13 +241,37 @@ if [[ ! -d /venv/main ]]; then
             su -l user -c "/opt/miniforge3/bin/conda config --set env_prompt '({name}) '"
             su -l user -c "/opt/miniforge3/bin/conda init"
         fi
-        /opt/miniforge3/bin/conda clean -ay
+        # Current CA data, then an empty package cache (same as base image).
+        /opt/miniforge3/bin/conda install -y -n base ca-certificates certifi pip
+        /opt/miniforge3/bin/conda clean --all --force-pkgs-dirs -y
 
         mkdir -p /venv
         # No --seed: on python < 3.12 it installs setuptools/wheel into the venv, where they
         # would win over the engine's own (setuptools >= 81 has no pkg_resources).
         uv venv --relocatable -p "$SYS_PYTHON" /venv/main
         if [[ "$VAST_ENGINE_PYTHON" != none ]]; then
+            # The engine's certifi (a data-only CA bundle) and pip (which vendors its own) are
+            # as old as the upstream image. Upgrade them BEFORE the mirror is built, so the
+            # mirror links the new files -- except where they already read the OS store (a
+            # Debian/Ubuntu python3-certifi or python3-pip): a PyPI copy would shadow that and
+            # stop the engine following apt's distrust updates.
+            engine_up=()
+            for mod in certifi pip._vendor.certifi; do
+                where=$("$VAST_ENGINE_PYTHON" -I -c "
+try:
+    import ${mod} as c
+except ImportError:
+    print('absent')
+else:
+    print(c.where())" 2>/dev/null || echo absent)
+                case "$where" in
+                    absent|/etc/ssl/certs/ca-certificates.crt) ;;   # not installed, or follows the OS store
+                    *) engine_up+=("${mod%%.*}") ;;
+                esac
+            done
+            if (( ${#engine_up[@]} )); then
+                uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages --no-deps -U "${engine_up[@]}"
+            fi
             /opt/instance-tools/bin/venv-mirror build --venv /venv/main \
                 --engine-python "$VAST_ENGINE_PYTHON"
         fi
@@ -273,6 +306,17 @@ if id -u user > /dev/null 2>&1; then
     chown -R user:root /opt/syncthing
 fi
 rm -f /opt/syncthing.tar.gz
+
+# CA data that does not follow the OS store on its own, wherever it landed (engine, sys-venv,
+# our venvs): uv-managed interpreters get a current pip; refresh-ca-data.sh links grpcio's
+# roots.pem and replaces stale bundled ensurepip wheels; stale uv caches would reinstall old
+# certifi into any new env.
+for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
+    [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
+done
+/opt/instance-tools/lib/refresh-ca-data.sh
+uv cache clean >/dev/null 2>&1 || true
+rm -rf /root/.cache/uv
 
 # Clean up
 apt-get clean && \
