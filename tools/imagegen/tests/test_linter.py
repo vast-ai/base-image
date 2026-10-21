@@ -5510,7 +5510,8 @@ _CA_FILES = ("Dockerfile", "Dockerfile.runtime", "tools/convert-non-vast-image.s
              "ROOT/opt/instance-tools/bin/update-portal", "external/vllm/ROOT/opt/supervisor-scripts/model-ui.sh",
              "templates/base-qa/template.yml", "templates/pytorch-qa/template.yml",
              ".github/workflows/promote-base-image.yml", ".github/workflows/promote-pytorch.yml",
-             "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh")
+             "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh", "ROOT/opt/instance-tools/lib/refresh-ca-data.sh",
+             "ROOT/opt/instance-tools/lib/pip-trust-floor.env")
 
 
 def _ca_tree(tmp_path, rel=None, mutate=None):
@@ -5584,3 +5585,11 @@ def test_L110_the_mini_build_that_stops_asserting_the_distrust_fires(tmp_path):
     repo = _ca_tree(tmp_path, "Dockerfile.runtime",
                     lambda t: t.replace("RUN /opt/instance-tools/lib/assert-distrust.sh\n", ""))
     assert any(f.path == "Dockerfile.runtime" for f in _ca_codes(repo, "L110"))
+
+
+def test_L110_a_second_copy_of_the_pip_floor_fires(tmp_path):
+    """The test carried its own PIP_FLOOR before; a copy that is not the floor file drifts."""
+    repo = _ca_tree(tmp_path, "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh",
+                    lambda t: t.replace("PIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env\n",
+                                        "PIP_FLOOR=26.2.2\nPIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env\n"))
+    assert any(f.path.endswith("29-ca-trust.sh") for f in _ca_codes(repo, "L110"))

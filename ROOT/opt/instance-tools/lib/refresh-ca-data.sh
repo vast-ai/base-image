@@ -23,30 +23,28 @@ set -euo pipefail
 find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f -not -path '/proc/*' -not -path '/opt/nvidia/*' \
     -exec ln -sf /etc/ssl/certs/ca-certificates.crt {} \;
 
-PIP_VERSION=26.2.2
-PIP_URL=https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl
-PIP_SHA256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
-PIP_MIN_PYTHON=10              # pip 26.2.2: Requires-Python >=3.10
+# The pip trust floor, its wheel and that wheel's hash: one source, shared with the test.
+. /opt/instance-tools/lib/pip-trust-floor.env
 
-wheel="pip-${PIP_VERSION}-py3-none-any.whl"
+wheel="pip-${PIP_FLOOR}-py3-none-any.whl"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 fetched=
 fetch_wheel() {   # once, and only if something needs it
     [[ -n "$fetched" ]] && return 0
     # The hash, not the TLS connection, is what makes this wheel trustworthy.
-    curl -fsSL --retry 5 --retry-all-errors -o "$work/$wheel" "$PIP_URL"
-    echo "${PIP_SHA256}  $work/$wheel" | sha256sum -c --quiet -
+    curl -fsSL --retry 5 --retry-all-errors -o "$work/$wheel" "$PIP_FLOOR_URL"
+    echo "${PIP_FLOOR_SHA256}  $work/$wheel" | sha256sum -c --quiet -
     fetched=1
 }
-below_floor() { [[ "$(printf '%s\n%s\n' "$1" "$PIP_VERSION" | sort -V | head -1)" != "$PIP_VERSION" ]]; }
+below_floor() { [[ "$(printf '%s\n%s\n' "$1" "$PIP_FLOOR" | sort -V | head -1)" != "$PIP_FLOOR" ]]; }
 
 while IFS= read -r init; do
     dir=$(dirname "$init")
     [[ -d "$dir/_bundled" ]] || continue
     minor=$(sed -nE 's#.*/lib/python3\.([0-9]+)/ensurepip$#\1#p' <<< "$dir")
-    if [[ -z "$minor" || "$minor" -lt "$PIP_MIN_PYTHON" ]]; then
-        echo "refresh-ca-data: $dir is not Python >= 3.${PIP_MIN_PYTHON}; bundled pip left as is" >&2
+    if [[ -z "$minor" || "$minor" -lt "$PIP_FLOOR_MIN_PYTHON" ]]; then
+        echo "refresh-ca-data: $dir is not Python >= 3.${PIP_FLOOR_MIN_PYTHON}; bundled pip left as is" >&2
         continue
     fi
     current=$(sed -nE 's/^_PIP_VERSION = "([^"]+)"$/\1/p' "$init")
@@ -55,8 +53,8 @@ while IFS= read -r init; do
     fetch_wheel
     rm -f "$dir"/_bundled/pip-*.whl
     cp "$work/$wheel" "$dir/_bundled/$wheel"
-    sed -i -E "s/^_PIP_VERSION = \"[^\"]+\"$/_PIP_VERSION = \"${PIP_VERSION}\"/" "$init"
-    echo "refresh-ca-data: $dir pip ${current} -> ${PIP_VERSION}"
+    sed -i -E "s/^_PIP_VERSION = \"[^\"]+\"$/_PIP_VERSION = \"${PIP_FLOOR}\"/" "$init"
+    echo "refresh-ca-data: $dir pip ${current} -> ${PIP_FLOOR}"
 done < <(find / -xdev -path '*/ensurepip/__init__.py' -not -path '/proc/*' -not -path '/opt/nvidia/*' 2>/dev/null)
 
 while IFS= read -r info; do
@@ -65,8 +63,8 @@ while IFS= read -r info; do
     current=$(basename "$info" | sed -E 's/^pip-(.+)\.dist-info$/\1/')
     below_floor "$current" || continue
     minor=$(sed -nE 's#.*/lib/python3\.([0-9]+)/(site|dist)-packages$#\1#p' <<< "$site")
-    if [[ -z "$minor" || "$minor" -lt "$PIP_MIN_PYTHON" ]]; then
-        echo "refresh-ca-data: $site is not Python >= 3.${PIP_MIN_PYTHON}; pip ${current} left as is" >&2
+    if [[ -z "$minor" || "$minor" -lt "$PIP_FLOOR_MIN_PYTHON" ]]; then
+        echo "refresh-ca-data: $site is not Python >= 3.${PIP_FLOOR_MIN_PYTHON}; pip ${current} left as is" >&2
         continue
     fi
     prefix=${site%/lib/python3.*}
@@ -77,5 +75,5 @@ while IFS= read -r info; do
     [[ -n "$py" ]] || { echo "refresh-ca-data: no interpreter for $site" >&2; exit 1; }
     fetch_wheel
     "$py" -m pip install --quiet --no-deps --no-cache-dir --break-system-packages --root-user-action=ignore "$work/$wheel"
-    echo "refresh-ca-data: $site pip ${current} -> ${PIP_VERSION}"
+    echo "refresh-ca-data: $site pip ${current} -> ${PIP_FLOOR}"
 done < <(find / -xdev -type d -name 'pip-*.dist-info' -path '*-packages/*' -not -path '/proc/*' -not -path '/opt/nvidia/*' 2>/dev/null | sort)

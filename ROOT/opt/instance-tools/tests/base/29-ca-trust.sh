@@ -20,10 +20,13 @@ source "$(dirname "$0")/../lib.sh"
 
 FIXTURES="$(cd "$(dirname "$0")/.." && pwd)/ca-trust"
 CAPTURED=1792497600   # 2026-10-20T12:00Z, when the chains were captured
-PIP_FLOOR=26.2.2      # pip loads its vendored certifi in addition to any other store
 UV_FLOOR=0.13.4       # uv compiles its roots in
 NODE_FLOOR=/opt/instance-tools/lib/node-trust-floor.txt
 
+# pip loads its vendored certifi in addition to any other store; the floor has one source.
+PIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env
+[[ -r "$PIP_FLOOR_FILE" ]] && . "$PIP_FLOOR_FILE"
+[[ -n "${PIP_FLOOR:-}" ]] || test_fail "no pip trust floor (${PIP_FLOOR_FILE})"
 command -v openssl >/dev/null || test_fail "no openssl CLI: the chain checks cannot run"
 [[ -d "$FIXTURES/chains" && -s "$FIXTURES/reference-roots.pem" ]] || test_fail "fixtures missing under ${FIXTURES}"
 

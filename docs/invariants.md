@@ -1767,6 +1767,9 @@ every root, by file and by bundle content. The base Dockerfile runs it right aft
 check reads the floor file, and so does `tests/base/29-ca-trust.sh`. The CI runner step (L109)
 runs before checkout and cannot read the list, so it carries a copy, and L110 requires that copy
 to name exactly the listed roots. In 2026-10 the three copies had already drifted (ADR 0058).
+The pip trust floor (version, wheel URL, SHA-256) lives only in `lib/pip-trust-floor.env`; it is a
+FLOOR, raised only when a new distrust needs a newer pip, and `lib/refresh-ca-data.sh` and the
+test source it rather than define their own.
 
 ### Only our own services follow the OS store through trust-env.sh — **GATED (L111)**
 
