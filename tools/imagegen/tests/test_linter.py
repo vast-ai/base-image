@@ -5504,7 +5504,7 @@ def test_L109_a_drifted_copy_fires(tmp_path):
 
 # --- L110-L112: CA trust has one source, stays ours, and gates promotion ----------- #
 
-_CA_FILES = ("Dockerfile", "tools/convert-non-vast-image.sh", "ROOT/opt/instance-tools/lib/distrusted-roots.txt",
+_CA_FILES = ("Dockerfile", "Dockerfile.runtime", "tools/convert-non-vast-image.sh", "ROOT/opt/instance-tools/lib/distrusted-roots.txt",
              "ROOT/opt/supervisor-scripts/instance_portal.sh", "ROOT/opt/supervisor-scripts/tunnel_manager.sh",
              "ROOT/opt/supervisor-scripts/utils/environment.sh", "ROOT/opt/instance-tools/bin/provisioner",
              "ROOT/opt/instance-tools/bin/update-portal", "external/vllm/ROOT/opt/supervisor-scripts/model-ui.sh",
@@ -5577,3 +5577,10 @@ def test_L112_missing_fixtures_fire(tmp_path):
     repo = _ca_tree(tmp_path)
     shutil.rmtree(repo / "ROOT/opt/instance-tools/tests/ca-trust/chains")
     assert any("fixtures missing" in f.msg for f in _ca_codes(repo, "L112"))
+
+
+def test_L110_the_mini_build_that_stops_asserting_the_distrust_fires(tmp_path):
+    """The mini images install apt packages on top of the base; the distrust must still hold."""
+    repo = _ca_tree(tmp_path, "Dockerfile.runtime",
+                    lambda t: t.replace("RUN /opt/instance-tools/lib/assert-distrust.sh\n", ""))
+    assert any(f.path == "Dockerfile.runtime" for f in _ca_codes(repo, "L110"))
