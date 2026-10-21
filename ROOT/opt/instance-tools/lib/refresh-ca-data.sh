@@ -13,9 +13,14 @@
 #    verified wheel. A package manager does not guarantee it: conda-forge builds pip 26.2.2
 #    only for Python >= 3.11, so `conda install pip` leaves a 3.10 env on 26.2.1 and succeeds.
 #    Debian/Ubuntu's own pip under /usr/lib/python3 reads the OS store and is left alone.
+#
+# Vendor tool bundles under /opt/nvidia (e.g. Nsight Compute's private Python) are left alone:
+# they are not on PATH and are not a runtime users or our services run, and patching a
+# vendor's bundled runtime is untestable here. tests/base/29-ca-trust.sh reports them on a
+# dated allowlist (ADR 0058).
 set -euo pipefail
 
-find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f -not -path '/proc/*' \
+find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f -not -path '/proc/*' -not -path '/opt/nvidia/*' \
     -exec ln -sf /etc/ssl/certs/ca-certificates.crt {} \;
 
 PIP_VERSION=26.2.2
@@ -52,7 +57,7 @@ while IFS= read -r init; do
     cp "$work/$wheel" "$dir/_bundled/$wheel"
     sed -i -E "s/^_PIP_VERSION = \"[^\"]+\"$/_PIP_VERSION = \"${PIP_VERSION}\"/" "$init"
     echo "refresh-ca-data: $dir pip ${current} -> ${PIP_VERSION}"
-done < <(find / -xdev -path '*/ensurepip/__init__.py' -not -path '/proc/*' 2>/dev/null)
+done < <(find / -xdev -path '*/ensurepip/__init__.py' -not -path '/proc/*' -not -path '/opt/nvidia/*' 2>/dev/null)
 
 while IFS= read -r info; do
     site=$(dirname "$info")
@@ -73,4 +78,4 @@ while IFS= read -r info; do
     fetch_wheel
     "$py" -m pip install --quiet --no-deps --no-cache-dir --break-system-packages --root-user-action=ignore "$work/$wheel"
     echo "refresh-ca-data: $site pip ${current} -> ${PIP_VERSION}"
-done < <(find / -xdev -type d -name 'pip-*.dist-info' -path '*-packages/*' -not -path '/proc/*' 2>/dev/null | sort)
+done < <(find / -xdev -type d -name 'pip-*.dist-info' -path '*-packages/*' -not -path '/proc/*' -not -path '/opt/nvidia/*' 2>/dev/null | sort)

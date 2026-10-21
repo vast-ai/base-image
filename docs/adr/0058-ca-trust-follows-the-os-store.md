@@ -98,6 +98,12 @@ rebuild, a pin bump or an upstream release.
   own fixes.
 - Upstream CA files we cannot safely replace (botocore's bundle; botocore uses certifi when it is
   importable) are reported by the test on a dated allowlist.
+- The line between "we fix it" and "upstream owns it" is the runtime that runs, not who shipped
+  the file. An external image's engine environment is upstream's, but users and our services run
+  it, so its certifi and pip are upgraded (decision 2). A vendor tool's private bundle that is not
+  on PATH and that nothing of ours runs (NVIDIA Nsight Compute's embedded Python under
+  `/opt/nvidia`, from the CUDA base image) is left to the vendor and reported on the dated
+  allowlist, because patching a profiler's bundled runtime cannot be tested here.
 - Every image carries the public test chains (about 60 KB) under `tests/ca-trust/`.
 
 ## What would reverse this
