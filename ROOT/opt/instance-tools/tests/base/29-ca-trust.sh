@@ -42,7 +42,7 @@ control=$(accepted -no-CApath -CAfile "$FIXTURES/reference-roots.pem")
 [[ "$control" == "$total" ]] || test_fail "positive control verified ${control}/${total}: this openssl cannot run the check"
 echo "  positive control: ${control}/${total} chains verify against the published roots"
 
-# Exact paths, each with its reason and review date. Debian/Ubuntu patch certifi.where() and
+# Exact paths, each with its reason and review date; the same list applies to every check below. Debian/Ubuntu patch certifi.where() and
 # pip's vendored copy to return the OS bundle, so those files are never read.
 ALLOW='/usr/lib/python3/dist-packages/certifi/cacert.pem|Debian/Ubuntu certifi reads the OS bundle|2099-12-31
 /usr/lib/python3/dist-packages/pip/_vendor/certifi/cacert.pem|Debian/Ubuntu pip reads the OS bundle|2099-12-31
@@ -87,11 +87,15 @@ echo "  bundles checked by content: ${bundles}"
 # 3. pip wheels bundled for ensurepip.
 while IFS= read -r w; do
     v=$(basename "$w" | sed -E 's/^pip-([^-]+)-.*/\1/')
-    case "$w" in
-        /usr/share/python-wheels/*) echo "  allow pip ${v}  $w [Debian/Ubuntu patched wheel reads the OS bundle]" ;;
-        *) version_ge "$v" "$PIP_FLOOR" && echo "  ok    pip ${v}  $w" \
-               || fail_later "ca-trust:$w" "bundled pip ${v} < ${PIP_FLOOR}; every venv made from this interpreter trusts the distrusted CAs" ;;
-    esac
+    if [[ "$w" == /usr/share/python-wheels/* ]]; then
+        echo "  allow pip ${v}  $w [Debian/Ubuntu patched wheel reads the OS bundle]"
+    elif version_ge "$v" "$PIP_FLOOR"; then
+        echo "  ok    pip ${v}  $w"
+    elif why=$(allowed "$w"); then
+        echo "  allow pip ${v}  $w [${why}]"
+    else
+        fail_later "ca-trust:$w" "bundled pip ${v} < ${PIP_FLOOR}; every venv made from this interpreter trusts the distrusted CAs${why:+ (${why})}"
+    fi
 done < <(find / -xdev -name 'pip-*.whl' \( -path '*/ensurepip/_bundled/*' -o -path '/usr/share/python-wheels/*' \
             -o -path '*/virtualenv/seed/wheels/embed/*' \) 2>/dev/null | sort)
 
@@ -102,6 +106,7 @@ while IFS= read -r node; do
     v=$("$node" -p 'process.versions.node')
     floor=$(awk -v m="${v%%.*}" '$1 == m {print $2}' "$NODE_FLOOR" 2>/dev/null)
     if [[ -n "$floor" ]] && version_ge "$v" "$floor"; then echo "  ok    node ${v}  $node"
+    elif why=$(allowed "$node"); then echo "  allow node ${v}  $node [${why}]"
     else fail_later "ca-trust:$node" "Node ${v} is below the trust floor for its line (${floor:-no fixed release listed})"; fi
 done < <( { type -ap node; find / -xdev -type f -name node -perm -u+x -not -path '/proc/*' 2>/dev/null; } \
             | xargs -r -n1 readlink -f | sort -u)
@@ -110,6 +115,7 @@ done < <( { type -ap node; find / -xdev -type f -name node -perm -u+x -not -path
 while IFS= read -r uv; do
     v=$("$uv" --version 2>/dev/null | awk '{print $2}')
     if [[ -n "$v" ]] && version_ge "$v" "$UV_FLOOR"; then echo "  ok    uv ${v}  $uv"
+    elif why=$(allowed "$uv"); then echo "  allow uv ${v}  $uv [${why}]"
     else fail_later "ca-trust:$uv" "uv ${v:-unknown} < ${UV_FLOOR} (compiled-in roots)"; fi
 done < <( { type -ap uv; find / -xdev -type f -name uv -perm -u+x -not -path '/proc/*' 2>/dev/null; } \
             | xargs -r -n1 readlink -f | sort -u)
