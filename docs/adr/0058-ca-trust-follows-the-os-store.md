@@ -56,9 +56,11 @@ rebuild, a pin bump or an upstream release.
    cache is emptied. Our own uv is installed, and the build fails unless it is the uv on PATH
    and at least 0.13.4.
 3. **CA data that does not follow the OS store is refreshed last.** `lib/refresh-ca-data.sh`
-   links every grpcio `roots.pem` to the OS bundle and replaces every stale `ensurepip` pip
-   wheel with a hash-pinned current one (interpreters below the wheel's `Requires-Python` are
-   left alone). The base and convert builds run it as their last install step. Any later build
+   links every grpcio `roots.pem` to the OS bundle, replaces every stale `ensurepip` pip wheel
+   with a hash-pinned current one, and upgrades every installed pip below the floor from that
+   same wheel (interpreters below the wheel's `Requires-Python` are left alone; Debian's own pip
+   is skipped). The last is not redundant with conda: conda-forge builds pip 26.2.2 only for
+   Python 3.11 and later, so `conda install pip` leaves a 3.10 env on 26.2.1 and succeeds. The base and convert builds run it as their last install step. Any later build
    that installs Python packages or interpreters can bring a stale copy back, so derivatives
    run it as their last step too, introduced with their next base pin bump.
 4. **The base image's system-Python certifi follows the OS store.** It is a PyPI certifi that
