@@ -65,3 +65,48 @@ class TestSetupLogging:
     def test_debug_level(self):
         logger = setup_logging()
         assert logger.level == logging.DEBUG
+
+
+SECRET = "s3cr3t-container-key"
+
+
+class TestRedactSecrets:
+    """The provisioning log is shown in the portal and leaves the box in support
+    bundles and QA evidence, so secret env values must never reach any handler."""
+
+    def test_masked_in_every_handler(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("CONTAINER_API_KEY", SECRET)
+        portal_log = tmp_path / "portal" / "provisioning.log"
+        logger = setup_logging(str(portal_log))
+        logger.info("Running: vastai show instance 1 --api-key %s", SECRET)
+        # Extension loggers propagate; a logger-level filter would miss them.
+        logging.getLogger("provisioner.ext.demo").info("ext saw %s", SECRET)
+        try:
+            raise RuntimeError(f"failed with {SECRET}")
+        except RuntimeError:
+            logger.exception("command failed")
+
+        outputs = {
+            "portal": portal_log.read_text(),
+            "clean": (tmp_path / "provisioning.log").read_text(),
+            "stdout": capsys.readouterr().out,
+        }
+        for name, text in outputs.items():
+            assert SECRET not in text, name
+            assert "--api-key ***" in text and "ext saw ***" in text, name
+
+    def test_expanded_post_command_not_logged(self, tmp_path, monkeypatch, tmp_manifest):
+        from provisioner.__main__ import run
+        from provisioner.manifest import load_manifest
+
+        monkeypatch.setenv("CONTAINER_API_KEY", SECRET)
+        log_file = tmp_path / "portal" / "provisioning.log"
+        path = tmp_manifest({
+            "version": 1,
+            "settings": {"log_file": str(log_file)},
+            "post_commands": ["vastai show instance 1 --api-key ${CONTAINER_API_KEY}"],
+        })
+        run(path, load_manifest(path), dry_run=True)
+        text = log_file.read_text()
+        assert "Would run: vastai show instance 1 --api-key ***" in text
+        assert SECRET not in text
