@@ -36,6 +36,16 @@ jobs:
   validate-secrets:
     runs-on: ubuntu-latest
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Check required secrets
         env:
           NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
@@ -68,6 +78,16 @@ jobs:
       has-multi: ${{ steps.matrix.outputs.has-multi }}
       build-date: ${{ steps.matrix.outputs.build-date }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       # Needed for configs/pytorch.json — this job previously ran with no checkout.
       - uses: actions/checkout@v4
       - name: Generate matrices
@@ -314,6 +334,16 @@ jobs:
       max-parallel: 20
       matrix: ${{ fromJson(needs.generate-matrix.outputs.build-matrix) }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -392,6 +422,16 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.merge-matrix) }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -460,6 +500,16 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-build-matrix) }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -526,6 +576,16 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.mini-merge-matrix) }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -585,6 +645,16 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.multi-build-matrix) }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -651,6 +721,16 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.multi-merge-matrix) }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -705,6 +785,16 @@ jobs:
     outputs:
       all-tags: ${{ steps.collect.outputs.tags }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Download all tag artifacts
         uses: actions/download-artifact@v4
         with:
@@ -732,6 +822,16 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Print build plan
         env:
           BUILD_MATRIX: ${{ needs.generate-matrix.outputs.build-matrix }}

@@ -45,6 +45,16 @@ jobs:
       all-configs: ${{ steps.configs.outputs.all-configs }}
       mini-tags: ${{ steps.configs.outputs.mini-tags }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       # Needed for configs/base-image.json — this job previously ran with no checkout.
       - uses: actions/checkout@v4
 
@@ -135,6 +145,16 @@ jobs:
     if: ${{ !inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Check the gate can actually run
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
@@ -178,6 +198,16 @@ jobs:
     outputs:
       qa-matrix: ${{ steps.plan.outputs.qa-matrix }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - uses: actions/checkout@v4
       - uses: imjasonh/setup-crane@v0.4
       - name: Docker Hub login
@@ -505,6 +535,16 @@ jobs:
     outputs:
       holds: ${{ steps.decide.outputs.holds }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - uses: actions/checkout@v4
       - uses: imjasonh/setup-crane@v0.4
       - name: Docker Hub login
@@ -620,6 +660,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Set up crane
         uses: imjasonh/setup-crane@v0.4
 
@@ -970,6 +1020,16 @@ jobs:
     if: ${{ always() && !inputs.DRY_RUN && needs.promote.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - uses: imjasonh/setup-crane@v0.4
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -998,6 +1058,16 @@ jobs:
     outputs:
       all-tags: ${{ steps.collect.outputs.tags }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Download tag artifacts
         uses: actions/download-artifact@v4
         with:
@@ -1025,6 +1095,16 @@ jobs:
     if: ${{ inputs.DRY_RUN }}
     runs-on: ubuntu-latest
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Set up crane
         uses: imjasonh/setup-crane@v0.4
 

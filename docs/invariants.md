@@ -1744,6 +1744,19 @@ workflows already did with `has-mini` / `has-multi`. L108 requires a job whose m
 `needs.<job>.outputs` in its `if:`. The main build and merge lists are out of scope: an
 empty one means `FILTER` matched nothing, and failing the run is right.
 
+### Every CI job refreshes the runner's CA store first — **GATED (L109)**
+
+A GitHub-hosted runner image is built days before it serves jobs, so an Ubuntu CA distrust
+reaches our runners late. In October 2026 runner image `20261018` was still serving jobs a
+day after Ubuntu distrusted `emSign ECC Root CA - G3`. Checkout, registry logins, pulls,
+pushes and Vast API calls all went through that stale store. The first step of every job
+with steps is `Refresh runner CA trust store`: it upgrades `ca-certificates` (allowed to
+fail, so a mirror outage does not stop CI), prints the version, then fails if a distrusted
+root is still linked in `/etc/ssl/certs`. It must come before checkout, which is why it is
+inline text and not a local composite action. L109 requires it first in every job and
+requires each copy to equal `linter.CA_REFRESH_STEP_RUN`; the generator's workflow template
+carries it too (ADR 0056).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

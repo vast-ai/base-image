@@ -46,6 +46,16 @@ jobs:
       should-run: ${{ steps.decision.outputs.should-run }}
       voicebox-ref: ${{ steps.resolve-ref.outputs.ref }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -132,6 +142,16 @@ jobs:
           - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-09-08
 
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -220,6 +240,16 @@ jobs:
     outputs:
       all-tags: ${{ steps.collect.outputs.tags }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Download all tag artifacts
         uses: actions/download-artifact@v4
         with:

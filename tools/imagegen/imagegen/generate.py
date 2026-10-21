@@ -309,6 +309,16 @@ jobs:
       qa-max-price: ${{ steps.qa-override.outputs.max-price }}
       qa-override-note: ${{ steps.qa-override.outputs.note }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -379,6 +389,16 @@ jobs:
           - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
           - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -454,6 +474,16 @@ jobs:
           # Same base-image matrix as the build job above.
           - CHANGEME
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -495,6 +525,16 @@ jobs:
     outputs:
       all-tags: ${{ steps.collect.outputs.tags }}
     steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
       - name: Download all tag artifacts
         uses: actions/download-artifact@v4
         with:
