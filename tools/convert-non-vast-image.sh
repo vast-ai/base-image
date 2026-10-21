@@ -126,13 +126,8 @@ if [[ ! -x /usr/bin/python3 ]]; then
 fi
 
 # The CA distrust must have landed before anything below fetches over TLS: the apt install
-# above upgrades ca-certificates to the distro's current list, which drops the roots behind
-# the compromised eMudhra intermediates (Ubuntu 20260816ubuntu0.*, Debian 20250419~deb12u2).
-for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
-    if [[ -e "/etc/ssl/certs/${root}.pem" ]]; then
-        echo "FATAL: ${root} is still trusted after the ca-certificates upgrade" >&2; exit 1
-    fi
-done
+# above upgrades ca-certificates to the distro's current list (ADR 0058).
+/opt/instance-tools/lib/assert-distrust.sh
 
 # Install our uv even when the upstream image ships one: uv compiles its root store in, so an
 # older upstream uv keeps trusting whatever its release trusted (fixed from 0.13.4).
@@ -140,6 +135,12 @@ curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
 chmod +x /tmp/uv-install.sh
 UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
 rm -f /tmp/uv-install.sh
+# Ours must be the uv that runs, and new enough.
+uv_found=$(command -v uv)
+uv_version=$(uv --version | awk '{print $2}')
+if [[ "$uv_found" != /usr/local/bin/uv || "$(printf '%s\n0.13.4\n' "$uv_version" | sort -V | head -1)" != 0.13.4 ]]; then
+    echo "FATAL: uv on PATH is $uv_found ($uv_version); need /usr/local/bin/uv >= 0.13.4" >&2; exit 1
+fi
 
 # Install Instance Portal
 chown -R 0:0 /opt/portal-aio
@@ -251,8 +252,26 @@ if [[ ! -d /venv/main ]]; then
         if [[ "$VAST_ENGINE_PYTHON" != none ]]; then
             # The engine's certifi (a data-only CA bundle) and pip (which vendors its own) are
             # as old as the upstream image. Upgrade them BEFORE the mirror is built, so the
-            # mirror links the new files.
-            uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages --no-deps -U certifi pip
+            # mirror links the new files -- except where they already read the OS store (a
+            # Debian/Ubuntu python3-certifi or python3-pip): a PyPI copy would shadow that and
+            # stop the engine following apt's distrust updates.
+            engine_up=()
+            for mod in certifi pip._vendor.certifi; do
+                where=$("$VAST_ENGINE_PYTHON" -I -c "
+try:
+    import ${mod} as c
+except ImportError:
+    print('absent')
+else:
+    print(c.where())" 2>/dev/null || echo absent)
+                case "$where" in
+                    absent|/etc/ssl/certs/ca-certificates.crt) ;;   # not installed, or follows the OS store
+                    *) engine_up+=("${mod%%.*}") ;;
+                esac
+            done
+            if (( ${#engine_up[@]} )); then
+                uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages --no-deps -U "${engine_up[@]}"
+            fi
             /opt/instance-tools/bin/venv-mirror build --venv /venv/main \
                 --engine-python "$VAST_ENGINE_PYTHON"
         fi
@@ -289,16 +308,13 @@ fi
 rm -f /opt/syncthing.tar.gz
 
 # CA data that does not follow the OS store on its own, wherever it landed (engine, sys-venv,
-# our venvs): grpcio's bundled roots.pem is pointed at the OS store, as Debian does for
-# certifi; uv-managed interpreters get a current pip; stale uv caches would reinstall old
+# our venvs): uv-managed interpreters get a current pip; refresh-ca-data.sh links grpcio's
+# roots.pem and replaces stale bundled ensurepip wheels; stale uv caches would reinstall old
 # certifi into any new env.
-for f in $(find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f 2>/dev/null); do
-    ln -sf /etc/ssl/certs/ca-certificates.crt "$f"
-done
 for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
     [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
 done
-/opt/instance-tools/lib/refresh-bundled-pip.sh
+/opt/instance-tools/lib/refresh-ca-data.sh
 uv cache clean >/dev/null 2>&1 || true
 rm -rf /root/.cache/uv
 

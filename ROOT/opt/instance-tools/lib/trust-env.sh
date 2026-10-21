@@ -8,7 +8,7 @@
 # scripts, and this must not override their choices.
 #
 # No PIP_CERT: pip always loads its vendored certifi IN ADDITION to any bundle it is given, so
-# for pip only a current pip helps (the image ships one, and refresh-bundled-pip.sh fixes the
+# for pip only a current pip helps (the image ships one, and refresh-ca-data.sh fixes the
 # copies ensurepip hands to new venvs).
 : "${SSL_CERT_FILE:=/etc/ssl/certs/ca-certificates.crt}"
 : "${REQUESTS_CA_BUNDLE:=/etc/ssl/certs/ca-certificates.crt}"

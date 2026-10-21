@@ -43,36 +43,60 @@ rebuild, a pin bump or an upstream release.
   a chain reaches, including through a user-supplied bundle.
 
 ## Decision
-1. **Every bundle we ship is current at build time.** The base Dockerfile and
-   `convert-non-vast-image.sh` assert that the distro's distrust has landed before anything else
-   is fetched; install current certifi and pip wherever we create or touch an interpreter,
-   including the upstream engine's (before `venv-mirror build`, so the mirror links the new
-   files); install current conda CA packages and empty conda's package cache; and install our
-   own uv even when the upstream image ships one; and replace every stale bundled `ensurepip`
-   pip wheel with a hash-pinned current one (`lib/refresh-bundled-pip.sh`).
-2. **grpcio's `roots.pem` is a link to the OS bundle**, the approach Debian takes for certifi.
-3. **Our own services follow the OS store.** `/opt/instance-tools/lib/trust-env.sh` sets
-   `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `UV_SYSTEM_CERTS` as defaults (a value the
-   template or user set wins). Only the services we own source it: the portal, tunnel manager,
-   provisioner, `update-portal` and model-ui. It is never in `/etc/environment`.
-4. **Node is a fixed release.** Node's trust only moves with a Node release, so the base build
-   asserts that the Node it installs is at or above the first release that blocks the
-   compromised intermediates on its line (22.23.4, 24.22.1, 26.12.1). A line without such a
-   release fails the build.
+1. **The distrust lands first.** `lib/distrusted-roots.txt` is the one list of roots the image
+   must not trust (name and SHA-256). `lib/assert-distrust.sh` fails unless the OS store has
+   dropped every one, checking both the per-root file and the bundle's content. The base
+   Dockerfile runs it right after its `apt-get upgrade` and `convert-non-vast-image.sh` right
+   after its apt install, before either fetches anything else over TLS.
+2. **Every bundle we ship is current at build time.** Current certifi and pip go wherever we
+   create or touch an interpreter, including the upstream engine's, before `venv-mirror build`
+   so the mirror links the new files. The engine is skipped where its certifi or pip already
+   reads the OS store (a Debian/Ubuntu `python3-certifi`/`python3-pip`), because a PyPI copy
+   would shadow that and stop it following apt. Conda's CA packages are current and its package
+   cache is emptied. Our own uv is installed, and the build fails unless it is the uv on PATH
+   and at least 0.13.4.
+3. **CA data that does not follow the OS store is refreshed last.** `lib/refresh-ca-data.sh`
+   links every grpcio `roots.pem` to the OS bundle and replaces every stale `ensurepip` pip
+   wheel with a hash-pinned current one (interpreters below the wheel's `Requires-Python` are
+   left alone). The base and convert builds run it as their last install step. Any later build
+   that installs Python packages or interpreters can bring a stale copy back, so derivatives
+   run it as their last step too, introduced with their next base pin bump.
+4. **The base image's system-Python certifi follows the OS store.** It is a PyPI certifi that
+   shadows Debian's, for jupyter, tensorboard and the other system tools, so its bundle is a
+   link to the OS bundle.
+5. **Our own services follow the OS store.** `lib/trust-env.sh` sets `SSL_CERT_FILE`,
+   `REQUESTS_CA_BUNDLE` and `UV_SYSTEM_CERTS` as defaults (a value the template or user set
+   wins). Only the services we own source it: the portal, tunnel manager, provisioner,
+   `update-portal` and model-ui. It is never in `/etc/environment`. One deliberate exception:
+   the provisioner runs the user's provisioning script and manifest installs as its children,
+   so they inherit these defaults. A user who set their own value keeps it; one who added a
+   private CA to certifi instead must set `REQUESTS_CA_BUNDLE` for provisioning. `PIP_CERT`
+   is not set, because pip only adds it to its vendored certifi.
+6. **Node is a fixed release.** Node's trust only moves with a Node release.
+   `lib/node-trust-floor.txt` lists the first fixed release on each line (22.23.4, 24.22.1,
+   26.12.1); the base build fails if the Node it installs is below it, or on a line not listed.
 
 ## Binding conditions
-- An image passes the trust probe before it is promoted. The probe finds bundles by content,
-  checks the OS directory store, verifies Node by handshake, runs a positive control at a fixed
-  check time, and fails rather than passes when it cannot run a check.
-- The Node floor is raised when Node ships the next trust fix; the probe checks the same floor.
+- `tests/base/29-ca-trust.sh` passes on the image before it is promoted. It is a required test
+  in the base and pytorch promotion gates, so a skip fails the cell. It verifies the published
+  chains through the compromised intermediates against every CA bundle found by content and
+  against the OS directory store, after a positive control at a fixed check time, and checks
+  bundled pip wheels, Node and uv against their floors. It fails rather than passes when it
+  cannot run a check.
+- The root list, the Node floor and the trust helper each have one source; the linter keeps the
+  copies that cannot read them (the CI runner step) and the services that must source them in
+  line.
+- A floor or list changes when the next distrust ships; the build and the test read the same file.
 
 ## Consequences
-- The next OS-level distrust reaches our services with an `apt-get upgrade`, without waiting for
-  a pin bump. Node still needs a Node release, which the build floor forces us to take.
+- The next OS-level distrust reaches our services and the system tools with an `apt-get
+  upgrade`, without waiting for a pin bump. Node still needs a Node release, which the build
+  floor forces us to take.
 - Node versions a user installs with nvm are theirs to keep current. Bun and Electron ship their
   own fixes.
 - Upstream CA files we cannot safely replace (botocore's bundle; botocore uses certifi when it is
-  importable) are reported by the probe on a dated allowlist.
+  importable) are reported by the test on a dated allowlist.
+- Every image carries the public test chains (about 60 KB) under `tests/ca-trust/`.
 
 ## What would reverse this
 Node gaining a way to follow the OS store's distrust without changing its trust semantics for

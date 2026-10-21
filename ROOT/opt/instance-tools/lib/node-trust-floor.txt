@@ -1,0 +1,8 @@
+# The first Node release on each line whose compiled-in trust excludes every distrusted CA,
+# one per line: <major> <minimum version>. Read by the base Dockerfile's Node check and by
+# tests/base/29-ca-trust.sh. A Node line not listed here fails both (ADR 0058).
+#
+# 2026-10: nodejs/node#66871 blocks the eight compromised eMudhra intermediates by public key.
+22 22.23.4
+24 24.22.1
+26 26.12.1

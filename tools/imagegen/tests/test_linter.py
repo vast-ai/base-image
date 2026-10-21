@@ -575,6 +575,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
+    "L110", "L111", "L112",
 })
 
 
@@ -5499,3 +5500,80 @@ def test_L109_a_drifted_copy_fires(tmp_path):
     text counts."""
     found = _l109_tree(tmp_path, lambda t: t.replace(" Comodo_AAA_Services_root", "", 1))
     assert len(found) == 1 and "differs from" in found[0].msg, found
+
+
+# --- L110-L112: CA trust has one source, stays ours, and gates promotion ----------- #
+
+_CA_FILES = ("Dockerfile", "tools/convert-non-vast-image.sh", "ROOT/opt/instance-tools/lib/distrusted-roots.txt",
+             "ROOT/opt/supervisor-scripts/instance_portal.sh", "ROOT/opt/supervisor-scripts/tunnel_manager.sh",
+             "ROOT/opt/supervisor-scripts/utils/environment.sh", "ROOT/opt/instance-tools/bin/provisioner",
+             "ROOT/opt/instance-tools/bin/update-portal", "external/vllm/ROOT/opt/supervisor-scripts/model-ui.sh",
+             "templates/base-qa/template.yml", "templates/pytorch-qa/template.yml",
+             ".github/workflows/promote-base-image.yml", ".github/workflows/promote-pytorch.yml",
+             "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh")
+
+
+def _ca_tree(tmp_path, rel=None, mutate=None):
+    """A copy of the files L110-L112 read, with at most one of them mutated."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for f in _CA_FILES:
+        dst = tmp_path / f
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (repo / f).read_text()
+        if f == rel:
+            new = mutate(text)
+            assert new != text, "mutation did not apply"
+            text = new
+        dst.write_text(text)
+    shutil.copytree(repo / "ROOT/opt/instance-tools/tests/ca-trust", tmp_path / "ROOT/opt/instance-tools/tests/ca-trust")
+    return tmp_path
+
+
+def _ca_codes(repo, code):
+    chk = {"L110": L.check_distrusted_roots_have_one_source, "L111": L.check_trust_env_is_ours_only,
+           "L112": L.check_ca_trust_test_gates_promotion}[code]
+    return list(chk(repo))
+
+
+@pytest.mark.parametrize("code", ["L110", "L111", "L112"])
+def test_L110_to_L112_real_tree_is_clean(code):
+    assert _ca_codes(find_repo_root(Path(__file__).resolve().parent), code) == []
+
+
+def test_L110_a_root_added_to_the_list_but_not_the_runner_fires(tmp_path):
+    """The drift this rule exists for: the list gains a root and the runner copy does not."""
+    repo = _ca_tree(tmp_path, "ROOT/opt/instance-tools/lib/distrusted-roots.txt",
+                    lambda t: t + "Some_Newly_Distrusted_Root|00\n")
+    assert any("runner step checks" in f.msg for f in _ca_codes(repo, "L110"))
+
+
+def test_L110_a_build_that_stops_asserting_the_distrust_fires(tmp_path):
+    repo = _ca_tree(tmp_path, "tools/convert-non-vast-image.sh",
+                    lambda t: t.replace("/opt/instance-tools/lib/assert-distrust.sh", "true"))
+    assert any("does not run" in f.msg and f.path == "tools/convert-non-vast-image.sh" for f in _ca_codes(repo, "L110"))
+
+
+def test_L111_an_owned_service_that_stops_sourcing_trust_env_fires(tmp_path):
+    repo = _ca_tree(tmp_path, "external/vllm/ROOT/opt/supervisor-scripts/model-ui.sh",
+                    lambda t: t.replace(L.TRUST_ENV_SOURCE + "\n", ""))
+    assert [f.path for f in _ca_codes(repo, "L111")] == ["external/vllm/ROOT/opt/supervisor-scripts/model-ui.sh"]
+
+
+def test_L111_trust_env_in_the_shared_environment_helper_fires(tmp_path):
+    """environment.sh is sourced by every supervisor script, user apps included."""
+    repo = _ca_tree(tmp_path, "ROOT/opt/supervisor-scripts/utils/environment.sh",
+                    lambda t: t + L.TRUST_ENV_SOURCE + "\n")
+    assert any("environment.sh" in f.path for f in _ca_codes(repo, "L111"))
+
+
+def test_L112_a_gate_that_does_not_require_the_trust_test_fires(tmp_path):
+    """Not required means a skipped trust test passes the promotion."""
+    repo = _ca_tree(tmp_path, ".github/workflows/promote-base-image.yml",
+                    lambda t: t.replace('REQUIRE_TESTS="base/29-ca-trust ', 'REQUIRE_TESTS="'))
+    assert [f.path for f in _ca_codes(repo, "L112")] == [".github/workflows/promote-base-image.yml"]
+
+
+def test_L112_missing_fixtures_fire(tmp_path):
+    repo = _ca_tree(tmp_path)
+    shutil.rmtree(repo / "ROOT/opt/instance-tools/tests/ca-trust/chains")
+    assert any("fixtures missing" in f.msg for f in _ca_codes(repo, "L112"))

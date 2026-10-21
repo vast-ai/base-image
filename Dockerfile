@@ -204,6 +204,9 @@ RUN \
         vulkan-tools && \
     mkdir -p /etc/OpenCL/vendors && \
     echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd && \
+    # The upgrade above must have landed the distro's current distrust list before anything
+    # below fetches over TLS (ADR 0058).
+    /opt/instance-tools/lib/assert-distrust.sh && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -275,10 +278,10 @@ RUN \
     (cd /opt/nvm/ && git checkout `git describe --abbrev=0 --tags --match "v[0-9]*" $(git rev-list --tags --max-count=1)`) && \
     source /opt/nvm/nvm.sh && \
     nvm install --lts && \
-    # Node compiles in its own roots, so its trust only moves with a Node release. These are the
-    # first releases that block the compromised eMudhra intermediates (nodejs/node#66871); an
-    # LTS line not listed here fails the build until it has one (ADR 0058).
-    node -e 'const [M,m,p]=process.versions.node.split(".").map(Number);const f={22:[23,4],24:[22,1],26:[12,1]}[M];if(!f||m<f[0]||(m===f[0]&&p<f[1])){console.error(`Node ${process.version} predates the eMudhra block (need 22.23.4 / 24.22.1 / 26.12.1)`);process.exit(1)}'
+    # Node compiles in its own roots, so its trust only moves with a Node release: the installed
+    # Node must be at or above the floor for its line in node-trust-floor.txt, and a line not
+    # listed there fails the build (ADR 0058).
+    node -e 'const fs=require("fs");const v=process.versions.node.split(".").map(Number);const floor=new Map(fs.readFileSync("/opt/instance-tools/lib/node-trust-floor.txt","utf8").split("\n").filter(l=>/^\d/.test(l)).map(l=>{const [M,f]=l.trim().split(/\s+/);return [Number(M),f.split(".").map(Number)]}));const f=floor.get(v[0]);const below=!f||v[1]<f[1]||(v[1]===f[1]&&v[2]<f[2]);if(below){console.error(`Node ${process.version} is below the trust floor for its line (node-trust-floor.txt)`);process.exit(1)}'
 
 # Add the 'instance portal' web app into this container to avoid needing to specify in onstart.  
 # We will launch each component with supervisor - Not the standalone launch script.
@@ -330,21 +333,17 @@ RUN \
         -O /usr/local/share/ca-certificates/jvastai.crt \
         https://console.vast.ai/static/jvastai_root.cer && \
     update-ca-certificates && \
-    # The distrust must have landed: Ubuntu's fixed ca-certificates (20260816ubuntu0.*) drops
-    # emSign ECC Root CA - G3, which anchors the compromised eMudhra intermediates.
-    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816 && \
-    [ ! -e /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem ] && \
     pip install --no-cache-dir --ignore-installed \
         certifi \
         jupyter \
         supervisor \
         tensorboard \
         magic-wormhole && \
-    # grpcio (via tensorboard) ships its own root bundle and ignores SSL_CERT_FILE; point it at
-    # the OS store, as Debian does for certifi, so it cannot go stale on its own.
-    for f in $(find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f 2>/dev/null); do \
-        ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; \
-    done && \
+    # This PyPI certifi shadows Debian's (which reads the OS store) for everything on the system
+    # Python. Point its bundle at the OS store too, so the next apt distrust reaches jupyter
+    # and tensorboard without waiting for a certifi release (ADR 0058).
+    find /usr/local/lib -path '*/dist-packages/certifi/cacert.pem' -type f \
+        -exec ln -sf /etc/ssl/certs/ca-certificates.crt {} \; && \
     mkdir -p /var/log/supervisor
 
 # Install Syncthing
@@ -505,8 +504,9 @@ RUN \
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
 
-# Every interpreter we ship bundles a pip wheel for `python -m venv`; replace stale ones (ADR 0058).
-RUN /opt/instance-tools/lib/refresh-bundled-pip.sh
+# CA data that does not follow the OS store on its own (grpcio roots.pem, ensurepip's bundled
+# pip), after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN \
