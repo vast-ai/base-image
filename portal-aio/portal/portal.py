@@ -779,7 +779,7 @@ async def refresh_quick_tunnel(target_url: str):
 
 ## Supervisor process management via XML-RPC
 
-SUPERVISOR_SOCK = "/var/run/supervisor.sock"
+SUPERVISOR_SOCK = "/dev/shm/supervisor.sock"
 _unstoppable_env = os.environ.get("PORTAL_UNSTOPPABLE", "")
 UNSTOPPABLE_PROCESSES = frozenset(
     {"instance_portal", "caddy", "tunnel_manager"} | {s.strip() for s in _unstoppable_env.split(",") if s.strip()}
