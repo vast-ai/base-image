@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312-2026-09-07
+ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312-2026-10-21
 
 FROM ${BASE_IMAGE}
 ARG BASE_IMAGE
@@ -121,6 +121,9 @@ ENV MODEL_LOG=/var/log/portal/llama.log
 # port entry. Only on these serverless images (not base-inherited); unbound and harmless
 # on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
 EXPOSE 3000
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

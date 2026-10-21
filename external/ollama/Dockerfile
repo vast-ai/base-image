@@ -1,5 +1,5 @@
 ARG OLLAMA_BASE=ollama/ollama:0.17.1
-ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312
+ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312-2026-10-21
 
 FROM ${VAST_BASE} AS vast_base_image
 FROM ${OLLAMA_BASE} AS ollama_build

@@ -1788,6 +1788,14 @@ wheels, Node and uv against their floors. It fails, never passes, when it cannot
 `base/29-ca-trust` is required in the base and pytorch QA templates and in both promotion
 workflows, so a skip fails the cell (ADR 0058).
 
+### An image's default base reference is a dated tag — **GATED (L113)**
+
+`ARG <NAME>=vastai/base-image:<tag>` in an external or derivative Dockerfile names a dated tag.
+The base promote writes dated tags and moves `-auto` ones and never touches an undated tag such
+as `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held.
+In 2026-10 all five externals defaulted to that tag and no workflow overrode it; its last write
+was in January, so every external shipped January's Caddy and base tooling (ADR 0058).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

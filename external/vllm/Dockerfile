@@ -1,5 +1,5 @@
 ARG VLLM_BASE=vllm/vllm-openai:v0.13.0
-ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312
+ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312-2026-10-21
 
 FROM ${VAST_BASE} AS vast_base_image
 FROM ${VLLM_BASE} AS vllm_build

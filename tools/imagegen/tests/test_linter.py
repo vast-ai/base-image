@@ -575,7 +575,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112",
+    "L110", "L111", "L112", "L113",
 })
 
 
@@ -5593,3 +5593,20 @@ def test_L110_a_second_copy_of_the_pip_floor_fires(tmp_path):
                     lambda t: t.replace("PIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env\n",
                                         "PIP_FLOOR=26.2.2\nPIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env\n"))
     assert any(f.path.endswith("29-ca-trust.sh") for f in _ca_codes(repo, "L110"))
+
+
+# --- L113: default base references are dated --------------------------------------- #
+
+def test_L113_real_tree_is_clean():
+    assert list(L.check_base_defaults_are_dated(find_repo_root(Path(__file__).resolve().parent))) == []
+
+
+def test_L113_a_floating_external_base_fires(tmp_path):
+    """The state every external was in: an undated tag promote never moves."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    df = tmp_path / "external/vllm/Dockerfile"
+    df.parent.mkdir(parents=True)
+    df.write_text(re.sub(r"(ARG VAST_BASE=vastai/base-image:stock-ubuntu24\.04-py312)-\d{4}-\d{2}-\d{2}",
+                         r"\1", (repo / "external/vllm/Dockerfile").read_text(), count=1))
+    found = list(L.check_base_defaults_are_dated(tmp_path))
+    assert [f.path for f in found] == ["external/vllm/Dockerfile"], found
