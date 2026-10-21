@@ -298,6 +298,7 @@ done
 for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
     [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
 done
+/opt/instance-tools/lib/refresh-bundled-pip.sh
 uv cache clean >/dev/null 2>&1 || true
 rm -rf /root/.cache/uv
 

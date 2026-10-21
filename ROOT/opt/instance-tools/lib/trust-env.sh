@@ -6,8 +6,11 @@
 #
 # Defaults only: a value the template or user already set wins. The provisioner runs user
 # scripts, and this must not override their choices.
+#
+# No PIP_CERT: pip always loads its vendored certifi IN ADDITION to any bundle it is given, so
+# for pip only a current pip helps (the image ships one, and refresh-bundled-pip.sh fixes the
+# copies ensurepip hands to new venvs).
 : "${SSL_CERT_FILE:=/etc/ssl/certs/ca-certificates.crt}"
 : "${REQUESTS_CA_BUNDLE:=/etc/ssl/certs/ca-certificates.crt}"
-: "${PIP_CERT:=/etc/ssl/certs/ca-certificates.crt}"
-: "${UV_NATIVE_TLS:=1}"
-export SSL_CERT_FILE REQUESTS_CA_BUNDLE PIP_CERT UV_NATIVE_TLS
+: "${UV_SYSTEM_CERTS:=true}"
+export SSL_CERT_FILE REQUESTS_CA_BUNDLE UV_SYSTEM_CERTS

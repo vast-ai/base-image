@@ -506,6 +506,9 @@ RUN \
 
 ENV PATH=/opt/instance-tools/bin:${PATH}
 
+# Every interpreter we ship bundles a pip wheel for `python -m venv`; replace stale ones (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-bundled-pip.sh
+
 # Defend against environment clashes when syncing to volume
 RUN \
     set -euo pipefail && \
