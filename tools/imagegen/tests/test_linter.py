@@ -574,7 +574,7 @@ def test_every_rule_has_a_test():
 _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
-    "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101",
+    "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
 })
 
 
@@ -5455,3 +5455,47 @@ def test_L108_catches_an_unguarded_mini_job(tmp_path, job, old):
     repl = "    if: ${{ !inputs.DRY_RUN }}\n" if job == "build-mini" else ""
     where = _l108_tree(tmp_path, lambda t: t.replace(old, repl, 1))
     assert where == [f".github/workflows/build-base-image.yml:{job}"], where
+
+
+# --- L109: every job refreshes the runner's CA store first ------------------------- #
+
+_L109_WF = "build-llama-cpp.yml"
+_L109_STEP = (f"      - name: {L.CA_REFRESH_STEP_NAME}\n        run: |\n"
+              + "".join(f"          {ln}\n" for ln in L.CA_REFRESH_STEP_RUN.splitlines()))
+_L109_CHECKOUT = "      - name: Checkout\n        uses: actions/checkout@v4\n"
+
+
+def _l109_tree(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    text = (repo / ".github/workflows" / _L109_WF).read_text()
+    new = mutate(text)
+    assert new != text, "mutation did not apply"
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows" / _L109_WF).write_text(new)
+    return list(L.check_jobs_refresh_runner_ca_first(tmp_path))
+
+
+def test_L109_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_jobs_refresh_runner_ca_first(repo)) == []
+
+
+def test_L109_a_job_without_the_step_fires(tmp_path):
+    """A new job added without the step runs checkout and registry logins through the
+    runner image's own store, which lagged Ubuntu's distrust by days."""
+    found = _l109_tree(tmp_path, lambda t: t.replace(_L109_STEP, "", 1))
+    assert len(found) == 1 and "first step is not" in found[0].msg, found
+
+
+def test_L109_the_step_after_checkout_fires(tmp_path):
+    """Checkout is itself a TLS fetch, so the refresh after it is too late."""
+    found = _l109_tree(tmp_path, lambda t: t.replace(
+        _L109_STEP + _L109_CHECKOUT, _L109_CHECKOUT + _L109_STEP, 1))
+    assert len(found) == 1 and "first step is not" in found[0].msg, found
+
+
+def test_L109_a_drifted_copy_fires(tmp_path):
+    """Dropping a root from one copy leaves that job trusting it; only the canonical
+    text counts."""
+    found = _l109_tree(tmp_path, lambda t: t.replace(" Comodo_AAA_Services_root", "", 1))
+    assert len(found) == 1 and "differs from" in found[0].msg, found
