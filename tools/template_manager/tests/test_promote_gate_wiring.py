@@ -197,8 +197,9 @@ def test_every_copy_of_the_required_set_agrees(raw, wf):
     # which only base-qa's onstart exports.
     # 58 checks base-qa's comma-separated PROVISIONING_* values were split and applied
     # (ADR 0053); it skips without them, which only base-qa sets.
-    required = {"base/36-home-env-sync", "base/57-env-literal", "base/58-env-lists", "base/60-gpu-cuda",
-                "base/61-cuda-compute", "base/62-gpu-libraries"}
+    # 29 is the CA trust check ADR 0058 made a promotion condition (L112).
+    required = {"base/29-ca-trust", "base/36-home-env-sync", "base/57-env-literal", "base/58-env-lists",
+                "base/60-gpu-cuda", "base/61-cuda-compute", "base/62-gpu-libraries"}
 
     cell = set(_job(wf, "qa")["with"]["require_tests"].split())
     assert cell == required, f"qa job require_tests drifted: {cell}"

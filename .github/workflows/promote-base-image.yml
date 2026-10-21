@@ -405,7 +405,7 @@ jobs:
       template_dir: templates/base-qa
       label: base-image-qa-base
       require_key: true
-      require_tests: "base/36-home-env-sync base/57-env-literal base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
+      require_tests: "base/29-ca-trust base/36-home-env-sync base/57-env-literal base/58-env-lists base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       # Base QA pulls a 10-20 GB image and downloads no model; observed passing
@@ -496,7 +496,7 @@ jobs:
       template_dir: templates/base-qa
       label: base-image-qa-serverless-detect
       require_key: true
-      require_tests: "base/15-boot-markers base/85-serverless-services"
+      require_tests: "base/15-boot-markers base/29-ca-trust base/85-serverless-services"
       set_filters: "cuda_max_good.gte=${{ matrix.floor }}"
       retries: 2
       poll_timeout: "900"
