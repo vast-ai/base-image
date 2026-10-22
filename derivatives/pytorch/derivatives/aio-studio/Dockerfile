@@ -277,7 +277,7 @@ RUN \
     npm run build
 
 # ---------- Wan2GP (base: torch-2.7.1) ----------
-ARG WAN2GP_REPO=https://github.com/deepbeepmeep/Wan2GP
+ARG WAN2GP_REPO=https://github.com/deepbeepmeep/WanGP
 ARG WAN2GP_REF=8675eab
 RUN \
     set -euo pipefail && \

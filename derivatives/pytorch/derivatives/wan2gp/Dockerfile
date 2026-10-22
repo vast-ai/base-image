@@ -11,7 +11,7 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 COPY ./ROOT /
 
 # Required or we will not build
-ARG WAN2GP_REPO=https://github.com/deepbeepmeep/Wan2GP
+ARG WAN2GP_REPO=https://github.com/deepbeepmeep/WanGP
 ARG WAN2GP_REF
 
 RUN \
