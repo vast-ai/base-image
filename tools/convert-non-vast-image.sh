@@ -135,11 +135,18 @@ curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
 chmod +x /tmp/uv-install.sh
 UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
 rm -f /tmp/uv-install.sh
-# Ours must be the uv that runs, and new enough.
+# An engine can ship uv as a Python package in its own environment, ahead of ours on PATH
+# (sglang: /opt/sglang/bin/uv). That one runs too, so it gets the same floor: upgrade the
+# package where it is, beside the interpreter that owns it.
+uv_found=$(command -v uv)
+if [[ "$uv_found" != /usr/local/bin/uv && -x "$(dirname "$uv_found")/python3" ]]; then
+    /usr/local/bin/uv pip install --python "$(dirname "$uv_found")/python3" --break-system-packages --no-deps -U 'uv>=0.13.4'
+fi
+# Whichever uv runs must be new enough.
 uv_found=$(command -v uv)
 uv_version=$(uv --version | awk '{print $2}')
-if [[ "$uv_found" != /usr/local/bin/uv || "$(printf '%s\n0.13.4\n' "$uv_version" | sort -V | head -1)" != 0.13.4 ]]; then
-    echo "FATAL: uv on PATH is $uv_found ($uv_version); need /usr/local/bin/uv >= 0.13.4" >&2; exit 1
+if [[ "$(printf '%s\n0.13.4\n' "$uv_version" | sort -V | head -1)" != 0.13.4 ]]; then
+    echo "FATAL: uv on PATH is $uv_found ($uv_version); need >= 0.13.4" >&2; exit 1
 fi
 
 # Install Instance Portal
