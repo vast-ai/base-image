@@ -58,7 +58,27 @@ allowed() {
         [[ "$(date +%F)" > "$exp" ]] && { echo "EXPIRED ${exp}: ${why}"; return 1; }
         echo "$why"; return 0
     done <<< "$ALLOW"
+    # The serverless worker bootstrap (start_server.sh) installs a uv-managed Python 3.10 at boot, after this
+    # image's CA refresh ran, and that interpreter carries pip 23.0.1. Allowed until the bootstrap is fixed, and
+    # only for an interpreter created after the build finished (newer than /.env_hash), so a 3.10 the image
+    # itself ships is still checked.
+    if [[ "$1" =~ ^(/opt/uv/python|/\.uv/python_install)/cpython-3\.10\.[^/]+ && -e /.env_hash && "${BASH_REMATCH[0]}" -nt /.env_hash ]]; then
+        why="managed Python 3.10 installed at boot by the serverless worker bootstrap; remove when it is fixed"
+        [[ "$(date +%F)" > 2026-11-05 ]] && { echo "EXPIRED 2026-11-05: ${why}"; return 1; }
+        echo "$why"; return 0
+    fi
     return 1
+}
+# True when virtualenv seeds this embedded wheel only into Pythons below the floor's minimum, read from its
+# BUNDLE_SUPPORT table: no pip at the floor runs there, the same boundary lib/refresh-ca-data.sh skips.
+seed_only_below_floor() {
+    local pys py
+    pys=$(awk -v whl="\"$(basename "$1")\"" '/^BUNDLE_SUPPORT/ { t = 1; next } t && /^}/ { exit }
+        t && match($0, /^ *"3\.[0-9]+":/) { ver = substr($0, RSTART, RLENGTH); gsub(/[^0-9.]/, "", ver) }
+        t && index($0, whl) && ver { print ver }' "$(dirname "$1")/__init__.py" 2>/dev/null)
+    [[ -n "$pys" ]] || return 1
+    for py in $pys; do (( ${py#3.} < PIP_FLOOR_MIN_PYTHON )) || return 1; done
+    echo $pys
 }
 judge() {   # $1 = label, $2 = chains accepted
     local why
@@ -94,6 +114,8 @@ while IFS= read -r w; do
         echo "  allow pip ${v}  $w [Debian/Ubuntu patched wheel reads the OS bundle]"
     elif version_ge "$v" "$PIP_FLOOR"; then
         echo "  ok    pip ${v}  $w"
+    elif [[ "$w" == */virtualenv/seed/wheels/embed/* ]] && pys=$(seed_only_below_floor "$w"); then
+        echo "  allow pip ${v}  $w [virtualenv seeds it only for Python ${pys}; no pip at the floor supports those]"
     elif why=$(allowed "$w"); then
         echo "  allow pip ${v}  $w [${why}]"
     else
