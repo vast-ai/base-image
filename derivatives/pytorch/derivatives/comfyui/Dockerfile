@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-09-08
+ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-22
 
 FROM ${PYTORCH_BASE}
 
@@ -144,6 +144,9 @@ RUN \
 # model-specific benchmark comes from PROVISIONING_COMFYUI_WORKFLOWS via convert-workflows.sh.
 ENV BACKEND=comfyui-json
 EXPOSE 3000
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN \

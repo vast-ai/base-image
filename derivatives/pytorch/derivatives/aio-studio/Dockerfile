@@ -721,5 +721,8 @@ COPY ./ROOT /
 COPY --from=comfyui ROOT/opt/instance-tools/lib/provisioner_comfyui /opt/instance-tools/lib/provisioner_comfyui
 COPY --from=comfyui ROOT/opt/instance-tools/bin/ /opt/instance-tools/bin/
 
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

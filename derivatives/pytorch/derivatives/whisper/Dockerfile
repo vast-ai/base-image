@@ -13,7 +13,7 @@
 # 2.8.0). The UPPER bound is real too — upstream master carries
 # "# 2.9 deprecates used functions" against it — so this is a fixed point, not a
 # floor to raise later: do not move it to 2.9.x without re-reading upstream.
-ARG PYTORCH_BASE=vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py312-2026-09-08
+ARG PYTORCH_BASE=vastai/pytorch:2.8.0-cu128-cuda-12.9-mini-py312-2026-10-22
 
 FROM ${PYTORCH_BASE}
 
@@ -52,6 +52,9 @@ RUN \
     # Verify torch ecosystem unchanged.
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN \

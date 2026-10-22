@@ -41,6 +41,9 @@ RUN set -euo pipefail; \\
     . /venv/main/bin/activate; \\
     : '>>> FILL: install @@NAME@@ here (apt/uv pip install, build, etc.) <<<'
 
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 RUN env-hash > /.env_hash
 '''
 
@@ -59,6 +62,9 @@ RUN set -euo pipefail; \\
     : '>>> FILL: install @@NAME@@ HERE, in THIS SAME RUN, between the two snapshots — git clone @@NAME_UPPER@@_REF, strip torch pins, uv pip install. Do NOT move this into a separate RUN: that makes the drift guard a no-op the linter cannot catch. <<<'; \\
     torch_versions_post=@@SNAP@@; \\
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem drift for @@NAME@@"; exit 1; }
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 RUN env-hash > /.env_hash
 '''
