@@ -114,6 +114,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L111", ERROR, "Our own services, and only they, source `lib/trust-env.sh` (the portal, tunnel manager, provisioner, update-portal and every external model-ui launcher), with the guarded line `[[ -r ... ]] && . ...`. It must never be sourced from `supervisor-scripts/utils/environment.sh`, which every supervisor script sources, user apps included: set there it would override users' certifi, conda's OpenSSL and private-CA setups, which ADR 0058 rejects. A service that does not source it keeps trusting the certifi it was built with until the next rebuild"),
     ("L112", ERROR, "`tests/base/29-ca-trust.sh` exists with its chain fixtures (`tests/ca-trust/`), and `base/29-ca-trust` is in the required-test list of the base and pytorch QA templates and of both promotion workflows, so a skipped or failing trust check blocks promotion. ADR 0058 made the trust probe a promotion condition; while it lived outside the repo, a green promote checked no CA bundle at all"),
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
+    ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -4464,6 +4465,30 @@ def check_base_defaults_are_dated(repo: Path) -> Iterable[Finding]:
                               "builds from whatever it last pointed at. Pin a dated tag (L113)")
 
 
+# Images built on the 2026-10-21 base or later, whose Dockerfiles must end their installs with
+# refresh-ca-data.sh. Widened to every derivative as each moves to a base that ships the script.
+REFRESH_CA_DATA_DOCKERFILES = ("derivatives/pytorch/Dockerfile", "derivatives/pytorch/Dockerfile.multi-torch",
+                               "derivatives/llama-cpp/Dockerfile", "derivatives/linux-desktop/Dockerfile")
+_INSTALL_STEP = re.compile(r"pip install|uv pip|conda (?:create|install)|npm (?:ci|install)|install-torch-venv|apt-get install")
+
+
+def check_refresh_ca_data_ends_installs(repo: Path) -> Iterable[Finding]:
+    """L114 (repo) — refresh-ca-data.sh runs after a Dockerfile's last install, before env-hash."""
+    for rel in REFRESH_CA_DATA_DOCKERFILES:
+        f = repo / rel
+        if not f.is_file():
+            continue
+        lines = f.read_text().splitlines()
+        last_install = max((i for i, ln in enumerate(lines) if _INSTALL_STEP.search(ln) and not ln.lstrip().startswith("#")), default=-1)
+        refresh = [i for i, ln in enumerate(lines) if "refresh-ca-data.sh" in ln and not ln.lstrip().startswith("#")]
+        env_hash = [i for i, ln in enumerate(lines) if "env-hash" in ln and not ln.lstrip().startswith("#")]
+        if not refresh or refresh[-1] < last_install or (env_hash and refresh[-1] > env_hash[-1]):
+            yield Finding("L114", ERROR, "repo", rel,
+                          "must run /opt/instance-tools/lib/refresh-ca-data.sh after its last install step and before "
+                          "env-hash: every install can bring back a stale ensurepip wheel, pip or grpcio bundle, and "
+                          "the base's own refresh ran before it (ADR 0058, L114)")
+
+
 CA_TRUST_TEST = "base/29-ca-trust"
 CA_TRUST_REQUIRED_IN = (("templates/base-qa/template.yml", "INSTANCE_TEST_REQUIRE_PASS"),
                         ("templates/pytorch-qa/template.yml", "INSTANCE_TEST_REQUIRE_PASS"),
@@ -4509,7 +4534,8 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_convert_builds_the_mirror,
     check_jobs_refresh_runner_ca_first,
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
-    check_ca_trust_test_gates_promotion, check_base_defaults_are_dated]
+    check_ca_trust_test_gates_promotion, check_base_defaults_are_dated,
+    check_refresh_ca_data_ends_installs]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

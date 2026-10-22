@@ -49,5 +49,9 @@ RUN set -euo pipefail && \
     done && \
     rm -f /tmp/install-torch-venv.sh /tmp/torch-companions.json
 
+# Each supplementary venv's interpreter bundles its own ensurepip pip; refresh it and any other
+# CA data that does not follow the OS store, after the installs above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Refresh environment hash
 RUN env-hash > /.env_hash
