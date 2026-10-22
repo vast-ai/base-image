@@ -1796,6 +1796,15 @@ as `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever 
 In 2026-10 all five externals defaulted to that tag and no workflow overrode it; its last write
 was in January, so every external shipped January's Caddy and base tooling (ADR 0058).
 
+### refresh-ca-data.sh ends every install on the new base — **GATED (L114)**
+
+An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step
+and before `env-hash`. The base refreshes its own CA data, but each later install can bring a
+stale ensurepip wheel, pip or grpcio bundle back. In 2026-10 the pytorch multi images created
+supplementary venvs after the base's refresh, each bundling pip 25.0.1, and `base/29-ca-trust`
+blocked the pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
+llama-cpp, linux-desktop) and widens as each derivative moves to such a base (ADR 0058).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

@@ -61,6 +61,9 @@ RUN \
     python3 -c "import torch; model = torch.nn.Linear(10,2); x = torch.randn(5,10); y = model(x); assert y.shape == (5,2) and not torch.isnan(y).any(), 'Neural network test failed'" && \
     rm -f /tmp/torch-companions.json
 
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Defend against environment clashes when syncing to volume
 RUN \
     set -euo pipefail && \

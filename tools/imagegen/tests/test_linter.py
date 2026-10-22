@@ -575,7 +575,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113",
+    "L110", "L111", "L112", "L113", "L114",
 })
 
 
@@ -5610,3 +5610,38 @@ def test_L113_a_floating_external_base_fires(tmp_path):
                          r"\1", (repo / "external/vllm/Dockerfile").read_text(), count=1))
     found = list(L.check_base_defaults_are_dated(tmp_path))
     assert [f.path for f in found] == ["external/vllm/Dockerfile"], found
+
+
+# --- L114: refresh-ca-data.sh ends every install ----------------------------------- #
+
+def _l114_tree(tmp_path, rel, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for f in L.REFRESH_CA_DATA_DOCKERFILES:
+        dst = tmp_path / f
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (repo / f).read_text()
+        if f == rel:
+            new = mutate(text)
+            assert new != text, "mutation did not apply"
+            text = new
+        dst.write_text(text)
+    return [x.path for x in L.check_refresh_ca_data_ends_installs(tmp_path)]
+
+
+def test_L114_real_tree_is_clean():
+    assert list(L.check_refresh_ca_data_ends_installs(find_repo_root(Path(__file__).resolve().parent))) == []
+
+
+def test_L114_the_multi_torch_image_without_the_refresh_fires(tmp_path):
+    """The incident: supplementary venvs made after the base refresh, never refreshed."""
+    assert _l114_tree(tmp_path, "derivatives/pytorch/Dockerfile.multi-torch",
+                      lambda t: t.replace("RUN /opt/instance-tools/lib/refresh-ca-data.sh\n", "")) \
+        == ["derivatives/pytorch/Dockerfile.multi-torch"]
+
+
+def test_L114_an_install_after_the_refresh_fires(tmp_path):
+    """A refresh that an install follows is stale again by the time the image ships."""
+    assert _l114_tree(tmp_path, "derivatives/llama-cpp/Dockerfile",
+                      lambda t: t.replace("RUN /opt/instance-tools/lib/refresh-ca-data.sh\n",
+                                          "RUN /opt/instance-tools/lib/refresh-ca-data.sh\nRUN pip install something\n")) \
+        == ["derivatives/llama-cpp/Dockerfile"]
