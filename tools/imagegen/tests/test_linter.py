@@ -5241,7 +5241,7 @@ def test_L101_real_vllm_system_install_after_convert_fires():
     """vllm's `ray[default]` was installed `--system` after convert: into the engine's
     site-packages after the mirror was built, so the venv never saw it."""
     repo, img = _real("vllm")
-    text = img.text.replace("uv pip install --python /venv/main/bin/python --no-cache-dir ray[default]",
+    text = img.text.replace("uv pip install --python /venv/main/bin/python --no-cache-dir --constraint /tmp/engine-constraints.txt ray[default]",
                             "uv pip install --system --no-cache-dir ray[default]")
     assert "--system --no-cache-dir ray" in text
     assert any("--system" in f.msg for f in _l101(replace(img, text=text), repo))
