@@ -55,9 +55,14 @@ RUN \
     if [ -d /workspace ]; then mv /workspace /opt/workspace-internal; fi
 
 # Add Ray dashboard, into /venv/main: a --system install would bypass its mirror (ADR 0048).
+# Constrained to what /venv/main already has, so the resolver picks a ray that fits this
+# engine instead of replacing the engine's packages (venv-mirror verify fails the build
+# if it does). Direct-URL entries such as the engine's own wheel are not constraints.
 RUN \
     set -euo pipefail && \
-    uv pip install --python /venv/main/bin/python --no-cache-dir ray[default]
+    uv pip freeze --python /venv/main/bin/python | grep -v -E ' @ |^-e ' > /tmp/engine-constraints.txt && \
+    uv pip install --python /venv/main/bin/python --no-cache-dir --constraint /tmp/engine-constraints.txt ray[default] && \
+    rm /tmp/engine-constraints.txt
 
 # vLLM keeps audio decoding behind an optional extra and the upstream image does not
 # install it, so /v1/audio/transcriptions and /v1/audio/translations -- routes vLLM
