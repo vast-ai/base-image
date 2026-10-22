@@ -3,8 +3,8 @@
 # in the image (ADR 0058). Build-time only; run it as the last step of any build that
 # installs Python packages or interpreters, because each install can bring a stale copy back.
 #
-# 1. grpcio ships its own roots.pem and ignores SSL_CERT_FILE: link it to the OS bundle, the
-#    way Debian does for certifi.
+# 1. grpcio ships its own roots.pem and ignores SSL_CERT_FILE, as does the distro's gRPC C core
+#    (/usr/share/grpc/roots.pem): link them to the OS bundle, the way Debian does for certifi.
 # 2. ensurepip bundles a pip wheel inside every interpreter, and `python -m venv` puts it in
 #    each new venv. pip always loads its vendored certifi IN ADDITION to the system store, so
 #    only a newer pip fixes it. Debian/Ubuntu interpreters have no _bundled directory (their
@@ -22,6 +22,9 @@ set -euo pipefail
 
 find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f -not -path '/proc/*' -not -path '/opt/nvidia/*' \
     -exec ln -sf /etc/ssl/certs/ca-certificates.crt {} \;
+if [[ -f /usr/share/grpc/roots.pem && ! -L /usr/share/grpc/roots.pem ]]; then
+    ln -sf /etc/ssl/certs/ca-certificates.crt /usr/share/grpc/roots.pem
+fi
 
 # The pip trust floor, its wheel and that wheel's hash: one source, shared with the test.
 . /opt/instance-tools/lib/pip-trust-floor.env
