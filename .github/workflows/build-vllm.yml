@@ -37,6 +37,9 @@ on:
       QA_MAX_PRICE:
         description: "Custom-tag builds only (ADR 0047). QA offer price ceiling in $/hr (default 2.00, hard max 15.00) - raise when the range above only matches expensive cards"
         required: false
+      CUDA_VARIANTS:
+        description: "Build only these CUDA versions of the release, space-separated (e.g. '13.0') - leave empty for every variant. For rebuilding a release whose other variant is broken upstream"
+        required: false
 
 env:
   DEFAULT_DOCKERHUB_REPO: "vllm"
@@ -164,6 +167,8 @@ jobs:
       - name: Build matrix from variant tags
         id: build-matrix
         if: inputs.VLLM_VERSION != 'nightly' && steps.release-check.outputs.new-release == 'true'
+        env:
+          CUDA_VARIANTS: ${{ inputs.CUDA_VARIANTS }}
         run: |
           VERSION="${{ steps.release-check.outputs.resolved-version }}"
 
@@ -253,6 +258,21 @@ jobs:
           if [[ -n "$COLLISIONS" ]]; then
               echo "::error::Variants collide on one output tag: ${COLLISIONS}"
               exit 1
+          fi
+
+          # A dispatch can name the CUDA versions to build, so a release whose
+          # other variant is broken upstream can still be rebuilt: every variant
+          # shares one QA gate, and a failing one holds the rest back. Each named
+          # version must exist in this release, so a typo fails instead of
+          # quietly building less.
+          if [[ -n "$CUDA_VARIANTS" ]]; then
+              for c in $CUDA_VARIANTS; do
+                  [[ "$c" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "::error::CUDA_VARIANTS: '${c}' is not a CUDA version like 13.0"; exit 1; }
+                  jq -e --arg c "$c" 'any(.[]; .cuda == $c)' <<< "$MATRIX" >/dev/null \
+                      || { echo "::error::CUDA_VARIANTS: ${VERSION} has no CUDA ${c} variant"; exit 1; }
+              done
+              MATRIX=$(jq -c --arg keep "$CUDA_VARIANTS" '[.[] | select(.cuda as $c | $keep | split(" ") | index($c))]' <<< "$MATRIX")
+              echo "CUDA_VARIANTS=${CUDA_VARIANTS}: building only those"
           fi
 
           echo "Build matrix: $MATRIX"
