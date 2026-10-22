@@ -43,11 +43,22 @@ runs:
     - name: Fetch tags from DockerHub
       id: fetch
       shell: bash
+      env:
+        TRIGGER: ${{ inputs.trigger }}
+        MANUAL_VERSION: ${{ inputs.manual-version }}
       run: |
         echo "Fetching tags from DockerHub for ${{ inputs.repository }}..."
-        
+
+        # One page holds only the 100 most recently updated tags, so a named version
+        # older than that page found no variants. Ask the Hub for that version's tags
+        # by name instead; scheduled runs still read the newest page.
+        NAME_FILTER=""
+        if [[ "$TRIGGER" != "schedule" && -n "$MANUAL_VERSION" ]]; then
+          NAME_FILTER="&name=$(jq -rn --arg v "$MANUAL_VERSION" '$v|@uri')"
+        fi
+
         RESPONSE=$(curl -sfS --retry 5 --retry-max-time 60 --connect-timeout 10 --max-time 30 \
-          "https://hub.docker.com/v2/repositories/${{ inputs.repository }}/tags?page_size=100&ordering=last_updated" || echo "")
+          "https://hub.docker.com/v2/repositories/${{ inputs.repository }}/tags?page_size=100&ordering=last_updated${NAME_FILTER}" || echo "")
         
         if [[ -z "$RESPONSE" ]]; then
           echo "::warning::Failed to fetch tags from DockerHub"
