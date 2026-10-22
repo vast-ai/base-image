@@ -3925,7 +3925,9 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                 continue
             img = _image_dir_for_template(repo, tdir) if tdir else None
 
-            suites = dict(base_suites)
+            # A suite name can be shipped by several layers (an overlay that patches one
+            # base test still inherits the rest), so each name keeps every directory.
+            suites = {k: [v] for k, v in base_suites.items()}
             if img is not None:
                 # Suites are INHERITED through the image chain, not only shipped in an
                 # image's own overlay: every class carries base's, and a pytorch-nested
@@ -3933,9 +3935,12 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                 # manifest` and ships no pytorch.d of its own, which is correct and was
                 # this check's first false positive.
                 df = img / "Dockerfile"
+                layers = [_suite_dirs(img)]
                 if df.exists() and "vastai/pytorch" in df.read_text(errors="replace"):
-                    suites.update(_suite_dirs(repo / "derivatives/pytorch"))
-                suites.update(_suite_dirs(img))
+                    layers.insert(0, _suite_dirs(repo / "derivatives/pytorch"))
+                for layer in layers:
+                    for k, v in layer.items():
+                        suites.setdefault(k, []).append(v)
 
             names: set[str] = set()
             for where, value in declarations:
@@ -3989,10 +3994,10 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                     continue
                 # runner.sh compares test names with ==, so a prefix that passes here
                 # still fails on a rented GPU with "missing from this image".
-                if not any(f.name == f"{stem}.sh" for f in suite.iterdir()):
+                if not any(f.name == f"{stem}.sh" for d in suite for f in d.iterdir()):
                     yield Finding("L097", ERROR, "-", rel,
                                   f"job `{jid}` requires `{name}`, which is not a file "
-                                  f"in {suite.relative_to(repo)} - the gate would fail "
+                                  f"in {suite[-1].relative_to(repo)} - the gate would fail "
                                   f"on a rented GPU over something visible here (L097)")
 
 

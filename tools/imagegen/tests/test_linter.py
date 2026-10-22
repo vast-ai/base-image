@@ -4468,6 +4468,25 @@ def test_L097_a_required_test_that_ships_is_clean(tmp_path):
     assert not _codes(repo, "L097")
 
 
+def test_L097_an_overlay_patching_one_base_test_still_inherits_the_rest(tmp_path):
+    """An image that overlays a single base test (a one-off CA-trust patch on llama-cpp
+    and comfyui) still runs every other base test from its base image, so a required
+    base test missing from the overlay but shipped by base is clean."""
+    repo = _wf_requiring(tmp_path, "base/60-gpu-cuda", "base", ["29-ca-trust.sh"])
+    b = tmp_path / "ROOT/opt/instance-tools/tests/base"
+    b.mkdir(parents=True, exist_ok=True)
+    (b / "60-gpu-cuda.sh").write_text("#!/bin/bash\n")
+    assert not _codes(repo, "L097")
+
+
+def test_L097_a_base_test_neither_layer_ships_still_fires(tmp_path):
+    repo = _wf_requiring(tmp_path, "base/99-nowhere", "base", ["29-ca-trust.sh"])
+    b = tmp_path / "ROOT/opt/instance-tools/tests/base"
+    b.mkdir(parents=True, exist_ok=True)
+    (b / "60-gpu-cuda.sh").write_text("#!/bin/bash\n")
+    assert _codes(repo, "L097")
+
+
 def test_L097_a_suite_the_image_does_not_have_fires(tmp_path):
     """Names the suite rather than the file, because it is a different mistake: a
     workflow copied between images and left naming the suite it came from. THE REAL
