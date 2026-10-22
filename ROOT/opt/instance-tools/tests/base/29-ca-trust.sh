@@ -50,8 +50,9 @@ echo "  positive control: ${control}/${total} chains verify against the publishe
 ALLOW='/usr/lib/python3/dist-packages/certifi/cacert.pem|Debian/Ubuntu certifi reads the OS bundle|2099-12-31
 /usr/lib/python3/dist-packages/pip/_vendor/certifi/cacert.pem|Debian/Ubuntu pip reads the OS bundle|2099-12-31
 */botocore/cacert.pem|upstream botocore bundle; botocore uses certifi when importable|2026-12-31
-/opt/nvidia/nsight-compute/*|NVIDIA Nsight Compute private Python from the CUDA base image; not on PATH, left to NVIDIA|2026-12-31
-/opt/sglang/bin/uv|upstream sglang engine environment uv; ours in /opt/instance-tools/bin runs first, left to upstream|2026-12-31'
+/opt/nvidia/nsight-*/*|private Python of the NVIDIA Nsight tools from the CUDA base image; not on PATH, left to NVIDIA|2026-12-31
+/opt/sglang/bin/uv|upstream sglang engine environment uv; ours in /opt/instance-tools/bin runs first, left to upstream|2026-12-31
+/opt/sglang/lib/python3*/site-packages/virtualenv/seed/wheels/embed/*|upstream sglang engine environment virtualenv seed wheels; left to upstream|2026-12-31'
 allowed() {
     local pat why exp
     while IFS='|' read -r pat why exp; do
@@ -117,7 +118,7 @@ while IFS= read -r w; do
         echo "  ok    pip ${v}  $w"
     elif [[ "$w" == */virtualenv/seed/wheels/embed/* ]] && pys=$(seed_only_below_floor "$w"); then
         echo "  allow pip ${v}  $w [virtualenv seeds it only for Python ${pys}; no pip at the floor supports those]"
-    elif why=$(allowed "$w"); then
+    elif why=$(allowed "$w") || why=$(allowed "$(readlink -f "$w")"); then   # a mirrored file is judged by its target
         echo "  allow pip ${v}  $w [${why}]"
     else
         fail_later "ca-trust:$w" "bundled pip ${v} < ${PIP_FLOOR}; every venv made from this interpreter trusts the distrusted CAs${why:+ (${why})}"
