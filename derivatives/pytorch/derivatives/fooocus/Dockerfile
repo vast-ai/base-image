@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py311-2026-09-08
+ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py311-2026-10-22
 
 FROM ${PYTORCH_BASE}
 
@@ -55,6 +55,9 @@ RUN \
     # Verify torch ecosystem unchanged.
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash

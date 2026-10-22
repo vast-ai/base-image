@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-09-08
+ARG PYTORCH_BASE=vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-10-22
 
 FROM ${PYTORCH_BASE}
 
@@ -98,6 +98,9 @@ print("voicebox stt-lock patch applied")
 PYEOF
 
 ENV VOICEBOX_ARGS="--host 127.0.0.1 --port 17493"
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
 # Defend against environment clashes when syncing to volume
 RUN \
