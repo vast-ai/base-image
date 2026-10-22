@@ -50,7 +50,8 @@ echo "  positive control: ${control}/${total} chains verify against the publishe
 ALLOW='/usr/lib/python3/dist-packages/certifi/cacert.pem|Debian/Ubuntu certifi reads the OS bundle|2099-12-31
 /usr/lib/python3/dist-packages/pip/_vendor/certifi/cacert.pem|Debian/Ubuntu pip reads the OS bundle|2099-12-31
 */botocore/cacert.pem|upstream botocore bundle; botocore uses certifi when importable|2026-12-31
-/opt/nvidia/nsight-compute/*|NVIDIA Nsight Compute private Python from the CUDA base image; not on PATH, left to NVIDIA|2026-12-31'
+/opt/nvidia/nsight-compute/*|NVIDIA Nsight Compute private Python from the CUDA base image; not on PATH, left to NVIDIA|2026-12-31
+/opt/sglang/bin/uv|upstream sglang engine environment uv; ours in /opt/instance-tools/bin runs first, left to upstream|2026-12-31'
 allowed() {
     local pat why exp
     while IFS='|' read -r pat why exp; do

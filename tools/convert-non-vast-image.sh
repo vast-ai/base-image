@@ -135,10 +135,15 @@ curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
 chmod +x /tmp/uv-install.sh
 UV_UNMANAGED_INSTALL=/usr/local/bin /tmp/uv-install.sh
 rm -f /tmp/uv-install.sh
+# An engine can ship its own uv ahead of ours on PATH (sglang: /opt/sglang/bin/uv, a Python
+# package in the engine's environment). Leave the engine's environment alone and put ours in
+# /opt/instance-tools/bin, which every external image puts first on PATH.
+ln -sf /usr/local/bin/uv /opt/instance-tools/bin/uv
+ln -sf /usr/local/bin/uvx /opt/instance-tools/bin/uvx
 # Ours must be the uv that runs, and new enough.
 uv_found=$(command -v uv)
 uv_version=$(uv --version | awk '{print $2}')
-if [[ "$uv_found" != /usr/local/bin/uv || "$(printf '%s\n0.13.4\n' "$uv_version" | sort -V | head -1)" != 0.13.4 ]]; then
+if [[ "$(readlink -f "$uv_found")" != /usr/local/bin/uv || "$(printf '%s\n0.13.4\n' "$uv_version" | sort -V | head -1)" != 0.13.4 ]]; then
     echo "FATAL: uv on PATH is $uv_found ($uv_version); need /usr/local/bin/uv >= 0.13.4" >&2; exit 1
 fi
 
