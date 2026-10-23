@@ -488,6 +488,28 @@ RUN \
         echo "Seeded Chrome CRLSet ${cver}"; \
     fi
 
+# Firefox likewise distrusts through CRLite and OneCRL, synced into the profile about half a minute after
+# a fresh profile first starts. Run Firefox once, headless, as the desktop user so it creates its own
+# default profile and syncs them; then remove what identifies this one install (telemetry and Normandy
+# IDs, crash and usage data, caches, locks) so every desktop gets its own on first run.
+RUN \
+    set -euo pipefail && \
+    su user -s /bin/bash -c ' \
+        set -euo pipefail; export HOME=/home/user; \
+        firefox --headless --no-remote about:blank >/dev/null 2>&1 & pid=$!; \
+        s=""; for i in $(seq 1 90); do \
+            s=$(ls -d "$HOME"/.config/mozilla/firefox/*.default-release/security_state 2>/dev/null | head -1 || true); \
+            [[ -n "$s" && -s "$s/crlite.filter" && -s "$s/data.safe.bin" ]] && break; sleep 2; \
+        done; \
+        sleep 10; kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+        [[ -n "$s" && -s "$s/crlite.filter" && -s "$s/data.safe.bin" ]] || { echo "FATAL: Firefox did not sync CRLite/security state"; exit 1; }' && \
+    p=$(ls -d /home/user/.config/mozilla/firefox/*.default-release) && \
+    rm -rf "$p"/{datareporting,crashes,minidumps,cache2,startupCache,sessionstore-backups,saved-telemetry-pings} \
+        "$p"/{cookies.sqlite*,sessionstore.jsonlz4,lock,.parentlock,WebDriverBiDiServer.json} /home/user/.cache/mozilla && \
+    sed -i -E '/"(app\.normandy\.user_id|toolkit\.telemetry\.cached(ClientID|ProfileGroupID)|datareporting\.dau\.cachedUsageProfile(GroupID|ID)|browser\.newtabpage\.activity-stream\.impressionId)"/d' "$p/prefs.js" && \
+    ! grep -q -E 'cachedClientID|normandy\.user_id' "$p/prefs.js" && \
+    echo "Seeded Firefox profile $(basename "$p"): crlite.filter $(stat -c %s "$p/security_state/crlite.filter") bytes"
+
 # Blender:
 #   amd64 -> install from Blender's official tarball at the latest release
 #            (auto-detected, overridable via the BLENDER_VERSION build arg).
