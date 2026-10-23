@@ -11,3 +11,11 @@
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+
+# Hotfix: the CA-trust tooling the 2026-10-22 images predate. The workflow builds from
+# derivatives/pytorch, which cannot reach the base's ROOT, so extend/ROOT carries copies that L115
+# keeps byte-identical to it. Refuse a source image that still trusts a distrusted root, then refresh
+# the CA data that does not follow the OS store (ADR 0058, L114). Revert with extend/ once promoted.
+COPY ./extend/ROOT /
+RUN /opt/instance-tools/lib/assert-distrust.sh && /opt/instance-tools/lib/refresh-ca-data.sh
+RUN env-hash > /.env_hash
