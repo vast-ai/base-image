@@ -505,7 +505,9 @@ RUN \
         [[ -n "$s" && -s "$s/crlite.filter" && -s "$s/data.safe.bin" ]] || { echo "FATAL: Firefox did not sync CRLite/security state"; exit 1; }' && \
     p=$(ls -d /home/user/.config/mozilla/firefox/*.default-release) && \
     rm -rf "$p"/{datareporting,crashes,minidumps,cache2,startupCache,sessionstore-backups,saved-telemetry-pings} \
-        "$p"/{cookies.sqlite*,sessionstore.jsonlz4,lock,.parentlock,WebDriverBiDiServer.json} /home/user/.cache/mozilla && \
+        "$p"/{cookies.sqlite*,sessionstore.jsonlz4,lock,.parentlock,WebDriverBiDiServer.json} /home/user/.cache/mozilla \
+        "/home/user/.config/mozilla/firefox/Crash Reports" "/home/user/.config/mozilla/firefox/Pending Pings" \
+        "/home/user/.config/mozilla/firefox/Profile Groups" && \
     sed -i -E '/"(app\.normandy\.user_id|toolkit\.telemetry\.cached(ClientID|ProfileGroupID)|datareporting\.dau\.cachedUsageProfile(GroupID|ID)|browser\.newtabpage\.activity-stream\.impressionId)"/d' "$p/prefs.js" && \
     ! grep -q -E 'cachedClientID|normandy\.user_id' "$p/prefs.js" && \
     echo "Seeded Firefox profile $(basename "$p"): crlite.filter $(stat -c %s "$p/security_state/crlite.filter") bytes"
