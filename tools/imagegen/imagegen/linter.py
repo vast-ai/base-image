@@ -4476,7 +4476,7 @@ def check_base_defaults_are_dated(repo: Path) -> Iterable[Finding]:
 
 # Images built on the 2026-10-21 base or later, whose Dockerfiles must end their installs with
 # refresh-ca-data.sh. Widened to every derivative as each moves to a base that ships the script.
-REFRESH_CA_DATA_DOCKERFILES = ("derivatives/pytorch/Dockerfile", "derivatives/pytorch/Dockerfile.multi-torch",
+REFRESH_CA_DATA_DOCKERFILES = ("Dockerfile.extend", "derivatives/pytorch/Dockerfile", "derivatives/pytorch/Dockerfile.multi-torch",
                                "derivatives/llama-cpp/Dockerfile", "derivatives/linux-desktop/Dockerfile",
                                "derivatives/pytorch/derivatives/a1111/Dockerfile",
                                "derivatives/pytorch/derivatives/ace-step/Dockerfile",
