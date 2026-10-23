@@ -2,4 +2,4 @@
 image:
   name: Linux desktop
   readme: https://github.com/vast-ai/base-image/tree/main/derivatives/linux-desktop
-  preinstalled: KDE Plasma desktop in-browser (Guacamole VNC; Selkies WebRTC on amd64) — Firefox, Blender, xdotool
+  preinstalled: KDE Plasma desktop in-browser (Selkies streaming; Guacamole VNC) — Firefox, Blender, xdotool

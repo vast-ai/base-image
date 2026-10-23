@@ -97,7 +97,7 @@ The workflow runs monthly on the 1st of each month. GitHub disables scheduled wo
 
 This image ships vendor application(s) under the following license(s):
 
-- **Selkies-GStreamer** — MPL-2.0 ([upstream](https://github.com/selkies-project/selkies-gstreamer))
+- **Selkies** — MPL-2.0 ([upstream](https://github.com/selkies-project/selkies))
 - **Apache Guacamole** — Apache-2.0 ([upstream](https://guacamole.apache.org/))
 - **Blender** — GPL-2.0-or-later ([upstream](https://www.blender.org/))
 
