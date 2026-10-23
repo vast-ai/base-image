@@ -541,6 +541,16 @@ ENV XMODIFIERS="@im=fcitx"
 
 USER root
 
+# Two more CA bundles that do not follow the OS store: Blender's bundled Python ships its own certifi
+# (its extensions and add-ons fetch over HTTPS with it) and KDE Frameworks 5 ships KSSL's bundle
+# (libkf5kdelibs4support-data). Link both to the OS bundle, as Debian does for certifi. One-off until
+# the base's refresh takes them over.
+RUN \
+    set -euo pipefail && \
+    for f in /opt/blender-*/*/python/lib/python3*/site-packages/certifi/cacert.pem /usr/share/kf5/kssl/ca-bundle.crt; do \
+        if [[ -f "$f" && ! -L "$f" ]]; then ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; fi; \
+    done
+
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
