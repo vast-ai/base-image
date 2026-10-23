@@ -36,6 +36,7 @@ use_jupyter_lab: false
 ports:
   - "1111:1111"                   # Instance Portal
   - "8080:8080"                   # Jupyter
+  - "6100:6100"                   # Desktop (Selkies), driven by aio-base.d/25-selkies-live
 env:
   OPEN_BUTTON_PORT: "1111"
   OPEN_BUTTON_TOKEN: "1"
@@ -55,7 +56,12 @@ env:
   # Minimal on purpose: the two services the base actually runs. Listing an app here
   # would be a route to something this image does not contain, and base/67 fails a
   # portal entry whose port never binds.
-  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  #
+  # The Desktop entry and SUPERVISOR_AUTOSTART=desktop exist so aio-base.d/25-selkies-live
+  # can stream through Caddy the way a browser does (ADR 0050); the desktop is the other
+  # half of what this base provides, and only a running Selkies shows the route works.
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:6100:16100:/:Desktop|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  SUPERVISOR_AUTOSTART: "desktop"
   #
   # Required-pass gate (ADR 0019/0031). Without it the GPU trio self-skips when
   # nvidia-smi never came up and a suite of skips reports green. Enforced twice — by the
@@ -66,7 +72,7 @@ env:
   # turns pytorch.d/05-venv-manifest from a skip into the check that catches a base
   # rebuilt on the wrong multi-torch family by ABSENCE rather than by version.
   EXPECTED_TORCH_VENVS: "main torch-2.9.1 torch-2.7.1"
-  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop"
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries pytorch.d/05-venv-manifest aio-base.d/10-base-venvs aio-base.d/20-base-desktop aio-base.d/25-selkies-live"
 # QA gate floors (ADR 0005): smallest viable box.
 extra_filters:
   compute_cap:
