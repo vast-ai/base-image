@@ -18,8 +18,10 @@ RUN \
     . /venv/main/bin/activate && \
     # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
     torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
-    # Install InvokeAI
-    uv pip install --no-cache-dir invokeai==${INVOKEAI_VERSION} && \
+    # Install InvokeAI. Its package pins fastapi but not starlette, and fastapi 0.141 accepts starlette 1.x,
+    # whose gzip internals break InvokeAI's GZipMiddleware override: every streamed response then fails with
+    # "Expected ASGI message 'http.response.start'". InvokeAI's own uv.lock uses starlette 0.48.
+    uv pip install --no-cache-dir invokeai==${INVOKEAI_VERSION} 'starlette<1' && \
     # Patchmatch will likely fail to build if the python version is not 3.12 or 3.10
     apt-get update && apt-get install --no-install-recommends -y python3-opencv libopencv-dev && \
     pip install pypatchmatch && \
