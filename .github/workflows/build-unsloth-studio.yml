@@ -158,7 +158,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-22
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
         # arm64 is intentionally absent: `torchao` (transitive via
         # unsloth-zoo>=2026.5.3 -> unsloth) only publishes amd64 manylinux
         # wheels as of v0.17.0+cu128. Re-add when upstream torchao ships
@@ -274,7 +274,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-22
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
 
     steps:
       - name: Refresh runner CA trust store

@@ -1,5 +1,5 @@
 ARG SGLANG_BASE=lmsysorg/sglang:v0.5.8
-ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312-2026-10-21
+ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312-2026-10-23
 
 FROM ${VAST_BASE} AS vast_base_image
 FROM ${SGLANG_BASE} AS sglang_build

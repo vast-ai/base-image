@@ -14,7 +14,7 @@
 # audio through faster-whisper). Move to 2.8.x once a 2.8.x mini base ships arm64; the upper
 # bound is real ("# 2.9 deprecates used functions" upstream), so never 2.9.x without re-reading
 # upstream.
-ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-10-22
+ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-10-23
 
 FROM ${PYTORCH_BASE}
 

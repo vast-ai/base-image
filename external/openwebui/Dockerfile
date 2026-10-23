@@ -1,5 +1,5 @@
 ARG OPENWEBUI_BASE=ghcr.io/open-webui/open-webui:v0.8.5-cuda
-ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312-2026-10-21
+ARG VAST_BASE=vastai/base-image:stock-ubuntu24.04-py312-2026-10-23
 ARG OLLAMA_VERSION=0.15.2
 
 FROM ${VAST_BASE} AS vast_base_image
