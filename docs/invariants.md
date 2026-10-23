@@ -1805,6 +1805,16 @@ supplementary venvs after the base's refresh, each bundling pip 25.0.1, and `bas
 blocked the pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
 llama-cpp, linux-desktop) and widens as each derivative moves to such a base (ADR 0058).
 
+### An overlay copy of a CA-trust file matches the base's — **GATED (L115)**
+
+A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` and
+`tests/base/29-ca-trust.sh` from its dated base. When its base predates a CA-trust fix, the image
+may overlay the current copies under its own `ROOT/opt/instance-tools/` as a one-off until the base
+is rebuilt; its `COPY ./ROOT /` then shadows the base. L115 requires every such copy to be
+byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy
+whose own test checks against the same stale floor. The copies are removed once the image is pinned
+to a base that ships the same files (ADR 0058).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model

@@ -89,6 +89,10 @@ rebuild, a pin bump or an upstream release.
   copies that cannot read them (the CI runner step) and the services that must source them in
   line.
 - A floor or list changes when the next distrust ships; the build and the test read the same file.
+- A derivative pinned to a base older than a CA-trust fix may overlay the current
+  `refresh-ca-data.sh`, `pip-trust-floor.env` and `29-ca-trust.sh` until its base is rebuilt. Each
+  copy is byte-identical to the base's (L115) and is deleted when the image moves to a base that
+  ships the same files.
 
 ## Consequences
 - The next OS-level distrust reaches our services and the system tools with an `apt-get

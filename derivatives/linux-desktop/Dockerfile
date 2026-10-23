@@ -491,7 +491,7 @@ RUN \
 # Firefox likewise distrusts through CRLite and OneCRL, synced into the profile about half a minute after
 # a fresh profile first starts. Run Firefox once, headless, as the desktop user so it creates its own
 # default profile and syncs them; then rebuild that profile from an allow-list -- the revocation state
-# (security_state/, the remote-settings database, the NSS files) and only the services.settings.* and
+# (security_state/, the remote-settings database, cert9.db) and only the services.settings.* and
 # security.* prefs -- so nothing else that one run wrote (push, telemetry, Nimbus and extension IDs,
 # region, crash and usage data) ships to every desktop. Each desktop generates its own on first run.
 RUN \
@@ -509,13 +509,13 @@ RUN \
     new="$p.new" && rm -rf "$new" && mkdir -p "$new/storage/permanent/chrome/idb" && \
     cp -a "$p/security_state" "$new/" && \
     cp -a "$p"/storage/permanent/chrome/idb/*rsegmnoittet-es.* "$new/storage/permanent/chrome/idb/" && \
-    for f in cert9.db key4.db pkcs11.txt compatibility.ini; do [[ ! -e "$p/$f" ]] || cp -a "$p/$f" "$new/"; done && \
+    for f in cert9.db pkcs11.txt compatibility.ini; do [[ ! -e "$p/$f" ]] || cp -a "$p/$f" "$new/"; done && \
     grep -E '^user_pref\("(services\.settings|security)\.' "$p/prefs.js" > "$new/prefs.js" && \
     rm -rf "$p" && mv "$new" "$p" && \
     rm -rf "/home/user/.config/mozilla/firefox/Crash Reports" "/home/user/.config/mozilla/firefox/Pending Pings" \
         "/home/user/.config/mozilla/firefox/Profile Groups" /home/user/.cache/mozilla && \
-    chown -R user:root /home/user/.config/mozilla && \
-    ! grep -q -E '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|"[0-9a-f]{24,}"' "$p/prefs.js" && \
+    chown -R user:root /home/user/.config/mozilla && chmod -R go-rwx /home/user/.config/mozilla && \
+    { ! grep -q -i -E '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|"[0-9a-f]{24,}"' "$p/prefs.js" || { echo "FATAL: an ID-shaped value survived in the seeded prefs.js"; exit 1; }; } && \
     [[ -s "$p/security_state/crlite.filter" && -s "$p/security_state/data.safe.bin" ]] && \
     echo "Seeded Firefox profile $(basename "$p"): crlite.filter $(stat -c %s "$p/security_state/crlite.filter") bytes, $(wc -l < "$p/prefs.js") prefs"
 
