@@ -53,6 +53,20 @@ RUN \
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
+# pytubefix depends on nodejs-wheel-binaries, which bundles its own Node (24.19.0 at the time of
+# writing, below the Node 24 trust floor, with no fixed release on PyPI). Node compiles its roots in,
+# so point the bundled binary at the image's own Node of the same major line. One-off until upstream
+# ships a fixed wheel; the base's refresh should take this over.
+RUN \
+    set -euo pipefail && \
+    w=/venv/main/lib/python3.12/site-packages/nodejs_wheel/bin/node && \
+    if [[ -x "$w" && ! -L "$w" ]]; then \
+        major=$("$w" --version | cut -d. -f1) && \
+        own=$(ls -d /opt/nvm/versions/node/${major}.*/bin/node 2>/dev/null | sort -V | tail -1) && \
+        [[ -n "$own" ]] || { echo "FATAL: no image Node on the ${major} line to replace the bundled one"; exit 1; } && \
+        ln -sf "$own" "$w"; \
+    fi
+
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
