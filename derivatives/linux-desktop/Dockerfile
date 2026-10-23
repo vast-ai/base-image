@@ -459,6 +459,35 @@ RUN \
         echo "Skipping Google Chrome on $(dpkg --print-architecture); Firefox above is the default browser."; \
     fi
 
+# Chrome distrusts compromised CAs through its CRLSet, a component it downloads about a minute after
+# a fresh profile first starts; until then a new desktop's Chrome trusts them. Seed the user's profile
+# with the current CRLSet from Google's component update service (hash-checked), so Chrome loads a
+# block list at startup and replaces it with newer ones as usual.
+RUN \
+    set -euo pipefail && \
+    if command -v google-chrome-stable >/dev/null; then \
+        ver=$(google-chrome-stable --version | awk '{print $3}') && \
+        resp=$(curl -fsS --retry 5 -X POST https://update.googleapis.com/service/update2/json \
+            -H 'Content-Type: application/json' \
+            -d "{\"request\":{\"protocol\":\"3.1\",\"acceptformat\":\"crx3\",\"prodversion\":\"${ver}\",\"os\":{\"platform\":\"Linux\",\"arch\":\"x86_64\"},\"app\":[{\"appid\":\"hfnkpimlhhgieaddgfemjhofmfblmnib\",\"version\":\"0.0.0.0\",\"updatecheck\":{}}]}}" \
+            | sed '1s/^)]}.//') && \
+        uc=$(jq -c '.response.app[0].updatecheck' <<< "$resp") && \
+        [[ "$(jq -r .status <<< "$uc")" == ok ]] || { echo "FATAL: CRLSet update check: $uc"; exit 1; } && \
+        cver=$(jq -r .manifest.version <<< "$uc") && \
+        name=$(jq -r '.manifest.packages.package[0].name' <<< "$uc") && \
+        sha=$(jq -r '.manifest.packages.package[0].hash_sha256' <<< "$uc") && \
+        base=$(jq -r '[.urls.url[].codebase | select(startswith("https://"))][0] // (.urls.url[0].codebase | sub("^http:"; "https:"))' <<< "$uc") && \
+        curl -fsSL --retry 5 -o /tmp/crlset.crx3 "${base}${name}" && \
+        echo "${sha}  /tmp/crlset.crx3" | sha256sum -c - && \
+        dir=/home/user/.config/google-chrome/CertificateRevocation/${cver} && \
+        mkdir -p "$dir" && \
+        { unzip -q -o /tmp/crlset.crx3 -d "$dir" || [[ $? -eq 1 ]]; } && \
+        [[ -s "$dir/crl-set" && "$(jq -r .version "$dir/manifest.json")" == "$cver" ]] && \
+        chown -R user:root /home/user/.config && chmod -R go-rwx /home/user/.config/google-chrome && \
+        rm -f /tmp/crlset.crx3 && \
+        echo "Seeded Chrome CRLSet ${cver}"; \
+    fi
+
 # Blender:
 #   amd64 -> install from Blender's official tarball at the latest release
 #            (auto-detected, overridable via the BLENDER_VERSION build arg).
