@@ -49,6 +49,10 @@ RUN \
     # Ensure setuptools<78 for legacy pkg_resources in build deps
     uv pip install --no-cache-dir 'setuptools<78' && \
     uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt && \
+    # uvr imports audioread without declaring it; librosa supplied it until 1.0 dropped the dependency,
+    # and without it BGM separation fails to import and the API refuses to start.
+    uv pip install --no-cache-dir audioread && \
+    /venv/main/bin/python -c "from uvr.models import MDX, Demucs, VrNetwork, MDXC" && \
     # Verify torch ecosystem unchanged.
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
