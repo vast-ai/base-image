@@ -243,7 +243,7 @@ Want to save your perfect setup? Templates can't be changed directly, but you ca
 
 - **ComfyUI:** [Official Repository](https://github.com/Comfy-Org/ComfyUI) · [ComfyUI-Manager](https://github.com/Comfy-Org/ComfyUI-Manager)
 - **SD Forge:** [Official Repository](https://github.com/Haoming02/sd-webui-forge-classic)
-- **Wan2GP:** [Official Repository](https://github.com/deepbeepmeep/Wan2GP)
+- **Wan2GP:** [Official Repository](https://github.com/deepbeepmeep/WanGP)
 - **ACE Step:** [Official Repository](https://github.com/ace-step/ACE-Step-1.5)
 - **Voicebox:** [Official Repository](https://github.com/jamiepine/voicebox)
 - **Whisper WebUI:** [Official Repository](https://github.com/jhj0517/Whisper-WebUI)

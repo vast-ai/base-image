@@ -37,7 +37,7 @@ For example, with forward compatibility a `cuda-12.9` image could run on a datac
 | Desktop (KDE + [Blender](https://www.blender.org/)) | GPU-accelerated remote desktop (Selkies; WebSocket over HTTPS, WebRTC over plain HTTP with ports 73478 and 73479/udp mapped) | 16100 | `desktop` |
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Node-based image/video generation | 18188 | `comfyui` |
 | [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) | Stable Diffusion WebUI (classic) | 17860 | `forge` |
-| [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | Video generation (Wan 2.x) | 17861 | `wan2gp` |
+| [Wan2GP](https://github.com/deepbeepmeep/WanGP) | Video generation (Wan 2.x) | 17861 | `wan2gp` |
 | [ACE Step 1.5](https://github.com/ace-step/ACE-Step-1.5) | AI music generation | 3000 | `ace-step` |
 | [Voicebox](https://github.com/jamiepine/voicebox) | Text-to-speech synthesis | 17493 | `voicebox` |
 | [Whisper WebUI](https://github.com/jhj0517/Whisper-WebUI) | Speech-to-text transcription | 7862 | `whisper-webui` |
@@ -171,7 +171,7 @@ docker buildx build \
 | `COMFYUI_REF` | `v0.18.1` | ComfyUI git ref |
 | `FORGE_REPO` | `https://github.com/Haoming02/sd-webui-forge-classic` | SD Forge repository |
 | `FORGE_REF` | `a90af56` | SD Forge git ref |
-| `WAN2GP_REPO` | `https://github.com/deepbeepmeep/Wan2GP` | Wan2GP repository |
+| `WAN2GP_REPO` | `https://github.com/deepbeepmeep/WanGP` | Wan2GP repository |
 | `WAN2GP_REF` | `e2b56fe` | Wan2GP git ref |
 | `ACE_STEP_REPO` | `https://github.com/ace-step/ACE-Step-1.5` | ACE Step repository |
 | `ACE_STEP_REF` | `v0.1.4` | ACE Step git ref |
@@ -194,7 +194,7 @@ This image ships the following vendor applications under their respective licens
 | SD Forge (Classic) | AGPL-3.0 | [Haoming02/sd-webui-forge-classic](https://github.com/Haoming02/sd-webui-forge-classic) |
 | Voicebox | MIT | [jamiepine/voicebox](https://github.com/jamiepine/voicebox) |
 | Ostris AI Toolkit | MIT | [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit) |
-| Wan2GP | WanGP Community License 2.0 | [deepbeepmeep/Wan2GP](https://github.com/deepbeepmeep/Wan2GP) |
+| Wan2GP | WanGP Community License 2.0 | [deepbeepmeep/WanGP](https://github.com/deepbeepmeep/WanGP) |
 | Unsloth Studio | AGPL-3.0 | [unslothai/unsloth](https://github.com/unslothai/unsloth) |
 | Whisper WebUI | Apache-2.0 | [jhj0517/Whisper-WebUI](https://github.com/jhj0517/Whisper-WebUI) |
 | ACE-Step 1.5 | MIT | [ace-step/ACE-Step-1.5](https://github.com/ace-step/ACE-Step-1.5) |
@@ -206,7 +206,7 @@ See `/LICENSES.md` in the image for license details and file locations.
 
 ## Useful Links
 
-- [Blender](https://www.blender.org/) · [ComfyUI](https://github.com/Comfy-Org/ComfyUI) · [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) · [Wan2GP](https://github.com/deepbeepmeep/Wan2GP) · [ACE Step](https://github.com/ace-step/ACE-Step-1.5) · [Voicebox](https://github.com/jamiepine/voicebox) · [Whisper WebUI](https://github.com/jhj0517/Whisper-WebUI) · [AI Toolkit](https://github.com/ostris/ai-toolkit) · [Unsloth](https://github.com/unslothai/unsloth)
+- [Blender](https://www.blender.org/) · [ComfyUI](https://github.com/Comfy-Org/ComfyUI) · [SD Forge](https://github.com/Haoming02/sd-webui-forge-classic) · [Wan2GP](https://github.com/deepbeepmeep/WanGP) · [ACE Step](https://github.com/ace-step/ACE-Step-1.5) · [Voicebox](https://github.com/jamiepine/voicebox) · [Whisper WebUI](https://github.com/jhj0517/Whisper-WebUI) · [AI Toolkit](https://github.com/ostris/ai-toolkit) · [Unsloth](https://github.com/unslothai/unsloth)
 - [PyTorch Image Documentation](../../README.md)
 - [Base Image Documentation](../../../../README.md)
 - [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/aio-studio)

@@ -64,7 +64,8 @@ allowed() {
     # image's CA refresh ran, and that interpreter carries pip 23.0.1. Allowed until the bootstrap is fixed, and
     # only for an interpreter created after the build finished (newer than /.env_hash), so a 3.10 the image
     # itself ships is still checked.
-    if [[ "$1" =~ ^(/opt/uv/python|/\.uv/python_install)/cpython-3\.10\.[^/]+ && -e /.env_hash && "${BASH_REMATCH[0]}" -nt /.env_hash ]]; then
+    # Where uv installs it: the base uses /.uv/python_install, externals /opt/uv/python, sglang /opt/python.
+    if [[ "$1" =~ ^(/opt/uv/python|/\.uv/python_install|/opt/python)/cpython-3\.10\.[0-9]+-[^/]+ && -e /.env_hash && "${BASH_REMATCH[0]}" -nt /.env_hash ]]; then
         why="managed Python 3.10 installed at boot by the serverless worker bootstrap; remove when it is fixed"
         [[ "$(date +%F)" > 2026-11-05 ]] && { echo "EXPIRED 2026-11-05: ${why}"; return 1; }
         echo "$why"; return 0

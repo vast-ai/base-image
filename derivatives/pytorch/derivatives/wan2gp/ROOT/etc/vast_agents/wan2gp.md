@@ -1,6 +1,6 @@
 ## Wan2GP (this image)
 
-The PyTorch image plus a preinstalled **Wan2GP / WanGP** (upstream `deepbeepmeep/Wan2GP`) — a
+The PyTorch image plus a preinstalled **Wan2GP / WanGP** (upstream `deepbeepmeep/WanGP`) — a
 low-VRAM **video generation** app (text-to-video / image-to-video with Wan-family models).
 Everything in base.md and pytorch.md applies unchanged (torch is in `/venv/main`); this file
 covers what Wan2GP adds. It is **not** an OpenAI `/v1` endpoint. Get the externally callable URL

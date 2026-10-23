@@ -45,7 +45,7 @@ on:
 
 env:
   DEFAULT_DOCKERHUB_REPO: "wan2gp"
-  WAN2GP_GITHUB_REPO: "deepbeepmeep/Wan2GP"
+  WAN2GP_GITHUB_REPO: "deepbeepmeep/WanGP"
   WAN2GP_BRANCH: "main"
   # 12 hours (matches the schedule cron) — scheduled runs skip if the latest
   # upstream commit is older than this.

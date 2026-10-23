@@ -230,12 +230,12 @@ jobs:
           else
             REF=""
             for attempt in 1 2 3; do
-              REF=$(git ls-remote https://github.com/deepbeepmeep/Wan2GP.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
+              REF=$(git ls-remote https://github.com/deepbeepmeep/WanGP.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
               if [[ -n "$REF" ]]; then break; fi
               if (( attempt < 3 )); then echo "Attempt $attempt/3: ls-remote failed, retrying in 3s..."; sleep 3; fi
             done
             if [[ -z "$REF" ]]; then
-              echo "::error::Could not resolve HEAD of deepbeepmeep/Wan2GP after 3 attempts"
+              echo "::error::Could not resolve HEAD of deepbeepmeep/WanGP after 3 attempts"
               exit 1
             fi
             echo "ref=${REF}" >> $GITHUB_OUTPUT

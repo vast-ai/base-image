@@ -72,8 +72,8 @@ Each runs as its own Supervisor process. To run **only** one of them, remove the
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Workspace directory |
-| `WHISPER_API_ARGS` | `--host 0.0.0.0 --port 8000` | uvicorn args |
-| `WHISPER_UI_ARGS` | `--whisper_type whisper --server_port 7860` | Gradio args |
+| `WHISPER_API_ARGS` | `--host 127.0.0.1 --port 8000` | uvicorn args |
+| `WHISPER_UI_ARGS` | `--whisper_type whisper --server_name 127.0.0.1 --server_port 7860` | Gradio args |
 | `WHISPER_API_HEALTH_URL` | `http://localhost:8000/docs` | URL the UI polls before starting |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 

@@ -459,6 +459,66 @@ RUN \
         echo "Skipping Google Chrome on $(dpkg --print-architecture); Firefox above is the default browser."; \
     fi
 
+# Chrome distrusts compromised CAs through its CRLSet, a component it downloads about a minute after
+# a fresh profile first starts; until then a new desktop's Chrome trusts them. Seed the user's profile
+# with the current CRLSet from Google's component update service (hash-checked), so Chrome loads a
+# block list at startup and replaces it with newer ones as usual.
+RUN \
+    set -euo pipefail && \
+    if command -v google-chrome-stable >/dev/null; then \
+        ver=$(google-chrome-stable --version | awk '{print $3}') && \
+        resp=$(curl -fsS --retry 5 -X POST https://update.googleapis.com/service/update2/json \
+            -H 'Content-Type: application/json' \
+            -d "{\"request\":{\"protocol\":\"3.1\",\"acceptformat\":\"crx3\",\"prodversion\":\"${ver}\",\"os\":{\"platform\":\"Linux\",\"arch\":\"x86_64\"},\"app\":[{\"appid\":\"hfnkpimlhhgieaddgfemjhofmfblmnib\",\"version\":\"0.0.0.0\",\"updatecheck\":{}}]}}" \
+            | sed '1s/^)]}.//') && \
+        uc=$(jq -c '.response.app[0].updatecheck' <<< "$resp") && \
+        [[ "$(jq -r .status <<< "$uc")" == ok ]] || { echo "FATAL: CRLSet update check: $uc"; exit 1; } && \
+        cver=$(jq -r .manifest.version <<< "$uc") && \
+        name=$(jq -r '.manifest.packages.package[0].name' <<< "$uc") && \
+        sha=$(jq -r '.manifest.packages.package[0].hash_sha256' <<< "$uc") && \
+        base=$(jq -r '[.urls.url[].codebase | select(startswith("https://"))][0] // (.urls.url[0].codebase | sub("^http:"; "https:"))' <<< "$uc") && \
+        curl -fsSL --retry 5 -o /tmp/crlset.crx3 "${base}${name}" && \
+        echo "${sha}  /tmp/crlset.crx3" | sha256sum -c - && \
+        dir=/home/user/.config/google-chrome/CertificateRevocation/${cver} && \
+        mkdir -p "$dir" && \
+        { unzip -q -o /tmp/crlset.crx3 -d "$dir" || [[ $? -eq 1 ]]; } && \
+        [[ -s "$dir/crl-set" && "$(jq -r .version "$dir/manifest.json")" == "$cver" ]] && \
+        chown -R user:root /home/user/.config && chmod -R go-rwx /home/user/.config/google-chrome && \
+        rm -f /tmp/crlset.crx3 && \
+        echo "Seeded Chrome CRLSet ${cver}"; \
+    fi
+
+# Firefox likewise distrusts through CRLite and OneCRL, synced into the profile about half a minute after
+# a fresh profile first starts. Run Firefox once, headless, as the desktop user so it creates its own
+# default profile and syncs them; then rebuild that profile from an allow-list -- the revocation state
+# (security_state/, the remote-settings database, cert9.db) and only the services.settings.* and
+# security.* prefs -- so nothing else that one run wrote (push, telemetry, Nimbus and extension IDs,
+# region, crash and usage data) ships to every desktop. Each desktop generates its own on first run.
+RUN \
+    set -euo pipefail && \
+    su user -s /bin/bash -c ' \
+        set -euo pipefail; export HOME=/home/user; \
+        firefox --headless --no-remote about:blank >/dev/null 2>&1 & pid=$!; \
+        s=""; for i in $(seq 1 90); do \
+            s=$(ls -d "$HOME"/.config/mozilla/firefox/*.default-release/security_state 2>/dev/null | head -1 || true); \
+            [[ -n "$s" && -s "$s/crlite.filter" && -s "$s/data.safe.bin" ]] && break; sleep 2; \
+        done; \
+        sleep 10; kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+        [[ -n "$s" && -s "$s/crlite.filter" && -s "$s/data.safe.bin" ]] || { echo "FATAL: Firefox did not sync CRLite/security state"; exit 1; }' && \
+    p=$(ls -d /home/user/.config/mozilla/firefox/*.default-release) && \
+    new="$p.new" && rm -rf "$new" && mkdir -p "$new/storage/permanent/chrome/idb" && \
+    cp -a "$p/security_state" "$new/" && \
+    cp -a "$p"/storage/permanent/chrome/idb/*rsegmnoittet-es.* "$new/storage/permanent/chrome/idb/" && \
+    for f in cert9.db pkcs11.txt compatibility.ini; do [[ ! -e "$p/$f" ]] || cp -a "$p/$f" "$new/"; done && \
+    grep -E '^user_pref\("(services\.settings|security)\.' "$p/prefs.js" > "$new/prefs.js" && \
+    rm -rf "$p" && mv "$new" "$p" && \
+    rm -rf "/home/user/.config/mozilla/firefox/Crash Reports" "/home/user/.config/mozilla/firefox/Pending Pings" \
+        "/home/user/.config/mozilla/firefox/Profile Groups" /home/user/.cache/mozilla && \
+    chown -R user:root /home/user/.config/mozilla && chmod -R go-rwx /home/user/.config/mozilla && \
+    { ! grep -q -i -E '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|"[0-9a-f]{24,}"' "$p/prefs.js" || { echo "FATAL: an ID-shaped value survived in the seeded prefs.js"; exit 1; }; } && \
+    [[ -s "$p/security_state/crlite.filter" && -s "$p/security_state/data.safe.bin" ]] && \
+    echo "Seeded Firefox profile $(basename "$p"): crlite.filter $(stat -c %s "$p/security_state/crlite.filter") bytes, $(wc -l < "$p/prefs.js") prefs"
+
 # Blender:
 #   amd64 -> install from Blender's official tarball at the latest release
 #            (auto-detected, overridable via the BLENDER_VERSION build arg).
@@ -540,6 +600,16 @@ ENV XIM=fcitx
 ENV XMODIFIERS="@im=fcitx"
 
 USER root
+
+# Two more CA bundles that do not follow the OS store: Blender's bundled Python ships its own certifi
+# (its extensions and add-ons fetch over HTTPS with it) and KDE Frameworks 5 ships KSSL's bundle
+# (libkf5kdelibs4support-data). Link both to the OS bundle, as Debian does for certifi. One-off until
+# the base's refresh takes them over.
+RUN \
+    set -euo pipefail && \
+    for f in /opt/blender-*/*/python/lib/python3*/site-packages/certifi/cacert.pem /usr/share/kf5/kssl/ca-bundle.crt; do \
+        if [[ -f "$f" && ! -L "$f" ]]; then ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; fi; \
+    done
 
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh

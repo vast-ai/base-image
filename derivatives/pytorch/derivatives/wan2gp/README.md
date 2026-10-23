@@ -79,7 +79,7 @@ docker buildx build \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `PYTORCH_BASE` | `vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-10-22` | PyTorch mini base image |
-| `WAN2GP_REPO` | `https://github.com/deepbeepmeep/Wan2GP` | Upstream Wan2GP repository |
+| `WAN2GP_REPO` | `https://github.com/deepbeepmeep/WanGP` | Upstream Wan2GP repository |
 | `WAN2GP_REF` | | Git ref (commit/branch/tag) to build |
 
 ## Building with GitHub Actions
@@ -115,13 +115,13 @@ Go to **Actions > Build Wan2GP Image > Run workflow** and fill in the inputs:
 
 This image ships vendor application(s) under the following license(s):
 
-- **Wan2GP** — Apache-2.0 ([upstream](https://github.com/deepbeepmeep/Wan2GP))
+- **Wan2GP** — WanGP Community License 2.0 ([upstream](https://github.com/deepbeepmeep/WanGP))
 
 See `/LICENSES.md` in the image for license details and file locations.
 
 ## Useful Links
 
-- [Wan2GP GitHub](https://github.com/deepbeepmeep/Wan2GP)
+- [Wan2GP GitHub](https://github.com/deepbeepmeep/WanGP)
 - [PyTorch Image Documentation](../../README.md)
 - [Base Image Documentation](../../../../README.md)
 - [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/wan2gp)
