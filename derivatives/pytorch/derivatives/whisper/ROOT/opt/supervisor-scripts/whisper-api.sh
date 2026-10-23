@@ -18,4 +18,4 @@ done
 
 cd "${WORKSPACE}/Whisper-WebUI"
 
-pty uvicorn backend.main:app ${WHISPER_API_ARGS:---host 0.0.0.0 --port 8000} 2>&1
+pty uvicorn backend.main:app ${WHISPER_API_ARGS:---host 127.0.0.1 --port 8000} 2>&1

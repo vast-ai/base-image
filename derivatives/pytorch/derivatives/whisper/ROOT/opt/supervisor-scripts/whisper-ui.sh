@@ -32,4 +32,4 @@ echo "Starting Whisper WebUI"
 
 cd "${WORKSPACE}/Whisper-WebUI"
 
-pty python app.py ${WHISPER_UI_ARGS:---whisper_type whisper --server_port 7860} 2>&1
+pty python app.py ${WHISPER_UI_ARGS:---whisper_type whisper --server_name 127.0.0.1 --server_port 7860} 2>&1

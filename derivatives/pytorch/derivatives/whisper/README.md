@@ -40,8 +40,8 @@ NVIDIA's [minor version compatibility](https://docs.nvidia.com/deploy/cuda-compa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKSPACE` | `/workspace` | Directory for models, outputs, and configurations |
-| `WHISPER_API_ARGS` | `--host 0.0.0.0 --port 8000` | uvicorn args |
-| `WHISPER_UI_ARGS` | `--whisper_type whisper --server_port 7860` | Gradio app.py args |
+| `WHISPER_API_ARGS` | `--host 127.0.0.1 --port 8000` | uvicorn args |
+| `WHISPER_UI_ARGS` | `--whisper_type whisper --server_name 127.0.0.1 --server_port 7860` | Gradio app.py args |
 | `WHISPER_API_HEALTH_URL` | `http://localhost:8000/docs` | URL the UI polls before starting |
 | `PROVISIONING_SCRIPT` | (none) | URL to a setup script to run on first boot |
 
