@@ -490,8 +490,10 @@ RUN \
 
 # Firefox likewise distrusts through CRLite and OneCRL, synced into the profile about half a minute after
 # a fresh profile first starts. Run Firefox once, headless, as the desktop user so it creates its own
-# default profile and syncs them; then remove what identifies this one install (telemetry and Normandy
-# IDs, crash and usage data, caches, locks) so every desktop gets its own on first run.
+# default profile and syncs them; then rebuild that profile from an allow-list -- the revocation state
+# (security_state/, the remote-settings database, the NSS files) and only the services.settings.* and
+# security.* prefs -- so nothing else that one run wrote (push, telemetry, Nimbus and extension IDs,
+# region, crash and usage data) ships to every desktop. Each desktop generates its own on first run.
 RUN \
     set -euo pipefail && \
     su user -s /bin/bash -c ' \
@@ -504,13 +506,18 @@ RUN \
         sleep 10; kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
         [[ -n "$s" && -s "$s/crlite.filter" && -s "$s/data.safe.bin" ]] || { echo "FATAL: Firefox did not sync CRLite/security state"; exit 1; }' && \
     p=$(ls -d /home/user/.config/mozilla/firefox/*.default-release) && \
-    rm -rf "$p"/{datareporting,crashes,minidumps,cache2,startupCache,sessionstore-backups,saved-telemetry-pings} \
-        "$p"/{cookies.sqlite*,sessionstore.jsonlz4,lock,.parentlock,WebDriverBiDiServer.json} /home/user/.cache/mozilla \
-        "/home/user/.config/mozilla/firefox/Crash Reports" "/home/user/.config/mozilla/firefox/Pending Pings" \
-        "/home/user/.config/mozilla/firefox/Profile Groups" && \
-    sed -i -E '/"(app\.normandy\.user_id|toolkit\.telemetry\.cached(ClientID|ProfileGroupID)|datareporting\.dau\.cachedUsageProfile(GroupID|ID)|browser\.newtabpage\.activity-stream\.impressionId)"/d' "$p/prefs.js" && \
-    ! grep -q -E 'cachedClientID|normandy\.user_id' "$p/prefs.js" && \
-    echo "Seeded Firefox profile $(basename "$p"): crlite.filter $(stat -c %s "$p/security_state/crlite.filter") bytes"
+    new="$p.new" && rm -rf "$new" && mkdir -p "$new/storage/permanent/chrome/idb" && \
+    cp -a "$p/security_state" "$new/" && \
+    cp -a "$p"/storage/permanent/chrome/idb/*rsegmnoittet-es.* "$new/storage/permanent/chrome/idb/" && \
+    for f in cert9.db key4.db pkcs11.txt compatibility.ini; do [[ ! -e "$p/$f" ]] || cp -a "$p/$f" "$new/"; done && \
+    grep -E '^user_pref\("(services\.settings|security)\.' "$p/prefs.js" > "$new/prefs.js" && \
+    rm -rf "$p" && mv "$new" "$p" && \
+    rm -rf "/home/user/.config/mozilla/firefox/Crash Reports" "/home/user/.config/mozilla/firefox/Pending Pings" \
+        "/home/user/.config/mozilla/firefox/Profile Groups" /home/user/.cache/mozilla && \
+    chown -R user:root /home/user/.config/mozilla && \
+    ! grep -q -E '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|"[0-9a-f]{24,}"' "$p/prefs.js" && \
+    [[ -s "$p/security_state/crlite.filter" && -s "$p/security_state/data.safe.bin" ]] && \
+    echo "Seeded Firefox profile $(basename "$p"): crlite.filter $(stat -c %s "$p/security_state/crlite.filter") bytes, $(wc -l < "$p/prefs.js") prefs"
 
 # Blender:
 #   amd64 -> install from Blender's official tarball at the latest release
