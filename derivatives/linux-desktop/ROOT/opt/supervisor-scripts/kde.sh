@@ -15,4 +15,9 @@ export XDG_SESSION_ID="${DISPLAY#*:}"
 export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.debug=false;qt.qpa.*=false}"
 export SHELL=${SHELL:-/bin/bash}
 
+# The desktop's applications reach the client's camera and gamepads through Selkies'
+# interposers, inherited from the session (ADR 0050).
+. "${utils}/selkies.sh"
+export LD_PRELOAD="$(selkies_session_preload)"
+
 /usr/bin/startplasma-x11

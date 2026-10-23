@@ -24,10 +24,8 @@ while [[ ! -S $socket ]]; do
 done
 
 # Apply the requested WIDTHxHEIGHT to the Xvfb screen with xrandr. Used as a
-# fallback where Selkies' own selkies-gstreamer-resize is unavailable: Selkies
-# ships amd64-only release artifacts, so on other arches (arm64/sbsa) that
-# helper is absent and the desktop would otherwise stay at Xvfb's full
-# 8192x4096 startup framebuffer.
+# fallback where Selkies' own selkies-resize is unavailable, so the desktop does
+# not stay at Xvfb's full 8192x4096 startup framebuffer.
 function resizeWithXrandr() {
     local res="$1"
     local w="${res%x*}" h="${res#*x}" output mode line
@@ -45,8 +43,8 @@ function resizeWithXrandr() {
 function delayedResize() {
     sleep 15
     local target="${DISPLAY_SIZEW}x${DISPLAY_SIZEH}"
-    if [[ -x /usr/local/bin/selkies-gstreamer-resize ]]; then
-        /usr/local/bin/selkies-gstreamer-resize "${target}"
+    if [[ -x /usr/bin/selkies-resize ]]; then
+        /usr/bin/selkies-resize "${target}"
     else
         resizeWithXrandr "${target}"
     fi

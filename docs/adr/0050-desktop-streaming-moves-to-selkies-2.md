@@ -10,7 +10,11 @@
   aio-studio app layer that boots it.
 - **Rollout:** in two steps. The portal part (`CADDY_HOST_PASSTHROUGH`, portal v3.1.7) ships first;
   everything else this ADR decides (the Selkies install, the launch library, coturn, the nvreach
-  shim, L102/L103 and the QA cell) takes effect with the desktop-image change that follows it.
+  shim, L102/L103/L106 and the QA cell) takes effect with the desktop-image change that follows
+  it.
+- **Amended 2026-10-06 (before release):** TURN takes two port directives, 73478 for TCP and
+  73479 for UDP. It first mapped both protocols on 73478, which Vast's port validator refuses
+  (see "TURN ports" under Options considered).
 
 ## Context
 
@@ -74,9 +78,11 @@ instances established the facts this decision rests on:
 
    A full allocation (1 of 1, driver 595) opens NVENC with no help. A100, H100, and H200 have
    no NVENC at all.
-4. **TCP and UDP 73478 map to different ports.** The ≥70000 1:1 directive maps each one to
-   its own random port (for example 21345/tcp and 21361/udp). 1.x advertised the TCP number
-   with protocol `udp`.
+4. **TCP and UDP map to different ports.** The ≥70000 1:1 directive maps each protocol to
+   its own random port (for example 21345/tcp and 21361/udp), named per protocol as
+   `VAST_TCP_PORT_N` and `VAST_UDP_PORT_N`. 1.x advertised the TCP number with protocol `udp`.
+   Vast's port validator refuses one number mapped for both protocols
+   (`-p 73478:73478 -p 73478:73478/udp`), so each protocol needs its own number.
 5. **With no TURN configured, WebRTC silently uses Metered's public Open Relay.** It logged
    `Using short-term shared secret HMAC for TURN credentials`. An empty `SELKIES_TURN_*`
    value falls back to that default; only the higher-priority RTC config file overrides it.
@@ -149,6 +155,18 @@ instances established the facts this decision rests on:
    because 1.x was deleted outright. If 2.x releases are deleted too, a mirror is the next
    step.
 
+**TURN ports**
+
+1. **One directive, 73478, for both protocols.** The first design. Rejected: Vast's port
+   validator refuses the pair.
+2. **UDP only.** One mapping and the lowest latency. Rejected: networks that block outbound
+   UDP get no stream, and TURN over TCP is their only route.
+3. **UDP keeps 73478 and TCP moves to a new number.** Rejected: the published desktop
+   templates already map `73478:73478`, which is TCP. Moving TCP silently turns that mapping
+   into one the image ignores.
+4. **TCP keeps 73478, UDP takes 73479.** Chosen. Existing templates keep working over TCP, and
+   adding `73479:73479/udp` enables UDP.
+
 ## Decision
 
 - **Install.** Both images install the pinned Selkies `.deb`, with its sha256 checked per
@@ -164,8 +182,9 @@ instances established the facts this decision rests on:
 - **Transport.** The launcher reads whether Caddy actually serves the Desktop route over TLS
   (its generated site carries a `tls` line), which is `ENABLE_HTTPS` AND a usable certificate:
   - **true:** WebSockets. WebRTC is available opt-in when TURN is reachable.
-  - **false, and 73478 is mapped:** WebRTC, using the in-image coturn.
-  - **false, and 73478 is not mapped:** WebSockets. The browser shows the HTTPS error, and the
+  - **false, and a TURN port (73478 or 73479/udp) is mapped:** WebRTC, using the in-image
+    coturn.
+  - **false, and neither is mapped:** WebSockets. The browser shows the HTTPS error, and the
     log names the remedy: install the console certificate and set `ENABLE_HTTPS=true`.
 
   The transport switch in the UI is enabled only when TURN is reachable.
@@ -174,9 +193,9 @@ instances established the facts this decision rests on:
     is never used by accident. Selkies treats an unparseable file as absent and falls back to
     that relay, so the file is built with a JSON encoder and re-read; if it does not parse,
     Selkies does not start.
-  - Port and protocol are chosen as a pair: UDP first, each with its own mapped port.
-  - coturn runs as `user`, one listener per mapped protocol (TCP and UDP 73478 get different
-    ports), never with `allow-loopback-peers`, and denies relaying into loopback and private
+  - Port and protocol are chosen as a pair: UDP first, each with its own mapped port. TCP
+    reads `VAST_TCP_PORT_73478` and UDP reads `VAST_UDP_PORT_73479`.
+  - coturn runs as `user`, one listener per mapped protocol, never with `allow-loopback-peers`, and denies relaying into loopback and private
     ranges except the container's own addresses. It sets no `external-ip`: relay addresses stay
     on the container's interfaces, where Selkies' media endpoint is, so no public relay port
     or hairpin NAT is needed. Its relay pool is off (`relay-threads=0`); its auth pool, which
@@ -196,6 +215,15 @@ instances established the facts this decision rests on:
   - The shim is removed when the pinned Selkies carries that change. #44 merged on 2026-10-05
     as pixelflux commit `7f8369e`; Selkies 2.0.0 bundles pixelflux 2.1.0, which predates it, so
     the shim stays until a Selkies release bundles a pixelflux release containing that commit.
+- **Microphone, camera and gamepads.** Selkies starts with the microphone and camera enabled
+  and on `demand`: the browser is asked only while an application in the desktop records from
+  them. Upstream's defaults leave both off, and on a live instance the side-panel toggle alone
+  delivered silence while a mic requested by the page carried speech. The desktop session
+  preloads Selkies' input and V4L2 interposers, so applications see the client's camera as
+  `/dev/video0` and gamepads under `/dev/input` with no kernel device; Selkies is told about them
+  (`SELKIES_INTERPOSER`) but never loads them, since their hooks block its event loop.
+  `/dev/input` is created at boot. Upstream's fake libudev, which lets SDL-style applications
+  discover the pads, is not shipped in the `.deb` and is not built here.
 - **Desktop route.** The boot stages stop removing the Desktop portal entry based on a 1.x
   binary name. Selkies is installed wherever the image builds.
 
@@ -227,7 +255,7 @@ instances established the facts this decision rests on:
    relay. It reports which encoder Selkies chose.
 6. **New lint rules, each with a mutation test.** The Selkies pin and checksum, identical
    across the two images, are gated. No boot stage removes a portal route because a binary
-   probe failed.
+   probe failed. No template maps one port number for both TCP and UDP (L106).
 7. **The image moves to gVisor (`runsc`) only after a live re-test.** gVisor's `nvproxy`
    virtualizes the device nodes and `/proc/driver/nvidia`, and leaves the `video` capability
    (NVENC) off by default. The subset-GPU behaviour, the shim, and the filter must be
@@ -237,8 +265,8 @@ instances established the facts this decision rests on:
 
 - Both images build again, on a maintained upstream, and linux-desktop gains Selkies on
   arm64.
-- HTTPS users get WebSockets over the single Caddy port. Plain-HTTP users get WebRTC if 73478
-  is mapped, otherwise an error page that names the fix. That gives users a visible reason to
+- HTTPS users get WebSockets over the single Caddy port. Plain-HTTP users get WebRTC if 73478 or
+  73479/udp is mapped, otherwise an error page that names the fix. That gives users a visible reason to
   install the console certificate and set `ENABLE_HTTPS`.
 - Subset-GPU rentals encode on NVENC, and full rentals are unaffected. Datacenter GPUs without
   NVENC, and CPU-only instances, encode in software.

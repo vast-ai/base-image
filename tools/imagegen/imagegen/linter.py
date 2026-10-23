@@ -115,6 +115,9 @@ RULES: list[tuple[str, str, str]] = [
     ("L112", ERROR, "`tests/base/29-ca-trust.sh` exists with its chain fixtures (`tests/ca-trust/`), and `base/29-ca-trust` is in the required-test list of the base and pytorch QA templates and of both promotion workflows, so a skipped or failing trust check blocks promotion. ADR 0058 made the trust probe a promotion condition; while it lived outside the repo, a green promote checked no CA bundle at all"),
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
+    ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
+    ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
+    ("L102", ERROR, "Every Dockerfile that installs Selkies pins it: a concrete `ARG SELKIES_VERSION=X.Y.Z`, `ARG SELKIES_SHA256_AMD64` and `ARG SELKIES_SHA256_ARM64` as 64-hex digests checked with `sha256sum -c`, and no `releases/latest` lookup for it; and every such Dockerfile carries the SAME version and digests. Upstream deleted every 1.x release when 2.0 shipped, which broke both desktop images on the same day, and 2.0 changes behaviour under unchanged flag names (1.x `x264enc` became hardware-first `h264enc`; unknown flags only warn), so a float can change what ships with no build signal. Amends ADR 0027 for this artifact (ADR 0050)"),
     ("L101", ERROR, "An external image declares its engine interpreter (`ENV VAST_ENGINE_PYTHON=<absolute path>` or `none`, plus `ENV VAST_ENGINE_IMPORT`) before the convert RUN, runs `venv-mirror verify --build` before `env-hash` when it has an engine, and installs nothing `--system` after convert; the convert script builds /venv/main with `venv-mirror build`, never `--system-site-packages`. uv does not see packages a venv inherits, so an inheriting /venv/main let installs lay a second torch under the engine, and the PATH guess for the interpreter was wrong on sglang (ADR 0048)"),
     ("L100", ERROR, "Every build workflow with a QA cell and a `CUSTOM_IMAGE_TAG` dispatch input offers the ADR 0047 QA override the ONE way: `QA_SET_FILTERS` and `QA_MAX_PRICE` inputs, a job that runs `./.github/actions/validate-qa-override`, every qa-gate cell's `set_filters` carrying and `max_price` equal to that job's validated outputs, and the Slack notify passing its `qa-override-note`. A per-model preview build whose kernels exist only for a newer architecture fails every draw on the template floor (hy4-preview: A10, RTX 3080, RTX 4000 Ada, `no kernel image is available`), so every image that can be built under a custom tag needs the escape hatch -- and a hatch copied by hand is a hatch that drifts: one workflow validating, another wired raw, a third announcing a narrowed pass as a normal one. The generator emits this wiring for a new image; this rule keeps the rest from falling behind. SCOPED TO CUSTOM-TAG WORKFLOWS: the promotion gates (promote-base-image, promote-pytorch) only certify mainline tags, where ADR 0047 condition 1 refuses every override, so they carry none. Complements L099, which bars a raw dispatch input in `set_filters`/`max_price` wherever it appears"),
     ("L099", ERROR, "A qa-gate caller never feeds `set_filters` or `max_price` from a raw dispatch input (`inputs.*` / `github.event.inputs.*`); it passes a value a preflight step has VALIDATED (ADR 0047). Those two inputs decide what hardware the gate that decides promotion rents, and at what price. Every value that reached them used to be committed in the workflow and reviewed; a dispatch input is typed at run time and reviewed by nobody. Raise-only filtering in create.py stops QA widening past the linted floor, but not QA NARROWING below what production promises: a mainline tag certified on Blackwell only would publish to customers renting sm_80. So the validation is what carries ADR 0047's conditions -- only with a custom tag, only `compute_cap`, a positive price under a hard maximum -- and wiring a cell straight to the input skips all of it while every other check stays green. Found designing PR #270, which did exactly that on both vLLM cells. Scoped to `set_filters` and `max_price`: the other qa-gate inputs do not change what is rented"),
@@ -4530,10 +4533,93 @@ def check_ca_trust_test_gates_promotion(repo: Path) -> Iterable[Finding]:
                           "a skipped trust test would then pass the promotion (L112)")
 
 
+def _selkies_dockerfiles(repo: Path) -> list[Path]:
+    out = []
+    for df in sorted(repo.glob("derivatives/**/Dockerfile*")):
+        if "pcl" in df.relative_to(repo).parts:
+            continue
+        if re.search(r"selkies-project/selkies", df.read_text()):
+            out.append(df)
+    return out
+
+
+def check_selkies_pinned(repo: Path) -> Iterable[Finding]:
+    """L102 (repo) — Selkies is pinned to one version and per-arch checksum across every
+    desktop image, never fetched from releases/latest (ADR 0050)."""
+    pins = {}
+    for df in _selkies_dockerfiles(repo):
+        rel = str(df.relative_to(repo))
+        code = "\n".join(l.split("#", 1)[0] for l in df.read_text().splitlines())
+        def _err(msg):
+            return Finding("L102", ERROR, "repo", rel, f"{msg} (ADR 0050, L102)")
+        if re.search(r"selkies[^\n]*releases/latest|releases/latest[^\n]*selkies", code, re.I):
+            yield _err("Selkies is resolved from releases/latest; pin SELKIES_VERSION instead")
+        ver = re.search(r"^ARG\s+SELKIES_VERSION=(\d+\.\d+\.\d+)\s*$", code, re.M)
+        shas = {a: re.search(rf"^ARG\s+SELKIES_SHA256_{a}=([0-9a-f]{{64}})\s*$", code, re.M)
+                for a in ("AMD64", "ARM64")}
+        if not ver:
+            yield _err("no concrete `ARG SELKIES_VERSION=X.Y.Z`")
+        for a, m in shas.items():
+            if not m:
+                yield _err(f"no `ARG SELKIES_SHA256_{a}=<64-hex digest>`")
+        if not re.search(r"sha256sum\s+-c", code):
+            yield _err("the downloaded Selkies package is never checked with `sha256sum -c`")
+        if ver and all(shas.values()):
+            pins[rel] = (ver.group(1), shas["AMD64"].group(1), shas["ARM64"].group(1))
+    if len(set(pins.values())) > 1:
+        detail = "; ".join(f"{r}: {v[0]}" for r, v in pins.items())
+        for rel in pins:
+            yield Finding("L102", ERROR, "repo", rel,
+                          f"desktop images disagree on the Selkies pin ({detail}); they must "
+                          f"carry the same version and digests (ADR 0050, L102)")
+
+
+def check_no_route_strip_on_binary_probe(repo: Path) -> Iterable[Finding]:
+    """L103 (repo) — no boot stage deletes a PORTAL_CONFIG entry because a binary probe
+    failed (ADR 0050)."""
+    for st in sorted(repo.glob("derivatives/**/vast_boot.d/*.sh")) + sorted(repo.glob("ROOT/etc/vast_boot.d/*.sh")):
+        if "pcl" in st.relative_to(repo).parts:
+            continue
+        code = "\n".join(l.split("#", 1)[0] for l in st.read_text().splitlines())
+        probes = re.search(r"\bcommand\s+-v\b|\bwhich\s+\S", code)
+        strips = re.search(r"PORTAL_CONFIG=\$\([^\n]*grep\s+-v", code)
+        if probes and strips:
+            yield Finding("L103", ERROR, "repo", str(st.relative_to(repo)),
+                          "removes a PORTAL_CONFIG entry behind a binary probe; a renamed "
+                          "binary silently deletes the route (ADR 0050, L103)")
+
+
+def check_no_port_mapped_for_both_protocols(repo: Path) -> Iterable[Finding]:
+    """L106 (repo) — no template maps one port number for both TCP and UDP; Vast's
+    port validator refuses the pair (ADR 0050)."""
+    import yaml  # lazy
+    for tpl in sorted(repo.glob("**/templates/**/template.yml")):
+        rel = str(tpl.relative_to(repo))
+        try:
+            data = yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict) or not isinstance(entry.get("ports"), list):
+                continue
+            protos: dict[str, set[str]] = {}
+            for spec in entry["ports"]:
+                text = str(spec).strip().strip('"').strip("'")
+                port, _, proto = text.split(":")[-1].partition("/")
+                protos.setdefault(port, set()).add(proto or "tcp")
+            for port, seen in sorted(protos.items()):
+                if {"tcp", "udp"} <= seen:
+                    yield Finding("L106", ERROR, "repo", rel,
+                                  f"maps port {port} for both TCP and UDP; Vast refuses the pair, "
+                                  "so give each protocol its own number (ADR 0050, L106)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
-    check_optional_matrix_jobs_are_guarded, check_unguarded_listen_port,
+    check_optional_matrix_jobs_are_guarded, check_selkies_pinned,
+    check_no_route_strip_on_binary_probe, check_no_port_mapped_for_both_protocols,
+    check_unguarded_listen_port,
     check_declared_expiry, check_serverless_gate_cannot_reach_production,
     check_no_template_declares_unsecured, check_bind_address_reads_the_local_field,
     check_fail_later_arity, check_curl_status_capture,

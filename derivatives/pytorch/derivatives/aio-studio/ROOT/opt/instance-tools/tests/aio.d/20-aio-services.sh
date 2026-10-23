@@ -88,13 +88,10 @@ echo ""
 echo "  -- portal routes --"
 for app in "${!APPS[@]}"; do
     label="${APPS[$app]}"
-    # Desktop self-removes from PORTAL_CONFIG when selkies-gstreamer is absent (see
-    # 05-aio-studio-env.sh), so a missing Desktop route is a legitimate state, not a
-    # defect — report it rather than failing on it.
+    # Selkies is installed wherever the image builds and nothing strips its route any
+    # more (ADR 0050, L103), so a missing Desktop route is a defect like any other.
     if portal_has "$label"; then
         echo "  ${label}: routed"
-    elif [[ "$app" == "desktop" ]]; then
-        echo "  ${label}: not routed (selkies absent — expected on a headless build)"
     else
         fail_later "route-${app}" "no PORTAL_CONFIG entry labelled '${label}' — the app ships but nothing routes to it"
     fi
