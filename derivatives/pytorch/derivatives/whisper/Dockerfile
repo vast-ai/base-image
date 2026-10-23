@@ -1,18 +1,19 @@
-# torch 2.8.0, NOT the 2.7.1 its siblings use, and not a free choice. Whisper-WebUI
-# v1.0.8 — the release this image builds — declares in requirements.txt
+# torch 2.7.1, KNOWINGLY below upstream's floor. Whisper-WebUI v1.0.8 -- the release this
+# image builds -- declares in requirements.txt
 #
 #     torchaudio>=2.8.0,<2.9.0
 #
-# and the strip below removes that line, because the pytorch base is the single
-# source of truth for the torch ecosystem. So the pin was silently unsatisfied: the
-# 2.7.1 base ships torchaudio 2.7.1, BELOW upstream's floor, and the drift-guard at
-# the end of the RUN then dutifully asserted that nothing had changed. Stripping a
-# constraint moves the obligation to this line; it does not discharge it.
+# and the strip below removes that line, because the pytorch base is the single source of
+# truth for the torch ecosystem. Stripping a constraint moves the obligation to this line; it
+# does not discharge it, and the drift guard at the end of the RUN cannot see it.
 #
-# 2.8.0 satisfies the range exactly (torch-companions.json: 2.8.0 -> torchaudio
-# 2.8.0). The UPPER bound is real too — upstream master carries
-# "# 2.9 deprecates used functions" against it — so this is a fixed point, not a
-# floor to raise later: do not move it to 2.9.x without re-reading upstream.
+# 2.8.0 satisfies the range exactly (torch-companions.json: 2.8.0 -> torchaudio 2.8.0), but the
+# 2.8.0 mini base is amd64-only, so whisper on it cannot ship arm64. This image stays on 2.7.1
+# for both arches: the same torch the published 1.0.8 has run on since June, and the rebuild on
+# it was checked live (transcription of uploaded files; the build itself imports uvr and decodes
+# audio through faster-whisper). Move to 2.8.x once a 2.8.x mini base ships arm64; the upper
+# bound is real ("# 2.9 deprecates used functions" upstream), so never 2.9.x without re-reading
+# upstream.
 ARG PYTORCH_BASE=vastai/pytorch:2.7.1-cu128-cuda-12.9-mini-py312-2026-10-22
 
 FROM ${PYTORCH_BASE}
@@ -69,7 +70,7 @@ RUN \
     w=/venv/main/lib/python3.12/site-packages/nodejs_wheel/bin/node && \
     if [[ -x "$w" && ! -L "$w" ]]; then \
         major=$("$w" --version | cut -d. -f1) && \
-        own=$(ls -d /opt/nvm/versions/node/${major}.*/bin/node 2>/dev/null | sort -V | tail -1) && \
+        own=$(ls -d /opt/nvm/versions/node/${major}.*/bin/node 2>/dev/null | sort -V | tail -1 || true) && \
         [[ -n "$own" ]] || { echo "FATAL: no image Node on the ${major} line to replace the bundled one"; exit 1; } && \
         ln -sf "$own" "$w"; \
     fi

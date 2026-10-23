@@ -10,7 +10,7 @@ apt-get install -y \
     --no-install-recommends
 
 cd "$WORKSPACE"
-[[ -d "${WORKSPACE}/Wan2GP" ]] || git clone https://github.com/deepbeepmeep/Wan2GP
+[[ -d "${WORKSPACE}/Wan2GP" ]] || git clone https://github.com/deepbeepmeep/WanGP
 cd Wan2GP
 [[ -n "{WAN2GP_VERSION:-}" ]] && git checkout "$WAN2GP_VERSION"
 

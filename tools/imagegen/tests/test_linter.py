@@ -5647,6 +5647,42 @@ def _l114_tree(tmp_path, rel, mutate):
     return [x.path for x in L.check_refresh_ca_data_ends_installs(tmp_path)]
 
 
+# --- L115: an overlay copy of a CA-trust file matches the base's ------------------- #
+
+def _l115_tree(tmp_path, overlay, text=None):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for name in L.CA_TRUST_OVERLAY_FILES:
+        dst = tmp_path / "ROOT/opt/instance-tools" / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes((repo / "ROOT/opt/instance-tools" / name).read_bytes())
+    copy = tmp_path / overlay / "ROOT/opt/instance-tools/lib/pip-trust-floor.env"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    base = (repo / "ROOT/opt/instance-tools/lib/pip-trust-floor.env").read_text()
+    copy.write_text(base if text is None else text(base))
+    return [f.path for f in L.check_ca_trust_overlays_match_base(tmp_path)]
+
+
+def test_L115_real_tree_is_clean():
+    assert list(L.check_ca_trust_overlays_match_base(find_repo_root(Path(__file__).resolve().parent))) == []
+
+
+def test_L115_an_identical_overlay_copy_is_clean(tmp_path):
+    assert _l115_tree(tmp_path, "derivatives/pytorch/derivatives/comfyui") == []
+
+
+def test_L115_an_overlay_left_on_an_old_floor_fires(tmp_path):
+    """The drift: the base raises its pip floor and a derivative keeps its one-off copy."""
+    stale = lambda t: t.replace("PIP_FLOOR=", "PIP_FLOOR=0.0.0\n#was ", 1)
+    assert _l115_tree(tmp_path, "derivatives/pytorch/derivatives/comfyui", stale) \
+        == ["derivatives/pytorch/derivatives/comfyui/ROOT/opt/instance-tools/lib/pip-trust-floor.env"]
+
+
+def test_L115_reaches_external_and_base_level_derivative_overlays(tmp_path):
+    stale = lambda t: t + "# drift\n"
+    assert _l115_tree(tmp_path, "external/vllm", stale) == ["external/vllm/ROOT/opt/instance-tools/lib/pip-trust-floor.env"]
+    assert "derivatives/llama-cpp/ROOT/opt/instance-tools/lib/pip-trust-floor.env" in _l115_tree(tmp_path, "derivatives/llama-cpp", stale)
+
+
 def test_L114_real_tree_is_clean():
     assert list(L.check_refresh_ca_data_ends_installs(find_repo_root(Path(__file__).resolve().parent))) == []
 

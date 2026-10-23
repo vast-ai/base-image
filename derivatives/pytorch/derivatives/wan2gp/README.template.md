@@ -100,7 +100,7 @@ Images are tagged with the CUDA version they were built against (e.g. `<ref>-<da
 
 ## Need More Help?
 
-- **Wan2GP Repository:** [deepbeepmeep/Wan2GP](https://github.com/deepbeepmeep/Wan2GP)
+- **Wan2GP Repository:** [deepbeepmeep/WanGP](https://github.com/deepbeepmeep/WanGP)
 - **Image Source & Features:** [GitHub Repository](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/wan2gp)
 - **Instance Portal Guide:** [Vast.ai Instance Portal Documentation](https://docs.vast.ai/instance-portal)
 - **SSH Setup Guide:** [Vast.ai SSH Documentation](https://docs.vast.ai/instances/sshscp)

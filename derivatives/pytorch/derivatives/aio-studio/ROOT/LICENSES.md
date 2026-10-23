@@ -44,7 +44,7 @@ as the canonical source for the license text.
 ## Wan2GP
 
 - **License:** WanGP Community License 2.0 (custom)
-- **Upstream:** https://github.com/deepbeepmeep/Wan2GP
+- **Upstream:** https://github.com/deepbeepmeep/WanGP
 - **License file in image:** `/opt/workspace-internal/Wan2GP/LICENSE.txt`
 - **Notes:** Free for personal and company use. Commercial redistribution,
   SaaS, and paid API hosting require a separate commercial license. See the

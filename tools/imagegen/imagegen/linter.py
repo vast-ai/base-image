@@ -115,6 +115,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L112", ERROR, "`tests/base/29-ca-trust.sh` exists with its chain fixtures (`tests/ca-trust/`), and `base/29-ca-trust` is in the required-test list of the base and pytorch QA templates and of both promotion workflows, so a skipped or failing trust check blocks promotion. ADR 0058 made the trust probe a promotion condition; while it lived outside the repo, a green promote checked no CA bundle at all"),
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
+    ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
     ("L102", ERROR, "Every Dockerfile that installs Selkies pins it: a concrete `ARG SELKIES_VERSION=X.Y.Z`, `ARG SELKIES_SHA256_AMD64` and `ARG SELKIES_SHA256_ARM64` as 64-hex digests checked with `sha256sum -c`, and no `releases/latest` lookup for it; and every such Dockerfile carries the SAME version and digests. Upstream deleted every 1.x release when 2.0 shipped, which broke both desktop images on the same day, and 2.0 changes behaviour under unchanged flag names (1.x `x264enc` became hardware-first `h264enc`; unknown flags only warn), so a float can change what ships with no build signal. Amends ADR 0027 for this artifact (ADR 0050)"),
@@ -4567,7 +4568,9 @@ def check_selkies_pinned(repo: Path) -> Iterable[Finding]:
         for a, m in shas.items():
             if not m:
                 yield _err(f"no `ARG SELKIES_SHA256_{a}=<64-hex digest>`")
-        if not re.search(r"sha256sum\s+-c", code):
+        # On the line that checks the Selkies .deb itself: any other `sha256sum -c` in the file
+        # (the desktop's CRLSet seed has one) must not satisfy this.
+        if not re.search(r"^[^\n]*\$\{?deb\b[^\n]*\|\s*sha256sum\s+-c", code, re.M):
             yield _err("the downloaded Selkies package is never checked with `sha256sum -c`")
         if ver and all(shas.values()):
             pins[rel] = (ver.group(1), shas["AMD64"].group(1), shas["ARM64"].group(1))
@@ -4619,6 +4622,24 @@ def check_no_port_mapped_for_both_protocols(repo: Path) -> Iterable[Finding]:
                                   "so give each protocol its own number (ADR 0050, L106)")
 
 
+CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env", "tests/base/29-ca-trust.sh")
+
+
+def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
+    """L115 (repo) — an image's overlay copy of a CA-trust file is byte-identical to the base's."""
+    for name in CA_TRUST_OVERLAY_FILES:
+        base = repo / "ROOT/opt/instance-tools" / name
+        if not base.is_file():
+            continue
+        want = base.read_bytes()
+        for copy in sorted(repo.glob(f"*/**/ROOT/opt/instance-tools/{name}")):
+            if copy.read_bytes() != want:
+                yield Finding("L115", ERROR, "repo", str(copy.relative_to(repo)),
+                              f"differs from ROOT/opt/instance-tools/{name}: an overlay copy shadows the "
+                              "base's, so a stale one keeps an old floor or refresh while its own test "
+                              "passes; copy the base's again or delete it (ADR 0058, L115)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
@@ -4642,7 +4663,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_jobs_refresh_runner_ca_first,
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
     check_ca_trust_test_gates_promotion, check_base_defaults_are_dated,
-    check_refresh_ca_data_ends_installs]
+    check_refresh_ca_data_ends_installs, check_ca_trust_overlays_match_base]
 
 
 def lint_repo(repo: Path) -> list[Finding]:
