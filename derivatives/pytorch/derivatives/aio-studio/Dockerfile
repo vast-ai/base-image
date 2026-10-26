@@ -250,10 +250,10 @@ RUN \
     # public half is exposed. Everything here sits behind Caddy, so the public listener
     # belongs on loopback (L091).
     #
-    # Detect the shape rather than assume it, and make an unrecognised one FATAL. BOTH
-    # images resolve the upstream ref in CI (each workflow resolves HEAD and passes
-    # <APP>_REF), so neither is anchored to a known shape and either can meet either one
-    # on any given day. The ARG default below is a local-build fallback that CI never
+    # Detect the shape rather than assume it, and make an unrecognised one FATAL. The
+    # standalone image resolves the upstream ref in CI; this one is pinned for now
+    # (AI_TOOLKIT_PIN in its workflow) but returns to HEAD later, so neither is anchored
+    # to a known shape. The ARG default below is a local-build fallback that CI never
     # uses; it is stale enough to describe a DIFFERENT launch shape, which is precisely
     # why the shape must be read from the tree rather than inferred from the ref. A sed
     # that silently matched nothing would ship the public bind, which is the failure this
