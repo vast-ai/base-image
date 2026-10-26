@@ -59,6 +59,23 @@ RUN \
     torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
+# The .NET SDK verifies NuGet package signatures against its own root bundles, which do not
+# follow the OS store and still carry the distrusted roots. Drop those roots by fingerprint,
+# from the same list the OS store is checked against (ADR 0058).
+RUN \
+    set -euo pipefail && \
+    fps=$(grep -vE '^[[:space:]]*(#|$)' /opt/instance-tools/lib/distrusted-roots.txt | cut -d'|' -f2) && \
+    for f in "${DOTNET_ROOT}"/sdk/*/trustedroots/*.pem; do \
+        out=$(mktemp) && kept=0 && dropped=0 && \
+        while IFS= read -r -d '' cert; do \
+            fp=$(printf '%s' "$cert" | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :) && \
+            if grep -qx "$fp" <<< "$fps"; then dropped=$((dropped + 1)); else printf '%s\n' "$cert" >> "$out"; kept=$((kept + 1)); fi; \
+        done < <(awk '/-----BEGIN CERTIFICATE-----/{c=""} {c=c $0 "\n"} /-----END CERTIFICATE-----/{printf "%s%c", c, 0}' "$f") && \
+        (( kept > 0 )) || { echo "FATAL: stripping distrusted roots emptied $f"; exit 1; } && \
+        cat "$out" > "$f" && rm -f "$out" && \
+        echo "$f: kept $kept, dropped $dropped"; \
+    done
+
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
