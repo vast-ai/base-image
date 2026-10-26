@@ -20,5 +20,10 @@ COPY ./ROOT /
 # Update the portal if present
 COPY portal-aio /opt/portal-aio
 
+# The overlay carries the current CA-trust tooling; apply it, not just ship it: refuse a source image
+# that still trusts a distrusted root, then refresh the CA data that does not follow the OS store
+# (ADR 0058, L114).
+RUN /opt/instance-tools/lib/assert-distrust.sh && /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Refresh environment hash to reflect any changes
 RUN env-hash > /.env_hash
