@@ -152,7 +152,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-10-22
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-10-23
         # arm64 is intentionally absent: oobabooga's accelerator wheels
         # (exllamav3, flash_attn, xformers, llama_cpp_binaries) are x86_64-only.
         # Re-add the arm64 entry once those gain aarch64 CUDA wheels (and update
@@ -225,7 +225,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-10-22
+          - vastai/pytorch:2.9.1-cu128-cuda-12.9-mini-py312-2026-10-23
 
     steps:
       - name: Refresh runner CA trust store

@@ -1,4 +1,4 @@
-ARG VAST_BASE=vastai/base-image:cuda-12.9-mini-py312-2026-10-21
+ARG VAST_BASE=vastai/base-image:cuda-12.9-mini-py312-2026-10-23
 # Must match the Ubuntu version in VAST_BASE so guacd links against the right SONAMEs
 ARG UBUNTU_VERSION=24.04
 

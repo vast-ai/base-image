@@ -131,8 +131,8 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-22
-          - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-10-22
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
+          - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-10-23
         arch:
           - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
           - { platform: linux/arm64, suffix: arm64, runs_on: ubuntu-24.04-arm }
@@ -384,8 +384,8 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-22
-          - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-10-22
+          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
+          - vastai/pytorch:2.10.0-cu130-cuda-13.2-mini-py312-2026-10-23
 
     steps:
       - name: Refresh runner CA trust store
