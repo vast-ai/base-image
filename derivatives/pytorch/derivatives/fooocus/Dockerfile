@@ -47,8 +47,10 @@ RUN \
     # Strip base-provided torch ecosystem pins from upstream requirements so
     # the pytorch base remains the single source of truth.
     sed -i -E '/^(torch|torchvision|torchaudio|torchcodec)([[:space:]]|[<>=!])/d' requirements_versions.txt && \
+    # gradio 3.41.2 leaves fastapi unbounded; starlette 1.0 dropped the
+    # TemplateResponse(name, context) form it renders every page with.
     uv pip install --no-cache-dir \
-        -r requirements_versions.txt && \
+        -r requirements_versions.txt 'starlette<1' && \
     # Download custom models into the build if you want them - None included in default build
     # wget -O /opt/workspace-internal/Fooocus/models/checkpoints/model1.safetensors https://url.to.files/model1.safetensors && \
     # wget -O /opt/workspace-internal/Fooocus/models/checkpoints/model2.safetensors https://url.to.files/model2.safetensors && \
