@@ -606,6 +606,20 @@ RUN \
     uv pip install --no-cache-dir 'setuptools<78' && \
     uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt
 
+# pytubefix depends on nodejs-wheel-binaries, which bundles its own Node (24.19.0 at the time of
+# writing, below the Node 24 trust floor, with no fixed release on PyPI). Node compiles its roots in,
+# so point the bundled binary at the image's own Node of the same major line, as the whisper image does.
+RUN \
+    set -euo pipefail && \
+    for w in /venv/whisper/lib/python3*/site-packages/nodejs_wheel/bin/node; do \
+        if [[ -x "$w" && ! -L "$w" ]]; then \
+            major=$("$w" --version | cut -d. -f1) && \
+            own=$(ls -d /opt/nvm/versions/node/${major}.*/bin/node 2>/dev/null | sort -V | tail -1 || true) && \
+            [[ -n "$own" ]] || { echo "FATAL: no image Node on the ${major} line to replace the bundled one"; exit 1; } && \
+            ln -sf "$own" "$w"; \
+        fi; \
+    done
+
 # ---------- ACE Step 1.5 (base: main/torch2.10) ----------
 ARG ACE_STEP_REPO=https://github.com/ace-step/ACE-Step-1.5
 ARG ACE_STEP_REF=v0.1.5
