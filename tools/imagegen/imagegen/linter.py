@@ -4481,6 +4481,7 @@ REFRESH_CA_DATA_DOCKERFILES = ("Dockerfile.extend", "derivatives/pytorch/Dockerf
                                "derivatives/pytorch/derivatives/a1111/Dockerfile",
                                "derivatives/pytorch/derivatives/ace-step/Dockerfile",
                                "derivatives/pytorch/derivatives/aio-studio/Dockerfile",
+                               "derivatives/pytorch/derivatives/aio-studio/Dockerfile.base",
                                "derivatives/pytorch/derivatives/comfyui/Dockerfile",
                                "derivatives/pytorch/derivatives/fluxgym/Dockerfile",
                                "derivatives/pytorch/derivatives/fooocus/Dockerfile",

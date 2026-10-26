@@ -721,6 +721,14 @@ COPY ./ROOT /
 COPY --from=comfyui ROOT/opt/instance-tools/lib/provisioner_comfyui /opt/instance-tools/lib/provisioner_comfyui
 COPY --from=comfyui ROOT/opt/instance-tools/bin/ /opt/instance-tools/bin/
 
+# Blender's bundled Python ships its own certifi (its extensions and add-ons fetch over HTTPS with
+# it), which does not follow the OS store. Link it to the OS bundle, as linux-desktop does.
+RUN \
+    set -euo pipefail && \
+    for f in /opt/blender-*/*/python/lib/python3*/site-packages/certifi/cacert.pem; do \
+        if [[ -f "$f" && ! -L "$f" ]]; then ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; fi; \
+    done
+
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 

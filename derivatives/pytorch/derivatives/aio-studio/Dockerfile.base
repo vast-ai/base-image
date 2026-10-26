@@ -227,3 +227,13 @@ RUN mkdir -p "${XDG_RUNTIME_DIR}/dbus"
 
 # Desktop supervisor scripts, configs, PAM, polkit, D-Bus, KDE, Chrome wrapper
 COPY ./ROOT_BASE /
+
+# KDE Frameworks 5 ships KSSL's own CA bundle (libkf5kdelibs4support-data), which does not follow the
+# OS store. Link it to the OS bundle, as linux-desktop does.
+RUN \
+    set -euo pipefail && \
+    f=/usr/share/kf5/kssl/ca-bundle.crt && \
+    if [[ -f "$f" && ! -L "$f" ]]; then ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; fi
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
