@@ -70,7 +70,11 @@ env:
   # ONE source of truth: the dispatch input defaults to empty and falls back here, and
   # the Dockerfile carries no default at all. Bump this only to a tag that already
   # EXISTS — naming one before it is published is the defect this branch started on.
-  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-09-02"
+  #
+  # Bumped 2026-10-26 to base-2026-10-26: the first aio base on the Selkies 2.0 desktop and the
+  # CA-trust refresh, passed live-GPU QA (base/29-ca-trust, aio-base.d/25-selkies-live) before
+  # publication.
+  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-10-26"
   DEFAULT_DOCKERHUB_REPO: "aio-studio"
   # AI Toolkit is pinned, not resolved from HEAD. Upstream 60ca869 (2026-09-24) moved to
   # torchcodec 0.15.0, which needs torch >= 2.11; the aio base offers 2.10/2.9.1/2.7.1 and
