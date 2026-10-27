@@ -151,6 +151,8 @@ Under gVisor some things behave differently:
   next restart.
 - The cgroup filesystem may be v1, v2 or absent, `nproc` reflects the CPU quota, and
   `MemTotal` reflects the memory limit.
+- Where the root filesystem is served by the host, `df` reports the host's filesystem rather
+  than your instance's disk, so the Instance Portal shows the disk as not reported.
 
 ## Instance Portal
 

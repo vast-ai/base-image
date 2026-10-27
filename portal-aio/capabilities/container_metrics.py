@@ -19,6 +19,12 @@ from typing import Optional
 
 CGROUP_ROOT = "/sys/fs/cgroup"
 MEMINFO = "/proc/meminfo"
+MOUNTS = "/proc/self/mounts"
+
+# Filesystems whose statfs answers for the HOST's filesystem, not the instance's disk. Under
+# gVisor with a host-served root filesystem the root and bind mounts are 9p, and df shows
+# the host's filesystem instead of the instance's allocation.
+_HOST_SERVED_FS = {"9p"}
 
 # Values at or above this are the v1 "unlimited" sentinel (9223372036854771712)
 # or close to it, never a real allocation.
@@ -196,3 +202,40 @@ def get_container_cpu_usage() -> Optional[dict]:
     _cpu_prev["usage"] = usage_ns
 
     return {"percent": round(_cpu_prev["percent"], 1), "count": int(quota_cores)}
+
+
+def _mount_fstype(path: str) -> Optional[str]:
+    """Filesystem type of the mount holding `path` (the longest matching mount point)."""
+    try:
+        with open(MOUNTS) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    path = os.path.realpath(path)
+    best, fstype = "", None
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mnt = parts[1].replace("\\040", " ")
+        if (path == mnt or path.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
+            best, fstype = mnt, parts[2]
+    return fstype
+
+
+def disk_usage(path: str) -> dict:
+    """total/used/percent for the filesystem holding `path`, or available=False with a reason
+    when the numbers would describe the host's filesystem rather than this instance's disk."""
+    fstype = _mount_fstype(path)
+    if fstype in _HOST_SERVED_FS:
+        return {"available": False, "total": None, "used": None, "percent": None,
+                "reason": f"{path} is host-served ({fstype}); its size and usage are the host's, "
+                          "not this instance's disk allocation"}
+    st = os.statvfs(path)
+    total = st.f_blocks * st.f_frsize
+    used = (st.f_blocks - st.f_bfree) * st.f_frsize
+    # Same arithmetic as psutil.disk_usage: percent of the space a non-root user can reach.
+    avail = st.f_bavail * st.f_frsize
+    reachable = used + avail
+    return {"available": True, "total": total, "used": used,
+            "percent": round(used / reachable * 100, 1) if reachable else 0.0}
