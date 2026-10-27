@@ -2608,3 +2608,25 @@ automatic venv backups, `.venv-backups` or `VENV_BACKUP_COUNT`; the move between
 the package list by hand on the source at transfer time (`pip freeze > /workspace/venv-main.txt`).
 Gate: pending a decision on a lint rule (a documented env var must be read by the image, with
 upstream-read variables marked).
+
+### Images ship compiled bytecode, valid where it is imported (ADR 0060) — **GATED (L117)**
+
+- Every image runs `compile-bytecode` in its final RUN, BEFORE `env-hash > /.env_hash` and, on an
+  external image, before `venv-mirror verify`; only the final RUN may compile (anything installed
+  later ships uncompiled). Enforced on the base image now; on derivatives and external images
+  once their base pin moves to a base that ships the helper (see Rollout).
+- The base image sets `ENV UV_COMPILE_BYTECODE=1`: each uv install compiles what it adds (current
+  uv compiles only the installed packages, about 0.03 s per small install).
+- The helper compiles each venv's site-packages with that venv's interpreter and each
+  `/opt/workspace-internal/<app>` with `/venv/main`'s, in explicit timestamp mode, tolerating
+  per-file failures but failing the build below 95% of a tree. It records trees and interpreters
+  in `/etc/vast-bytecode.tsv`. On an external image it compiles the `/venv/main` mirror (real
+  bytecode files in its `__pycache__` directories, which `venv-mirror verify` accepts), never the
+  engine's own site-packages (an unused second copy).
+- Boot stage 36 copies app trees with `--preserve=timestamps`; without it every copied app's
+  bytecode is discarded on first boot.
+
+Rollout: derivatives and external images add `compile-bytecode &&` to their final RUN (external
+images also `ENV UV_COMPILE_BYTECODE=1`) when their base pin moves to a base that ships the helper;
+until then its uv installs are compiled by the base's ENV but its app tree and pip installs are
+not. L117 then requires the call of every image. Runtime check: `base/47-bytecode.sh`.

@@ -5818,3 +5818,55 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     tpl.write_text(text.replace(anchor, extra + anchor, 1))
     codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
     assert codes == (["L106"] if fires else []), codes
+
+
+# ---- L117: build-time bytecode in the final RUN (ADR 0060) ----
+
+def _base():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    return repo, next(i for i in discover(repo) if i.cls == "base")
+
+
+def test_mut_L117_base_without_compile_bytecode():
+    repo, img = _base()
+    assert "compile-bytecode && \\" in img.text
+    mut = replace(img, text=img.text.replace("compile-bytecode && \\\n", "", 1))
+    assert "L117" in errs(mut, repo)
+
+
+def test_mut_L117_base_compiles_after_env_hash():
+    repo, img = _base()
+    mut = replace(img, text=img.text.replace("compile-bytecode && \\\n    env-hash > /.env_hash",
+                                             "env-hash > /.env_hash && \\\n    compile-bytecode", 1))
+    assert mut.text != img.text
+    assert "L117" in errs(mut, repo)
+
+
+def test_mut_L117_external_compiles_after_the_mirror_verify():
+    repo, img = _real("vllm")
+    mut = replace(img, text=img.text.replace("&& env-hash > /.env_hash", "&& compile-bytecode && env-hash > /.env_hash", 1))
+    assert mut.text != img.text
+    assert "L117" in errs(mut, repo)
+
+
+def test_L117_external_compiling_before_the_mirror_verify_is_clean():
+    repo, img = _real("vllm")
+    mut = replace(img, text=img.text.replace("RUN venv-mirror verify", "RUN compile-bytecode && venv-mirror verify", 1))
+    assert mut.text != img.text
+    assert "L117" not in errs(mut, repo)
+
+
+def test_L117_derivative_may_not_compile_before_its_last_install(tmp_path):
+    df = VALID_DF.replace("RUN env-hash > /.env_hash", "RUN compile-bytecode\nRUN uv pip install x\nRUN env-hash > /.env_hash")
+    assert df != VALID_DF
+    assert "L117" in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L117_derivative_compiling_in_the_final_run_is_clean(tmp_path):
+    df = VALID_DF.replace("RUN env-hash > /.env_hash", "RUN compile-bytecode && env-hash > /.env_hash")
+    assert df != VALID_DF
+    assert "L117" not in errs(make(tmp_path, df=df), tmp_path)
+
+
+def test_L117_derivative_not_yet_compiling_is_clean(tmp_path):
+    assert "L117" not in errs(make(tmp_path), tmp_path)
