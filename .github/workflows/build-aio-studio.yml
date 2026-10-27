@@ -49,7 +49,7 @@ on:
         description: "Voicebox ref (empty = latest release)"
         required: false
       AI_TOOLKIT_REF:
-        description: "AI Toolkit ref (empty = latest commit)"
+        description: "AI Toolkit ref (empty = AI_TOOLKIT_PIN below)"
         required: false
       WAN2GP_REF:
         description: "Wan2GP ref (empty = latest commit)"
@@ -70,8 +70,18 @@ env:
   # ONE source of truth: the dispatch input defaults to empty and falls back here, and
   # the Dockerfile carries no default at all. Bump this only to a tag that already
   # EXISTS — naming one before it is published is the defect this branch started on.
-  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-09-02"
+  #
+  # Bumped 2026-10-26 to base-2026-10-26: the first aio base on the Selkies 2.0 desktop and the
+  # CA-trust refresh, passed live-GPU QA (base/29-ca-trust, aio-base.d/25-selkies-live) before
+  # publication.
+  DEFAULT_AIO_BASE: "vastai/aio-studio:base-2026-10-26"
   DEFAULT_DOCKERHUB_REPO: "aio-studio"
+  # AI Toolkit is pinned, not resolved from HEAD. Upstream 60ca869 (2026-09-24) moved to
+  # torchcodec 0.15.0, which needs torch >= 2.11; the aio base offers 2.10/2.9.1/2.7.1 and
+  # AI Toolkit gets the 2.7.1 venv, so every HEAD build since has failed to resolve.
+  # cbc6bbd is its parent, the last commit that installs on 2.7.1. Return to HEAD once
+  # the aio base carries a torch >= 2.11 venv.
+  AI_TOOLKIT_PIN: "cbc6bbd"
 
 jobs:
   # ── Resolve latest refs for all apps ──
@@ -205,21 +215,7 @@ jobs:
         id: ai-toolkit
         shell: bash
         run: |
-          if [[ -n "${{ inputs.AI_TOOLKIT_REF }}" ]]; then
-            echo "ref=${{ inputs.AI_TOOLKIT_REF }}" >> $GITHUB_OUTPUT
-          else
-            REF=""
-            for attempt in 1 2 3; do
-              REF=$(git ls-remote https://github.com/ostris/ai-toolkit.git HEAD 2>/dev/null | cut -f1 | cut -c1-7) || REF=""
-              if [[ -n "$REF" ]]; then break; fi
-              if (( attempt < 3 )); then echo "Attempt $attempt/3: ls-remote failed, retrying in 3s..."; sleep 3; fi
-            done
-            if [[ -z "$REF" ]]; then
-              echo "::error::Could not resolve HEAD of ostris/ai-toolkit after 3 attempts"
-              exit 1
-            fi
-            echo "ref=${REF}" >> $GITHUB_OUTPUT
-          fi
+          echo "ref=${{ inputs.AI_TOOLKIT_REF || env.AI_TOOLKIT_PIN }}" >> $GITHUB_OUTPUT
 
       - name: Resolve Wan2GP ref
         id: wan2gp

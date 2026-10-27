@@ -5694,6 +5694,13 @@ def test_L114_the_multi_torch_image_without_the_refresh_fires(tmp_path):
         == ["derivatives/pytorch/Dockerfile.multi-torch"]
 
 
+def test_L114_the_aio_base_without_the_refresh_fires(tmp_path):
+    """The aio base installed Selkies' venv and never refreshed; its old pip failed base/29-ca-trust."""
+    assert _l114_tree(tmp_path, "derivatives/pytorch/derivatives/aio-studio/Dockerfile.base",
+                      lambda t: t.replace("RUN /opt/instance-tools/lib/refresh-ca-data.sh\n", "")) \
+        == ["derivatives/pytorch/derivatives/aio-studio/Dockerfile.base"]
+
+
 def test_L114_an_install_after_the_refresh_fires(tmp_path):
     """A refresh that an install follows is stale again by the time the image ships."""
     assert _l114_tree(tmp_path, "derivatives/llama-cpp/Dockerfile",

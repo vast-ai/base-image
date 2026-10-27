@@ -250,10 +250,10 @@ RUN \
     # public half is exposed. Everything here sits behind Caddy, so the public listener
     # belongs on loopback (L091).
     #
-    # Detect the shape rather than assume it, and make an unrecognised one FATAL. BOTH
-    # images resolve the upstream ref in CI (each workflow resolves HEAD and passes
-    # <APP>_REF), so neither is anchored to a known shape and either can meet either one
-    # on any given day. The ARG default below is a local-build fallback that CI never
+    # Detect the shape rather than assume it, and make an unrecognised one FATAL. The
+    # standalone image resolves the upstream ref in CI; this one is pinned for now
+    # (AI_TOOLKIT_PIN in its workflow) but returns to HEAD later, so neither is anchored
+    # to a known shape. The ARG default below is a local-build fallback that CI never
     # uses; it is stale enough to describe a DIFFERENT launch shape, which is precisely
     # why the shape must be read from the tree rather than inferred from the ref. A sed
     # that silently matched nothing would ship the public bind, which is the failure this
@@ -606,6 +606,20 @@ RUN \
     uv pip install --no-cache-dir 'setuptools<78' && \
     uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt
 
+# pytubefix depends on nodejs-wheel-binaries, which bundles its own Node (24.19.0 at the time of
+# writing, below the Node 24 trust floor, with no fixed release on PyPI). Node compiles its roots in,
+# so point the bundled binary at the image's own Node of the same major line, as the whisper image does.
+RUN \
+    set -euo pipefail && \
+    for w in /venv/whisper/lib/python3*/site-packages/nodejs_wheel/bin/node; do \
+        if [[ -x "$w" && ! -L "$w" ]]; then \
+            major=$("$w" --version | cut -d. -f1) && \
+            own=$(ls -d /opt/nvm/versions/node/${major}.*/bin/node 2>/dev/null | sort -V | tail -1 || true) && \
+            [[ -n "$own" ]] || { echo "FATAL: no image Node on the ${major} line to replace the bundled one"; exit 1; } && \
+            ln -sf "$own" "$w"; \
+        fi; \
+    done
+
 # ---------- ACE Step 1.5 (base: main/torch2.10) ----------
 ARG ACE_STEP_REPO=https://github.com/ace-step/ACE-Step-1.5
 ARG ACE_STEP_REF=v0.1.5
@@ -720,6 +734,14 @@ COPY ./ROOT /
 # Build with: --build-context comfyui=../comfyui
 COPY --from=comfyui ROOT/opt/instance-tools/lib/provisioner_comfyui /opt/instance-tools/lib/provisioner_comfyui
 COPY --from=comfyui ROOT/opt/instance-tools/bin/ /opt/instance-tools/bin/
+
+# Blender's bundled Python ships its own certifi (its extensions and add-ons fetch over HTTPS with
+# it), which does not follow the OS store. Link it to the OS bundle, as linux-desktop does.
+RUN \
+    set -euo pipefail && \
+    for f in /opt/blender-*/*/python/lib/python3*/site-packages/certifi/cacert.pem; do \
+        if [[ -f "$f" && ! -L "$f" ]]; then ln -sf /etc/ssl/certs/ca-certificates.crt "$f"; fi; \
+    done
 
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
