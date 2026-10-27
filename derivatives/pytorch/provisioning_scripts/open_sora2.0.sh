@@ -11,7 +11,12 @@ git clone https://github.com/hpcaitech/Open-Sora
 
 sed -i '/^torch/d; /^torchvision/d' /workspace/Open-Sora/requirements.txt
 
-pip install -vv /workspace/Open-Sora/
+# colossalai caps torch at 2.5.1, so install the matching torch/torchvision/torchaudio
+# set first; otherwise pip swaps torch alone and torchvision breaks (nms missing).
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+
+# The transformers colossalai pins needs huggingface-hub < 1.0; the base ships 2.x.
+pip install -vv /workspace/Open-Sora/ 'huggingface_hub<1.0'
 
 pip install flash-attn --no-build-isolation
 
