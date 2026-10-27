@@ -1861,6 +1861,10 @@ oobabooga). The `new-image` skill + generator encode them.
   PATH entry most externals also carry is **NOT gated**: `vast_boot.d/10-prep-env.sh` adds it at
   runtime, so `vllm-omni` omits it from the Dockerfile and works fine. Root cause was a generator
   bug (`_DF_EXTERNAL` set neither); fixed + gated.
+- **External images set `PIP_BREAK_SYSTEM_PACKAGES=1` (GATED, L116).** Base ENV an external does
+  not inherit, like `TCLLIBPATH`. Without it pip refuses installs into an externally managed system
+  Python and `base/55-environment` fails. Open WebUI predates the generator, shipped without it,
+  and nothing caught it because its build had no live QA.
 
 - **A source-built Unsloth Studio llama.cpp asserts its CUDA backend (GATED, L056).** Unsloth
   Studio's `setup.sh` gates `-DGGML_CUDA=ON` on a **runtime GPU probe** (`nvidia-smi -L`, then

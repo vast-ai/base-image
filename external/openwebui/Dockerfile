@@ -14,6 +14,7 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 SHELL ["/bin/bash", "-c"]
 ENV DATA_DIRECTORY=/workspace
 ENV WORKSPACE=/workspace
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TCLLIBPATH=/usr/lib/tcltk/default
 ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}

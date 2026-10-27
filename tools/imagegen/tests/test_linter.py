@@ -262,6 +262,13 @@ def test_mut_external_stage_order_reversed():
     assert "L004" in errs(mut, repo)
 
 
+def test_mut_L116_external_pip_break_removed():
+    repo, img = _real("vllm")
+    assert "L116" not in errs(img, repo)
+    mut = replace(img, text=img.text.replace("ENV PIP_BREAK_SYSTEM_PACKAGES=1\n", ""))
+    assert mut.text != img.text and "L116" in errs(mut, repo)
+
+
 def test_mut_torch_guard_weakened():
     repo, img = _real("comfyui")
     mut = replace(img, text=img.text.replace('[[ "$torch_versions_pre" = "$torch_versions_post" ]]', "true"))
