@@ -52,7 +52,8 @@ ALLOW='/usr/lib/python3/dist-packages/certifi/cacert.pem|Debian/Ubuntu certifi r
 */botocore/cacert.pem|upstream botocore bundle; botocore uses certifi when importable|2026-12-31
 /opt/nvidia/nsight-*/*|private Python of the NVIDIA Nsight tools from the CUDA base image; not on PATH, left to NVIDIA|2026-12-31
 /opt/sglang/bin/uv|upstream sglang engine environment uv; ours in /opt/instance-tools/bin runs first, left to upstream|2026-12-31
-/opt/sglang/lib/python3*/site-packages/virtualenv/seed/wheels/embed/*|upstream sglang engine environment virtualenv seed wheels; left to upstream|2026-12-31'
+/opt/sglang/lib/python3*/site-packages/virtualenv/seed/wheels/embed/*|upstream sglang engine environment virtualenv seed wheels; left to upstream|2026-12-31
+/usr/local/lib/python3.12/dist-packages/virtualenv/seed/wheels/embed/pip-26.2.1-py3-none-any.whl|upstream vllm-omni engine interpreter virtualenv seed wheel; left to upstream|2026-12-31'
 allowed() {
     local pat why exp
     while IFS='|' read -r pat why exp; do
