@@ -121,3 +121,37 @@ def test_no_cgroup_falls_back_cleanly(fake, monkeypatch, tmp_path):
     assert cm.get_container_memory_stats() is None
     assert cm.get_container_cpu_usage() is None
     assert cm.get_cpu_quota_cores() == float(os.cpu_count() or 1)
+
+
+# ---- disk: never report the host's filesystem as this instance's disk ----
+
+def _mounts(tmp_path, monkeypatch, lines):
+    f = tmp_path / "mounts"
+    f.write_text("".join(f"{dev} {mnt} {fs} rw 0 0\n" for dev, mnt, fs in lines))
+    monkeypatch.setattr(cm, "MOUNTS", str(f))
+
+
+def test_host_served_root_is_not_reported(tmp_path, monkeypatch):
+    # gVisor with a host-served root: df would show the host's filesystem.
+    _mounts(tmp_path, monkeypatch, [("none", "/", "9p")])
+    d = cm.disk_usage(str(tmp_path))
+    assert d["available"] is False and d["total"] is None and "host" in d["reason"]
+
+
+def test_overlay_root_reports_real_numbers(tmp_path, monkeypatch):
+    _mounts(tmp_path, monkeypatch, [("overlay", "/", "overlay")])
+    d = cm.disk_usage(str(tmp_path))
+    assert d["available"] is True and d["total"] > 0 and 0 <= d["percent"] <= 100
+
+
+def test_the_longest_matching_mount_decides(tmp_path, monkeypatch):
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    _mounts(tmp_path, monkeypatch, [("overlay", "/", "overlay"), ("none", str(ws), "9p")])
+    assert cm.disk_usage(str(ws))["available"] is False
+    assert cm.disk_usage(str(tmp_path))["available"] is True
+
+
+def test_unreadable_mounts_still_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(cm, "MOUNTS", str(tmp_path / "missing"))
+    assert cm.disk_usage(str(tmp_path))["available"] is True
