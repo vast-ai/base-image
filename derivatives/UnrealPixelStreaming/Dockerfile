@@ -132,6 +132,12 @@ RUN \
     touch /tmp/install.log && \
     git clone https://github.com/EpicGamesExt/PixelStreamingInfrastructure -b ${PIXEL_STREAMING_REF} /opt/PixelStreamingInfrastructure && \
     jq '.player_port = "13000"' /opt/PixelStreamingInfrastructure/SignallingWebServer/config.json | sponge /opt/PixelStreamingInfrastructure/SignallingWebServer/config.json && \
+    # setup.sh downloads its own Node (18.17.0 at this ref), below the trust floor and on a line with
+    # no fixed release; Node compiles its roots in. It keeps any Node it finds at or above that version,
+    # so give it the image's own Node LTS instead.
+    node_dir=$(ls -d /opt/nvm/versions/node/v*/ | sort -V | tail -1) && \
+    [[ -x "${node_dir}bin/node" ]] || { echo "FATAL: no image Node under /opt/nvm"; exit 1; } && \
+    ln -s "${node_dir%/}" /opt/PixelStreamingInfrastructure/SignallingWebServer/platform_scripts/bash/node && \
     /opt/PixelStreamingInfrastructure/SignallingWebServer/platform_scripts/bash/setup.sh && \
     /opt/PixelStreamingInfrastructure/SignallingWebServer/platform_scripts/bash/start.sh > /tmp/install.log 2>&1 & \
     while ! grep -q "Http server listening on port 13000" /tmp/install.log; do sleep 1; done && \
