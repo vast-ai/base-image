@@ -23,7 +23,6 @@ apt-get install --no-install-recommends -y \
     bc \
     ca-certificates \
     gpg-agent \
-    software-properties-common \
     locales \
     lsb-release \
     curl \
@@ -94,14 +93,18 @@ if [[ "$DISTRO_ID" == "ubuntu" ]]; then
     apt-get install --no-install-recommends -y \
         fonts-ubuntu \
         nvtop \
-        linux-tools-common
+        linux-tools-common \
+        software-properties-common
 else
-    # Debian: fonts-ubuntu and linux-tools-common don't exist; nvtop may be in backports
-    if apt-cache show nvtop > /dev/null 2>&1; then
-        apt-get install --no-install-recommends -y nvtop
-    else
-        echo "nvtop not available in configured repositories — skipping"
-    fi
+    # Debian: fonts-ubuntu and linux-tools-common don't exist; nvtop may be in backports;
+    # software-properties-common was dropped in trixie (13)
+    for pkg in nvtop software-properties-common; do
+        if apt-cache show "$pkg" > /dev/null 2>&1; then
+            apt-get install --no-install-recommends -y "$pkg"
+        else
+            echo "$pkg not available in configured repositories — skipping"
+        fi
+    done
 fi
 
 # Enable expect/unbuffer to find its Tcl libraries (multiarch-safe, matches base Dockerfile)

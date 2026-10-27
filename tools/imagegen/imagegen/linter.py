@@ -116,6 +116,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
     ("L102", ERROR, "Every Dockerfile that installs Selkies pins it: a concrete `ARG SELKIES_VERSION=X.Y.Z`, `ARG SELKIES_SHA256_AMD64` and `ARG SELKIES_SHA256_ARM64` as 64-hex digests checked with `sha256sum -c`, and no `releases/latest` lookup for it; and every such Dockerfile carries the SAME version and digests. Upstream deleted every 1.x release when 2.0 shipped, which broke both desktop images on the same day, and 2.0 changes behaviour under unchanged flag names (1.x `x264enc` became hardware-first `h264enc`; unknown flags only warn), so a float can change what ships with no build signal. Amends ADR 0027 for this artifact (ADR 0050)"),
@@ -2393,6 +2394,19 @@ def check_external_env(img: Image) -> Iterable[Finding]:
                       "app launch dies at boot")
 
 
+def check_external_pip_break(img: Image) -> Iterable[Finding]:
+    """L116 — like TCLLIBPATH (L055), PIP_BREAK_SYSTEM_PACKAGES=1 is base ENV an external image
+    does not inherit. Without it pip refuses installs into an externally managed system Python,
+    and base/55-environment fails. External only."""
+    if img.cls != "external":
+        return
+    env = " ".join(i.value for i in parse(img.text) if i.cmd == "ENV")
+    if not re.search(r"PIP_BREAK_SYSTEM_PACKAGES\s*=\s*1(\s|$)", env):
+        yield Finding("L116", ERROR, img.name, "Dockerfile",
+                      "external image must set ENV PIP_BREAK_SYSTEM_PACKAGES=1 — it does not inherit "
+                      "the base ENV, and pip refuses system installs on an externally managed Python")
+
+
 def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
     """L056 — an image that source-builds Unsloth Studio's bundled llama.cpp via
     `unsloth studio setup` MUST also assert the CUDA backend artifact exists.
@@ -2866,7 +2880,7 @@ IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
-    check_external_env, check_llama_cuda_assert, check_llama_sass_coverage,
+    check_external_env, check_external_pip_break, check_llama_cuda_assert, check_llama_sass_coverage,
     check_vendored_script_is_executed, check_forge_opencv_is_headless,
     check_ai_toolkit_binds_loopback, check_curl_download_fails_on_http_error,
     check_engine_python_declared]
