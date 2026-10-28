@@ -182,6 +182,11 @@ jobs:
       tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.resolved-ref }}-cuda-${{ matrix.cuda }}-amd64
       template_dir: external/unsloth/templates/default
       label: base-image-qa-unsloth
+      log_paths: "/var/log/portal/jupyter.log"
+      # Present AND passed, not merely not-failed: the GPU trio skips itself on a box whose
+      # driver never came up, and the GRPO test is the only one that exercises the app.
+      require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries unsloth.d/10-unsloth-grpo"
+      retries: 2
       # ADR 0047: the dispatch's validated QA override. Empty filters and qa-gate's
       # default ceiling on every scheduled run and every ordinary dispatch (L100).
       set_filters: ${{ needs.preflight.outputs.qa-set-filters }}
@@ -233,6 +238,8 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          # amd64 only, matching the build matrix.
+          arches: amd64
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
