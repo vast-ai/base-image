@@ -1,0 +1,303 @@
+# Build Unsloth image — scheduled + manual workflow_dispatch.
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN,
+#   DOCKERHUB_NAMESPACE (prod, final multi-arch index), DOCKERHUB_NAMESPACE_STAGING
+#   (per-arch build artifacts). Optional: SLACK_WEBHOOK_URL.
+#
+# Wraps the upstream unsloth/unsloth image (external class, like build-vllm.yml): the
+# standard 5-job pipeline (preflight -> build -> qa -> merge-manifests -> notify).
+
+name: Build Unsloth Image
+
+on:
+  schedule:
+    # Unique offset among the build-*.yml crons. Builds only when a new upstream beta
+    # release appeared within RELEASE_AGE_THRESHOLD (nightlies are dispatch-only).
+    - cron: '30 4,16 * * *'
+  workflow_dispatch:
+    inputs:
+      UNSLOTH_REF:
+        description: "unsloth/unsloth tag to wrap (e.g. nightly-2026.10.18) - empty for the latest beta release"
+        required: false
+      DOCKERHUB_REPO:
+        description: "Push to <namespace>/<repo>"
+        required: true
+        default: "unsloth"
+      CUSTOM_IMAGE_TAG:
+        description: "Custom tag (auto by default)"
+        required: false
+      QA_SET_FILTERS:
+        description: "Custom-tag builds only (ADR 0047). Narrow QA to the GPUs the build has kernels for: compute_cap.gte=N and/or compute_cap.lte=N, space-separated. Give a RANGE - e.g. 'compute_cap.gte=1000 compute_cap.lte=1030' for sm_100-only; a lower bound alone draws the smallest-VRAM card above it"
+        required: false
+      QA_MAX_PRICE:
+        description: "Custom-tag builds only (ADR 0047). QA offer price ceiling in $/hr (default 2.00, hard max 15.00) - raise when the range above only matches expensive cards"
+        required: false
+
+env:
+  DEFAULT_DOCKERHUB_REPO: "unsloth"
+  RELEASE_AGE_THRESHOLD: 43200   # 12h
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decision.outputs.should-run }}
+      resolved-ref: ${{ steps.release-check.outputs.resolved-version }}
+      qa-set-filters: ${{ steps.qa-override.outputs.set-filters }}
+      qa-max-price: ${{ steps.qa-override.outputs.max-price }}
+      qa-override-note: ${{ steps.qa-override.outputs.note }}
+    steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ADR 0047: validate a dispatch's QA selection override. The QA cells read
+      # this step's outputs, never the raw inputs (L099/L100); see
+      # .github/actions/validate-qa-override for the rules and why.
+      - name: Validate QA selection overrides
+        id: qa-override
+        uses: ./.github/actions/validate-qa-override
+        with:
+          set-filters: ${{ inputs.QA_SET_FILTERS }}
+          max-price: ${{ inputs.QA_MAX_PRICE }}
+          custom-tag: ${{ inputs.CUSTOM_IMAGE_TAG }}
+
+      - name: Check for required secrets
+        id: secrets
+        run: |
+          missing=()
+          [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] && missing+=("DOCKERHUB_USERNAME")
+          [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]] && missing+=("DOCKERHUB_TOKEN")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE }}" ]] && missing+=("DOCKERHUB_NAMESPACE")
+          [[ -z "${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}" ]] && missing+=("DOCKERHUB_NAMESPACE_STAGING")
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping - missing secrets: ${missing[*]}"
+          fi
+
+      # The upstream publishes a nightly every day and a vX.Y.Z-beta release about weekly;
+      # scheduled builds follow the releases. The `core-` and `studio` lines are other
+      # variants of the same image and are not matched.
+      - name: Check release and resolve ref
+        id: release-check
+        uses: ./.github/actions/check-dockerhub-release
+        with:
+          repository: unsloth/unsloth
+          version-pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-beta$"
+          age-threshold-seconds: ${{ env.RELEASE_AGE_THRESHOLD }}
+          trigger: ${{ github.event_name }}
+          manual-version: ${{ inputs.UNSLOTH_REF }}
+
+      - name: Determine if build should run
+        id: decision
+        run: |
+          if [[ "${{ steps.secrets.outputs.available }}" == "true" && "${{ steps.release-check.outputs.new-release }}" == "true" ]]; then
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-run=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ${{ matrix.arch.runs_on }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `cuda` is the upstream image's CUDA_VERSION (major.minor); the Dockerfile fails
+        # the build if they disagree, so the tag cannot claim the wrong toolkit.
+        base_image:
+          - { image: unsloth/unsloth, cuda: '12.8' }
+        # amd64 only: the upstream arm64 build is untested on Vast.
+        arch:
+          - { platform: linux/amd64, suffix: amd64, runs_on: ubuntu-latest }
+    steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: ./.github/actions/maximize-build-space
+
+      - name: Derive staging tag
+        run: |
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          REF="${{ needs.preflight.outputs.resolved-ref }}"
+          # Format: nightly-2026.10.18-cuda-12.8
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.resolved-ref }}-cuda-${{ matrix.base_image.cuda }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "UNSLOTH_BASE=${{ matrix.base_image.image }}:${REF}" >> $GITHUB_ENV
+
+      - name: Build and push arch image to staging
+        uses: ./.github/actions/build-arch-image
+        with:
+          context: external/unsloth
+          arch: ${{ matrix.arch.platform }}
+          tag-base: ${{ env.STAGING_TAG_BASE }}
+          build-args: |
+            UNSLOTH_BASE=${{ env.UNSLOTH_BASE }}
+            UNSLOTH_CUDA=${{ matrix.base_image.cuda }}
+          build-contexts: |
+            base_image_source=.
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # Live-GPU QA gate (ADR 0005): rent a real GPU, boot the freshly-built STAGING image,
+  # run a functional test, and gate promotion on the verdict. Fires only when a build ran
+  # (should-run). If this image genuinely cannot be functionally tested, remove this job
+  # AND drop `qa` from merge-manifests/notify `needs` below — but surface that to a human.
+  qa:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cuda: '12.8' }
+    uses: ./.github/workflows/qa-gate.yml
+    with:
+      repo: ${{ inputs.DOCKERHUB_REPO || 'unsloth' }}
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.resolved-ref }}-cuda-${{ matrix.cuda }}-amd64
+      template_dir: external/unsloth/templates/default
+      label: base-image-qa-unsloth
+      # ADR 0047: the dispatch's validated QA override. Empty filters and qa-gate's
+      # default ceiling on every scheduled run and every ordinary dispatch (L100).
+      set_filters: ${{ needs.preflight.outputs.qa-set-filters }}
+      max_price: ${{ needs.preflight.outputs.qa-max-price }}
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      DOCKERHUB_NAMESPACE_STAGING: ${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  merge-manifests:
+    needs: [preflight, build, qa]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    # Production approval gate: a manual dispatch must clear the `production` environment
+    # approval before the multi-arch index is published to the prod namespace.
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image:
+          - { image: unsloth/unsloth, cuda: '12.8' }
+    steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive image tags
+        run: |
+          DOCKERHUB_REPO="${{ inputs.DOCKERHUB_REPO || env.DEFAULT_DOCKERHUB_REPO }}"
+          IMAGE_TAG="${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.resolved-ref }}-cuda-${{ matrix.base_image.cuda }}"
+          STAGING_TAG_BASE="${{ secrets.DOCKERHUB_NAMESPACE_STAGING }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          PROD_TAG="${{ secrets.DOCKERHUB_NAMESPACE }}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
+          echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
+          MATRIX_ID=$(echo "${{ matrix.base_image.image }}-${{ matrix.base_image.cuda }}" | md5sum | cut -c1-8)
+          echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
+
+      - name: Assemble multi-arch index in production
+        uses: ./.github/actions/merge-arch-manifests
+        with:
+          target-tag: ${{ env.PROD_TAG }}
+          source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Record merged manifest tag
+        run: |
+          mkdir -p built-tags
+          echo "${{ env.PROD_TAG }}" > built-tags/tag-${{ env.MATRIX_ID }}.txt
+
+      - name: Upload manifest tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tag-${{ env.MATRIX_ID }}
+          path: built-tags/
+          retention-days: 1
+
+  collect-tags:
+    needs: [preflight, build, merge-manifests]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      all-tags: ${{ steps.collect.outputs.tags }}
+    steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
+      - name: Download all tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: built-tag-*
+          path: all-tags/
+          merge-multiple: true
+
+      - name: Aggregate tags
+        id: collect
+        run: |
+          if [ -d all-tags ] && [ "$(ls -A all-tags 2>/dev/null)" ]; then
+            TAGS=$(cat all-tags/*.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          else
+            echo "::warning::No tags found - build may have failed"
+            TAGS="[]"
+          fi
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+  notify:
+    needs: [preflight, build, qa, merge-manifests, collect-tags]
+    if: always() && needs.preflight.outputs.should-run == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      # ADR 0047: names an accepted QA override in the header; empty otherwise (L100).
+      qa-override-note: ${{ needs.preflight.outputs.qa-override-note }}
+      build-result: ${{ needs.merge-manifests.result }}
+      # Distinct headline per outcome; `needs.qa.outputs.gated` is matrix-safe (all cells
+      # share the repo secret, so they agree). A plain pass renders the default success.
+      headline: ${{ (needs.build.result != 'success' && 'Unsloth build failed') || (needs.qa.result == 'failure' && 'Unsloth QA FAILED on real GPU — not promoted') || (needs.merge-manifests.result == 'failure' && 'Unsloth promotion (manifest merge) failed') || (needs.qa.outputs.gated == 'true' && 'Unsloth promoted — live-GPU QA passed') || '' }}
+      image-name: "Unsloth"
+      image-ref: ${{ needs.preflight.outputs.resolved-ref }}
+      image-tags: ${{ needs.collect-tags.outputs.all-tags }}
+      trigger: ${{ github.event_name }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

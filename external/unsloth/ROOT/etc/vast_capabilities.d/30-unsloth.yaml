@@ -1,0 +1,8 @@
+# Unsloth — image identity (overrides the base image block).
+tools:
+  - name: grpo
+    description: GRPO reinforcement-learning script (/workspace/grpo/train_grpo.py); every flag is also a GRPO_* env var
+image:
+  name: Unsloth
+  readme: https://github.com/vast-ai/base-image/tree/main/external/unsloth
+  preinstalled: PyTorch + Unsloth + TRL + vLLM, JupyterLab, a GRPO notebook and script

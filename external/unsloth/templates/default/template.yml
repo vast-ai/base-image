@@ -1,0 +1,47 @@
+# THE production-ready recommended template for Unsloth (ADR 0010/0011): the user-facing
+# launch template AND the one the live-GPU QA gate boots — so "QA passed" means "the template
+# users launch passed". The gate overrides image/tag to the freshly-built staging image (a
+# transient copy); `imagegen publish` dogfoods a private copy of it. The functional test is
+# the image's baked ROOT/opt/instance-tools/tests/unsloth.d/, not a template field.
+name: "Unsloth GRPO (RL)"
+image: vastai/unsloth
+tag: "nightly-2026.10.18-cuda-12.8"
+href: https://hub.docker.com/r/vastai/unsloth/
+repo: vastai/unsloth
+desc: "Reinforcement learning (GRPO) for LLMs with Unsloth on a single GPU. Notebook and script."
+recommended_disk_space: 80.0   # image ~11 GB, plus model weights, vLLM cache and checkpoints
+private: false
+readme_visible: true
+onstart: entrypoint.sh
+jup_direct: true
+ssh_direct: true
+use_ssh: true
+use_jupyter_lab: true
+runtype: jupyter
+ports:
+  - "1111:1111"                   # Instance Portal
+  - "8080:8080"                   # Jupyter
+env:
+  OPEN_BUTTON_PORT: "1111"
+  OPEN_BUTTON_TOKEN: "1"
+  JUPYTER_TYPE: lab
+  PORTAL_CONFIG: "localhost:1111:11111:/:Instance Portal|localhost:8080:18080:/:Jupyter|localhost:8080:8080:/terminals/1:Jupyter Terminal"
+  # Set to 1 to train at boot with the GRPO_* settings (for agents and scripted runs).
+  GRPO_AUTORUN: "0"
+  # Required-pass gate (ADR 0019, extended to every gating template by ADR 0031): the GPU
+  # trio proves the box, unsloth.d/10-unsloth-grpo proves the app.
+  INSTANCE_TEST_REQUIRE_PASS: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries unsloth.d/10-unsloth-grpo"
+extra_filters:
+  cpu_arch:
+    in: [amd64]
+  compute_cap:
+    # Unsloth's vLLM path needs Ampere or newer (sm_80).
+    gte: 800
+  # One fixed default run: Qwen3-1.7B GRPO. Measured on 24 GB cards
+  # (3090, 4090); smaller cards are untested.
+  gpu_ram:
+    gte: 24000
+  # vLLM in the upstream image fails to start on CUDA 12.8 drivers (570): "CUDA driver
+  # version is insufficient for CUDA runtime version". Measured on a 570.211.01 host.
+  cuda_max_good:
+    gte: 13
