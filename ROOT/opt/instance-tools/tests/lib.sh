@@ -25,6 +25,8 @@
 #   service_running NAME — predicate (return 0/1)
 #   version_gt A B   — predicate: version A > B (dotted integers)
 #   listeners_visible tcp|udp — predicate: ss shows a sentinel of every bindable family
+#   is_gvisor_runtime — predicate (return 0/1): running under gVisor
+#   bind_checks_apply — predicate: exposure and bind-address checks can decide here
 #   find_caddy_ports — populate REPLY with active Caddy external ports
 #   caddy_port_proto PORT — echo "https" or "http" for a Caddyfile port
 #   http_check LABEL EXPECTED [curl_args...] — HTTP status check via fail_later
@@ -391,11 +393,32 @@ listeners_visible() {
     return 1
 }
 
+# Fixed, not taken from the environment: a template must not be able to switch the
+# exposure and bind checks off under runc.
+_VAST_IS_GVISOR=/opt/instance-tools/bin/is-gvisor
+
+is_gvisor_runtime() {
+    "$_VAST_IS_GVISOR" 2>/dev/null
+}
+
+# Exposure and bind-address verdicts are decided under runc, where every listener family
+# is visible (ADR 0055). Under gVisor the listener tables are incomplete, so those checks
+# do not run there; under runc they always do, and a blind `ss` still fails them.
+bind_checks_apply() {
+    ! is_gvisor_runtime || listeners_visible tcp >/dev/null
+}
+
 # A listener that `ss` cannot see reads as absent, which turns "not public" or "nothing
-# holds it" into a guess. Fail the test as undecided rather than let that pass or skip.
+# holds it" into a guess. Under runc, fail the test as undecided rather than let that pass
+# or skip. Under gVisor, say the check was not run and return false, so a caller that did
+# not ask bind_checks_apply first carries on instead of failing on a runc-only check.
 _require_tcp_visible() {
     local gap
     gap=$(listeners_visible tcp) && return 0
+    if is_gvisor_runtime; then
+        echo "  bind check on port ${1} not run under gVisor (${gap}); bind addresses are verified under runc" >&2
+        return 1
+    fi
     test_fail "cannot determine the listener on port ${1}: ${gap} (undecided, not passed)" >&2
 }
 

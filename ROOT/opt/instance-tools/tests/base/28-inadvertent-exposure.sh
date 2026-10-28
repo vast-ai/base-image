@@ -39,6 +39,9 @@ is_serverless && test_skip "serverless: no Caddy gate; exposure model differs (A
 # silently degraded pass is the worst outcome — skip loudly instead. The automated
 # path (runner.sh at boot) is root; this only affects `runner.sh --manual` over SSH.
 [[ "$EUID" -eq 0 ]] || test_skip "exposure scan requires root (ss -p cannot attribute other users' sockets; a non-root scan would pass without deciding)"
+# Exposure is decided under runc, where every listener family is visible (ADR 0055). Under
+# gVisor the IPv6 tables are missing, so the scan could only report undecided.
+is_gvisor_runtime && test_skip "exposure is verified under runc; listener tables are incomplete under gVisor"
 
 ALLOW_DIR="$(cd "$(dirname "$0")/.." && pwd)/exposure-allowlist"
 

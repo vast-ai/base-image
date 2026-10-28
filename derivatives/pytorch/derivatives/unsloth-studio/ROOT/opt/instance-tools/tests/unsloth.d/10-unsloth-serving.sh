@@ -49,7 +49,11 @@ esac
 declare -F listener_is_public >/dev/null 2>&1 || \
     test_fail "this image's lib.sh predates listener_is_public — the bind check cannot run; rebuild base + pytorch and bump this image's PYTORCH_BASE pin"
 
-if listener_is_public "${STUDIO_INTERNAL_PORT}"; then
+# Bind addresses are verified under runc (ADR 0055). The declare -F keeps a lib.sh from an
+# older base on today's behaviour instead of skipping the check under runc.
+if declare -F bind_checks_apply >/dev/null && ! bind_checks_apply; then
+    echo "  studio: bind address not checked under gVisor (verified under runc)"
+elif listener_is_public "${STUDIO_INTERNAL_PORT}"; then
     listener_local_addr "${STUDIO_INTERNAL_PORT}"
     fail_later "studio-bind" "Unsloth Studio is bound to a PUBLIC interface on ${STUDIO_INTERNAL_PORT}, not loopback"
 else
