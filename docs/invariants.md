@@ -1217,12 +1217,21 @@ sentinel per family (v6 only where a `::1` bind succeeds) and requires `ss` to s
 `listener_local_addr` and `listener_owner` fail the test as "cannot determine" when a TCP
 family is invisible, instead of answering "not public" or "nothing holds it".
 `base/28-inadvertent-exposure` fails as "undecided" when either protocol's sentinel is
-invisible, whatever `EXPOSURE_ENFORCE` says, like a scan that could not run. That is the
+invisible, whatever `EXPOSURE_ENFORCE` says, like a scan that could not run.
+**Under gVisor these are runc's checks (ADR 0055 condition 7, as amended):** test 28 skips
+("exposure is verified under runc"), and the bind helpers print "not run under gVisor" and
+return false instead of failing. Callers ask `bind_checks_apply` first and report the check as
+not run; a derivative test guards that call with `declare -F`, so a `lib.sh` from an older
+base keeps checking under runc. The runtime check is `is_gvisor_runtime`, a fixed path in
+`lib.sh`, never an environment variable, so a template cannot switch the checks off under runc.
+Tests: `test_instance_test_lib_sh.py` (helpers and test 28 under a gVisor stub, runc unchanged
+with a blind `ss`, derivative guards against an older `lib.sh`). That is the
 only part of `exposure_scan.py`'s exit 2 it applies: the scan's other exit-2 causes and its
 violations stay shadow until ADR 0028's flip. `exposure_scan.py` itself exits 2 for a
 missing v4 table, a missing v6 table while IPv6 binds, a failing `ss`, or a sentinel `ss`
 cannot show. Nothing else in the repo checks UDP listeners. The positive checks
-(`wait_for_port`, the `ss -tln | grep` port probes) are not wired yet.
+(`wait_for_port`, the `ss -tln | grep` port probes) are not wired yet, and under gVisor they
+miss a listener bound to `::`; moving them to a connect check is the follow-up.
 
 ### A supervisor state is not a functional verdict, and "expected" is decided positively — **GATED (L086)**
 

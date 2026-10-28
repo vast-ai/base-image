@@ -476,10 +476,10 @@ T28 = TESTS / "base/28-inadvertent-exposure.sh"
 ROOT_GUARD = '[[ "$EUID" -eq 0 ]] || test_skip'
 
 
-def _t28(tmp_path, ss_body, t28_src=None):
+def _t28(tmp_path, ss_body, t28_src=None, lib_src=None):
     tree = tmp_path / "tests"
     (tree / "base").mkdir(parents=True)
-    shutil.copy(LIB, tree / "lib.sh")
+    (tree / "lib.sh").write_text(lib_src if lib_src is not None else LIB.read_text())
     shutil.copy(TESTS / "base/exposure_scan.py", tree / "base/exposure_scan.py")
     shutil.copytree(TESTS / "exposure-allowlist", tree / "exposure-allowlist")
     src = t28_src if t28_src is not None else T28.read_text()
@@ -522,3 +522,78 @@ def test_28_passes_as_before_when_ss_sees_every_family(tmp_path):
     p = _t28(tmp_path, '"$REAL_SS" "$@"')
     assert p.returncode == 0, p.stdout + p.stderr
     assert "PASS:" in p.stdout and "undecided" not in p.stdout
+
+
+# ── under gVisor: exposure and bind checks are runc's (ADR 0055) ──────
+#
+# Under gVisor the listener tables are incomplete, so test 28 skips and the bind helpers
+# say the check was not run instead of failing. Under runc nothing changes: a blind `ss`
+# still fails them. The runtime check is a fixed path in lib.sh, staged here at a stub.
+
+REPO = Path(__file__).resolve().parents[3]
+IS_GVISOR_PATH = "_VAST_IS_GVISOR=/opt/instance-tools/bin/is-gvisor"
+GUARD = "declare -F bind_checks_apply >/dev/null && ! bind_checks_apply"
+DERIVATIVE_BIND_TESTS = [
+    REPO / "derivatives/pytorch/derivatives/unsloth-studio/ROOT/opt/instance-tools/tests/unsloth.d/10-unsloth-serving.sh",
+    REPO / "derivatives/pytorch/derivatives/aio-studio/ROOT_BASE/opt/instance-tools/tests/aio-base.d/25-selkies-live.sh",
+]
+
+
+def _runtime_lib(tmp_path, gvisor: bool) -> Path:
+    stub = tmp_path / "is-gvisor"
+    stub.write_text(f"#!/bin/bash\nexit {0 if gvisor else 1}\n")
+    stub.chmod(0o755)
+    text = LIB.read_text()
+    assert text.count(IS_GVISOR_PATH) == 1
+    staged = tmp_path / "lib.sh"
+    staged.write_text(text.replace(IS_GVISOR_PATH, f"_VAST_IS_GVISOR={stub}"))
+    return staged
+
+
+BLIND_SS = 'echo "Cannot open netlink socket: Protocol not supported" >&2\n"$REAL_SS" "$@"'
+
+
+@needs_ss
+@pytest.mark.parametrize("call", ["listener_is_public 1", "listener_owner 1", "listener_local_addr 1"])
+def test_under_gvisor_a_blind_ss_skips_the_bind_check_instead_of_failing(tmp_path, call):
+    lib = _runtime_lib(tmp_path, gvisor=True)
+    env = _ss_env(tmp_path, BLIND_SS)
+    p = subprocess.run(["bash", "-c", f'source "{lib}"\n{call} || echo NOT-DECIDED\necho FELL-THROUGH'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert "NOT-DECIDED" in p.stdout and "FELL-THROUGH" in p.stdout and "FAIL:" not in p.stdout
+    assert "not run under gVisor" in p.stderr
+
+
+@needs_ss
+@pytest.mark.parametrize("gvisor,expected", [(True, "NO"), (False, "YES")])
+def test_bind_checks_apply_only_where_they_can_decide(tmp_path, gvisor, expected):
+    # Under runc they always apply, even with a blind ss: there that blindness is a failure.
+    lib = _runtime_lib(tmp_path, gvisor=gvisor)
+    env = _ss_env(tmp_path, BLIND_SS)
+    p = subprocess.run(["bash", "-c", f'source "{lib}"\nbind_checks_apply && echo YES || echo NO'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert p.stdout.strip() == expected
+
+
+@needs_ss
+def test_28_skips_under_gvisor(tmp_path):
+    lib = _runtime_lib(tmp_path, gvisor=True)
+    p = _t28(tmp_path, GVISOR_SS, lib_src=lib.read_text())
+    assert p.returncode == 77, p.stdout + p.stderr
+    assert "SKIP:" in p.stdout and "runc" in p.stdout
+
+
+@pytest.mark.parametrize("path", DERIVATIVE_BIND_TESTS, ids=lambda p: p.parts[-2])
+@pytest.mark.parametrize("lib_kind,skips", [("older base", False), ("runc", False), ("gvisor", True)])
+def test_derivative_bind_checks_skip_only_under_gvisor(tmp_path, path, lib_kind, skips):
+    # An image built on an older base has a lib.sh without bind_checks_apply; its bind
+    # check must keep running under runc rather than be skipped by a missing function.
+    assert GUARD in path.read_text()
+    if lib_kind == "older base":
+        lib = tmp_path / "lib.sh"
+        lib.write_text(LIB.read_text().replace("bind_checks_apply()", "_removed_bind_checks_apply()"))
+    else:
+        lib = _runtime_lib(tmp_path, gvisor=(lib_kind == "gvisor"))
+    p = subprocess.run(["bash", "-c", f'source "{lib}"\nif {GUARD}; then echo SKIPPED; else echo CHECKED; fi'],
+                       capture_output=True, text=True, timeout=60)
+    assert p.stdout.strip() == ("SKIPPED" if skips else "CHECKED"), p.stderr

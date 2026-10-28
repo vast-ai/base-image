@@ -153,12 +153,20 @@ is neutral or better under runc.** Concretely:
      socket of each family, against the source each test actually reads (`ss`, or `/proc/self/net/*`).
      "IPv6 enabled" means an IPv6 sentinel bind succeeds, not a sysctl read. A family that is
      enabled but cannot be seen makes the dependent checks **undecided**, never passed and never
-     skipped. An `ss` that fails (for example "Cannot open netlink socket") is undecided, not empty.
+     skipped (under gVisor the exposure and bind-address checks skip instead; see the amendment
+     below). An `ss` that fails (for example "Cannot open netlink socket") is undecided, not empty.
      This extends `exposure_scan.py`'s existing exit 2 ("decided nothing"); it is not a parallel
      mechanism.
    - **Exposure and bind-address verdicts are decided by the runc cell.** They normally come from
-     the app's configuration, not the runtime. Under gVisor they are reported as undecidable when
-     the sentinel fails. Option D stays rejected.
+     the app's configuration, not the runtime. Option D stays rejected. *Amended:* under gVisor
+     these checks are skipped rather than failed as undecided. Test 28 skips ("exposure is
+     verified under runc"), and a bind-address check reports that it was not run there. A failed
+     check stopped the runner before the image's own tests, so no gVisor run could check
+     anything else; the runc result already answers whether a service binds publicly. Under runc
+     nothing changes: a listener family `ss` cannot see still fails the check as undecided. A
+     full connect scan of the container's own addresses was considered for TCP and rejected: it
+     costs a sweep of every port on every run to repeat what runc already decides, and UDP has no
+     equivalent.
    - **In a runsc cell, every check that can decide under gVisor gates** (supervisord starts, the
      GPU is reachable, no privilege failure in a pipeline, and so on). Only the checks that report
      undecided are non-gating there.
@@ -244,7 +252,7 @@ Positive:
 
 Accepted negatives:
 
-- Under gVisor some checks stay undecided rather than green; exposure verdicts come only from runc.
+- Under gVisor the exposure and bind-address checks are skipped; those verdicts come only from runc.
   An app that chooses its bind from the network it finds could expose differently under gVisor and
   not be caught.
 - The `/dev/shm` fallback socket is removed by a user's `rm -rf /dev/shm/*` until the next restart;
