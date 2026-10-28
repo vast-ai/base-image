@@ -35,6 +35,7 @@ from capabilities import assemble_live
 # cgroup v2, then v1, then none; outside this file so it tests without the
 # portal's runtime dependencies.
 from capabilities.container_metrics import (
+    allocation,
     disk_usage,
     get_container_cpu_usage,
     get_container_memory_stats,
@@ -1387,7 +1388,7 @@ async def _collect_metrics() -> dict:
             'used': psutil.virtual_memory().used,
             'percent': psutil.virtual_memory().percent
         },
-        'disk': disk_usage('/')
+        'disk': disk_usage('/', allocated=allocation('disk_bytes'))
     }
     
     # Add container detection info

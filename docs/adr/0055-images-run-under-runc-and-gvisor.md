@@ -176,6 +176,17 @@ is neutral or better under runc.** Concretely:
 10. **Code reading cgroups handles v2, v1 and none.** Readers try v2, then v1, and treat nothing
    readable as "no limit known" (no-op, or fall back to process-level figures). No code assumes the
    sandbox's cgroup version, because it can change between gVisor releases and configurations.
+11. **The portal shows the same RAM and disk totals under both runtimes.** Under runc both are read
+   locally: the guaranteed RAM from the cgroup (v2 `memory.low`, v1 soft limit) and the disk from
+   `statfs`. Under gVisor the sandbox shows only the hard memory limit, which can sit well above the
+   guarantee, and on a host-served root `statfs` describes the host's filesystem. Boot
+   stage 14 therefore reads the allocation once from the instance API, under gVisor only, and
+   records it; the portal uses it only where no local figure is real. RAM usage still comes from
+   the cgroup. Disk usage stays unreported where the root is host-served: polling the API for it
+   was rejected, as was fetching from the portal itself (every portal restart would repeat the
+   request and the key handling would live in a second place). The RAM figure derived from the
+   instance record measured 0.4% above the cgroup's own figure under runc; it is shown as derived,
+   without a correction factor nobody can verify.
 
 ## Binding conditions
 

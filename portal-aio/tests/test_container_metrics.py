@@ -5,6 +5,7 @@ pids.max = max and /proc/meminfo's MemTotal equal to the memory limit; and a
 sandbox may expose no cgroup filesystem at all.
 """
 
+import json
 import os
 import sys
 
@@ -23,6 +24,14 @@ def _tree(root, files: dict):
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content + "\n")
+
+
+@pytest.fixture(autouse=True)
+def no_allocation(tmp_path, monkeypatch):
+    """No boot-time allocation record unless a test writes one (never the real /run file)."""
+    path = tmp_path / "vast-allocation.json"
+    monkeypatch.setattr(cm, "ALLOCATION", str(path))
+    return path
 
 
 @pytest.fixture
@@ -97,6 +106,31 @@ def test_v1_sandbox_limit_equal_to_memtotal_is_real(fake):
     }
 
 
+def test_v1_sandbox_total_is_the_recorded_allocation(fake, no_allocation):
+    # The hard limit is not the guarantee; the recorded allocation is what runc would show.
+    fake(GVISOR_V1, mem_total=64 * GiB)
+    no_allocation.write_text(json.dumps({"ram_bytes": 32 * GiB, "disk_bytes": 60 * GiB}))
+    assert cm.get_container_memory_stats() == {
+        "total": 32 * GiB, "used": 8 * GiB, "percent": 25.0,
+    }
+
+
+def test_a_visible_guarantee_wins_over_the_allocation(fake, no_allocation):
+    # runc never consults the record: memory.low is the guarantee itself.
+    fake({"memory.low": str(16 * GiB), "memory.max": str(48 * GiB),
+          "memory.current": str(4 * GiB)}, mem_total=512 * GiB)
+    no_allocation.write_text(json.dumps({"ram_bytes": 99 * GiB}))
+    assert cm.get_container_memory_stats()["total"] == 16 * GiB
+
+
+@pytest.mark.parametrize("content", ["not json", "[]", '{"ram_bytes": -1}',
+                                     '{"ram_bytes": "32"}', '{"ram_bytes": true}'])
+def test_an_unusable_allocation_record_is_ignored(fake, no_allocation, content):
+    fake(GVISOR_V1, mem_total=64 * GiB)
+    no_allocation.write_text(content)
+    assert cm.get_container_memory_stats()["total"] == 64 * GiB
+
+
 def test_v1_sandbox_cpu_quota_and_usage(fake):
     fake(GVISOR_V1, mem_total=64 * GiB)
     assert cm.get_cpu_quota_cores() == 31.0
@@ -136,6 +170,20 @@ def test_host_served_root_is_not_reported(tmp_path, monkeypatch):
     _mounts(tmp_path, monkeypatch, [("none", "/", "9p")])
     d = cm.disk_usage(str(tmp_path))
     assert d["available"] is False and d["total"] is None and "host" in d["reason"]
+
+
+def test_host_served_root_reports_the_allocated_total(tmp_path, monkeypatch):
+    _mounts(tmp_path, monkeypatch, [("none", "/", "9p")])
+    d = cm.disk_usage(str(tmp_path), allocated=60 * GiB)
+    assert d["available"] is False and d["total"] == 60 * GiB
+    assert d["used"] is None and d["percent"] is None and "allocation" in d["reason"]
+
+
+def test_overlay_root_ignores_the_allocated_total(tmp_path, monkeypatch):
+    # runc: statfs is the instance's own disk and stays the source.
+    _mounts(tmp_path, monkeypatch, [("overlay", "/", "overlay")])
+    d = cm.disk_usage(str(tmp_path), allocated=1)
+    assert d["available"] is True and d["total"] != 1
 
 
 def test_overlay_root_reports_real_numbers(tmp_path, monkeypatch):

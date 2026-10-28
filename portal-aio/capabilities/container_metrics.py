@@ -6,6 +6,10 @@ assumes a cgroup version: runc hosts expose v2 (``memory.max``, ``cpu.max``),
 the gVisor sandbox exposes v1 only (``memory/memory.limit_in_bytes``,
 ``cpu/cpu.cfs_quota_us``), and either may expose none at all.
 
+Where the sandbox hides the allocation (only a hard memory limit, a host-served root), boot
+stage 14 records it from the instance API in ``ALLOCATION``; local figures win wherever they
+are real, so under runc that file is never consulted.
+
 Kept out of ``portal.py`` (and free of psutil) so it can be tested without the
 portal's runtime dependencies. Paths are module attributes so tests can point
 them at a fixture tree.
@@ -13,6 +17,7 @@ them at a fixture tree.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Optional
@@ -20,6 +25,7 @@ from typing import Optional
 CGROUP_ROOT = "/sys/fs/cgroup"
 MEMINFO = "/proc/meminfo"
 MOUNTS = "/proc/self/mounts"
+ALLOCATION = "/run/vast-allocation.json"
 
 # Filesystems whose statfs answers for the HOST's filesystem, not the instance's disk. Under
 # gVisor with a host-served root filesystem the root and bind mounts are 9p, and df shows
@@ -72,6 +78,16 @@ def is_in_container() -> bool:
     )
 
 
+def allocation(name: str) -> Optional[int]:
+    """``ram_bytes`` or ``disk_bytes`` from the boot-time allocation record, or None."""
+    try:
+        with open(ALLOCATION) as f:
+            value = json.load(f).get(name)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def _is_real_limit(value: Optional[int], mem_total: int) -> bool:
     """A limit is real unless it is unset, the unlimited sentinel, or larger
     than MemTotal.
@@ -86,26 +102,25 @@ def _is_real_limit(value: Optional[int], mem_total: int) -> bool:
     return True
 
 
-def _v2_memory(mem_total: int) -> tuple[Optional[int], Optional[int]]:
-    limit = None
-    # memory.low (soft) first: Vast sets the user's allocation there and a
-    # higher hard limit with burst headroom.
-    for rel in ("memory.low", "memory.max"):
+def _first_limit(mem_total: int, guarantee: str, ceiling: str) -> tuple[Optional[int], bool]:
+    """The first real limit of (guarantee, ceiling), and whether it was the guarantee."""
+    for rel in (guarantee, ceiling):
         value = _read_int(rel)
         if _is_real_limit(value, mem_total):
-            limit = value
-            break
-    return limit, _read_int("memory.current")
+            return value, rel == guarantee
+    return None, False
 
 
-def _v1_memory(mem_total: int) -> tuple[Optional[int], Optional[int]]:
-    limit = None
-    for rel in ("memory/memory.soft_limit_in_bytes", "memory/memory.limit_in_bytes"):
-        value = _read_int(rel)
-        if _is_real_limit(value, mem_total):
-            limit = value
-            break
-    return limit, _read_int("memory/memory.usage_in_bytes")
+def _v2_memory(mem_total: int) -> tuple[Optional[int], Optional[int], bool]:
+    # memory.low (soft) first: it is the guarantee; the hard limit can be higher.
+    limit, guaranteed = _first_limit(mem_total, "memory.low", "memory.max")
+    return limit, _read_int("memory.current"), guaranteed
+
+
+def _v1_memory(mem_total: int) -> tuple[Optional[int], Optional[int], bool]:
+    limit, guaranteed = _first_limit(mem_total, "memory/memory.soft_limit_in_bytes",
+                                     "memory/memory.limit_in_bytes")
+    return limit, _read_int("memory/memory.usage_in_bytes"), guaranteed
 
 
 def get_container_memory_limit() -> Optional[int]:
@@ -113,7 +128,7 @@ def get_container_memory_limit() -> Optional[int]:
     visible (v2 ``max``, the v1 unlimited sentinel, or no cgroup)."""
     mem_total = _mem_total()
     for reader in (_v2_memory, _v1_memory):
-        limit, _ = reader(mem_total)
+        limit, _, _ = reader(mem_total)
         if limit is not None:
             return limit
     return None
@@ -123,14 +138,17 @@ def get_container_memory_stats() -> Optional[dict]:
     """total/used/percent from one cgroup version, or None to fall back.
 
     Limit and usage always come from the same version so they describe the
-    same group.
+    same group. When only the hard limit is visible, the recorded
+    allocation is the total instead, so the figure means the same under both runtimes.
     """
     if not is_in_container():
         return None
     mem_total = _mem_total()
     for reader in (_v2_memory, _v1_memory):
-        limit, usage = reader(mem_total)
+        limit, usage, guaranteed = reader(mem_total)
         if limit is not None and usage is not None:
+            if not guaranteed:
+                limit = allocation("ram_bytes") or limit
             return {"total": limit, "used": usage, "percent": (usage / limit) * 100}
     return None
 
@@ -223,14 +241,16 @@ def _mount_fstype(path: str) -> Optional[str]:
     return fstype
 
 
-def disk_usage(path: str) -> dict:
+def disk_usage(path: str, allocated: Optional[int] = None) -> dict:
     """total/used/percent for the filesystem holding `path`, or available=False with a reason
-    when the numbers would describe the host's filesystem rather than this instance's disk."""
+    when the numbers would describe the host's filesystem rather than this instance's disk.
+    `allocated` (bytes) is then the total, with usage still unreported."""
     fstype = _mount_fstype(path)
     if fstype in _HOST_SERVED_FS:
-        return {"available": False, "total": None, "used": None, "percent": None,
-                "reason": f"{path} is host-served ({fstype}); its size and usage are the host's, "
-                          "not this instance's disk allocation"}
+        return {"available": False, "total": allocated, "used": None, "percent": None,
+                "reason": f"{path} is host-served ({fstype}); its usage is not visible from inside, "
+                          + ("the total is this instance's allocation" if allocated else
+                             "and its size is the host's, not this instance's disk allocation")}
     st = os.statvfs(path)
     total = st.f_blocks * st.f_frsize
     used = (st.f_blocks - st.f_bfree) * st.f_frsize
