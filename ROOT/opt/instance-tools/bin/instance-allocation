@@ -9,7 +9,7 @@ filesystem. The allocation is fixed for the instance's lifetime, so boot stage 1
 runs this once, under gVisor only, and the portal reads the result.
 
 One request to the instance API with the container's own key (sent in a header, never on a
-command line), 5 s, no retry: a host that cannot reach the API pays 5 s in the background and
+command line, never across a redirect), 5 s, no retry: a host that cannot reach the API pays 5 s in the background and
 the portal keeps its current figures. Only the derived numbers are written; the response
 carries the instance's environment and is never logged or stored.
 
@@ -50,10 +50,17 @@ def allocation(record: dict) -> dict:
     return out
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the key's header to wherever it points, possibly over plain http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def fetch(instance_id: str, key: str) -> dict:
     req = urllib.request.Request(f"{API}{instance_id}/", headers={
         "Authorization": f"Bearer {key}", "User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+    with urllib.request.build_opener(_NoRedirect).open(req, timeout=TIMEOUT) as resp:
         body = json.load(resp)
     record = body.get("instances", body) if isinstance(body, dict) else None
     if not isinstance(record, dict):
@@ -73,8 +80,8 @@ def write(figures: dict, out: Path) -> None:
 def main() -> int:
     instance_id = (os.environ.get("CONTAINER_ID") or os.environ.get("VAST_CONTAINERLABEL") or "").removeprefix("C.")
     key = os.environ.get("CONTAINER_API_KEY", "")
-    if not instance_id or not key:
-        print("skipped: no CONTAINER_API_KEY or container id")
+    if not instance_id.isdigit() or not key:
+        print("skipped: no CONTAINER_API_KEY or numeric container id")
         return 0
     try:
         figures = allocation(fetch(instance_id, key))

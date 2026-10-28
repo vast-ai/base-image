@@ -63,8 +63,10 @@ else
 fi
 
 # Clients with no environment at all (cron, a bare `env -i`) reach it on the
-# literal serverurl.
-env -i /usr/local/bin/supervisorctl status >/dev/null 2>&1; rc=$?
-(( rc == 0 || rc == 3 )) || test_fail "env -i /usr/local/bin/supervisorctl status failed (exit ${rc})"
+# literal serverurl. Resolved on PATH first: external images install supervisor in
+# their own venv and expose it through a shim, not in /usr/local/bin.
+sc=$(command -v supervisorctl) || test_fail "supervisorctl is not on PATH"
+env -i "$sc" status >/dev/null 2>&1; rc=$?
+(( rc == 0 || rc == 3 )) || test_fail "env -i ${sc} status failed (exit ${rc})"
 
 test_pass "supervisord running and serving on its RPC socket"

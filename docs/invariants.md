@@ -454,7 +454,10 @@ probed. Pinned by `tools/imagegen/tests/test_nvidia_driver_version.py` and the
 GPU tests in `portal-aio/tests/test_capabilities.py`. The lint rule banning other
 readers of the `/proc` file is **not yet in force**: the aio-studio display-driver
 script and UnrealPixelStreaming's `pixel-streaming.sh` still read it, and the rule
-lands with their fix.
+lands with their fix. Two more rules from ADR 0055 condition 2 are **not gated yet**
+and land with the same desktop change: no `sudo` in a supervisor script whose program
+runs as a non-root user, and no runtime check other than `is-gvisor` and the portal's
+single Python check.
 
 ### One TLS cert-usability predicate, not one per caller — **GATED (L066)**
 
@@ -767,7 +770,7 @@ symlink at the path or its parent, and is a no-op where they are already right.
 shipped functions against temporary paths. On a live instance `base/10-supervisor`
 re-probes independently: where the probe works the socket must be plain (`[ -S ] && [ ! -L ]`)
 with no include, otherwise the symlink, directory and include are checked; in both cases
-`env -i /usr/local/bin/supervisorctl status` must work. The fallback socket is lost to an
+`supervisorctl status` run with `env -i` (the binary found on PATH first; external images keep it in their own venv) must work. The fallback socket is lost to an
 `rm -rf /dev/shm/*` until the next boot.
 
 ### Runtime races found by audit 2026-08-20 — fixed, NOT gated
@@ -1473,6 +1476,16 @@ absent carries `in_use_verified: false`. The manifest reports supervisord's cont
 `supervisor.control_socket`; a symlink at `/var/run/supervisor.sock` means the `/dev/shm`
 fallback is in use. Tests: `test_capabilities.py`.
 
+
+**Two portals, one version label, until the portal release.** These portal changes ship baked into
+the image while `portal-aio/VERSION` stays at the last release, so the published tarball with that
+version is the older code. First boot replaces the image's portal whenever the latest release or
+`PORTAL_VERSION` differs from the image's `VERSION`, and keeps it when they match. So an image built
+from this code keeps it only while no newer portal release exists; setting `PORTAL_VERSION` to the
+same label keeps it too, and any other value replaces it. Images already deployed keep their old
+portal until the release. Bumping `VERSION` in the same change is not the fix: an image whose
+installed version is newer than the latest release would downgrade itself at first boot (ADR 0015).
+The release follows the base rollout.
 ### Portal "not ready" interstitial is CDN-safe (200 for Cloudflare only) — **enforced by portal-aio tests (ADR 0017)**
 
 When a proxied backing service has not started yet, Caddy's `handle_errors 502 503
