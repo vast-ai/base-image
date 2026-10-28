@@ -23,8 +23,3 @@ as the canonical source for the license text.
 - **License:** Apache-2.0
 - **Upstream:** https://github.com/huggingface/trl
 - **License file in image:** `/opt/unsloth-venv/lib/python3.12/site-packages/trl-*.dist-info/`
-
-## Unsloth Studio
-
-Present in the upstream image under `/opt/unsloth-studio-app` but not started by this
-image. Licensed as stated in the upstream repository: https://github.com/unslothai/unsloth

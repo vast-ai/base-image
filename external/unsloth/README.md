@@ -11,7 +11,8 @@ Unsloth, TRL and vLLM at versions that work together, and grafts the Vast stack 
 (`convert-non-vast-image.sh`). `/venv/main` mirrors the upstream `/opt/unsloth-venv`
 (ADR 0048), so Jupyter, `python` in a terminal and `uv pip install` all see the same
 packages. The upstream's own launcher (Unsloth Studio, its Jupyter, sshd) is replaced by
-the Vast supervisor stack.
+the Vast supervisor stack, and the Studio app is removed (its bundled Node fails the CA trust
+floor; `vastai/unsloth-studio` is the Studio image).
 
 vLLM matters for RL: GRPO spends most of each step generating answers, and Unsloth runs
 vLLM inside the training process, sharing the GPU's memory. `vastai/unsloth-studio`

@@ -11,6 +11,16 @@ RUN case "${CUDA_VERSION}" in \
       *) echo "upstream CUDA_VERSION=${CUDA_VERSION}, workflow says ${UNSLOTH_CUDA}"; exit 1 ;; \
     esac
 
+# Before the convert step, which mirrors this venv into /venv/main: anything changed after it
+# would leave the mirror pointing at files that moved. base/29-ca-trust fails the upstream as
+# shipped on two binaries with distrusted CAs compiled in:
+# - the venv's uv 0.13.1 (floor 0.13.4): upgrade it in place; uv is a standalone binary wheel
+#   and pulls nothing else.
+# - Unsloth Studio's bundled Node 24.18 (below its line's floor): this image does not run
+#   Studio (vastai/unsloth-studio is that template), so its app tree goes.
+RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python --no-cache "uv>=0.13.4" && \
+    rm -rf /opt/unsloth-studio-app /opt/unsloth-studio
+
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="Unsloth suitable for Vast.ai."
 LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
@@ -57,7 +67,10 @@ COPY ./ROOT /
 # overwritten by the base ROOT above, so the Vast stack runs instead: Jupyter on 8080
 # behind Caddy, SSH from the base. GRPO files come in with ./ROOT under
 # /opt/workspace-internal and sync to $WORKSPACE on first boot.
+# vastai/base-image's Dockerfile puts `umask 002` at the top of /root/.bashrc (group-writable
+# files for the shared root group); the convert step does not, and base/55-environment checks it.
 RUN set -euo pipefail; \
+    sed -i '1i umask 002' /root/.bashrc; \
     /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (Unsloth)"; \
     chmod +x /opt/supervisor-scripts/grpo-autorun.sh
 
