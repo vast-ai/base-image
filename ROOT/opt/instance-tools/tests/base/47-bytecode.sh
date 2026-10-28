@@ -45,6 +45,11 @@ for r, ds, fs in os.walk(sys.argv[1]):
 print(total, valid)
 PY
     )
+    # A probe that crashed prints nothing; read as 0/0 that would pass.
+    if [[ ! "$total" =~ ^[0-9]+$ || ! "$valid" =~ ^[0-9]+$ ]]; then
+        fail_later "$where" "the bytecode probe failed under $py"
+        continue
+    fi
     share=$(awk -v v="$valid" -v t="$total" 'BEGIN { printf "%.3f", (t ? v / t : 1) }')
     echo "  $where: $valid/$total sources have valid bytecode ($share)"
     if awk -v s="$share" -v m="$min" 'BEGIN { exit !(s < m) }'; then

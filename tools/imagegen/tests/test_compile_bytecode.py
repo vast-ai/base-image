@@ -235,3 +235,18 @@ def test_instance_test_fails_when_the_copy_lost_its_timestamps(tmp_path):
 def test_instance_test_skips_on_an_image_without_the_marker(tmp_path):
     r = _test47(tmp_path, tmp_path / "workspace")
     assert r.returncode == 77
+
+
+def test_instance_test_fails_when_its_probe_crashes(tmp_path):
+    # A probe that prints nothing must not read as 0/0 sources and pass.
+    broken = tmp_path / "broken-python"
+    broken.write_text("#!/bin/bash\nexit 1\n")
+    broken.chmod(0o755)
+    tree = tmp_path / "site"
+    _module(tree, "m0")
+    marker = tmp_path / "etc/vast-bytecode.tsv"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(f"{broken}\t{tree}\n")
+    r = _test47(tmp_path, tmp_path / "workspace")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "probe failed" in r.stdout + r.stderr

@@ -52,12 +52,14 @@ def test_no_ram_figure_without_a_usable_share(record):
 
 
 class _API(http.server.BaseHTTPRequestHandler):
-    status, body, seen = 200, {"instances": RECORD}, []
+    status, body, seen, location = 200, {"instances": RECORD}, [], None
 
     def do_GET(self):
         type(self).seen.append((self.path, self.headers.get("Authorization")))
         payload = json.dumps(type(self).body).encode()
         self.send_response(type(self).status)
+        if type(self).location:
+            self.send_header("Location", type(self).location)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(payload)
@@ -68,7 +70,7 @@ class _API(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def api(tmp_path, monkeypatch):
-    _API.status, _API.body, _API.seen = 200, {"instances": RECORD}, []
+    _API.status, _API.body, _API.seen, _API.location = 200, {"instances": RECORD}, [], None
     server = http.server.HTTPServer(("127.0.0.1", 0), _API)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     mod = _helper()
@@ -127,3 +129,20 @@ def test_stage_runs_the_helper_under_gvisor(tmp_path):
 
 def test_stage_does_nothing_under_runc(tmp_path):
     assert not _run_stage(tmp_path, gvisor=False).exists()
+
+
+def test_a_redirect_is_not_followed_with_the_key(api):
+    # The key header would otherwise go to wherever Location points.
+    _API.status, _API.body = 302, {}
+    _API.location = "/elsewhere/"
+    assert api.main() == 0
+    assert [p for p, _ in _API.seen] == ["/instances/58087446/"]
+    assert not api.OUT.exists()
+
+
+@pytest.mark.parametrize("cid", ["C.../../x", "", "C.12a"])
+def test_a_non_numeric_container_id_means_no_request(api, monkeypatch, cid):
+    monkeypatch.setenv("CONTAINER_ID", cid)
+    monkeypatch.delenv("VAST_CONTAINERLABEL", raising=False)
+    assert api.main() == 0
+    assert _API.seen == [] and not api.OUT.exists()

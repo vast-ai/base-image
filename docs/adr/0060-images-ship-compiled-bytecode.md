@@ -54,8 +54,8 @@ with `cp -ru`, which gives every copied source a new mtime, so bytecode compiled
    the gain must not depend on that.
 3. **`ENV UV_COMPILE_BYTECODE=1` alone.** First rejected on the belief that uv recompiles the
    whole site-packages after every install; measured, it compiles only what the install adds.
-   Adopted as part of option 1, but not enough alone: app trees, pip installs and packages that
-   shipped uncompiled are not uv installs in the image's last steps.
+   Adopted as part of option 1, but not enough alone: app trees, pip installs made with
+   `--no-compile` and packages that shipped uncompiled are not uv installs in the image's last steps.
 7. **Exclude external images.** First chosen, on the belief that compiling into the
    `/venv/main` mirror would break ADR 0048. Measured: Python already writes real bytecode there
    at runtime and `venv-mirror verify` passes. Rejected.
@@ -119,7 +119,7 @@ mirror too. Measured on vLLM: 100% of every tree compiled in 38 s, and the verif
   does not compile them.
 - Workspace files copied on first boot keep their build-time mtimes instead of the boot time.
 - A derivative on a new base that has not added the call yet still gets its uv installs compiled
-  (the base's ENV), but not its app tree or pip installs. `base/47-bytecode.sh` fails if its venv
+  (the base's ENV), but not its app tree or pip installs made with `--no-compile`. `base/47-bytecode.sh` fails if its venv
   coverage drops below 95%; the app tree is caught by L117 once step 2 widens it.
 - Existing `$WORKSPACE` volumes keep the trees they already have; nothing changes for them.
 
