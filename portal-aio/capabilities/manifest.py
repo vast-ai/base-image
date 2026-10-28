@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 from datetime import datetime, timezone
 from typing import Iterable, Optional
@@ -104,7 +105,7 @@ def _gpu_render_caps() -> Optional[dict]:
     OpenGL/OptiX/EGL/Vulkan libs are missing (undetectable before renting).
     Returns None when no NVIDIA driver is present (nothing to report).
     """
-    if not os.path.exists("/proc/driver/nvidia/version"):
+    if not _has_nvidia_gpu():
         return None
     libs = _ldconfig_libs()
     caps: dict = {
@@ -121,15 +122,46 @@ def _gpu_render_caps() -> Optional[dict]:
     return caps
 
 
+_DRIVER_VERSION_HELPER = "/opt/instance-tools/bin/nvidia-driver-version"
+_NVIDIACTL = "/dev/nvidiactl"
+_DRIVER_VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$")
+
+
+def _driver_version_helper() -> Optional[str]:
+    if os.access(_DRIVER_VERSION_HELPER, os.X_OK):
+        return _DRIVER_VERSION_HELPER
+    return shutil.which("nvidia-driver-version")
+
+
 def _driver_version() -> Optional[str]:
+    """The NVIDIA driver version, or None when there is no driver to ask.
+
+    Never read the kernel module's /proc version file here: under gVisor it is
+    absent while the GPU works. The image's nvidia-driver-version helper owns
+    the /proc-then-nvidia-smi order. Images built before the helper existed
+    still install the latest portal at first boot, so without it this falls
+    back to nvidia-smi's machine-readable query (first GPU; they share a driver).
+    """
+    helper = _driver_version_helper()
+    if helper:
+        cmd, timeout = [helper], 20      # the helper bounds its own nvidia-smi call
+    else:
+        cmd, timeout = ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], 10
     try:
-        with open("/proc/driver/nvidia/version") as f:
-            for tok in f.readline().split():
-                if re.match(r"^\d+\.\d+(\.\d+)?$", tok):
-                    return tok
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception:
-        pass
-    return None
+        return None
+    if res.returncode != 0:
+        return None
+    lines = res.stdout.splitlines()
+    first = lines[0].strip() if lines else ""
+    return first if _DRIVER_VERSION_RE.match(first) else None
+
+
+def _has_nvidia_gpu() -> bool:
+    """GPU presence: the driver control node, or a driver that reports a version.
+    Never "the /proc file exists" (absent under gVisor with a working GPU)."""
+    return os.path.exists(_NVIDIACTL) or _driver_version() is not None
 
 
 def _min_cuda_for_compute_cap(caps: list[str]) -> Optional[str]:
@@ -290,7 +322,7 @@ def _cuda_info() -> Optional[dict]:
     cuDNN), and full nvidia/cuda-devel-derived images ship everything. Installing
     the wrong CUDA/driver packages from the (configured) nvidia apt repo breaks CUDA.
     """
-    if not os.path.exists("/proc/driver/nvidia/version"):
+    if not _has_nvidia_gpu():
         return None
     libs = _ldconfig_libs()
     components = _cuda_components(libs)
@@ -410,6 +442,10 @@ def _open_ports() -> list[dict]:
     return out
 
 
+PROC_NET = "/proc/net"
+_PROBE_TIMEOUT = 0.15  # seconds per address; loopback answers or refuses at once
+
+
 def _listening_ports() -> set:
     """TCP ports currently in LISTEN state (from /proc/net/tcp[6]).
 
@@ -417,9 +453,9 @@ def _listening_ports() -> set:
     to map its own app onto.
     """
     ports: set = set()
-    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+    for name in ("tcp", "tcp6"):
         try:
-            with open(path) as f:
+            with open(os.path.join(PROC_NET, name)) as f:
                 next(f, None)  # header
                 for line in f:
                     parts = line.split()
@@ -432,6 +468,57 @@ def _listening_ports() -> set:
         except OSError:
             pass
     return ports
+
+
+def _proc_net_has(name: str) -> bool:
+    """Whether the kernel exposes the /proc/net/<name> table at all.
+
+    Under gVisor tcp6 and udp6 are absent, so IPv6 and dual-stack listeners are
+    invisible to the table scan. Absent is not the same as empty.
+    """
+    return os.path.exists(os.path.join(PROC_NET, name))
+
+
+def _tcp_port_accepts(port: int) -> bool:
+    """True when something accepts a TCP connect on loopback (v4 or v6).
+
+    Connects and closes without sending data. Used only when the tcp6 table is
+    missing, to catch listeners the table scan cannot see.
+    """
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(_PROBE_TIMEOUT)
+                if s.connect_ex((host, port)) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+SUPERVISOR_SOCK = "/var/run/supervisor.sock"
+
+
+def _supervisor_socket() -> dict:
+    """Where supervisord's control socket is.
+
+    The usual path is a plain socket. When /run cannot hold a unix socket the
+    boot stage puts it under /dev/shm and leaves a symlink at the usual path;
+    clients keep using the usual path either way.
+    """
+    out = {
+        "path": SUPERVISOR_SOCK,
+        "present": os.path.exists(SUPERVISOR_SOCK),
+        "fallback": False,
+        "target": None,
+    }
+    if os.path.islink(SUPERVISOR_SOCK):
+        out["fallback"] = True
+        try:
+            out["target"] = os.readlink(SUPERVISOR_SOCK)
+        except OSError:
+            pass
+    return out
 
 
 def _credentials() -> dict:
@@ -816,6 +903,11 @@ def assemble(
     # Annotate open ports: occupied by a configured service, or actively
     # listening, => in_use; otherwise free for an agent to map its own app onto.
     listening = _listening_ports()
+    # A missing tcp6 table (gVisor) hides IPv6 and dual-stack listeners, so
+    # confirm a port is free by connecting to it. With the table present the
+    # scan is complete and nothing is probed.
+    probe_tcp = not _proc_net_has("tcp6")
+    udp_unverifiable = not _proc_net_has("udp6")
     svc_by_ext = {s["external_port"]: s["name"] for s in svc_out if s.get("external_port") is not None}
     open_ports = _open_ports()
     for p in open_ports:
@@ -825,6 +917,11 @@ def assemble(
         bind = p.get("bind_port", cp)
         svc_name = svc_by_ext.get(cp)
         p["in_use"] = (bind in listening) or (svc_name is not None)
+        if not p["in_use"] and p["proto"] == "tcp" and probe_tcp:
+            p["in_use"] = _tcp_port_accepts(bind)
+        if not p["in_use"] and p["proto"] == "udp" and udp_unverifiable:
+            # UDP cannot be connect-probed; "free" here is a guess.
+            p["in_use_verified"] = False
         if svc_name:
             p["service"] = svc_name
 
@@ -852,6 +949,7 @@ def assemble(
         "python_environments": py_envs,
         "tools": fragments.get("tools", []),
         "services": svc_out,
+        "supervisor": {"control_socket": _supervisor_socket()},
         "endpoints_openai": openai_rollup,
         "provisioning": {
             "status": prov_status,

@@ -16,6 +16,8 @@ sup_status=$(supervisorctl status 2>/dev/null)
 for conf in /etc/supervisor/conf.d/*.conf; do
     [[ -f "$conf" ]] || continue
     name=$(basename "$conf" .conf)
+    # Socket override written by 65-supervisor-launch.sh on the fallback path, not a program.
+    [[ "$name" == vast-supervisor-socket ]] && continue
     if ! echo "$sup_status" | grep -q "^${name} "; then
         echo "  WARN: ${name}.conf exists but not in supervisorctl status"
     fi
@@ -116,7 +118,9 @@ check_jupyter() {
             # and the WARN below could never fire: a check that cannot fail. Same defect
             # measured live on an unsloth-studio QA cell, where the inverted direction
             # made it fail every time instead (L082).
-            if listener_is_public 8080; then
+            if ! bind_checks_apply; then
+                echo "  jupyter: bind address not checked under gVisor (verified under runc)"
+            elif listener_is_public 8080; then
                 echo "  jupyter: bound to all interfaces"
             else
                 echo "  WARN: jupyter on port 8080 but not bound to 0.0.0.0 ($(listener_local_addr 8080))"

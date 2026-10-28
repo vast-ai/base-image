@@ -127,6 +127,39 @@ All applications are managed by [Supervisor](https://supervisord.readthedocs.io/
 - **Shared permissions**: umask 002 for collaborative file access
 - **SSH key propagation**: Keys automatically set up for both root and user accounts
 
+## Container Runtimes
+
+Instances of this image can run under the standard container runtime (runc) or under
+[gVisor](https://gvisor.dev) (`runsc`), a sandbox that runs the container on its own
+user-space kernel. The image detects what it needs at boot and works under both; you do not
+choose a tag for either. To check which one you have, `/opt/instance-tools/bin/is-gvisor`
+exits 0 under gVisor.
+
+Under gVisor some things behave differently:
+
+- **Not available:** 32-bit programs (they stay installed and run under runc), anything
+  that opens `/dev/dri` (VA-API, GBM, Wayland/KMS sessions), kernel profilers, `io_uring`,
+  FUSE mounts, and `nvidia-smi topo`.
+- **Degraded:** anything that touches many files or starts many processes is slower. Measured
+  against the same instance under runc: small-file create/stat/delete about 4x, process
+  start-up about 4.7x, `pip`/`apt` 1.5-5x, Python imports 1.4-2.6x, so an app restart (ComfyUI,
+  A1111, Fooocus, Forge, Unsloth) takes 1.4-2.6x as long. Single-thread CPU and GPU compute run
+  at the same speed, and model weights already in the page cache load onto the GPU at nearly
+  the same speed. X11 round trips are slower; NCCL cannot see the PCI/NUMA topology; `ss` and
+  `/proc/net` may not list every listening socket (IPv6 and UDP in particular).
+- **Tools:** `strace` and `gdb` work; `perf`, eBPF tools and `iotop` do not.
+- **`sudo` for the non-root user** works only where the sandbox allows setuid programs.
+- **supervisord's control socket** normally lives at `/var/run/supervisor.sock`. Where that
+  directory cannot hold it, the boot puts the socket in a root-only directory under
+  `/dev/shm` and leaves a symlink at the usual path, so `supervisorctl` and the portal work
+  unchanged. Clearing `/dev/shm` (`rm -rf /dev/shm/*`) then removes the socket until the
+  next restart.
+- The cgroup filesystem may be v1, v2 or absent, `nproc` reflects the CPU quota, and
+  `MemTotal` reflects the memory limit.
+- Where the root filesystem is served by the host, `df` reports the host's filesystem rather
+  than your instance's disk. The Instance Portal shows your disk allocation instead, without a
+  usage figure, and shows your guaranteed RAM as it does under runc.
+
 ## Instance Portal
 
 The Instance Portal is a web-based dashboard for managing applications running on your instance. It provides secure access through TLS, authentication, and Cloudflare tunnels.

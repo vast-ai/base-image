@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Compile the image's Python bytecode at build time (ADR 0060).
+
+A fresh container (every new instance, every recycle) otherwise compiles whatever its app
+imports on the first start: 2-5 s under runc, more where file operations are slow. uv
+installs without compiling, and app trees in /opt/workspace-internal ship no bytecode.
+
+Run it in the image's final RUN, before `env-hash`:
+
+    RUN compile-bytecode && env-hash > /.env_hash
+
+What it compiles, each tree with the interpreter that will import it (bytecode is tagged
+by Python version, so the system python's bytecode is useless to a venv on another one):
+- every venv under /venv, and every venv found by its pyvenv.cfg under /opt (the portal's, the
+  provisioner's, an external image's model UI): its site-packages;
+- every app tree under /opt/workspace-internal, once per distinct Python version among those
+  venvs (an image such as aio-studio runs each app in its own venv). Boot stage 36 copies app
+  trees into $WORKSPACE with their timestamps, so the bytecode stays valid there.
+
+Timestamp invalidation is explicit: SOURCE_DATE_EPOCH would otherwise switch compileall to
+hash checking, which reads every source on every import. A file that fails to compile
+(templates, Python 2 leftovers in site-packages) is tolerated; the coverage check then fails
+the build if too little of a tree compiled. The trees and their interpreters are recorded
+for the instance test (base/47-bytecode.sh).
+
+On an external image /venv/main is a per-file symlink mirror of the engine's site-packages
+(ADR 0048), and the engine is imported through it (its launchers run /venv/main/bin/python).
+Compiling /venv/main writes the bytecode as real files in the mirror's __pycache__ directories,
+exactly where Python writes it at runtime today; `venv-mirror verify` accepts real files, so run
+this before the verify in the final RUN. The engine's own site-packages are NOT compiled: that
+copy would never be imported and doubled the bytecode (vLLM: 186 MiB compressed, unused).
+
+uv installs compile what they add (ENV UV_COMPILE_BYTECODE=1 in the base image); this helper
+covers everything else: app trees, pip installs made with --no-compile, and whatever shipped uncompiled.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+VENVS = Path(os.environ.get("COMPILE_BYTECODE_VENVS", "/venv"))
+# Venvs outside /venv (the portal's, the provisioner's, an external image's model UI) are found by
+# their pyvenv.cfg under these roots, at most VENV_SEARCH_DEPTH levels down.
+VENV_SEARCH = [Path(p) for p in os.environ.get("COMPILE_BYTECODE_VENV_SEARCH", "/opt").split(":") if p]
+VENV_SEARCH_DEPTH = 4
+APPS = Path(os.environ.get("COMPILE_BYTECODE_APPS", "/opt/workspace-internal"))
+MARKER = Path(os.environ.get("COMPILE_BYTECODE_MARKER", "/etc/vast-bytecode.tsv"))
+MIN_COVERAGE = float(os.environ.get("COMPILE_BYTECODE_MIN_COVERAGE", "0.95"))
+
+VERSION = "import sys; print('%d.%d' % sys.version_info[:2])"
+
+SITE_DIRS = ("import sysconfig\n"
+             "p = sysconfig.get_paths()\n"
+             "print('\\n'.join(sorted({p['purelib'], p['platlib']})))")
+
+# Run by the tree's own interpreter: cache_from_source names that interpreter's bytecode.
+COVERAGE = ("import importlib.util, os, sys\n"
+            "total = ok = 0\n"
+            "for r, ds, fs in os.walk(sys.argv[1]):\n"
+            "    for f in fs:\n"
+            "        if f.endswith('.py'):\n"
+            "            total += 1\n"
+            "            ok += os.path.exists(importlib.util.cache_from_source(os.path.join(r, f)))\n"
+            "print(total, ok)")
+
+
+def venv_python(venv: Path) -> Path | None:
+    py = venv / "bin" / "python"
+    if venv.is_symlink() or not venv.is_dir() or not os.access(py, os.X_OK):
+        return None
+    return py
+
+
+def _searched_venvs() -> list[Path]:
+    """Venvs found by their pyvenv.cfg under VENV_SEARCH, not following symlinks."""
+    found: list[Path] = []
+    for root in VENV_SEARCH:
+        if not root.is_dir():
+            continue
+        base = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = len(Path(dirpath).parts) - base
+            if "pyvenv.cfg" in filenames:
+                found.append(Path(dirpath))
+                dirnames[:] = []                    # a venv's own tree holds no further venvs
+                continue
+            dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))] \
+                if depth < VENV_SEARCH_DEPTH else []
+    return sorted(found)
+
+
+def _prefix(py: Path) -> Path:
+    return Path(subprocess.run([str(py), "-c", "import sys; print(sys.prefix)"],
+                               capture_output=True, text=True, check=True).stdout.strip()).resolve()
+
+
+def app_interpreters(versions: dict[Path, str], preferred: Path | None) -> list[Path]:
+    """One interpreter per distinct Python version among the image's venvs, the preferred one
+    (/venv/main's) standing for its own version. An app tree is compiled once with each, so it has
+    bytecode for whichever venv runs it, without mapping apps to venvs."""
+    chosen: dict[str, Path] = {}
+    if preferred in versions:
+        chosen[versions[preferred]] = preferred
+    for py, ver in versions.items():
+        chosen.setdefault(ver, py)
+    return [chosen[v] for v in sorted(chosen)]
+
+
+def targets() -> list[tuple[Path, Path]]:
+    """(interpreter, tree) pairs, in a stable order."""
+    out: list[tuple[Path, Path]] = []
+    venvs = sorted(p for p in VENVS.glob("*") if p.is_dir()) if VENVS.is_dir() else []
+    pythons = [py for py in (venv_python(v) for v in venvs + _searched_venvs()) if py]
+    # An external image's engine may itself be a venv under /opt (sglang). It is imported through
+    # the /venv/main mirror, so compiling its own site-packages would only add an unused copy.
+    engine = os.environ.get("VAST_ENGINE_PYTHON", "")
+    if engine and engine != "none" and os.access(engine, os.X_OK):
+        engine_prefix = _prefix(Path(engine))
+        pythons = [py for py in pythons if _prefix(py) != engine_prefix]
+    seen: set[Path] = set()
+    versions: dict[Path, str] = {}
+    for py in pythons:
+        versions[py] = subprocess.run([str(py), "-c", VERSION], capture_output=True, text=True, check=True).stdout.strip()
+        dirs = subprocess.run([str(py), "-c", SITE_DIRS], capture_output=True, text=True, check=True).stdout
+        for d in dirs.split():
+            tree = Path(d)
+            if tree.is_dir() and tree.resolve() not in seen:
+                seen.add(tree.resolve())
+                out.append((py, tree))
+    apps = [a for a in sorted(APPS.iterdir()) if a.is_dir() and not a.is_symlink()] if APPS.is_dir() else []
+    if apps:
+        interps = app_interpreters(versions, venv_python(VENVS / "main"))
+        if not interps:
+            raise SystemExit(f"compile-bytecode: app trees under {APPS} but no venv to compile them with")
+        out += [(py, app) for app in apps for py in interps]
+    return out
+
+
+def compile_tree(py: Path, tree: Path) -> tuple[int, int]:
+    # compileall exits 1 when any file fails; that is tolerated here and judged by coverage.
+    subprocess.run([str(py), "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "timestamp", str(tree)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    total, ok = subprocess.run([str(py), "-c", COVERAGE, str(tree)],
+                               capture_output=True, text=True, check=True).stdout.split()
+    return int(total), int(ok)
+
+
+def main() -> int:
+    pairs = targets()
+    if not pairs:
+        print("compile-bytecode: nothing to compile (no venv under /venv, no app tree)", file=sys.stderr)
+        return 1
+    short = []
+    for py, tree in pairs:
+        total, ok = compile_tree(py, tree)
+        share = ok / total if total else 1.0
+        print(f"compile-bytecode: {tree} ({py}): {ok}/{total} sources compiled ({share:.1%})")
+        if share < MIN_COVERAGE:
+            short.append(f"{tree}: {share:.1%} < {MIN_COVERAGE:.0%}")
+    MARKER.parent.mkdir(parents=True, exist_ok=True)
+    MARKER.write_text("".join(f"{py}\t{tree}\n" for py, tree in pairs))
+    if short:
+        print("compile-bytecode: too little compiled:\n  " + "\n  ".join(short), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -299,8 +299,6 @@ if ! id -u user > /dev/null 2>&1; then
     useradd -ms /bin/bash user -u 1001 -g 0
 fi
 
-rm -f /etc/vast_boot.d/48-venv-backup.sh
-rm -f /opt/instance-tools/bin/venv_backup.sh
 rm -f /etc/supervisor/conf.d/tensorboard.conf
 rm -f /opt/supervisor-scripts/tensorboard.sh
 
