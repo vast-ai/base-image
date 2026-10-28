@@ -31,7 +31,7 @@ this before the verify in the final RUN. The engine's own site-packages are NOT 
 copy would never be imported and doubled the bytecode (vLLM: 186 MiB compressed, unused).
 
 uv installs compile what they add (ENV UV_COMPILE_BYTECODE=1 in the base image); this helper
-covers everything else: pip installs, app trees, and whatever shipped uncompiled.
+covers everything else: app trees, pip installs made with --no-compile, and whatever shipped uncompiled.
 """
 from __future__ import annotations
 

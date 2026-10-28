@@ -1,6 +1,6 @@
 # ADR 0055 — Images run under runc and gVisor
 
-- **Status:** Accepted (conditional)
+- **Status:** Accepted (conditional). The base image meets the binding conditions except the three lint rules in condition 2, which are deferred to the change that makes the desktop images run under gVisor (see condition 2).
 - **Date:** 2026-10-19
 - **Decision owner:** Rob Ballantyne
 
@@ -107,8 +107,9 @@ is neutral or better under runc.** Concretely:
 2. **One driver-version helper.** A single tool next to `cuda-driver-version` prints the NVIDIA
    driver version: `/proc/driver/nvidia/version` first (a file that exists but does not parse falls
    through), then `nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1` with a
-   timeout; it prints nothing and exits non-zero if neither answers. Every shell reader in the repo
-   calls it. **GPU presence** is decided by the helper (or `/dev/nvidiactl`), never by testing for
+   timeout; it prints nothing and exits non-zero if neither answers. Every shell reader in the base
+   image calls it; the aio-studio display-driver script and UnrealPixelStreaming's
+   `pixel-streaming.sh` still read the `/proc` file and move to the helper in the desktop change. **GPU presence** is decided by the helper (or `/dev/nvidiactl`), never by testing for
    the `/proc` file. The portal's capability manifest prefers the helper but keeps an in-process
    `nvidia-smi --query-gpu` fallback when the helper is absent, because the latest portal is
    installed at first boot on images built before the helper existed.
@@ -202,7 +203,7 @@ is neutral or better under runc.** Concretely:
    behaviour unchanged. For the supervisord change the runc arm asserts that
    `/var/run/supervisor.sock` is a plain socket and not a symlink (`[ -S p ] && [ ! -L p ]`), that
    no generated socket include exists, that the effective configuration equals the shipped one, and
-   that `env -i /usr/local/bin/supervisorctl status` succeeds.
+   that `supervisorctl status`, found on PATH and then run with `env -i`, succeeds.
 2. **Codified, each with a mutation test** (Bug -> Invariant protocol), landing in the same change
    as the fix it polices, so the lint baseline stays clean:
    - The linter's shipped-script scope covers the aio image's `ROOT_BASE` (today it is not scanned).
@@ -211,6 +212,14 @@ is neutral or better under runc.** Concretely:
      read.
    - No `sudo` in a supervisor script whose program runs as a non-root user.
    - No runtime check other than `is-gvisor` and the portal's single Python check.
+
+   *Amended:* only the first rule lands with the base change. The other three are deferred to the
+   change that makes the desktop images run under gVisor, because each polices code that change
+   owns: the `/proc` rule would fail the lint baseline on the aio-studio and Unreal readers until
+   they move to the helper; the `sudo` rule's violations are the desktop patcher and X clean-up
+   scripts; and the runtime-check rule is written against the desktop scripts' readback switch, the
+   one place a second runtime check would be tempting. Until then `docs/invariants.md` lists them
+   as not gated.
 3. **Off-box tests.**
    - Driver-version helper (modelled on the `cuda-driver-version` tests): `/proc` wins over
      `nvidia-smi`; the open-kernel-module `/proc` format parses; an unparseable `/proc` falls
@@ -235,7 +244,9 @@ is neutral or better under runc.** Concretely:
    exit 2; and a runc fixture with IPv6 disabled (no tcp6 table, IPv6 bind refused) still decides.
 6. **cgroup fixtures cover three cases** for every cgroup reader touched by this work (the portal's
    metrics, the thread-cap valve's tests): a v2 host, a v1 sandbox with `pids.max` = `max`, and no
-   cgroup filesystem. Each gives a decided, correct result or the documented no-op.
+   cgroup filesystem. Each gives a decided, correct result or the documented no-op. The base change
+   touches only the portal's metrics, which have all three; the thread-cap valve is unchanged, and
+   its fixtures land with the next change to it.
 7. **Live confirmations before the docs claim them:** `/proc/gvisor` present under gVisor and absent
    under runc; regular-file hard links under both runtimes (a file
    hard link, a real `uv pip install` with the default link mode, a conda environment create).
