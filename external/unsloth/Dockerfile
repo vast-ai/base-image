@@ -6,8 +6,10 @@ FROM ${UNSLOTH_BASE} AS unsloth_build
 # The image tag carries the CUDA version the workflow passes; fail rather than publish a
 # tag that names the wrong toolkit when the upstream moves to a new CUDA.
 ARG UNSLOTH_CUDA=12.8
-RUN [[ "${CUDA_VERSION}" == "${UNSLOTH_CUDA}" || "${CUDA_VERSION}" == "${UNSLOTH_CUDA}."* ]] || \
-    { echo "upstream CUDA_VERSION=${CUDA_VERSION}, workflow says ${UNSLOTH_CUDA}"; exit 1; }
+RUN case "${CUDA_VERSION}" in \
+      "${UNSLOTH_CUDA}"|"${UNSLOTH_CUDA}".*) ;; \
+      *) echo "upstream CUDA_VERSION=${CUDA_VERSION}, workflow says ${UNSLOTH_CUDA}"; exit 1 ;; \
+    esac
 
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="Unsloth suitable for Vast.ai."
