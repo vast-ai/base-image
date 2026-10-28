@@ -38,7 +38,9 @@ Local counterparts to CI. Model: **staging namespace → prod namespace via reta
   - `opt/instance-tools/bin/` — PATH executables: `entrypoint.sh`, `boot_default.sh`,
     `provisioner`, `vast-capabilities`, `env-hash`, `jupyter`, `cuda-driver-version`,
     `nvidia-driver-version` (the one NVIDIA driver-version reader), `is-gvisor`,
-    `compile-bytecode` (build-time only, in the final RUN before `env-hash`; ADR 0060), etc.
+    `compile-bytecode` (build-time only, in the final RUN before `env-hash`; ADR 0060),
+    `instance-allocation` (boot stage 14, gVisor only: records the RAM and disk allocation the
+    sandbox hides, for the portal; ADR 0055), etc.
   - `opt/instance-tools/lib/provisioner/` — **Python** package (`python -m provisioner`):
     phased, idempotent manifest runner (apt/git/pip/conda installers, HF/wget
     downloaders, schema/state/concurrency). Has its own `tests/`. `envlist.py` is the one
