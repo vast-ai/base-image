@@ -1431,10 +1431,14 @@ window.InstancePortal = (function() {
             // Update Disk metrics
             if (this.data.disk && this.data.disk.available === false) {
                 // Host-served root (gVisor): statfs describes the host's filesystem, not this disk.
+                // The total, when known, is the instance's recorded allocation.
                 const diskEl = document.getElementById(this.elements.diskFill);
                 diskEl.style.width = '0%';
                 diskEl.removeAttribute('data-level');
-                document.getElementById(this.elements.diskTooltip).textContent = 'Not reported under this runtime';
+                const allocated = this.data.disk.total ? Math.round(this.data.disk.total / (1024 * 1024 * 1024)) : null;
+                document.getElementById(this.elements.diskTooltip).textContent = allocated
+                    ? `${allocated} GB allocated | usage not reported under this runtime`
+                    : 'Not reported under this runtime';
             } else if (this.data.disk) {
                 const diskPercent = this.data.disk.percent;
                 const diskUsed = this.data.disk.used / (1024 * 1024 * 1024); // GiB to match df -h

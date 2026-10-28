@@ -1446,6 +1446,17 @@ host's: when the mount holding the path is host-served (`9p`, gVisor with a host
 null numbers, and the portal shows "Not reported under this runtime". Tests:
 `test_container_metrics.py` (9p root, overlay root, longest mount match, unreadable mounts).
 
+Where the sandbox hides the allocation, the totals come from `/run/vast-allocation.json`, written
+once per boot by `14-instance-allocation.sh` (`bin/instance-allocation`) under gVisor only; under
+runc the stage does nothing. A local figure always wins: the RAM total is the recorded allocation
+only when neither `memory.low` (v2) nor the soft limit (v1) is real, and the disk total only on a
+host-served mount, with usage still null. The helper sends the container key in a header, makes
+one 5 s request, writes only the derived numbers (never the response, which carries the instance's
+environment), and on failure keeps any earlier record. Tests: `test_container_metrics.py`
+(allocation over a hard limit, a visible guarantee winning, unusable records ignored, allocated
+disk total), `tools/imagegen/tests/test_instance_allocation.py` (derivation from a real record,
+header and file contents, failure keeps the record, gVisor-only stage).
+
 The capability manifest decides a TCP port is in use from `/proc/net/tcp` and `tcp6`; only when
 the `tcp6` table is ABSENT (not empty) does it also connect-probe 127.0.0.1 and ::1 (150 ms, no
 data), so hosts with full tables are never probed. A UDP port that looks free while `udp6` is
