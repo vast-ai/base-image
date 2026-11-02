@@ -48,6 +48,13 @@ done
 ss -lnMH 2>/dev/null | awk '{print $4}' | grep -qx "127.0.0.1:${probe_port}" \
     || test_skip "ss does not list a known MPTCP listener (127.0.0.1:${probe_port}); MPTCP socket diagnostics are unavailable here"
 
+# Syncthing adds its public sync listener after its GUI is up. Read the table too early and
+# its half of the check passes with nothing to look at.
+syncthing_missing=""
+if [[ "${VAST_TCP_PORT_72299:-}" =~ ^[0-9]+$ ]] && service_running syncthing; then
+    wait_for_port "$VAST_TCP_PORT_72299" 120 || syncthing_missing="$VAST_TCP_PORT_72299"
+fi
+
 offenders=()
 while read -r _state _recvq _sendq addr _peer _rest; do
     [[ -z "$addr" || "$addr" == "127.0.0.1:${probe_port}" ]] && continue
@@ -65,4 +72,6 @@ if (( ${#offenders[@]} )); then
     test_fail "${#offenders[@]} MPTCP listener(s) reachable from outside the container; Go services must listen as plain TCP (SetMultipathTCP(false) or GODEBUG=multipathtcp=0)"
 fi
 
+[[ -z "$syncthing_missing" ]] \
+    || test_skip "no non-loopback MPTCP listeners, but Syncthing's sync listener on ${syncthing_missing} never appeared, so it was not judged"
 test_pass "no non-loopback MPTCP listeners"
