@@ -11,7 +11,14 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "caddy_manager"))
 
+import pytest  # noqa: E402
+
 import mptcp_off  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _lock_in_tmp(tmp_path, monkeypatch):
+    monkeypatch.setattr(mptcp_off, "LOCK_PATH", str(tmp_path / ".mptcp_off.lock"))
 
 LAUNCH = "#!/bin/bash\n/opt/portal-aio/caddy_manager/caddy run\n"
 
@@ -130,3 +137,36 @@ def test_config_manager_wraps_before_it_publishes_portal_yaml(monkeypatch):
     monkeypatch.setattr(ccm, "load_config", load_config)
     ccm.main()
     assert calls == ["wrap", "publish"]
+
+
+def test_fifo_target_is_skipped_without_hanging(tmp_path):
+    """`user` can swap Syncthing for a FIFO; root must not block on it before publishing config."""
+    fifo = tmp_path / "caddy"
+    os.mkfifo(fifo)
+    (tmp_path / "caddy.sh").write_text(LAUNCH)
+    out = subprocess.run(
+        [sys.executable, "-c", "import sys, mptcp_off as m; m.LOCK_PATH = sys.argv[3]; print(m.wrap(sys.argv[1], sys.argv[2]))",
+         str(fifo), str(tmp_path / "caddy.sh"), str(tmp_path / "lock")],
+        capture_output=True, text=True, timeout=10, cwd=os.path.dirname(mptcp_off.__file__))
+    assert out.stdout.strip().startswith("skip"), out
+
+
+def _race(args):
+    target, script, lock = args
+    mptcp_off.LOCK_PATH = lock
+    return mptcp_off.wrap(target, script)
+
+
+def test_concurrent_wraps_leave_one_working_wrapper(tmp_path):
+    """Two runs at once must not unlink the original or link the wrapper over it."""
+    import multiprocessing
+    ctx = multiprocessing.get_context("fork")
+    for i in range(15):
+        d = tmp_path / str(i)
+        d.mkdir()
+        target, script = _fake(d)
+        args = (str(target), str(script), str(d / "lock"))
+        with ctx.Pool(2) as pool:
+            pool.map(_race, [args, args])
+        assert _run(target) == "GODEBUG=multipathtcp=0 ARGS=run --x=1", i
+        assert _run(d / ".mptcp_off" / "caddy") == "GODEBUG= ARGS=run --x=1", i

@@ -16,13 +16,18 @@ Caddy by process name (pgrep -x caddy, `caddy run`). Any failure leaves the ship
 binary in place, because the service must start.
 
 This runs as root, and /opt/syncthing is owned by `user`, so nothing here follows a
-symlink: a symlinked target or .mptcp_off is skipped, the temp file is created
-exclusively, and the link and unlink go through a directory fd opened O_NOFOLLOW.
+symlink: the target is opened O_NOFOLLOW|O_NONBLOCK and must be a regular file (a
+symlink or FIFO is skipped, never waited on), .mptcp_off must be a real directory,
+the temp file is created exclusively, and the link and unlink go through a directory
+fd opened O_NOFOLLOW. Each wrap holds a lock in this root-owned directory, so two
+runs at once cannot interleave the unlink, link and replace.
 
 Retire this only once host kernels are confirmed patched. Users' saved templates
 keep pinning old images, so new instances of them depend on this indefinitely.
 """
 
+import errno
+import fcntl
 import os
 import re
 import stat
@@ -30,20 +35,13 @@ import tempfile
 
 WRAPPER_MARK = "# portal mptcp_off wrapper"
 ORIG_DIR = ".mptcp_off"
+LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mptcp_off.lock")
 TARGETS = (
     ("Caddy", "/opt/portal-aio/caddy_manager/caddy", "/opt/supervisor-scripts/caddy.sh"),
     ("Syncthing", "/opt/syncthing/syncthing", "/opt/supervisor-scripts/syncthing.sh"),
 )
 # The line images built with the fix carry (L118 checks for the same line).
-_BAKED = re.compile(r'^\s*export GODEBUG="\$\{GODEBUG:\+\$\{GODEBUG\},\}multipathtcp=0"\s*$', re.M)
-
-
-def _is_wrapper(path):
-    try:
-        with open(path, "rb") as f:
-            return WRAPPER_MARK.encode() in f.read(512)
-    except OSError:
-        return False
+_BAKED = re.compile(r'^[ \t]*export GODEBUG="\$\{GODEBUG:\+\$\{GODEBUG\},\}multipathtcp=0"[ \t]*$', re.M)
 
 
 def _image_has_fix(script):
@@ -56,19 +54,37 @@ def _image_has_fix(script):
 
 def wrap(target, script):
     """Run `target` with GODEBUG=multipathtcp=0 via a wrapper. Returns a short status string."""
-    if os.path.islink(target):
-        return "skip: is a symlink"
-    if not os.path.isfile(target):
-        return "skip: not installed"
-    if _is_wrapper(target):
-        return "ok: already wrapped"
+    lock = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _wrap_locked(target, script)
+    finally:
+        os.close(lock)
+
+
+def _wrap_locked(target, script):
+    try:
+        tfd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            return "skip: not installed"
+        if e.errno == errno.ELOOP:
+            return "skip: is a symlink"
+        return f"skip: cannot open: {e}"
+    try:
+        st = os.fstat(tfd)
+        if not stat.S_ISREG(st.st_mode):
+            return "skip: not a regular file"
+        if WRAPPER_MARK.encode() in os.read(tfd, 512):
+            return "ok: already wrapped"
+    finally:
+        os.close(tfd)
     if _image_has_fix(script):
         return "ok: image already runs it as plain TCP"
 
     parent = os.path.dirname(target)
     name = os.path.basename(target)
     orig_dir = os.path.join(parent, ORIG_DIR)
-    st = os.stat(target)
     tmp = None
     dfd = None
     try:

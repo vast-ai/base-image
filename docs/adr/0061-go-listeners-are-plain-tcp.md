@@ -1,6 +1,6 @@
 # ADR 0061 — Go listeners are plain TCP, and the portal release carries the fix to older images
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-02
 - **Decision owner:** Rob Ballantyne
 
@@ -24,11 +24,12 @@ setting appears more than once, the last value wins. Both verified on that image
 v2.11.7 listens as MPTCP with no `GODEBUG`, and as plain TCP with `multipathtcp=0` or with
 `multipathtcp=1,multipathtcp=0`.
 
-**What this protects, and what it cannot.** It protects a user who has not changed anything: the
-listeners our images open stop offering the path the known attack uses. Someone with a shell in
-the container can turn MPTCP back on in our services, or open an MPTCP listener of their own; that
-is their choice. Nothing in an image can stop a tenant from reaching the host kernel, and this ADR
-does not try. The host kernel is the fix.
+**What this protects, and what it cannot.** It stops our containers' own listeners being the way
+in for the published attack, for a user who has not changed anything. It does not protect that
+user from host compromise: anyone who can run a container on the same host can open an MPTCP
+listener of their own, and someone with a shell in the container can turn MPTCP back on in our
+services; that is their choice. Nothing in an image can stop a tenant from reaching the host
+kernel, and this ADR does not try. The host kernel is the fix.
 
 The other half is reach: most instances run images built before any fix, pinned by templates, and
 users' saved copies of templates.
@@ -77,9 +78,11 @@ users' saved copies of templates.
 - Every failure leaves the shipped binary in place and never stops config generation.
 - The wrapper keeps the original's owner and passes every argument through unchanged, and the
   running program keeps its name.
-- The wrap runs as root, and `/opt/syncthing` is owned by `user`, so it follows no symlink: a
-  symlinked binary or `.mptcp_off` is skipped, the temp file is created exclusively, and the link
-  and unlink go through a directory opened without following symlinks.
+- The wrap runs as root, and `/opt/syncthing` is owned by `user`, so it follows no symlink and
+  never waits on a file: the binary is opened without following symlinks or blocking and must be a
+  regular file, `.mptcp_off` must be a real directory, the temp file is created exclusively, and
+  the link and unlink go through a directory opened without following symlinks. A lock in the
+  portal's root-owned directory keeps two wraps from interleaving.
 
 ## Consequences
 - Instances on older images that take the first-boot portal update get plain-TCP Caddy and
@@ -88,8 +91,9 @@ users' saved copies of templates.
   portal change carries this ADR, and the image change carries L118 and test 31. The portal change
   merges first and ships as usual; the image change is promoted from its branch first, as any base
   change is, then merges.
-- Reverting decision 2: revert it and publish the next portal version (the release workflow never
-  re-publishes an older version as latest). That stops new wraps only. Instances already wrapped
+- Reverting decision 2: marking its release as a prerelease takes it out of `releases/latest` at
+  once, so new instances fall back to the previous portal. Then revert it and publish the next
+  portal version (the release workflow never re-publishes an older version as latest). That stops new wraps only. Instances already wrapped
   keep the wrapper for life, since the portal update runs on first boot only; it behaves like the
   original binary apart from the listener type, so nothing depends on undoing it.
 - Loopback MPTCP listeners (Syncthing's GUI, cloudflared's metrics) remain; no remote peer reaches
