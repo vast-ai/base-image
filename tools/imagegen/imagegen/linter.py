@@ -4672,6 +4672,9 @@ def check_go_listeners_are_plain_tcp(repo: Path) -> Iterable[Finding]:
     for rel, launch_re in GO_LISTENER_LAUNCHES:
         path = repo / rel
         if not path.is_file():
+            yield Finding("L118", ERROR, "repo", rel,
+                          "missing, so L118 cannot check that it sets GODEBUG before starting its listener; "
+                          "update GO_LISTENER_LAUNCHES if the script moved (ADR 0061, L118)")
             continue
         lines = path.read_text().splitlines()
         launch = next((i for i, ln in enumerate(lines) if re.match(launch_re, ln)), None)

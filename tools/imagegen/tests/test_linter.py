@@ -5814,11 +5814,11 @@ CADDY_SH = "ROOT/opt/supervisor-scripts/caddy.sh"
 SYNCTHING_SH = "ROOT/opt/supervisor-scripts/syncthing.sh"
 
 
-def _l118_tree(tmp_path, mutate=None, drop_test=False):
-    """Copy the real files L118 reads; `mutate` maps a path to a text transform."""
+def _l118_tree(tmp_path, mutate=None, drop=()):
+    """Copy the real files L118 reads, minus `drop`; `mutate` maps a path to a text transform."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     for rel in (CADDY_SH, SYNCTHING_SH, L.MPTCP_OFF_TEST):
-        if rel == L.MPTCP_OFF_TEST and drop_test:
+        if rel in drop:
             continue
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -5857,4 +5857,9 @@ def test_L118_renamed_launch_line_fires(tmp_path):
 
 
 def test_L118_missing_runtime_test_fires(tmp_path):
-    assert _l118_tree(tmp_path, drop_test=True) == [L.MPTCP_OFF_TEST]
+    assert _l118_tree(tmp_path, drop=(L.MPTCP_OFF_TEST,)) == [L.MPTCP_OFF_TEST]
+
+
+def test_L118_missing_launch_script_fires(tmp_path):
+    """A moved or renamed script must not turn the check into a silent pass."""
+    assert _l118_tree(tmp_path, drop=(CADDY_SH,)) == [CADDY_SH]

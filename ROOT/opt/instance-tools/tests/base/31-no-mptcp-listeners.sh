@@ -21,13 +21,40 @@ ss -lnMH >/dev/null 2>&1 || test_skip "ss cannot list MPTCP sockets here (iprout
 enabled=$(cat /proc/sys/net/mptcp/enabled 2>/dev/null || echo 0)
 [[ "$enabled" == "1" ]] || test_skip "MPTCP is disabled in this network namespace (net.mptcp.enabled=${enabled}); the image cannot be judged here"
 
+# Positive control: open an MPTCP listener on loopback and require `ss -M` to see it.
+# Without it, a kernel whose MPTCP socket diagnostics are unavailable lists nothing,
+# and the test would pass having checked nothing.
+command -v python3 >/dev/null 2>&1 || test_skip "python3 not available for the MPTCP positive control"
+probe_port_file=$(mktemp)
+python3 - "$probe_port_file" <<'EOF' 2>/dev/null &
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 262)  # IPPROTO_MPTCP
+s.bind(("127.0.0.1", 0))
+s.listen()
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.getsockname()[1]))
+time.sleep(30)
+EOF
+probe_pid=$!
+trap 'kill "$probe_pid" 2>/dev/null; rm -f "$probe_port_file"' EXIT
+probe_port=""
+for _ in $(seq 1 50); do
+    probe_port=$(cat "$probe_port_file" 2>/dev/null)
+    [[ -n "$probe_port" ]] && break
+    kill -0 "$probe_pid" 2>/dev/null || break
+    sleep 0.1
+done
+[[ -n "$probe_port" ]] || test_skip "cannot open an MPTCP socket here; the image cannot be judged"
+ss -lnMH 2>/dev/null | awk '{print $4}' | grep -qx "127.0.0.1:${probe_port}" \
+    || test_skip "ss does not list a known MPTCP listener (127.0.0.1:${probe_port}); MPTCP socket diagnostics are unavailable here"
+
 offenders=()
 while read -r _state _recvq _sendq addr _peer _rest; do
-    [[ -z "$addr" ]] && continue
+    [[ -z "$addr" || "$addr" == "127.0.0.1:${probe_port}" ]] && continue
     port="${addr##*:}"
     host="${addr%:*}"
     case "$host" in
-        127.*|"[::1]"|"::1") echo "  loopback MPTCP listener (allowed): ${addr}"; continue ;;
+        127.*|"[::1]"|"::1"|"[::ffff:127."*) echo "  loopback MPTCP listener (allowed): ${addr}"; continue ;;
     esac
     owner=$(listener_owner "$port" || true)
     offenders+=("${addr} (${owner:-owner unknown})")
