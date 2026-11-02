@@ -88,3 +88,45 @@ def test_one_failure_does_not_stop_the_other(tmp_path, monkeypatch, capsys):
     mptcp_off.apply((("Caddy", str(caddy), str(caddy_sh)), ("Syncthing", str(st), str(st_sh))))
     assert "Caddy: skip: boom" in capsys.readouterr().out
     assert _run(st) == "GODEBUG=multipathtcp=0 ARGS=run --x=1"
+
+
+def test_symlinked_target_is_skipped_and_still_runs(tmp_path):
+    """Hard-linking a relative symlink into .mptcp_off/ would leave a wrapper that cannot run."""
+    real, script = _fake(tmp_path, "real")
+    (tmp_path / "caddy").symlink_to("real")
+    assert mptcp_off.wrap(str(tmp_path / "caddy"), str(script)).startswith("skip")
+    assert _run(tmp_path / "caddy") == "GODEBUG= ARGS=run --x=1"
+
+
+def test_planted_orig_dir_symlink_is_refused(tmp_path):
+    """Root wraps Syncthing inside a directory `user` owns; never follow a planted symlink."""
+    target, script = _fake(tmp_path)
+    victim_dir = tmp_path / "victim"
+    victim_dir.mkdir()
+    (victim_dir / "caddy").write_text("keep")
+    (tmp_path / ".mptcp_off").symlink_to(victim_dir)
+    assert mptcp_off.wrap(str(target), str(script)).startswith("skip")
+    assert (victim_dir / "caddy").read_text() == "keep"
+    assert _run(target) == "GODEBUG= ARGS=run --x=1"
+
+
+def test_a_comment_mentioning_the_setting_does_not_skip_the_wrap(tmp_path):
+    target, script = _fake(tmp_path, script_text="#!/bin/bash\n# TODO: multipathtcp=0\n" + LAUNCH)
+    assert mptcp_off.wrap(str(target), str(script)).startswith("installed")
+
+
+def test_config_manager_wraps_before_it_publishes_portal_yaml(monkeypatch):
+    """Syncthing starts as soon as /etc/portal.yaml exists; wrapping after that is too late."""
+    import types
+    import caddy_config_manager as ccm
+
+    calls = []
+    monkeypatch.setitem(sys.modules, "mptcp_off", types.SimpleNamespace(apply=lambda: calls.append("wrap")))
+
+    def load_config():
+        calls.append("publish")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(ccm, "load_config", load_config)
+    ccm.main()
+    assert calls == ["wrap", "publish"]
