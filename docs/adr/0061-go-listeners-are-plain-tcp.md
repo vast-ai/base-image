@@ -8,15 +8,16 @@
 CVE-2026-98432 is a use-after-free in the Linux kernel's IPv4 TCP handshake (IPv4 option data
 freed with `kfree()` while another CPU still reads it; fixed upstream by switching to
 `kfree_rcu()`). A remote peer can reach it without authentication before any application code
-runs. The only fix is a patched host kernel and a reboot. Containers share the host kernel, so no
-image change fixes the bug.
+runs. The fix is a patched kernel from the distribution (for Ubuntu, see
+https://ubuntu.com/security/CVE-2026-98432). Containers share the host kernel, so no image change
+fixes the bug.
 
 The attack published against it needs an **MPTCP listener**, and Go 1.24+ opens MPTCP listeners
 by default. Measured on `vastai/base-image:cuda-12.9.2-cudnn-devel-ubuntu24.04-py312-2026-10-23`
 with `ss -lnM`: Caddy (every public port) and Syncthing's sync port (`VAST_TCP_PORT_72299`) were
-MPTCP listeners; cloudflared and Syncthing's GUI were MPTCP on loopback only. The container's
-network namespace has `net.mptcp.enabled=1`, and the container cannot change it: `/proc/sys` is
-read-only. Only whatever creates the container can set it (`docker run --sysctl`).
+MPTCP listeners; cloudflared and Syncthing's GUI were MPTCP on loopback only. MPTCP cannot be
+switched off from inside a container (`net.mptcp.enabled` is per network namespace, and `/proc/sys`
+is read-only), so an image controls only how its own programs listen.
 
 Neither program sets MPTCP in its own code, so `GODEBUG=multipathtcp=0` turns it off. When the
 setting appears more than once, the last value wins. Both verified on that image: stock Caddy
@@ -33,10 +34,8 @@ The other half is reach: most instances run images built before any fix, pinned 
 users' saved copies of templates.
 
 ## Options considered
-- **Rely on the host kernel patch alone.** Rejected as the only measure: patching and rebooting a
-  fleet of independently operated hosts takes time, and our images offer the exact listener the
-  published attack needs on every public port meanwhile. Recommended to the platform in parallel,
-  together with `--sysctl net.mptcp.enabled=0` at container creation.
+- **Rely on the kernel patch alone.** Rejected as the only measure: until a host runs a patched
+  kernel, our images would offer the listener the published attack needs on every public port.
 - **Patch Caddy's source (`config.SetMultipathTCP(false)`) instead of `GODEBUG`.** Built and
   verified, then rejected. Its only advantage is that the environment cannot undo it, which
   defends against a user who chose to undo it, not one who does not know. For older images it
@@ -85,9 +84,6 @@ users' saved copies of templates.
 ## Consequences
 - Instances on older images that take the first-boot portal update get plain-TCP Caddy and
   Syncthing on first boot.
-- Not reached: instances already running (the update runs on first boot only), instances with
-  `PORTAL_VERSION` pinned or started with `--no-update-portal`, and serverless (which runs neither
-  Caddy nor Syncthing). Those depend on the host kernel.
 - The two changes are independent at runtime, but each one's documentation cites the other: the
   portal change carries this ADR, and the image change carries L118 and test 31. The portal change
   merges first and ships as usual; the image change is promoted from its branch first, as any base
@@ -100,8 +96,7 @@ users' saved copies of templates.
   them.
 
 ## What would reverse this
-- The host fleet is confirmed patched, or MPTCP is disabled at container creation everywhere:
-  decision 2 can be retired; decision 1 stays, since it costs nothing. Template pins are not a
+- Kernels with the upstream fix are in place where our images run: decision 2 can be retired; decision 1 stays, since it costs nothing. Template pins are not a
   reason to retire it: users' saved templates keep pinning old images, and every new instance of
   one depends on decision 2.
 - A Go release drops `multipathtcp`: test 31 fails on the first image built with it, and the
