@@ -11,6 +11,11 @@ utils=/opt/supervisor-scripts/utils
 export STCONFDIR=${STCONFDIR:-/opt/syncthing/config}
 export STDATADIR=${STDATADIR:-/opt/syncthing/data}
 
+# Plain TCP for the public sync listener. Go 1.24+ listens as MPTCP by default, and an
+# MPTCP listener is what the known attack on CVE-2026-98432 (host kernel) needs.
+# Appended because the last multipathtcp= in GODEBUG wins; a user's other settings stay.
+export GODEBUG="${GODEBUG:+${GODEBUG},}multipathtcp=0"
+
 GUI_ADDR="127.0.0.1:18384"
 API_KEY=${OPEN_BUTTON_TOKEN:-$(openssl rand -hex 16)}
 CLI="/opt/syncthing/syncthing cli --gui-address=${GUI_ADDR} --gui-apikey=${API_KEY}"

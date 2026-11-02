@@ -116,6 +116,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L118", ERROR, "The Go listeners the base ships open as plain TCP, not MPTCP (ADR 0061). Go 1.24+ listens as MPTCP by default, and an MPTCP listener is what the published attack on CVE-2026-98432 (a host-kernel IPv4 TCP handshake use-after-free) needs; Caddy holds every public port and Syncthing the public sync port. caddy.sh and syncthing.sh each export GODEBUG with multipathtcp=0 last (the last value wins) before the line that starts the listener, and tests/base/31-no-mptcp-listeners.sh exists, because only the kernel's socket table sees a Go service an app brings. This protects users who have not changed the setting; the host kernel is the fix"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
@@ -4655,7 +4656,45 @@ def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
                               "passes; copy the base's again or delete it (ADR 0058, L115)")
 
 
+MPTCP_OFF_TEST = "ROOT/opt/instance-tools/tests/base/31-no-mptcp-listeners.sh"
+
+
+# (launch script, the line that starts the listener). GODEBUG must be exported before it.
+GO_LISTENER_LAUNCHES = (
+    ("ROOT/opt/supervisor-scripts/caddy.sh", r"\s*/opt/portal-aio/caddy_manager/caddy run\b"),
+    ("ROOT/opt/supervisor-scripts/syncthing.sh", r"\s*/opt/syncthing/syncthing serve\b"),
+)
+_GODEBUG_MPTCP_OFF = re.compile(r'\s*export GODEBUG="\$\{GODEBUG:\+\$\{GODEBUG\},\}multipathtcp=0"\s*$')
+
+
+def check_go_listeners_are_plain_tcp(repo: Path) -> Iterable[Finding]:
+    """L118 (repo) — the Go listeners the base ships open as plain TCP, not MPTCP (ADR 0061)."""
+    for rel, launch_re in GO_LISTENER_LAUNCHES:
+        path = repo / rel
+        if not path.is_file():
+            yield Finding("L118", ERROR, "repo", rel,
+                          "missing, so L118 cannot check that it sets GODEBUG before starting its listener; "
+                          "update GO_LISTENER_LAUNCHES if the script moved (ADR 0061, L118)")
+            continue
+        lines = path.read_text().splitlines()
+        launch = next((i for i, ln in enumerate(lines) if re.match(launch_re, ln)), None)
+        godebug = next((i for i, ln in enumerate(lines) if _GODEBUG_MPTCP_OFF.match(ln)), None)
+        if launch is None:
+            yield Finding("L118", ERROR, "repo", rel,
+                          "the line that starts the listener was not found, so L118 cannot check that GODEBUG "
+                          "is set before it; update GO_LISTENER_LAUNCHES with the new launch line (ADR 0061, L118)")
+        elif godebug is None or godebug > launch:
+            yield Finding("L118", ERROR, "repo", rel,
+                          'export GODEBUG="${GODEBUG:+${GODEBUG},}multipathtcp=0" (ours last, so it wins) must '
+                          "come before the launch line; Go 1.24+ otherwise listens as MPTCP (ADR 0061, L118)")
+    if not (repo / MPTCP_OFF_TEST).is_file():
+        yield Finding("L118", ERROR, "repo", MPTCP_OFF_TEST,
+                      "missing; nothing checks the kernel's socket table for public MPTCP listeners, which is "
+                      "the only check that sees a Go service an app brings (ADR 0061, L118)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
+    check_go_listeners_are_plain_tcp,
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
     check_optional_matrix_jobs_are_guarded, check_selkies_pinned,
