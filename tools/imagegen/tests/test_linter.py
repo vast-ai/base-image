@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114",
+    "L110", "L111", "L112", "L113", "L114", "L118",
 })
 
 
@@ -5806,3 +5806,55 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     tpl.write_text(text.replace(anchor, extra + anchor, 1))
     codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
     assert codes == (["L106"] if fires else []), codes
+
+
+# --- L118: Go listeners are plain TCP (ADR 0061) ----------------------------------- #
+
+CADDY_SH = "ROOT/opt/supervisor-scripts/caddy.sh"
+SYNCTHING_SH = "ROOT/opt/supervisor-scripts/syncthing.sh"
+
+
+def _l118_tree(tmp_path, mutate=None, drop_test=False):
+    """Copy the real files L118 reads; `mutate` maps a path to a text transform."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for rel in (CADDY_SH, SYNCTHING_SH, L.MPTCP_OFF_TEST):
+        if rel == L.MPTCP_OFF_TEST and drop_test:
+            continue
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (repo / rel).read_text()
+        fn = (mutate or {}).get(rel)
+        new = fn(text) if fn else text
+        assert not fn or new != text, f"mutation did not apply to {rel}"
+        dst.write_text(new)
+    return [f.path for f in L.check_go_listeners_are_plain_tcp(tmp_path)]
+
+
+def test_L118_real_tree_is_clean():
+    assert list(L.check_go_listeners_are_plain_tcp(find_repo_root(Path(__file__).resolve().parent))) == []
+
+
+@pytest.mark.parametrize("script", [CADDY_SH, SYNCTHING_SH])
+def test_L118_without_godebug_fires(tmp_path, script):
+    """The state every image shipped in before ADR 0061: Go's MPTCP default."""
+    strip = lambda t: re.sub(r'(?m)^\s*export GODEBUG=.*multipathtcp=0"\n', "", t)
+    assert _l118_tree(tmp_path, {script: strip}) == [script]
+
+
+@pytest.mark.parametrize("script", [CADDY_SH, SYNCTHING_SH])
+def test_L118_godebug_after_launch_fires(tmp_path, script):
+    """Set after the launch line, it applies to nothing that listens."""
+    def move(t):
+        line = next(ln for ln in t.splitlines(keepends=True) if ln.lstrip().startswith("export GODEBUG="))
+        return t.replace(line, "") + line
+    assert _l118_tree(tmp_path, {script: move}) == [script]
+
+
+def test_L118_renamed_launch_line_fires(tmp_path):
+    """A changed launch line must not turn the check into a silent pass."""
+    rename = lambda t: t.replace("/opt/portal-aio/caddy_manager/caddy run", "exec /opt/portal-aio/caddy_manager/caddy run")
+    assert _l118_tree(tmp_path, {CADDY_SH: rename}) == [CADDY_SH]
+
+
+def test_L118_missing_runtime_test_fires(tmp_path):
+    assert _l118_tree(tmp_path, drop_test=True) == [L.MPTCP_OFF_TEST]
