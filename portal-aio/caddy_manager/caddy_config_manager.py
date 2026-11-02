@@ -626,6 +626,14 @@ def generate_auth_config(caddy_identifier, username, password, open_button_token
 
 
 def main():
+    # Before /etc/portal.yaml is published: Caddy and Syncthing both wait for it (ADR 0061).
+    # Never allowed to stop config generation.
+    try:
+        import mptcp_off
+        mptcp_off.apply()
+    except Exception as e:
+        print(f"mptcp_off: skip: {e}")
+
     try:
         config = load_config()
         caddyfile_content, username, password, open_token = generate_caddyfile(config)

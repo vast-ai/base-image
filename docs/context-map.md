@@ -73,7 +73,8 @@ Local counterparts to CI. Model: **staging namespace → prod namespace via reta
 ## 4. portal-aio/ (Python)
 Instance-portal web/proxy suite, launched by supervisor, shipped in every image
 via `Dockerfile.extend`. `portal/portal.py` (serves capabilities at :11111),
-`caddy_manager/` (generates Caddy config from `PORTAL_CONFIG`), `tunnel_manager/`
+`caddy_manager/` (generates Caddy config from `PORTAL_CONFIG`; temporarily also wraps
+Caddy and Syncthing to listen as plain TCP on older images, `mptcp_off.py`, ADR 0061), `tunnel_manager/`
 (Cloudflare), `capabilities/`, `mcp_server/` (MCP tools for agents). Own pytest
 suite (`portal-aio/tests/`).
 
