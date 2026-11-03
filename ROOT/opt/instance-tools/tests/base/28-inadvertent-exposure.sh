@@ -39,6 +39,9 @@ is_serverless && test_skip "serverless: no Caddy gate; exposure model differs (A
 # silently degraded pass is the worst outcome — skip loudly instead. The automated
 # path (runner.sh at boot) is root; this only affects `runner.sh --manual` over SSH.
 [[ "$EUID" -eq 0 ]] || test_skip "exposure scan requires root (ss -p cannot attribute other users' sockets; a non-root scan would pass without deciding)"
+# Exposure is decided under runc, where every listener family is visible (ADR 0055). Under
+# gVisor the IPv6 tables are missing, so the scan could only report undecided.
+is_gvisor_runtime && test_skip "exposure is verified under runc; listener tables are incomplete under gVisor"
 
 ALLOW_DIR="$(cd "$(dirname "$0")/.." && pwd)/exposure-allowlist"
 
@@ -177,11 +180,29 @@ if [[ "$rc" -ge 2 ]]; then
     test_fail "exposure scan could not run (see above) — the check decided nothing; treat as unverified, not clean"
 fi
 
+# ── Visibility: an empty listing is only "nothing public" if ss can see ──────
+# Under gVisor `ss` prints "Cannot open netlink socket" yet exits 0, tcp6/udp6 have
+# no table and `ss -lun` lists no udp4, so the legacy verdict above can come back
+# clean having seen part of the machine. A sentinel of each bindable family must
+# show up in the same `ss` listing that verdict read, or the scan decided nothing.
+# This applies only the visibility half of "decided nothing"; the shadow verdict's
+# other exit-2 causes (and its violations) stay unapplied until ADR 0028's flip.
+unseen=""
+for proto in tcp udp; do
+    why=$(listeners_visible "$proto") || unseen+="${unseen:+; }${why}"
+done
+
 # ADR 0006 cond 2: advisory until a clean baseline is demonstrated, then promote
 # (EXPOSURE_ENFORCE=true, then flip the default). A hard fail on day one would red
 # every image and break the baseline-stays-CLEAN protocol.
 if [[ "${EXPOSURE_ENFORCE:-false}" == "true" && "$rc" -ne 0 ]]; then
     test_fail "inadvertent public exposure detected (see above) — a public port is neither behind Caddy nor allowlisted"
+fi
+
+# Undecided is never advisory, like a scan that could not run: an enforced violation
+# found above is still reported as such, but nothing below may call this clean.
+if [[ -n "$unseen" ]]; then
+    test_fail "exposure scan undecided: listeners are not fully visible to ss here (${unseen}) — the check decided nothing; treat as unverified, not clean"
 fi
 
 # The summary line is the only thing most readers see, so it must never claim a

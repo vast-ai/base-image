@@ -1,0 +1,100 @@
+#!/usr/bin/python3
+"""Record this instance's RAM and disk allocation for the portal (ADR 0055).
+
+Under runc the portal reads both from inside the container: the guaranteed RAM from the
+cgroup (v2 `memory.low`, v1 soft limit) and the disk from `statfs`. Under gVisor neither
+is visible: the sandbox shows only the hard memory limit, which can sit well above the
+guarantee, and where the root filesystem is host-served `statfs` describes the host's
+filesystem. The allocation is fixed for the instance's lifetime, so boot stage 14
+runs this once, under gVisor only, and the portal reads the result.
+
+One request to the instance API with the container's own key (sent in a header, never on a
+command line, never across a redirect), 5 s, no retry: a host that cannot reach the API pays 5 s in the background and
+the portal keeps its current figures. Only the derived numbers are written; the response
+carries the instance's environment and is never logged or stored.
+
+- disk: `disk_space`, in GiB.
+- RAM: the record's `cpu_ram` (MB) times its `gpu_frac`. Measured under runc this is 0.4%
+  above the cgroup's own figure.
+
+A failure leaves any earlier file in place: the allocation does not change between boots.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+API = "https://console.vast.ai/api/v0/instances/"
+OUT = Path("/run/vast-allocation.json")
+TIMEOUT = 5
+USER_AGENT = "vast-base-image instance-allocation"   # lets the platform count, or refuse, this traffic
+
+
+def _positive(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+
+def allocation(record: dict) -> dict:
+    """The byte figures derivable from an instance record; a figure that can't be derived is left out."""
+    out = {}
+    disk = _positive(record.get("disk_space"))
+    if disk:
+        out["disk_bytes"] = int(disk * 1024**3)
+    ram, frac = _positive(record.get("cpu_ram")), _positive(record.get("gpu_frac"))
+    if ram and frac and frac <= 1:
+        out["ram_bytes"] = int(ram * frac * 1_000_000)
+    return out
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the key's header to wherever it points, possibly over plain http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch(instance_id: str, key: str) -> dict:
+    req = urllib.request.Request(f"{API}{instance_id}/", headers={
+        "Authorization": f"Bearer {key}", "User-Agent": USER_AGENT})
+    with urllib.request.build_opener(_NoRedirect).open(req, timeout=TIMEOUT) as resp:
+        body = json.load(resp)
+    record = body.get("instances", body) if isinstance(body, dict) else None
+    if not isinstance(record, dict):
+        raise ValueError("unexpected response shape")
+    return record
+
+
+def write(figures: dict, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".vast-allocation.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(figures, f)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, out)
+
+
+def main() -> int:
+    instance_id = (os.environ.get("CONTAINER_ID") or os.environ.get("VAST_CONTAINERLABEL") or "").removeprefix("C.")
+    key = os.environ.get("CONTAINER_API_KEY", "")
+    if not instance_id.isdigit() or not key:
+        print("skipped: no CONTAINER_API_KEY or numeric container id")
+        return 0
+    try:
+        figures = allocation(fetch(instance_id, key))
+    except Exception as e:  # network, HTTP status, JSON: all mean "keep the current figures"
+        print(f"skipped: instance API request failed ({type(e).__name__})")
+        return 0
+    if not figures:
+        print("skipped: the instance record carries no usable allocation")
+        return 0
+    write(figures, OUT)
+    print("recorded " + ", ".join(f"{k}={v}" for k, v in sorted(figures.items())))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
