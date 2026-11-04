@@ -29,6 +29,7 @@ The template runs Unsloth's own Docker image ([`unsloth/unsloth`](https://hub.do
 
 - Run GRPO from a notebook: change the settings, run the cells, watch the reward climb, try the trained model.
 - Run the same recipe as a script over SSH, or from an agent, with every setting as a flag or environment variable.
+- Train on your own task: write a small task file (data, prompt, scoring) and pass its path or URL. A tool-calling task (answer a request with JSON function calls) is built in as an example.
 - Swap in a bigger model (Qwen3-4B or 8B) or a harder dataset (competition math).
 - Keep the LoRA adapter, save a merged model, or upload it to Hugging Face.
 
@@ -49,12 +50,14 @@ Open `/workspace/grpo/grpo_quickstart.ipynb` and run the cells in order. Or, fro
 cd /workspace/grpo
 python train_grpo.py                                   # defaults: Qwen3-1.7B, GSM8K, 100 steps
 python train_grpo.py --model unsloth/Qwen3-4B-Base --dataset dapo-math --max-steps 300
+python train_grpo.py --task toolcall                   # built-in tool-calling task
+python train_grpo.py --task ./my_task.py               # your own task (see tasks/README.md)
 python train_grpo.py --help                            # every option
 ```
 
-Every option is also an environment variable (`GRPO_MODEL`, `GRPO_MAX_STEPS`, ...). Set `GRPO_AUTORUN=1` to start a run as soon as the instance boots (add flags with `GRPO_ARGS`); the log is `/workspace/grpo/autorun.log` and the exit code lands in `/workspace/grpo/autorun.exit`.
+Every option is also an environment variable (`GRPO_TASK`, `GRPO_MODEL`, `GRPO_MAX_STEPS`, ...). Set `GRPO_AUTORUN=1` to start a run as soon as the instance boots (add flags with `GRPO_ARGS`; `GRPO_TASK=<url>` trains on a task file downloaded at start); the log is `/workspace/grpo/autorun.log` and the exit code lands in `/workspace/grpo/autorun.exit`.
 
-Each run writes to `/workspace/grpo-runs/<timestamp>/`: the LoRA adapter, `results.json` (accuracy before and after on held-out questions, time, peak memory, cost) and the training log.
+Each run writes to `/workspace/grpo-runs/<timestamp>-<task>/`: the LoRA adapter, a copy of the task file, `results.json` (accuracy before and after on held-out questions, time, peak memory, cost) and the training log.
 
 ### Expected results
 
