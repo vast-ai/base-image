@@ -197,6 +197,32 @@ value. Prose mentions of "token"/"key"/"secret" and env-var references (e.g.
 soft endpoint) is not machine-detectable and stays review-enforced. Precedent for
 the excision: ADR 0005 condition 8, moved to the internal issue.
 
+### The provisioner never logs CONTAINER_API_KEY, HF_TOKEN or CIVITAI_TOKEN — **TESTED (provisioner pytest)**
+
+The provisioning log is shown in the portal and leaves the instance in support
+bundles and QA evidence. It leaked the key on two paths:
+- `on_failure: stop|destroy` logged `vastai <action> instance <id> --api-key <key>`, and
+  again through the argv that `CalledProcessError`/`TimeoutExpired` put in `str(e)`.
+- Manifest loading expands `${CONTAINER_API_KEY}`, so a post command using it was
+  logged with the real value ("Running:", "Would run:", "Post command failed").
+
+Two layers now hold it:
+- `provisioner/log.py` attaches a redaction filter to every provisioner handler
+  (stdout, portal log, clean log). It masks the values of `CONTAINER_API_KEY`,
+  `HF_TOKEN` and `CIVITAI_TOKEN` in the message and in any traceback. It sits on the
+  handlers, not the logger, because extension loggers (`provisioner.ext.*`)
+  propagate to the handlers and a logger-level filter never sees their records.
+- `failure._vastai_command` passes the key as `VAST_API_KEY` in the child
+  environment, never in argv, so it is not in the command line at all.
+
+Tested by `provisioner/tests/test_log.py::TestRedactSecrets` (every handler, an
+extension logger, a traceback, and the expanded post command) and
+`test_failure.py::TestVastaiCommand::test_{destroy,stop}_command` (key in env, not
+argv). Mutations that disable the filter, move it to the logger, skip traceback
+masking, or put `--api-key` back on argv each fail a test. This is a pytest check,
+not a linter code, because the leak is runtime log content and no image source
+shows it.
+
 ### No internal tracker ticket id in a public file — **GATED (L061)**
 
 `base-image` is public. An internal Jira ticket id (a Vast-internal project key such
