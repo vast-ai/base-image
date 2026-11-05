@@ -1,0 +1,5 @@
+# GLiNER derivative — image identity (overrides the base image block).
+image:
+  name: GLiNER2
+  readme: https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/gliner
+  preinstalled: PyTorch + GLiNER2 (zero-shot entity extraction)
