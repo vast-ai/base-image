@@ -600,8 +600,9 @@ These hold for every fix delivered through this channel. If one is refused, the 
       - one converted external image;
       - the most-launched derivative image.
     - **Launch modes:** entrypoint mode, the platform's SSH launch mode, and the platform's Jupyter
-      launch mode in direct form, and in proxy form wherever QA can drive it end to end. A
-      proxy cell that cannot run is listed on the run with the reason.
+      launch mode in direct form. Between them they cover each way the update differs by launch
+      mode: whether the platform's launcher runs first, where the opt-out flag goes, the boot's
+      port-8080 mapping, and whether the platform or our boot supplies the TLS certificate.
     - **Architectures:** every cell runs on amd64, and arm64 cells run for each vintage that has
       arm64 images.
     - **Checks:**
