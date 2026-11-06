@@ -227,11 +227,12 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
          Outside first boot means that file exists. A run of `update-portal` from a terminal is
          therefore always a user install, even during provisioning.
        - **Older images.** Their boot writes no end marker, and `/.first_boot_complete` is
-         written early in the first boot. The harness runs from `caddy.sh`, after supervisord
-         starts, and the first-boot update always unpacks before supervisord starts. So outside
-         first boot means `/.first_boot_complete` is older than PID 1, or `MANIFEST` changed (by
-         inode change time, which unpacking always sets) after supervisord started. Only that
-         file is read, because imports write `__pycache__` elsewhere in the tree.
+         written early in the first boot, after the first-boot update has unpacked, on every
+         vintage. So outside first boot means `MANIFEST` changed after `/.first_boot_complete`
+         was written (by more than a couple of seconds' timestamp slack): a later unpack was the
+         user's own. `MANIFEST` is read by inode change time, which unpacking always sets, because
+         tar restores the modification time from the archive. Only that file is read, because
+         imports write `__pycache__` elsewhere in the tree.
        - **An interrupted first boot still counts as first boot.** On images from 2025-08, the
          update unpacks at stage 25 and stages 35 to 55 run before supervisord, so a stop or
          preemption can land between the two. When the harness has never run for the installed
@@ -253,8 +254,11 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
      the installed `/opt/portal-aio` files against the release's `MANIFEST`. The frozen updater
      deletes the
      downloaded tarball, so the cell cannot hash the tarball itself.
-   - **Promote only on a pass.** Promotion to latest happens only on a passing matrix, automatically
-     on pass, and only after re-checking:
+   - **Promote only on a pass.** Promotion to latest happens only on a passing matrix, and only
+     after re-checking the items below. The first promotion also waits for a reviewer's approval
+     on the `portal-release` environment; whether later promotions stay reviewed or run
+     automatically on a pass is the owner's decision after that first one. Each promotion is
+     announced, as each hold is.
      - the asset's sha256;
      - that the version is strictly greater than the current latest;
 
@@ -321,30 +325,172 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
      - It may be used only while the live checks recorded in the binding conditions still hold.
    - **serverless.** On existing images, serverless workers stay outside the channel, apart from
      2025-03 workers, whose updater does not skip them. On new images they are inside it
-     (Decision 4). Every fix runs on serverless workers that reach the harness.
+     (Decision 4). A fix runs on serverless workers that reach the harness unless it skips them.
+   - **A fix may skip serverless workers.** A fix lists the conditions it skips on in `SKIP_ON`,
+     and the harness records the skip. The one condition is `serverless`, read from the
+     platform's `SERVERLESS` variable (ADR 0038): a fix that only matters to services a worker
+     stops, or that would cost a worker's cold start more than it saves, skips them. A container
+     cannot reliably tell whether it is on demand or interruptible, so there is no condition for
+     that.
+   - **A fix may run a command, by name.** Some fixes need a command after a file change, such as
+     `update-ca-certificates` after a CA bundle change or `ldconfig` after a library change. A
+     fix declares each command in a `COMMANDS` table in its own source and runs it through the
+     harness, under these rules:
+     - **Fixed in source.** Each entry is an absolute path to a program the image or the release
+       carries, then literal arguments. Nothing in it comes from the environment, a file or the
+       release manifest.
+     - **No shell.** The arguments go straight to the program: no `sh -c`, pipes, globbing or
+       expansion. It runs with no stdin, a fixed minimal environment, and a timeout.
+     - **Safe to repeat.** The fix checks whether the command's effect is already present and
+       records "already done" instead of running it again. If it cannot tell, it does not run.
+     - **Recorded and checked.** The exit code and a hash of the output go into the container's
+       record. A non-zero exit is a failed fix, which the matrix catches.
+     - **Timed like any other action.** A quick command can run in the early slot within its
+       budget; a slow one runs detached after `/etc/portal.yaml`, still within first boot.
+     - **Reviewed.** A lint rule refuses any other way of running a program from a fix:
+       `subprocess`, `os.system` and the like, `shell=True`, or a command not in the fix's table.
+       Each command a fix adds is listed in the release notes of the release that adds it.
 
-   It has no general binary fetcher, and no fix downloads anything. A fix that genuinely needs a
-   download amends this ADR.
+   - **A fix may update packages, for security.** A security fix is usually a newer package from
+     the distribution or a package index, and shipping it with its dependencies would make every
+     release heavy. So a fix may raise packages through each manager the images ship: apt, the
+     Python environments' pip, conda, and npm for every Node that nvm installed. It declares a
+     `PACKAGE_UPDATES` table of (manager, environment, package, minimum version), and every
+     manager follows the same rules:
+     - **Upgrade-only.** A package that is not installed is left alone. One already at or above
+       its minimum is recorded as already patched, so the action is safe to repeat. Packages are
+       never removed, recommended extras are not installed, and the user's own config files are
+       kept.
+     - **Everything else stays put.** apt upgrades only the named packages; pip installs against
+       the environment's current versions as constraints, binary wheels only, so no build code
+       runs; conda freezes what is installed.
+     - **Within the minimum's major version.** pip and conda ask for at least the minimum and below
+       its next major version, and npm for `^minimum`, so a security update never becomes a feature
+       jump (npm 11 to 12 was the case found in testing).
+     - **Two phases.** The download (`apt-get update` and the packages; the wheels; the conda
+       packages; npm's cache) is the phase a stall guard may stop, and killing it is safe because nothing
+       is installed yet. If a template sets a time cap, every download in a run shares it; queries
+       have their own short timeout. The install then runs only from what was downloaded, with no network
+       wait, and is never cut off: a package manager killed mid-install leaves its state
+       half-configured for the user's next run.
+     - **No collisions.** A user's provisioning runs apt and pip without waiting for their locks,
+       so ours must never run beside it. On new images the action runs at the start of the boot,
+       before provisioning begins. On existing images the detached run waits until provisioning
+       has finished: every vintage sets `/.provisioning` before supervisord starts and removes it
+       when provisioning ends. After 2 hours it records a failure instead of running. apt also
+       waits a bounded time for the dpkg lock, for a user's own apt run. The platform's launcher
+       finishes its own apt steps before our boot starts (ADR 0064's measurements), so it is never
+       contended.
+     - **Verified and recorded.** Each package's version is read again afterwards: at or above the
+       minimum is applied, anything else is a failed fix. A version the manager will not report
+       (a venv without pip, say) is a failed fix too, never "not installed": only a package the
+       manager says is absent is left alone. The record keeps both versions, and the matrix
+       checks the outcome.
+     - **When it runs.** On new images, in the start-of-boot block, so the patch lands before any
+       service starts. On existing images, the stage-65 hook hands it to a detached run after
+       `/etc/portal.yaml`, followed by a named restart of the services the fix lists. Serverless
+       workers take it unless the fix skips them.
+     - **The manager updates itself first.** A manager's own packages (apt and dpkg, pip, conda,
+       npm) are raised as ordinary entries, and go first, in their own two phases, so the rest of
+       that manager's packages are installed by the patched manager. If the manager's own update
+       fails, the rest of its packages are not attempted and are recorded as failed.
+     - **A tool before what it installs.** Managers run in a fixed order: apt, uv, conda, pip,
+       Node, npm, then venv Python patch releases. So uv is current before it fetches a Python,
+       and npm's rows see a Node release installed moments earlier. Each manager's environments
+       are worked out when its turn comes.
+     - **Runtimes no manager installs.** Three tools are not packages of any manager the images
+       ship, and each has its own entry. Each installs the new release beside the old one, which
+       stays, and switches over only once the new one is verified.
+       - **uv** (`uv`, an exact release). Images install uv as a standalone binary in
+         `/usr/local/bin`, where `uv self update` is switched off. The entry downloads exactly that
+         release for the machine's architecture from uv's GitHub releases, checks it against the
+         release's published sha256, and swaps `uv` and `uvx` in by rename, keeping the old
+         binaries. Keeping uv current is worth doing on its own; it is also what lets an image
+         fetch Python patch releases published after the image was built.
+       - **Node** (`node`, a major line, a minimum release in it). `nvm install` fetches the
+         line's newest release from nodejs.org and checks it against the published checksums.
+         The release must reach the minimum and Node's trust floor (ADR 0058). Its global npm
+         packages are reinstalled from the old release, and only then does it become nvm's
+         default, which is how login shells and services find Node. A failed install removes its
+         own partial release and leaves the default alone.
+       - **A venv's Python patch release** (`python-runtime`, the venv, its minor version, a
+         minimum patch release). Only for venvs on a uv-managed interpreter: an apt or conda
+         Python is raised by an apt or conda entry. `uv python install` adds the patch release
+         beside the old one. A venv on uv's minor-version link (uv 0.8 and later, which current
+         images use) follows the link; a venv pinned to an exact patch directory (older uv) is
+         repointed by rewriting its `pyvenv.cfg` and `bin/python` link, each swapped by rename.
+         Installed packages carry over, because a patch release keeps the binary interface. It
+         never moves a venv to another minor version. A venv whose Python is not uv-managed is
+         left alone rather than failed, so one fix covers every image. The patch release must be
+         one uv knows: a fix that needs a newer one than the image's uv also carries a `uv` row,
+         which runs first.
+     - **Only this way.** A lint rule (L123) refuses a package manager run as a named command, and
+       a `PACKAGE_UPDATES` table that is not literal or whose runtime rows leave their line.
+
+     The accepted cost: what is installed is whatever the archive or index serves that day, at or
+     above the minimum, so QA tests that day's result rather than fixed bits. The gate checks that
+     what ships works as intended; it does not prove which versions a later boot receives. That is
+     the trust image builds already place in the same archives and indexes, which they also
+     install from by version range without hashes. Pinning rows to exact versions or hashes was
+     considered and rejected for now, for that reason; it would come with the same change to
+     image builds. For the same reason npm runs packages' install scripts, as image builds do
+     (`--ignore-scripts` was considered and rejected). The cost, accepted: a bad release of a
+     package a row names keeps resolving while the fix stays in the registry, and demoting the
+     portal release does not stop it; only a release that changes the row does. A fix's first boot is slower by the update's download, only on containers that
+     need it, and the boot waits for it (see "No time cap").
+
+   It has no general binary fetcher. Apart from package updates, no fix downloads anything; a fix
+   that genuinely needs another download amends this ADR.
 
 4. **New images: fixes in source, and a portal update that never downgrades.**
    - **Fixes in source.** New images carry their fixes in source, as ADR 0061's baked export and
      lint rule L118 do. There is no new baked boot stage. *Dissent recorded:* one reviewer
-     preferred one.
+     preferred one. An image ships only with every fix its portal registers already in its own
+     source: a lint rule (L124) requires every registered fix to be listed as baked, and L121
+     requires each listed fix's source change to be present. So a baked portal never runs its own
+     fixes. Taking a fix's source change back out means taking the fix off the registry in the
+     same change.
    - **The hook moves to the start of the boot on new images.**
      - **What moves.** The vast-cli update, the portal update and the harness run first, before
        stage 05. Image-specific first-boot scripts, such as the `99-package-install.sh` that
        several engine images ship, stay at stage 25, after the environment is set up.
        Serverless workers still skip the vast-cli update.
-     - **The early block has a wall-clock cap.** The lookup, download, `pip install -r` and
-       harness together run under one time cap. When it runs out, the boot carries on with the
-       baked portal, and the record says so. The cap is set by the owner with the serverless
-       latency threshold.
+     - **A generous ceiling that defers, never drops.** Delivering a release's fixes matters more
+       than a fast first boot, so the boot waits for the lookup, the downloads (the release, its
+       missing dependencies, a package fix's packages) and the installs. It says so in the
+       container log: before the lookup, when it installs, when a fix updates packages, and every
+       minute while a download runs. It waits up to a whole-run ceiling, 60 minutes by default
+       (`PORTAL_UPDATE_DEADLINE`, in seconds, read from the process environment or
+       `/etc/environment`). Within it, a download gives up on a connection that makes no
+       progress: the managers' own network timeouts, curl's minimum speed, nvm's download watched
+       for growth (stopped after 2 minutes without any), and a 30-minute backstop on every
+       attempt, the release's own download and its dependencies' included. A stalled or failed
+       download is retried, up to 3 attempts with a pause between, after removing any partial
+       result; it is safe to repeat because nothing is installed until the download phase is
+       complete. Installs are never cut off: a package manager killed mid-install leaves its state
+       half-configured. Once the release's dependencies are installed its files always follow,
+       because the baked portal on the new dependencies is a pairing nobody tested; its `VERSION`
+       is written last, so an install cut off part-way still reads as the old version.
+
+       When the ceiling is reached, the update is deferred, not dropped. Before the install, the
+       boot carries on with the baked portal and the next start runs the update once more. During
+       a fix's downloads, the fix is recorded as deferred and the next start finishes it once, by
+       the same path as an interrupted first boot. A second deferral is final, as a second
+       interruption is. *Rejected:* a default cap of 120 seconds, which the live test showed a Node
+       download alone can exceed on a slow host, leaving the fix failed for good; no ceiling at
+       all, whose worst case on a slow but live connection is hours; a lower per-attempt backstop
+       alone, still unbounded in total; and running the rest after services start on new images,
+       which starts services before the patch lands.
      - **One entry point on new images.** `update-portal` runs the harness directly after
        installing. On first boot, fixes then reach every boot stage and every supervised program
        before it runs, so new images never need a named restart or a reboot to deliver a fix.
        The stage-65 entry point in `caddy_config_manager.main()` never runs the harness on a new
-       image; it exists for older images. So an opt-out, a skipped pin, a failed lookup or an
-       expired cap means no harness run, and the image keeps the fixes it baked.
+       image; it exists for older images. The harness applies fixes only for a release
+       `update-portal` installed at that first boot, recorded before any file moves. So an
+       opt-out, an already-current portal, a skipped pin, a failed lookup or an expired cap (when a
+       template sets one) means
+       no fixes run, and the image keeps the fixes it baked. The one exception is finishing a
+       first-boot run of an installed release that a stop cut off.
      - **How a fix changes a later stage.** Stages are sourced into the boot shell, and the harness
        is a separate process. So a fix changes a later stage by editing that stage's file, or a
        file the stage reads, before the shell reaches it. Each stage file is read only when it
@@ -368,9 +514,20 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
        Stage 12 has already needed a fleet-wide fix once.
    - **Serverless workers take the update on new images.** Stage 25 no longer skips the portal
      update for `SERVERLESS=true`. This brings every worker under the same fixes as on-demand
-     instances. It adds the lookup, download and harness run to a worker's first boot only, and
-     puts GitHub on that first boot. An endpoint that wants today's cold start opts out with
-     `--no-update-portal` or `PORTAL_UPDATE=false`; the opt-out is the template owner's choice.
+     instances, and puts GitHub on a worker's first boot. An endpoint that wants today's cold
+     start opts out with `--no-update-portal` or `PORTAL_UPDATE=false`; the opt-out is the
+     template owner's choice. Three things keep the cost down:
+     - **Worker mode.** A worker never serves the portal (`caddy.sh` exits on it), so on a worker
+       the update is the release's fixes only: the updater stages and verifies the release, does
+       not install its dependencies or files, and runs the staged release's harness against the
+       container. The installed portal stays the baked one.
+     - **Nothing to fetch when the image already has the release.** Each release publishes its
+       portal identity as a small asset beside the archive. When it matches the installed
+       portal's, the updater downloads nothing more and runs no fixes: the image carries them
+       (L124). This is the steady state for every image built from a released tree.
+     - **Running on workers is a reviewed choice.** Every package fix declares `SKIP_ON`
+       explicitly, `()` or `("serverless",)` (L125), so its cost on workers is decided when it is
+       written, not left to a default.
    - **An environment variable also opts out on new images.** `PORTAL_UPDATE=false` (any case)
      does exactly what `--no-update-portal` does: no lookup, no download, no harness run.
      - **Why.** The flag lives in a different place in each launch mode: on the `entrypoint.sh`
@@ -444,6 +601,12 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
      updater downloads to a staging directory and reads the archive's `VERSION` and `MANIFEST`
      before anything is unpacked into `/opt`, then applies the never-downgrade and deny checks
      below. With `PORTAL_REPO`, the deny list is read from that repository.
+   - **A frozen updater honours five template settings.** `PORTAL_VERSION`, `PORTAL_UPDATE`,
+     `PORTAL_UPDATE_DEADLINE`, `PORTAL_REPO` and `PORTAL_DOWNLOAD_URL`. The updater is frozen
+     into every image that carries it, so each setting it honours is a contract for as long as
+     that image is launched. Its other knobs (the install root, the deny-list address, the
+     download heartbeat and backstop) are honoured only by its sandbox tests, behind
+     `PORTAL_UPDATE_TEST=1`.
    - **Never downgrade.** The new-image updater only ever moves to a higher version, comparing
      versions by semver precedence. No request moves it lower, and there is no override. An older
      portal on a newer image is a combination nobody tests, and supporting it is not worth the
@@ -487,8 +650,10 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
      id in a root-owned list of fixes that image already contains. A lint rule pairs each id with
      the source change that carries it, as L118 does for ADR 0061. The harness skips any fix in that
      list. Images built before the list exists fall back to each fix's own detection.
-   - **The container's applied record.** The harness also skips any fix this container has already
-     applied, for example when the user later runs `update-portal` themselves.
+   - **The container's applied record.** Each fix reads which fixes this container has already
+     applied (the harness's records) and treats its own earlier work as done, for example when the
+     user later runs `update-portal` themselves. The harness does not skip such a fix outright: a
+     superseding fix must still run where an earlier one applied.
    - **Superseding, and two fixes on one file.** Two releases can need to change the same file.
      For example, a later fix may need Caddy to run with a second setting, on top of the wrapper
      `mptcp_off` already installs. These rules apply. The worked example at the end of this ADR
@@ -519,12 +684,14 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
 
        There is no partial state to handle, because every action is atomic.
      - **The container's history narrows the states.** Each fix records the release that
-       introduced it. The harness marker records every release the harness has run under in this
-       container. It is the only place that history survives, because the updater overwrites
+       introduced it, and the harness records each fix's outcome on each file it changed, in a
+       root-owned log that every later run appends to. That log is the history fixes read; the
+       marker keeps a list of past runs for people. It survives because the updater overwrites
        `VERSION` before the harness runs. On a later install, a fix accepts only the states that
-       history allows. For example, once an earlier fix in the chain has run here, its own state is
-       expected. Finding the file "as shipped" instead means someone replaced it after that fix,
-       and the fix treats it as not ours.
+       history allows, file by file. For example, once an earlier fix in the chain has changed a
+       file here, its own state is expected on that file. Finding that file "as shipped" instead
+       means someone replaced it after that fix, and the fix treats it as not ours. A file the
+       earlier fix never reached here (absent then, installed since) is still the fix's to change.
      - **The original stays where the first fix put it.** A superseding fix changes only what an
        earlier fix wrote, such as the wrapper or the drop-in. It never moves the original again,
        so the shipped binary is kept exactly once.
@@ -555,7 +722,7 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
 
 These hold for every fix delivered through this channel. If one is refused, the decision is void.
 
-- **The harness runs once per portal install, and never resumes on a later boot.**
+- **The harness runs once per portal install, finishing an interrupted first boot once.**
   - **Every portal carries its own identity.** `portal-aio/MANIFEST` is a committed file that
     lists every shipped file under `portal-aio/` with its sha256, apart from `VERSION`, which
     bakes and updaters rewrite. CI fails any change that leaves it out of date. Its own sha256 is
@@ -569,11 +736,20 @@ These hold for every fix delivered through this channel. If one is refused, the 
     means exactly first boot or a user install.
   - The marker also lists every release the harness has run under in this container, oldest first
     (Decision 5's history).
-  - It writes an "in progress" marker before it starts and the final marker when it finishes.
-  - If a later boot finds a run that was interrupted, it records the run as interrupted and does
-    not resume it. Each action is atomic, so it is either applied or not, and it detects that it
-    has already been applied (for example, never wrapping a wrapper).
-  - A fix that failed is not retried on a later boot.
+  - The marker records that a run has started before its first fix runs, and each fix's result is
+    written as soon as that fix finishes, so a run cut off part-way leaves an exact record of what
+    finished.
+  - **An interrupted first boot is finished once.** A stop or a preemption during first boot, or
+    during the detached run that follows it, would otherwise lose a security update for good. So
+    on the next start, the fixes of that first-boot install that have no final record run once
+    more: slow ones detached again, as before. This is safe because every action checks its own
+    state first and reports "already applied" or "already patched". If dpkg was interrupted
+    mid-install by our own run, its configuration is finished (`dpkg --configure -a`) before
+    anything else, or every later `apt-get` refuses. A lock stops a resumed run overlapping one
+    that is still alive. If the first boot is cut off a second time, the unfinished fixes are
+    recorded as "interrupted twice", once, and not retried. A user's own install is not resumed; its
+    fixes stay pending for `portal-fixes apply`.
+  - A fix that ran to completion and failed is not retried on a later boot.
   - The behaviour is verified on the support floor vintage before the harness ships.
   - `mptcp_off` comes under this rule.
 
@@ -625,7 +801,8 @@ These hold for every fix delivered through this channel. If one is refused, the 
   passes. It alerts on failure.
 
 - **The early slot is local and bounded.** Code at the top of `main()` does only local file
-  operations from the tarball: wrap with environment, replace by known hash, config drop-in. It is
+  operations from the tarball: wrap with environment, replace by known hash, config drop-in, and
+  a named command quick enough for its budget. It is
   standard library only, runs under a total budget of 5 seconds, and has its import failure
   caught, so the config manager always runs and always writes `/etc/portal.yaml`. Anything slower
   runs
@@ -656,7 +833,9 @@ These hold for every fix delivered through this channel. If one is refused, the 
     release through the frozen updater and checks that Caddy is wrapped and listens as plain
     TCP. "Not ours" is never a passing outcome for a fix on the portal's own binaries.
 
-  There is no "run a shell command" action and no download action.
+  There is no shell action, no command built at run time, and no download action other than
+  package updates. A fix runs a program only as a named command, and updates packages only
+  through the package update action (Decision 3), both enforced by lint rule L123.
 
 - **The registry is an explicit list that every tarball overwrites.** It is never a directory glob,
   because unpacking never deletes, and stale modules would otherwise run.
@@ -730,14 +909,23 @@ These hold for every fix delivered through this channel. If one is refused, the 
   full `reload`. A matrix check confirms that `caddy.sh` and the harness are not restarted by the
   harness's own action.
 
-- **Serverless first boot is measured on new images.** On every release, the matrix times a
-  serverless worker's first boot from start to the worker's first healthy benchmark. It runs in
-  Jupyter launch mode and in entrypoint mode, with and without the update, and the difference is
-  reported on the release run. It is also timed once with GitHub and PyPI unreachable, which
-  must finish within the early block's cap. A release that adds more than a set threshold to that
-  difference
-  over the previous release is held. ADR 0038 kept the skip because cold start is the product, so
-  the threshold is set by the owner before the gate ships.
+- **Serverless first boot is measured on new images.** On every release, a matrix cell boots a
+  new image as a serverless worker. It checks that the release's fixes were recorded, that the
+  portal is still the baked one, and that a second start changes nothing, and it reports how long
+  the first-boot update block took, from the container's start to its end. The owner
+  decided that no time limit holds a release (2026-11-06): the numbers are reported on every
+  release so a rise is seen, and the whole-run ceiling bounds a worker's first boot as any
+  other's. *Rejected:* holding a release that adds more than a set amount over the previous one,
+  or more than an absolute limit; the measurement varies more between hosts than a release
+  changes it, and worker mode and the identity skip already remove most of the cost.
+- **The network failures and the ceiling are tested once per updater, not per release.** GitHub
+  unreachable, GitHub up with the package index down, a short ceiling that defers, and a
+  throttled connection with a stalled download each run once as a scripted live test before an
+  image carrying the updater is promoted, and the result is recorded in the build status below.
+  Each must fall back to the baked portal, or finish, and the boot must carry on. These cases test
+  the updater, which is frozen into the image; a portal release does not change how it behaves.
+  *Rejected:* running them as per-release cells, which multiplies the matrix for behaviour a
+  release cannot change.
 
 - **The user-install prompt is tested.** On a new image, `update-portal` from a terminal outside
   first boot lists the fixes and programs, and changes nothing when answered no. With `--yes`, or
@@ -775,6 +963,37 @@ These hold for every fix delivered through this channel. If one is refused, the 
 
   It is written alongside the harness, kept current with it, and linked from
   `docs/context-map.md`. The harness does not ship without it.
+
+## Build status
+
+The proof of concept builds the harness, the updater and the gate. What it does not yet build is
+tracked here against the step that must not happen without it. A binding condition listed here is
+not refused; it is scheduled, and the step waits for it.
+
+- **M0, before any image is promoted from the branch** (that freezes the updater in every image
+  and saved template that pins it): the ceiling and its deferral; the 30-minute backstop and the
+  per-minute log line on the updater's own downloads; worker mode; the identity asset and the
+  match that skips the download; `SKIP_ON` explicit on package fixes (L125); the updater's other
+  environment overrides decided and documented, and the user-install plan refused when it cannot
+  run unprivileged; per-release matrix cells for a new image (SSH and entrypoint launch), opted
+  out, and as a serverless worker with its first-boot time reported; a one-off scripted run,
+  recorded here, of GitHub unreachable, GitHub up with the package index down, a short ceiling
+  that defers, and a throttled download; a live run of the final code on the support floor, in
+  entrypoint mode, and through a user's own install and approval.
+- **M1, before merge** (a merge that raises `VERSION` publishes the first gated release): the
+  repository settings the gate depends on (immutable releases, a read-only default token, rulesets
+  on all tags and on `portal-deny`, main protected) and the two environments (QA secrets; the
+  release, with its first-promotion reviewer); the asset checked against the digest the platform
+  reports, not the release notes; actions pinned by digest; the matrix's unauthenticated-access
+  check made strict; the remaining opt-out cells (the flag, and each opt-out alongside a pin, in
+  every launch mode); "current" resolved at run time and every vintage pinned and confirmed; the
+  deny and one-tree checks at image promotion; demote rehearsed and safe with any tag; the
+  emergency override; announcements and alerts; the canary; the guide to writing a fix; this ADR
+  accepted.
+- **M2, before the first package fix or supervisor action ships:** a hard deadline on the
+  stage-65 hook, the dpkg repair at the start of every run, uv's checksum named in its row,
+  supervisor results recorded, and a faster way to pull a package row that misbehaves upstream.
+- **Before a second fix lands:** the retire and supersede refusals in the release workflow.
 
 ## Consequences
 
