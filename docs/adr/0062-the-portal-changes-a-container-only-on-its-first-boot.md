@@ -455,7 +455,7 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
        stage 05. Image-specific first-boot scripts, such as the `99-package-install.sh` that
        several engine images ship, stay at stage 25, after the environment is set up.
        Serverless workers still skip the vast-cli update.
-     - **A generous ceiling that defers, never drops.** Delivering a release's fixes matters more
+     - **A generous ceiling, then what is left is the owner's.** Delivering a release's fixes matters more
        than a fast first boot, so the boot waits for the lookup, the downloads (the release, its
        missing dependencies, a package fix's packages) and the installs. It says so in the
        container log: before the lookup, when it installs, when a fix updates packages, and every
@@ -472,11 +472,14 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
        because the baked portal on the new dependencies is a pairing nobody tested; its `VERSION`
        is written last, so an install cut off part-way still reads as the old version.
 
-       When the ceiling is reached, the update is deferred, not dropped. Before the install, the
-       boot carries on with the baked portal and the next start runs the update once more. During
-       a fix's downloads, the fix is recorded as deferred and the next start finishes it once, by
-       the same path as an interrupted first boot. A second deferral is final, as a second
-       interruption is. *Rejected:* a default cap of 120 seconds, which the live test showed a Node
+       When the ceiling is reached, the update stops there and the boot carries on. No later start
+       tries again: by then the user has had the container, and it is theirs (Decision 1). Before
+       the install, the baked portal stays, and the log says the release was not delivered and how
+       to install it (`update-portal`). During a fix's downloads, the fix is recorded as waiting
+       for approval and the release is held as a user's own install is: `portal-fixes status`
+       lists what is waiting and `portal-fixes apply` applies it on the owner's say-so.
+       *Rejected:* deferring the update to the next start, which changes a container after its
+       user has had it (recorded and withdrawn on 2026-11-06); a default cap of 120 seconds, which the live test showed a Node
        download alone can exceed on a slow host, leaving the fix failed for good; no ceiling at
        all, whose worst case on a slow but live connection is hours; a lower per-attempt backstop
        alone, still unbounded in total; and running the rest after services start on new images,
@@ -489,8 +492,8 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
        `update-portal` installed at that first boot, recorded before any file moves. So an
        opt-out, an already-current portal, a skipped pin, a failed lookup or an expired cap (when a
        template sets one) means
-       no fixes run, and the image keeps the fixes it baked. The one exception is finishing a
-       first-boot run of an installed release that a stop cut off.
+       no fixes run, and the image keeps the fixes it baked. The one exception is finishing, once,
+       a first-boot run that a stop cut off before any service started.
      - **How a fix changes a later stage.** Stages are sourced into the boot shell, and the harness
        is a separate process. So a fix changes a later stage by editing that stage's file, or a
        file the stage reads, before the shell reaches it. Each stage file is read only when it
@@ -722,7 +725,7 @@ hook to the start of the boot and bring serverless inside the channel (Decision 
 
 These hold for every fix delivered through this channel. If one is refused, the decision is void.
 
-- **The harness runs once per portal install, finishing an interrupted first boot once.**
+- **The harness runs once per portal install, and what a first boot does not finish is the owner's.**
   - **Every portal carries its own identity.** `portal-aio/MANIFEST` is a committed file that
     lists every shipped file under `portal-aio/` with its sha256, apart from `VERSION`, which
     bakes and updaters rewrite. CI fails any change that leaves it out of date. Its own sha256 is
@@ -739,16 +742,24 @@ These hold for every fix delivered through this channel. If one is refused, the 
   - The marker records that a run has started before its first fix runs, and each fix's result is
     written as soon as that fix finishes, so a run cut off part-way leaves an exact record of what
     finished.
-  - **An interrupted first boot is finished once.** A stop or a preemption during first boot, or
-    during the detached run that follows it, would otherwise lose a security update for good. So
-    on the next start, the fixes of that first-boot install that have no final record run once
-    more: slow ones detached again, as before. This is safe because every action checks its own
-    state first and reports "already applied" or "already patched". If dpkg was interrupted
-    mid-install by our own run, its configuration is finished (`dpkg --configure -a`) before
-    anything else, or every later `apt-get` refuses. A lock stops a resumed run overlapping one
-    that is still alive. If the first boot is cut off a second time, the unfinished fixes are
-    recorded as "interrupted twice", once, and not retried. A user's own install is not resumed; its
-    fixes stay pending for `portal-fixes apply`.
+  - **What a stop or a preemption during first boot leaves.** It depends on whether any service
+    had started, because once one has, the user may have used the container.
+    - **New images: finished once.** Their first-boot block runs before any service starts, so a
+      cut there is still first boot. On the next start, the fixes of that first-boot install that
+      have no final record run once more. This is safe because every action checks its own state
+      first and reports "already applied" or "already patched". If dpkg was interrupted
+      mid-install by our own run, its configuration is finished (`dpkg --configure -a`) before
+      anything else, or every later `apt-get` refuses. A lock stops a resumed run overlapping one
+      that is still alive. If the first boot is cut off a second time, the unfinished fixes are
+      recorded as "interrupted twice", once, and not retried.
+    - **Older images: left for the owner.** Their fixes run at stage 65 and in the detached run
+      that follows, while services are up. The next start applies nothing: it records the
+      unfinished fixes as waiting and holds the release for approval, as a user's own install is,
+      and `portal-fixes apply` finishes them on the owner's say-so. An apt install of ours cut off
+      part-way leaves dpkg half-configured until then; apt names the repair
+      (`dpkg --configure -a`) to anyone who runs it.
+
+    A user's own install is not resumed; its fixes stay pending for `portal-fixes apply`.
   - A fix that ran to completion and failed is not retried on a later boot.
   - The behaviour is verified on the support floor vintage before the harness ships.
   - `mptcp_off` comes under this rule.
@@ -922,7 +933,7 @@ These hold for every fix delivered through this channel. If one is refused, the 
   or more than an absolute limit; the measurement varies more between hosts than a release
   changes it, and worker mode and the identity skip already remove most of the cost.
 - **The network failures and the ceiling are tested once per updater, not per release.** GitHub
-  unreachable, GitHub up with the package index down, a short ceiling that defers, and a
+  unreachable, GitHub up with the package index down, a short ceiling, and a
   throttled connection with a stalled download each run once as a scripted live test before an
   image carrying the updater is promoted, and the result is recorded in the build status below.
   Each must fall back to the baked portal, or finish, and the boot must carry on. These cases test
@@ -973,16 +984,17 @@ The proof of concept builds the harness, the updater and the gate. What it does 
 tracked here against the step that must not happen without it. A binding condition listed here is
 not refused; it is scheduled, and the step waits for it.
 
-- **M0, before any image is promoted from the branch** (that freezes the updater in every image
-  and saved template that pins it): the ceiling and its deferral; the 30-minute backstop and the
-  per-minute log line on the updater's own downloads; worker mode; the identity asset and the
-  match that skips the download; `SKIP_ON` explicit on package fixes (L125); the updater's other
-  environment overrides decided and documented, and the user-install plan refused when it cannot
-  run unprivileged; per-release matrix cells for a new image (SSH and entrypoint launch), opted
-  out, and as a serverless worker with its first-boot time reported; a one-off scripted run,
-  recorded here, of GitHub unreachable, GitHub up with the package index down, a short ceiling
-  that defers, and a throttled download; a live run of the final code on the support floor, in
-  entrypoint mode, and through a user's own install and approval.
+- **M0, before any image is promoted from the branch** (that freezes the updater in every image and
+  saved template that pins it): the ceiling, and what is left handed to the owner; the 30-minute
+  backstop and the per-minute log line on the updater's own downloads; worker mode; the identity
+  asset and the match that skips the download; `SKIP_ON` explicit on package fixes (L125); the
+  updater's other environment overrides decided and documented, and the user-install plan refused
+  when it cannot run unprivileged; per-release matrix cells for a new image (SSH and entrypoint
+  launch), opted out, and as a serverless worker with its first-boot time reported; a one-off
+  scripted run, recorded here, of GitHub unreachable, GitHub up with the package index down, a
+  short ceiling that leaves the rest to the owner, and a throttled download; a live run of the
+  final code on the support floor, in entrypoint mode, and through a user's own install and
+  approval.
 - **M1, before merge** (a merge that raises `VERSION` publishes the first gated release): the
   repository settings the gate depends on (immutable releases, a read-only default token, rulesets
   on all tags and on `portal-deny`, main protected) and the two environments (QA secrets; the
