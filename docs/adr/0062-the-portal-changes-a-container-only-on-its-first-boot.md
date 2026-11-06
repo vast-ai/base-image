@@ -833,9 +833,12 @@ These hold for every fix delivered through this channel. If one is refused, the 
     release through the frozen updater and checks that Caddy is wrapped and listens as plain
     TCP. "Not ours" is never a passing outcome for a fix on the portal's own binaries.
 
-  There is no shell action, no command built at run time, and no download action other than
-  package updates. A fix runs a program only as a named command, and updates packages only
-  through the package update action (Decision 3), both enforced by lint rule L123.
+  There is no shell action, no command built from anything but the fix's own source, and no
+  download action other than package updates. A fix runs a program only as a named command, and
+  updates packages only through the package update action (Decision 3), both enforced by lint rule
+  L123. The package action itself calls nvm, which is a shell function, through two fixed scripts
+  in the harness's source; the Node version and paths reach them as arguments, never as script
+  text.
 
 - **The registry is an explicit list that every tarball overwrites.** It is never a directory glob,
   because unpacking never deletes, and stale modules would otherwise run.
