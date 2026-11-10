@@ -221,3 +221,98 @@ def test_env_float_defensive(monkeypatch):
     assert _env_float("QA_TEST_X", 1.0) == 0.0     # clamped to >= 0
     monkeypatch.setenv("QA_TEST_X", "2.5")
     assert _env_float("QA_TEST_X", 1.0) == 2.5
+
+
+# ---------------------------------------------------------------- --min-inet / --min-reliability
+
+import sys
+
+import test_template as tt
+
+
+def test_offer_floors_only_tighten():
+    base = {"inet_down": {"gte": 500}, "reliability2": {"gte": 0.95, "lte": 1.0}}
+    out = tt.apply_offer_floors(base, min_inet=800, min_reliability=0.9)
+    assert out["inet_down"] == {"gte": 800}                         # raised
+    assert out["reliability2"] == {"gte": 0.95, "lte": 1.0}         # template's higher floor kept
+    assert base == {"inet_down": {"gte": 500}, "reliability2": {"gte": 0.95, "lte": 1.0}}
+
+
+def test_offer_floors_are_added_when_the_template_has_none():
+    assert tt.apply_offer_floors({}, min_inet=300, min_reliability=0.97) == {
+        "inet_down": {"gte": 300}, "reliability2": {"gte": 0.97}}
+
+
+def test_no_floor_options_leave_the_filters_exactly_as_they_were():
+    base = {"verified": {"eq": True}, "inet_down": {"gte": 500}}
+    assert tt.apply_offer_floors(base) == base
+
+
+@pytest.mark.parametrize("flag,value", [("--min-inet", "0"), ("--min-inet", "nan"),
+                                        ("--min-reliability", "1.5"),
+                                        ("--min-reliability", "-0.1")])
+def test_a_bad_floor_is_a_usage_error(monkeypatch, flag, value):
+    monkeypatch.setattr(sys, "argv", ["test_template.py", "abc123", flag, value])
+    with pytest.raises(SystemExit) as e:
+        tt.parse_args()
+    assert e.value.code == tt.EXIT_CONFIG_ERROR
+
+
+class _SearchAPI:
+    """Just enough of VastAPI for main() to reach the offer search on --dry-run."""
+    searched = []
+
+    def __init__(self, *a, **k):
+        pass
+
+    def get_template(self, h):
+        return {"image": "vastai/base-image:v1", "env": "",
+                "extra_filters": json.dumps({"inet_down": {"gte": 500},
+                                             "reliability2": {"gte": 0.95}}),
+                "recommended_disk_space": 40}
+
+    def search_offers(self, filters):
+        _SearchAPI.searched.append(filters)
+        return {"offers": [{"id": 1, "gpu_name": "RTX A4000", "num_gpus": 1,
+                            "gpu_total_ram": 16384, "gpu_ram": 16384, "compute_cap": 860,
+                            "dph_total": 0.2, "inet_down": 900, "inet_up": 900}]}
+
+    def __getattr__(self, name):                    # anything else main() asks for
+        return lambda *a, **k: {}
+
+
+def _dry_run(monkeypatch, *extra):
+    _SearchAPI.searched = []
+    monkeypatch.setattr(sys, "stderr", sys.stderr)             # main() wraps it; restore after
+    monkeypatch.setattr(tt, "VastAPI", _SearchAPI)
+    monkeypatch.setattr(sys, "argv", ["test_template.py", "abc123", "--api-key", "k",
+                                      "--dry-run", *extra])
+    tt.main()
+    return _SearchAPI.searched
+
+
+def test_without_the_options_the_search_is_unchanged(monkeypatch):
+    (filters,) = _dry_run(monkeypatch)
+    assert filters["inet_down"] == {"gte": 500} and filters["reliability2"] == {"gte": 0.95}
+
+
+def test_the_options_reach_the_launchers_own_search(monkeypatch):
+    (filters,) = _dry_run(monkeypatch, "--min-inet", "1000", "--min-reliability", "0.99")
+    assert filters["inet_down"] == {"gte": 1000} and filters["reliability2"] == {"gte": 0.99}
+
+
+def test_offer_warns_that_the_templates_filters_are_bypassed(monkeypatch, capsys):
+    searched = _dry_run(monkeypatch, "--offer", "4242")
+    assert searched == []
+    err = capsys.readouterr().err
+    assert "WARNING: --offer 4242 skips the offer search" in err and "not applied" in err
+
+
+def test_main_leaves_no_atexit_handler_in_the_pytest_process(monkeypatch, _no_atexit_handlers_leak):
+    """The guard for conftest's atexit fixture: a dry run registers its handlers, and
+    none reaches the real atexit (whose count would otherwise grow)."""
+    import atexit
+    before = atexit._ncallbacks()
+    _dry_run(monkeypatch)
+    assert atexit._ncallbacks() == before
+    assert any(getattr(fn, "__name__", "") == "_finish_proof" for fn in _no_atexit_handlers_leak)

@@ -219,3 +219,97 @@ def test_a_reason_with_shell_metacharacters_survives_the_output_file(capsys, tmp
     assert res["verdict"] == PASS
     assert "(" in res["reason"] and ")" in res["reason"], (
         "the very payload that broke bash must still round-trip intact")
+
+
+# --- external results (ADR 0059), behind an explicit opt-in ----------------
+
+def _with_external(*results):
+    raw = raw_pass()
+    raw["external_checks"] = [dict(name=n, state=s, advisory=True) for n, s in results]
+    return raw
+
+
+EVERY_STATE = _with_external(("external/capabilities", "info"),
+                             ("external/chat-inference", "failed"),
+                             ("contract/identity", "error"),
+                             ("external/rerank", "skipped"),
+                             ("contract/error-unknown-model", "deviation"))
+
+
+def test_without_the_opt_in_external_results_never_change_the_verdict():
+    """Today's verdicts, pinned: failed and error external results are advisory."""
+    assert classify(EXIT_PASSED, EVERY_STATE, GPU_TRIO)[0] == PASS
+    assert classify(EXIT_PASSED, EVERY_STATE, GPU_TRIO) == classify(EXIT_PASSED, raw_pass(), GPU_TRIO)
+
+
+def test_without_the_opt_in_the_cli_verdict_is_unchanged(tmp_path):
+    p = tmp_path / "raw.json"
+    p.write_text(json.dumps(EVERY_STATE))
+    gho = tmp_path / "out"
+    main(["--exit-code", "0", "--raw", str(p), "--require-tests", " ".join(GPU_TRIO),
+          "--github-output", str(gho)])
+    assert "verdict=pass" in gho.read_text()
+
+
+@pytest.mark.parametrize("state,verdict", [
+    ("passed", PASS), ("failed", BLOCK), ("error", BLOCK), ("skipped", PASS),
+    ("deviation", PASS), ("info", PASS), ("advisory", PASS), ("weird", BLOCK)])
+def test_with_the_opt_in_each_state_maps(state, verdict):
+    v, reason = classify(EXIT_PASSED, _with_external(("external/chat-inference", state)),
+                         GPU_TRIO, external=True)
+    assert v == verdict, reason
+
+
+def test_skips_and_deviations_are_listed_not_hidden():
+    v, reason = classify(EXIT_PASSED, _with_external(("external/rerank", "skipped"),
+                                                     ("contract/error-unknown-model", "deviation"),
+                                                     ("external/chat-inference", "passed")),
+                         GPU_TRIO, external=True)
+    assert v == PASS
+    assert "not checked: external/rerank=skipped" in reason
+    assert "documented deviations: contract/error-unknown-model" in reason
+
+
+def test_a_required_external_check_that_is_absent_blocks():
+    """Declared but unchecked is never a pass."""
+    v, reason = classify(EXIT_PASSED, _with_external(("external/chat-inference", "passed")),
+                         GPU_TRIO, external=True, require_external=["contract/identity"])
+    assert v == BLOCK and "required external checks absent: contract/identity" in reason
+
+
+@pytest.mark.parametrize("state", ["skipped", "deviation", "info"])
+def test_a_required_external_check_must_have_passed(state):
+    v, reason = classify(EXIT_PASSED, _with_external(("contract/identity", state)),
+                         GPU_TRIO, external=True, require_external=["contract/identity"])
+    assert v == BLOCK and "not passed" in reason
+
+
+def test_a_required_external_check_that_passed_passes():
+    v, reason = classify(EXIT_PASSED, _with_external(("contract/identity", "passed")),
+                         GPU_TRIO, external=True, require_external=["contract/identity"])
+    assert v == PASS and "1 external check(s) passed" in reason
+
+
+def test_the_opt_in_never_turns_an_in_image_block_into_a_pass():
+    raw = _with_external(("external/chat-inference", "passed"))
+    raw["tests"][0]["state"] = "failed"
+    assert classify(EXIT_PASSED, raw, GPU_TRIO, external=True)[0] == BLOCK
+    assert classify(EXIT_FAILED, raw, GPU_TRIO, external=True)[0] == BLOCK
+
+
+def test_the_cli_opt_in(tmp_path):
+    p = tmp_path / "raw.json"
+    p.write_text(json.dumps(_with_external(("external/chat-inference", "passed"))))
+    gho = tmp_path / "out"
+    main(["--exit-code", "0", "--raw", str(p), "--external-verdict",
+          "--require-external", "external/chat-inference contract/identity",
+          "--github-output", str(gho)])
+    out = gho.read_text()
+    assert "verdict=block" in out and "contract/identity" in out
+
+
+def test_require_external_without_the_opt_in_is_refused(tmp_path):
+    p = tmp_path / "raw.json"
+    p.write_text(json.dumps(raw_pass()))
+    with pytest.raises(SystemExit):
+        main(["--exit-code", "0", "--raw", str(p), "--require-external", "contract/identity"])

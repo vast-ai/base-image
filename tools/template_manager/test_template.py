@@ -4,9 +4,11 @@
 import argparse
 import atexit
 import errno
+import ipaddress
 import json
 import os
 import random
+import re
 import signal
 import sys
 import threading
@@ -15,6 +17,43 @@ import types
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# external_checks.py sits next to this script. Running the script puts this directory
+# on sys.path; loading the file by path (as some tests do) does not, so fall back to
+# loading the sibling by path rather than breaking those callers.
+try:
+    from external_checks import (CHAT_CHECK, KNOWN_CAPABILITIES, parse_capabilities,
+                                 run_external_checks)
+except ImportError:  # loaded by path from elsewhere
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "external_checks", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "external_checks.py"))
+    _ec = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_ec)
+    CHAT_CHECK, KNOWN_CAPABILITIES, parse_capabilities, run_external_checks = (
+        _ec.CHAT_CHECK, _ec.KNOWN_CAPABILITIES, _ec.parse_capabilities,
+        _ec.run_external_checks)
+
+try:
+    from remote import RemoteSession
+except ImportError:  # loaded by path from elsewhere
+    import importlib.util as _ilu
+    _rspec = _ilu.spec_from_file_location(
+        "remote", os.path.join(os.path.dirname(os.path.abspath(__file__)), "remote.py"))
+    _rmod = _ilu.module_from_spec(_rspec)
+    _rspec.loader.exec_module(_rmod)
+    RemoteSession = _rmod.RemoteSession
+
+try:
+    from proof import ProofRecorder
+except ImportError:  # loaded by path from elsewhere
+    import importlib.util as _ilu
+    _pspec = _ilu.spec_from_file_location(
+        "proof", os.path.join(os.path.dirname(os.path.abspath(__file__)), "proof.py"))
+    _pmod = _ilu.module_from_spec(_pspec)
+    _pspec.loader.exec_module(_pmod)
+    ProofRecorder = _pmod.ProofRecorder
 
 API_BASE = "https://console.vast.ai"
 
@@ -93,6 +132,8 @@ EXIT_INTERRUPTED = 130    # state "interrupted"   — SIGINT/SIGTERM
 BAD_INSTANCE_EXIT_CODE = EXIT_BAD_INSTANCE  # back-compat alias
 
 _RAW_MODE = False  # set from args.raw in main(); read by emit_outcome()
+_PROOF = None      # the run's ProofRecorder (proof.py); emit_outcome records into it
+DEFAULT_PROOF_DIR = "qa-proofs"
 
 
 def emit_outcome(state, code, **extra):
@@ -103,6 +144,8 @@ def emit_outcome(state, code, **extra):
     Used for the pre-test terminal paths; the post-test path emits the richer
     result JSON inline and exits with the mapped code.
     """
+    if _PROOF is not None:
+        _PROOF.set_outcome(state, code, extra.get("reason", ""))
     if _RAW_MODE:
         print(json.dumps({"state": state, "exit_code": code, **extra}))
     sys.exit(code)
@@ -255,7 +298,8 @@ class LogPanel:
         \r\n line endings) is stripped and treated as a normal line.
         """
         # Strip trailing \r (CRLF artifact), then check for mid-line \r
-        line = line.rstrip("\r")
+        # Redact the plain line, before any escape sequence is put around it.
+        line = redact_ips(line.rstrip("\r"))
         is_cr = "\r" in line
         if self.active:
             if is_cr:
@@ -288,6 +332,8 @@ class LogPanel:
         line = line.rstrip("\r")
         if "\r" in line:
             line = line.rsplit("\r", 1)[-1]
+        # Redact the plain line and source, before any escape sequence decorates them.
+        line, src = redact_ips(line), redact_ips(src)
         prefix = f"\033[36m{src}\033[2m " if src else ""
         formatted = f"{prefix}{line}"
         if self.active:
@@ -550,6 +596,53 @@ def _bad_status_reason(status_msg):
     return None
 
 
+def test_server_endpoint(full):
+    """(test_url, auth_token) from a full instance record, or (None, None) while its
+    public IP or the test server's port mapping is not published. auth_token is the
+    instance's jupyter_token (Bearer auth for the test server), or None."""
+    if not full or not full.get("public_ipaddr"):
+        return None, None
+    test_port = None
+    for key, mappings in (full.get("ports") or {}).items():
+        if key.startswith(str(TEST_SERVER_PORT)):
+            if isinstance(mappings, list) and mappings:
+                test_port = mappings[0].get("HostPort")
+            break
+    if not test_port:
+        return None, None
+    return f"http://{full['public_ipaddr']}:{test_port}", full.get("jupyter_token")
+
+
+def attach_instance(api, instance_id, template_hash, log):
+    """(instance_id, test_url, auth_token, machine_id) for an instance that is
+    ALREADY running (--instance), or (None, reason). Nothing is launched, and the
+    caller never hands this instance to teardown.
+
+    The template still comes from the positional hash, because the env and the
+    checks are built from it. When the instance record names the template it was
+    created from, the two must match; when it does not, that is said, not assumed.
+    """
+    full = api.get_instance(instance_id, safe=True)
+    if not full:
+        return None, f"instance {instance_id} not found on this account"
+    status = full.get("actual_status")
+    if status != "running":
+        return None, f"instance {instance_id} is {status or 'not running'}, not running"
+    recorded = full.get("template_hash_id")
+    if recorded and recorded != template_hash:
+        return None, (f"instance {instance_id} was created from template {recorded}, "
+                      f"not {template_hash}")
+    if not recorded:
+        log(f"  Instance {instance_id} does not record its template: checking it "
+            f"against {template_hash} as given")
+    test_url, token = test_server_endpoint(full)
+    if not test_url:
+        return None, f"instance {instance_id} publishes no test server port"
+    log(f"Using running instance {instance_id} ({test_url.split('//', 1)[1]}); "
+        f"it is never stopped or destroyed by this run")
+    return (instance_id, test_url, token, full.get("machine_id")), None
+
+
 def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
     """Poll instance until running with ports available.
 
@@ -612,22 +705,12 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
             # Now — and only now — pull the full record (one heavy list call per
             # instance, not one per tick) for the Docker port mapping + public IP.
             full = api.get_instance(instance_id, safe=True)
-            if full and full.get("public_ipaddr"):
-                ports = full.get("ports", {})
-                test_port = None
-                for key, mappings in (ports or {}).items():
-                    if key.startswith(str(TEST_SERVER_PORT)):
-                        if isinstance(mappings, list) and mappings:
-                            test_port = mappings[0].get("HostPort")
-                        break
-
-                if test_port:
-                    host = full["public_ipaddr"]
-                    token = full.get("jupyter_token")
-                    # Clear status line and print final
-                    print(f"\r\033[KInstance {instance_id} running ({host}:{test_port})",
-                          file=sys.stderr)
-                    return f"http://{host}:{test_port}", token
+            test_url, token = test_server_endpoint(full)
+            if test_url:
+                # Clear status line and print final
+                print(f"\r\033[KInstance {instance_id} running "
+                      f"({test_url.split('//', 1)[1]})", file=sys.stderr)
+                return test_url, token
             # running but ports/IP not published yet (or a transient list blip) —
             # keep polling; ticks stay cheap (by-id) until the mapping appears.
 
@@ -1010,6 +1093,26 @@ def apply_vram_ceiling(filters, multiplier):
     return filters
 
 
+def apply_offer_floors(filters, min_inet=None, min_reliability=None):
+    """Raise the search's `inet_down` (Mbps) and `reliability2` floors to the given
+    minimums. A floor only ever tightens: a template's higher `gte` is kept, and
+    other bounds on the field (an `lte`) are left alone. With neither given the
+    filters are returned unchanged, so the offers chosen are the same as without
+    the options."""
+    out = dict(filters)
+    for field, floor in (("inet_down", min_inet), ("reliability2", min_reliability)):
+        if floor is None:
+            continue
+        spec = dict(out.get(field) or {}) if isinstance(out.get(field), dict) else {}
+        try:
+            current = float(spec["gte"]) if "gte" in spec else None
+        except (TypeError, ValueError):
+            current = None
+        spec["gte"] = floor if current is None else max(current, floor)
+        out[field] = spec
+    return out
+
+
 def make_offer_sort_key(required_total_mb, required_per_gpu_mb, required_compute_cap=None,
                         disk_gb=None):
     """Build an ascending sort key for offers (ADR 0005: test the smallest viable box).
@@ -1255,8 +1358,8 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
     # live on 2026-08-19, run 32236327488.
     machine_blacklist = set(exclude_machines or ())
     if machine_blacklist:
-        log(f"Excluding {len(machine_blacklist)} machine(s) that already failed: "
-            f"{sorted(machine_blacklist)}")
+        # The count only: machine ids are not printed (the run log is public).
+        log(f"Excluding {len(machine_blacklist)} machine(s) that already failed")
     attempts = 0
     last_error = ""
 
@@ -1275,7 +1378,7 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
             continue
         machine_id = offer.get("machine_id")
         if machine_id is not None and machine_id in machine_blacklist:
-            log(f"Skipping offer {offer_id} — machine {machine_id} already blacklisted")
+            log(f"Skipping offer {offer_id} — its machine already failed this cell")
             continue
         attempts += 1
         log(f"[Attempt {attempts}/{max_attempts}] Launching offer {offer_id} "
@@ -1338,6 +1441,137 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
     return None
 
 
+# ── IP redaction ─────────────────────────────────────────────────────
+# Nothing this tool shows carries an IP address: provider hosts are not ours to
+# publish, and QA output lands in public CI logs. Loopback and unspecified addresses
+# identify nothing and stay readable (engine logs are full of 127.0.0.1:18000).
+# Candidates are validated with ipaddress, so timestamps (11:51:05) are left alone.
+# The false-positive policy is fail-safe: a bare four-part dotted number that is a
+# valid address (`==1.2.3.4`) is redacted even if it was a version; one glued to a
+# word (`v1.2.3.4`) or with a fifth part (`1.2.3.4.5`) is not.
+REDACTED_IP = "[redacted-ip]"
+_IP_CANDIDATE = re.compile(
+    # IPv4, which may be followed by :port; or IPv6 (bracketed or bare).
+    r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)"
+    r"|(?<![\w.:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w.:])")
+
+
+def _redact_match(m):
+    text = m.group(0)
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return text
+    return text if (ip.is_loopback or ip.is_unspecified) else REDACTED_IP
+
+
+# Terminal escape sequences: CSI (`\x1b[2m`) and two-byte escapes. Their final letter
+# would otherwise glue onto an address (`\x1b[2m203.0.113.5` reads as `m203...`), so
+# the text between escapes is redacted piece by piece. An OSC payload (a window
+# title) is text, and is redacted like any other.
+_ANSI = re.compile(r"(\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_]))")
+
+
+def redact_ips(text):
+    """Replace every non-loopback IPv4/IPv6 address in text, including one directly
+    before or after a terminal escape sequence."""
+    if not text:
+        return text
+    if "\x1b" not in text:
+        return _IP_CANDIDATE.sub(_redact_match, text)
+    return "".join(part if i % 2 else _IP_CANDIDATE.sub(_redact_match, part)
+                   for i, part in enumerate(_ANSI.split(text)))
+
+
+class RedactingStream:
+    """A text stream that redacts IPs on the way out; everything else is delegated
+    (isatty and fileno keep the split-screen log panel working).
+
+    Line-buffered: text is held until a newline or flush(), then redacted and
+    written. So an address is redacted however many write() calls built its line,
+    as long as no flush() falls inside it. Every partial-line write in this tool is
+    followed by a flush (progress dots, the panel's cursor moves), so what is shown,
+    and when, is unchanged."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._pending = ""
+
+    def write(self, s):
+        self._pending += s
+        head, sep, self._pending = self._pending.rpartition("\n")
+        if sep:
+            self._stream.write(redact_ips(head + sep))
+        return len(s)
+
+    def flush(self):
+        if self._pending:
+            pending, self._pending = self._pending, ""
+            self._stream.write(redact_ips(pending))
+        return self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _redact_doc(value):
+    """Every string in a JSON-shaped document — values and keys — redacted."""
+    if isinstance(value, str):
+        return redact_ips(value)
+    if isinstance(value, dict):
+        return {redact_ips(k) if isinstance(k, str) else k: _redact_doc(v)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_doc(v) for v in value]
+    return value
+
+
+def redacted_raw_json(raw_output):
+    """--raw JSON with IPs redacted everywhere except the top-level `ssh` field: that
+    field is read by the QA-fix loop to log in to a held (--keep) box, and CI never
+    keeps one.
+
+    The document is redacted string by string, before serialization: in serialized
+    text an escape glues onto an address (`\n203.0.113.5` reads as `n203...`) and
+    would hide it."""
+    out = dict(raw_output)
+    ssh = out.pop("ssh", None)
+    out = _redact_doc(out)
+    if ssh is not None:
+        out["ssh"] = ssh
+    return json.dumps(out)
+
+
+# The engine log each image writes, by image repository. Every engine's supervisor
+# wrapper writes /var/log/portal/<program>.log (utils/logging.sh). The runner tails
+# files only and waits for a path that does not exist yet.
+ENGINE_LOGS = {
+    "vastai/vllm": ("/var/log/portal/vllm.log",),
+    "vastai/vllm-omni": ("/var/log/portal/vllm-omni.log",),
+    "vastai/sglang": ("/var/log/portal/sglang.log",),
+    "vastai/llama-cpp": ("/var/log/portal/llama.log",),
+    "vastai/comfy": ("/var/log/portal/comfyui.log", "/var/log/portal/api-wrapper.log"),
+}
+
+
+def select_logs(explicit, no_logs, image):
+    """(paths to stream, a note for the run header).
+
+    --no-logs streams nothing; an explicit --log wins; otherwise the engine log for
+    the template's image, so a plain `test_template.py <hash>` shows the engine.
+    """
+    if no_logs:
+        return [], "logs off (--no-logs)"
+    if explicit:
+        return list(explicit), "logs: " + ", ".join(explicit) + " (--log)"
+    repo = str(image or "").split(":", 1)[0]
+    paths = ENGINE_LOGS.get(repo)
+    if not paths:
+        return [], (f"no default engine log for image {repo or '?'}; "
+                    f"use --log PATH to stream one")
+    return list(paths), "logs: " + ", ".join(paths) + f" (engine log for {repo})"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Launch a Vast.ai instance from a template and stream test results."
@@ -1345,6 +1579,12 @@ def parse_args():
     parser.add_argument("template_hash", help="Vast template hash to test")
     parser.add_argument("--api-key", metavar="KEY", help="Vast API key (default: $VAST_API_KEY)")
     parser.add_argument("--offer", type=int, metavar="ID", help="Use specific offer ID (skip search)")
+    parser.add_argument("--instance", type=int, metavar="ID",
+                        help="Run the checks against this ALREADY-RUNNING instance instead of "
+                             "launching one: no offer search, no launch, and the instance is "
+                             "never stopped or destroyed (implies --keep; --destroy and "
+                             "--offer are refused). The template hash must be the one the "
+                             "instance was created from.")
     parser.add_argument("--exclude-machine", type=int, action="append", default=[],
                         metavar="ID", dest="exclude_machines",
                         help="Never draw this machine (repeatable). The caller's retry loop "
@@ -1364,6 +1604,12 @@ def parse_args():
                              "reaper can positively identify QA-owned instances.")
     parser.add_argument("--max-price", type=_positive_price, metavar="PRICE",
                         help="Max $/hr filter (a positive, finite amount)")
+    parser.add_argument("--min-inet", type=_positive_number, metavar="MBPS", default=None,
+                        help="Minimum download bandwidth (inet_down, Mbps) for the offer "
+                             "search; raises the template's floor, never lowers it")
+    parser.add_argument("--min-reliability", type=_reliability, metavar="R", default=None,
+                        help="Minimum host reliability (reliability2, 0-1] for the offer "
+                             "search; raises the template's floor, never lowers it")
     parser.add_argument("--disk", type=float, metavar="GB", help="Override template's recommended_disk")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TEST_TIMEOUT, metavar="SECS",
                         help=f"Max wait for tests to complete (default: {DEFAULT_TEST_TIMEOUT})")
@@ -1379,7 +1625,22 @@ def parse_args():
     parser.add_argument("--raw", action="store_true",
                         help="Output final JSON result to stdout (streaming output goes to stderr)")
     parser.add_argument("--log", metavar="PATH", action="append", default=[],
-                        help="Tail a log file on the instance (repeatable, e.g. --log /var/log/portal --log /var/log/vllm)")
+                        help="Tail a log file on the instance (repeatable). Default: the "
+                             "engine log for the template's image, e.g. "
+                             "/var/log/portal/vllm.log")
+    parser.add_argument("--proof-dir", metavar="DIR", default=DEFAULT_PROOF_DIR,
+                        help="Where each run's proof directory is written (default: "
+                             f"./{DEFAULT_PROOF_DIR}/). Every run that resolves a template "
+                             "leaves one, on every exit path: proof.json, summary.md and "
+                             "the streamed logs, with no host data (ADR 0059, D10)")
+    parser.add_argument("--no-logs", action="store_true",
+                        help="Do not stream any instance log")
+    parser.add_argument("--capabilities", metavar="LIST", default=None, type=_capabilities_arg,
+                        help="Override the capabilities the external checks verify, as "
+                             "comma-separated names (chat, completions, embeddings, "
+                             "transcriptions, speech, comfyui-workflows, ...). By default "
+                             "they come from the template's OPENAI_ROUTES, a ComfyUI image, "
+                             "or pyworker's default (completions, chat) (ADR 0059).")
     parser.add_argument("--env", metavar="KEY=VAL", action="append", default=[],
                         help="Set instance env var (repeatable). Timeout overrides: "
                              "PROV_TIMEOUT, VLLM_HEALTH_TIMEOUT, INSTANCE_TEST_DEFAULT_TIMEOUT")
@@ -1391,7 +1652,17 @@ def parse_args():
     # the verdict tool maps to BLOCK, which is exactly right for "our harness is
     # wrong". Latent until the gate began passing --exclude-machine.
     try:
-        return parser.parse_args()
+        args = parser.parse_args()
+        if args.instance:
+            # The instance was not made by this run, so this run never ends it.
+            if args.destroy:
+                parser.error("--instance never stops or destroys the instance it is "
+                             "given: drop --destroy")
+            if args.offer:
+                parser.error("--instance runs against an existing instance: --offer "
+                             "(which launches one) cannot be combined with it")
+            args.keep = True
+        return args
     except SystemExit as e:
         if e.code in (None, 0):
             raise                      # --help and friends
@@ -1449,8 +1720,50 @@ def _positive_price(value):
         raise argparse.ArgumentTypeError(f"must be a positive, finite $/hr amount: {value!r}")
     return price
 
+def _positive_number(value):
+    """argparse type: a positive, finite number."""
+    import math
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}")
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive, finite number: {value!r}")
+    return number
+
+
+def _reliability(value):
+    """argparse type for --min-reliability: Vast's reliability2 score, in (0, 1]."""
+    number = _positive_number(value)
+    if number > 1:
+        raise argparse.ArgumentTypeError(f"must be in (0, 1]: {value!r}")
+    return number
+
+
+def _capabilities_arg(value):
+    """argparse type for --capabilities: every name must be a known capability.
+
+    An unknown name (a typo) would otherwise be found only after an instance was
+    rented and the run had finished; refusing it here makes it a usage error at the
+    door, which parse_args() turns into config_error before anything is launched.
+    The comma string is returned unchanged: run_external_checks parses it again.
+    """
+    caps, unknown = parse_capabilities(value)
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown capabilit{'y' if len(unknown) == 1 else 'ies'} {', '.join(unknown)}; "
+            f"valid: {', '.join(sorted(KNOWN_CAPABILITIES))}")
+    if not caps:
+        raise argparse.ArgumentTypeError("no capability named")
+    return value
+
+
 def main():
-    global _RAW_MODE
+    global _RAW_MODE, _PROOF
+    # Everything shown on stderr — launcher messages, test output, streamed engine
+    # logs — goes through IP redaction. stdout carries only the --raw JSON, which is
+    # redacted separately (redacted_raw_json) so a held box's ssh coords survive.
+    sys.stderr = RedactingStream(sys.stderr)
     args = parse_args()
     _RAW_MODE = args.raw
     api_key = args.api_key or os.environ.get("VAST_API_KEY")
@@ -1461,6 +1774,19 @@ def main():
     # All human-readable output goes to stderr so stdout is clean for --raw JSON
     def log(msg="", **kwargs):
         print(msg, file=sys.stderr, **kwargs)
+
+    # The run's proof (ADR 0059, D10). Its writer is registered with atexit BEFORE
+    # teardown, so it runs AFTER teardown on every exit path (atexit is LIFO) and the
+    # proof path is the launcher's last line. Nothing is written before begin().
+    _PROOF = ProofRecorder(args.proof_dir, sys.argv[1:], redact_ips)
+    _PROOF.add_secret(api_key)
+
+    def _finish_proof():
+        if _PROOF.outcome is None and args.dry_run:
+            _PROOF.set_outcome("dry_run", 0)
+        _PROOF.write(log)
+        sys.stderr.flush()
+    atexit.register(_finish_proof)
 
     api = VastAPI(api_key)
     # Mutable state shared with signal handler, monitor thread, and the
@@ -1475,10 +1801,16 @@ def main():
 
     # 1. Fetch template
     template = api.get_template(args.template_hash)
+    args.log, logs_note = select_logs(args.log, args.no_logs, (template or {}).get("image"))
     image = template.get("image", "")
     tag = template.get("tag") or template.get("default_tag") or ""
     image_full = f"{image}:{tag}" if tag else image
     name = template.get("name", args.template_hash)
+    _PROOF.begin(args.template_hash, template, image_full, args.env,
+                 {"instance": args.instance, "offer": args.offer, "keep": args.keep})
+    _PROOF.instance_seen(args.instance)
+    for hid in (args.offer, *args.exclude_machines):
+        _PROOF.add_host_id(hid)
 
     # Validate image — only vastai/ and robatvastai/ images have the test suite
     ALLOWED_PREFIXES = ("vastai/", "robatvastai/")
@@ -1507,6 +1839,7 @@ def main():
     log(f"Template: {name} (hash: {args.template_hash})")
     log(f"Image: {image_full}")
     log(f"Disk: {disk} GB")
+    log(logs_note.capitalize() if logs_note.startswith("logs") else logs_note)
 
     # 2. Build instance env overrides.  With template_hash_id, the server
     # uses the template's full config; we only send our additions.
@@ -1580,10 +1913,19 @@ def main():
 
     # 3. Find candidate offers.  When --offer is given, skip search and use
     # a single-element candidate list with only one allowed attempt.
-    if args.offer:
+    if args.instance:
+        candidate_offers, max_attempts = [], 0      # nothing is searched or launched
+        if args.dry_run:
+            log(f"Would run the checks against instance {args.instance}")
+            return
+    elif args.offer:
         candidate_offers = [{"id": args.offer}]
         max_attempts = 1
         log(f"Using offer {args.offer}")
+        print(f"WARNING: --offer {args.offer} skips the offer search: the template's "
+              f"filters (VRAM, compute_cap, reliability, bandwidth, arch) and "
+              f"--gpu/--max-price/--min-inet/--min-reliability are not applied",
+              file=sys.stderr)
         if args.dry_run:
             return
     else:
@@ -1608,6 +1950,7 @@ def main():
         # Bound the VRAM search above the declared floor (don't test a small
         # claim on a huge box). Templates with an explicit lte are left alone.
         filters = apply_vram_ceiling(filters, VRAM_CEILING_MULTIPLIER)
+        filters = apply_offer_floors(filters, args.min_inet, args.min_reliability)
 
         log(f"Filters: {format_filters(filters)}")
 
@@ -1666,7 +2009,12 @@ def main():
             payload["label"] = args.label
         return payload
 
+    for o in candidate_offers:
+        _PROOF.add_host_id(o.get("id"))
+        _PROOF.add_host_id(o.get("machine_id"))
+
     def _track_instance(new_id):
+        _PROOF.instance_created(new_id)      # learns the id and C.<id> at creation
         ctx.instance_id = new_id
         # Machine marker: a box now exists and is BILLING, before any verdict. `imagegen qa`
         # streams stderr and writes a provisional teardown ledger the instant it sees this,
@@ -1674,15 +2022,34 @@ def main():
         # unrecorded box — the recovery no longer depends on instance_id reaching --raw.
         print(f"QA-INSTANCE-CREATED {new_id}", file=sys.stderr, flush=True)
 
-    launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
-                               max_attempts, _track_instance, log,
-                               server_probe_timeout=server_probe_timeout,
-                               exclude_machines=args.exclude_machines)
+    if args.instance:
+        # --instance: attach, never launch. ctx.instance_id is NOT set, so no
+        # teardown path (normal, error, signal, atexit) can stop or destroy it.
+        launch, why = attach_instance(api, args.instance, args.template_hash, log)
+        if launch is None:
+            log(f"--instance: {why}")
+            emit_outcome("config_error", EXIT_CONFIG_ERROR, reason=f"--instance: {why}")
+        if not probe_test_server(launch[1], launch[2], server_timeout=server_probe_timeout,
+                                 log=log):
+            emit_outcome("bad_instance", EXIT_BAD_INSTANCE,
+                         reason=f"--instance {args.instance}: test server unreachable")
+    else:
+        launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
+                                   max_attempts, _track_instance, log,
+                                   server_probe_timeout=server_probe_timeout,
+                                   exclude_machines=args.exclude_machines)
     if launch is None:
         log("Could not launch a usable instance on any candidate offer")
         emit_outcome("bad_instance", EXIT_BAD_INSTANCE, reason="exhausted launch attempts")
 
     instance_id, test_url, auth_token, machine_id = launch
+    _PROOF.instance_seen(instance_id)
+    _PROOF.add_host_id(machine_id)
+    _PROOF.add_secret(auth_token)
+    try:
+        _PROOF.set_hardware(api.get_instance(instance_id, safe=True) or {})
+    except Exception:  # noqa: BLE001 — descriptive only; never costs the run
+        pass
 
     # 6. Monitor instance health in background.
     # Detects if instance goes non-running, disappears, or enters a terminal state.
@@ -1769,6 +2136,7 @@ def main():
         if event.get("_event") == "output":
             line = event.get("_data", "")
             panel.write_output(line)
+            _PROOF.add_test_output(line)
             stripped = line.strip()
             # Track current test name from runner's "── Running: base/XX ──" header
             tracker.feed(stripped)
@@ -1777,8 +2145,10 @@ def main():
             if "line" in event:
                 panel.write_log(event["line"], src=event.get("src", ""),
                                overwrite=event.get("overwrite", False))
+                _PROOF.add_log_line(event.get("src", ""), event["line"])
             else:
                 panel.write_log(event.get("_data", ""))
+                _PROOF.add_log_line("", event.get("_data", ""))
         elif event.get("_event") == "result":
             got_result_event = True
             final_result = event
@@ -1846,11 +2216,34 @@ def main():
     failed_names = [t["name"] for t in stream_tests if t["state"] == "failed"]
     log(f"\n{format_summary(final_state, stream_counts, elapsed, failed_names)}")
 
+    # External checks (ADR 0059, D1): inference through the public endpoint, run
+    # alongside the in-image check. ADVISORY: reported, never folded into
+    # final_state or the exit code, until the two verdicts are seen to agree.
+    external = []
+    if not _get_dead_reason() and final_state in ("passed", "failed") and instance_id:
+        try:
+            inst = api.get_instance(instance_id, safe=True) or {}
+            external = run_external_checks(
+                inst, template, (final_result or {}).get("tests") or stream_tests,
+                env_overrides=args.env, token=auth_token,
+                capabilities=args.capabilities,
+                # Checks that need the box (prompt-roundtrip) run there over SSH, with a
+                # key attached to this instance only and removed straight after.
+                remote_factory=lambda: RemoteSession(api, instance_id))
+        except Exception as e:  # noqa: BLE001 — advisory: never break the run
+            external = [{"name": CHAT_CHECK, "state": "error", "advisory": True,
+                         "detail": f"{type(e).__name__}: {e}"}]
+        for c in external:
+            log(f"  [advisory] {c['name']}: {c['state']} — {c.get('detail', '')}")
+
     # The verdict CI acts on: passed only counts as a FULL pass if the runner
     # actually delivered a result event; a "passed" with got_result_event False
     # means we inferred state from a post-test poll and should be treated with
     # suspicion (ADR 0005 condition 2 — auto-promote requires both).
     exit_state, exit_code = classify_outcome(final_state)
+    _PROOF.set_results(tests=(final_result or {}).get("tests") or stream_tests,
+                       external=external)
+    _PROOF.set_outcome(exit_state, exit_code)
 
     # --raw: emit clean JSON to stdout for programmatic consumers
     if args.raw:
@@ -1864,6 +2257,9 @@ def main():
         # bad": a gap means some per-test states were backfilled from the status
         # JSON rather than observed live.
         raw_output["stream_had_gap"] = stream_had_gap
+        # Advisory checks run from outside the instance (ADR 0059). Kept out of
+        # "tests" so require_tests and qa_verdict are unchanged while they are compared.
+        raw_output["external_checks"] = external
         # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
         # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
         if machine_id is not None:
@@ -1872,7 +2268,7 @@ def main():
             raw_output["instance_id"] = instance_id
             if args.keep:
                 raw_output["ssh"] = ssh_endpoint(api, instance_id)
-        print(json.dumps(raw_output))
+        print(redacted_raw_json(raw_output))
 
     # 7. Cleanup — destroy if instance died or connection was lost
     if _get_dead_reason() or final_state == "error":

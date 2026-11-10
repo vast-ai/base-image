@@ -91,3 +91,19 @@ jobs:
           if [ -n "${{ inputs.max_age_min }}" ]; then AGE="--max-age-min ${{ inputs.max_age_min }}"; fi
           python tools/template_manager/reap_orphans.py \
             --label "${IMAGEGEN_LABEL}" $AGE $DESTROY
+
+      - name: Reap orphaned Template QA instances (label-only)
+        if: steps.guard.outputs.run == 'true'
+        env:
+          # template-qa.yml tests a PUBLISHED template, whose image is not in the
+          # staging namespace, so (as for imagegen qa) the image prefix must not be
+          # ANDed. The base-image-qa-template label is created ONLY by
+          # template-qa.yml; the age threshold still protects healthy in-flight boxes.
+          TEMPLATE_QA_LABEL: base-image-qa-template
+        run: |
+          DESTROY="--destroy"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DESTROY=""; fi
+          AGE=""
+          if [ -n "${{ inputs.max_age_min }}" ]; then AGE="--max-age-min ${{ inputs.max_age_min }}"; fi
+          python tools/template_manager/reap_orphans.py \
+            --label "${TEMPLATE_QA_LABEL}" $AGE $DESTROY

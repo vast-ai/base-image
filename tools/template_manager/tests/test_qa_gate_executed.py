@@ -56,41 +56,39 @@ def _run(script: str, workdir: Path, env: dict, stub_curl: bool = False):
 
 # ---- the exoneration branch (ADR 0029 binding condition 3) -------------------
 
-REPORT = "Report suspect hosts"
+REPORT = "Report discarded attempts"
 
 
-def _report(workdir, suspects: str, final_code: str):
+def _report(workdir, discarded: str, final_code: str):
     script = wfexec.step_script(QA_GATE, "qa", REPORT)
-    return _run(script, workdir, {"SUSPECTS": suspects, "FINAL_CODE": final_code,
+    return _run(script, workdir, {"DISCARDED": discarded, "FINAL_CODE": final_code,
                                   "QA_REPO": "pytorch", "QA_TAG": "qa-1-auto-cu126"})
 
 
-def test_a_cell_that_passed_after_a_redraw_names_de_verification_candidates(tmp_path):
-    r, summary, _ = _report(tmp_path, "35974|48034321|1|pytorch.d/40-nccl-init", "0")
+def test_a_cell_that_passed_after_a_redraw_reports_the_host_at_fault(tmp_path):
+    r, summary, _ = _report(tmp_path, "1|48034321|RTX 4090|1|pytorch.d/40-nccl-init", "0")
     assert r.returncode == 0, r.stderr
-    assert "De-verification candidates" in summary
-    assert "NOT exonerated" not in summary
-    assert "35974" in summary
+    assert "host at fault" in summary and "NOT exonerated" not in summary
+    assert "| 1 | `48034321` | RTX 4090 | 1 | pytorch.d/40-nccl-init |" in summary
 
 
-def test_a_cell_that_NEVER_passed_must_not_name_de_verification_candidates(tmp_path):
+def test_a_cell_that_NEVER_passed_must_not_blame_the_hosts(tmp_path):
     """The image is still a live suspect, so these hosts are not evidence.
     Inverting the branch would tell an operator to remove healthy third-party
     machines from the marketplace for a defect that is ours."""
-    r, summary, _ = _report(tmp_path, "35974|48034321|1|pytorch.d/40-nccl-init", "1")
+    r, summary, _ = _report(tmp_path, "1|48034321|RTX 4090|1|pytorch.d/40-nccl-init", "1")
     assert r.returncode == 0, r.stderr
     assert "NOT exonerated" in summary, (
         "a cell that never passed must not present its hosts as at fault")
-    assert "De-verification candidates" not in summary
+    assert "host at fault" not in summary
 
 
-def test_an_unknown_machine_is_not_offered_for_de_verification(tmp_path):
-    """exit 3 (bad_instance) is emitted before any machine is bound, so the
-    record is `unknown`. Presenting that as a candidate is noise at best and a
-    wrong accusation at worst."""
-    r, summary, _ = _report(tmp_path, "unknown|unknown|3|none", "0")
+def test_an_attempt_with_no_instance_is_not_tabled(tmp_path):
+    """exit 3 (bad_instance) can be emitted before any instance is bound, so the
+    record is `unknown`: a row that names nothing to look up."""
+    r, summary, _ = _report(tmp_path, "1|unknown|unknown|3|none", "0")
     assert r.returncode == 0, r.stderr
-    assert "`unknown`" not in summary, "an unknown machine id must not be tabled"
+    assert "`unknown`" not in summary
 
 
 def test_every_recorded_attempt_appears_not_just_the_last(tmp_path):
@@ -98,10 +96,10 @@ def test_every_recorded_attempt_appears_not_just_the_last(tmp_path):
     DIFFERENT machines failing the same image is the pattern that says the image
     is at fault — which is the whole mitigation ADR 0029 rests on."""
     r, summary, _ = _report(
-        tmp_path, "35974|1|1|a\n136916|2|1|a\n140359|3|1|a", "0")
+        tmp_path, "1|50000001|A|1|a\n2|50000002|B|1|a\n3|50000003|C|1|a", "0")
     assert r.returncode == 0, r.stderr
-    for m in ("35974", "136916", "140359"):
-        assert m in summary, f"machine {m} missing from the report"
+    for i in ("50000001", "50000002", "50000003"):
+        assert i in summary, f"instance {i} missing from the report"
 
 
 # ---- the Slack header clamp -------------------------------------------------
@@ -194,6 +192,20 @@ def _loop_script(retries="2"):
     return script
 
 
+# The loop writes these fixed paths. Redirected into tmp_path so two runs of this
+# suite at once (parallel CI, two shells) cannot read each other's raw payload or
+# suspect list — a run once saw a machine id from another test's data.
+_LOOP_TMP_FILES = ("/tmp/qa-suspect-hosts.txt", "/tmp/qa-discarded-attempts.txt",
+                   "/tmp/qa-raw-last.json", "/tmp/qa-raw.json", "/tmp/qa-proofs")
+
+
+def _isolated(script, tmp_path):
+    for path in _LOOP_TMP_FILES:
+        script = script.replace(path, str(tmp_path / path.rsplit("/", 1)[1]))
+    assert "/tmp/qa-" not in script, "a /tmp path in the loop is not isolated"
+    return script
+
+
 RED = ('{"state":"failed","got_result_event":true,"machine_id":%d,'
        '"tests":[{"name":"base/60-gpu-cuda","state":"failed"}],'
        '"stream_counts":{"passed":1,"failed":1,"skipped":0}}')
@@ -214,8 +226,7 @@ def _run_loop(tmp_path, exit_codes, machines):
         "sys.exit(codes[i])\n")
     # a fresh suspect file per run, as a real runner VM would have
     (tmp_path / "qa-suspect-hosts.txt").write_text("")
-    script = _loop_script().replace("/tmp/qa-suspect-hosts.txt",
-                                    str(tmp_path / "qa-suspect-hosts.txt"))
+    script = _isolated(_loop_script(), tmp_path)
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     # `python` (the workflow calls it unqualified) and `sleep` are externals, and
@@ -321,8 +332,7 @@ def test_a_redraw_is_visible_in_the_job_summary(tmp_path):
         f"print({RED!r} % (35974 + i))\n"
         "sys.exit(1 if i == 0 else 0)\n")
     (tmp_path / "qa-suspect-hosts.txt").write_text("")
-    script = _loop_script().replace("/tmp/qa-suspect-hosts.txt",
-                                    str(tmp_path / "qa-suspect-hosts.txt"))
+    script = _isolated(_loop_script(), tmp_path)
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     (bindir / "python").write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n')
@@ -346,3 +356,66 @@ def test_interrupted_is_never_redrawn(tmp_path):
     assert out["exit_code"] == "130", "a cancellation must not be retried"
     assert out["attempts"] == "1", (
         f"redrew a cancelled run ({out['attempts']} attempts)")
+
+
+# ---- machine ids stay in the job; everything shown names the instance -----------
+
+MACHINES = (135791, 246802)
+INSTANCES = (50000001, 50000002, 50000003)
+
+
+def test_a_redrawn_cell_shows_instances_never_machines_and_still_excludes_them(tmp_path):
+    """Owner ruling: machine ids appear in no job log line, annotation or summary;
+    a run maps an instance to its machine in the backend. The redraw must still keep
+    the next draw off the failed machine."""
+    tm = tmp_path / "tm"
+    tm.mkdir(parents=True, exist_ok=True)
+    (tm / "counter").write_text("0")
+    (tm / "test_template.py").write_text(
+        "import json, os, sys, pathlib\n"
+        f"machines, instances = {list(MACHINES) + [0]!r}, {list(INSTANCES)!r}\n"
+        "c = pathlib.Path(__file__).with_name('counter')\n"
+        "i = int(c.read_text()); c.write_text(str(i + 1))\n"
+        "pathlib.Path(__file__).with_name(f'argv{i}').write_text(json.dumps(sys.argv))\n"
+        "pd = sys.argv[sys.argv.index('--proof-dir') + 1]\n"
+        "d = pathlib.Path(pd) / f'p{i}'; d.mkdir(parents=True, exist_ok=True)\n"
+        "(d / 'proof.json').write_text(json.dumps({'hardware': {'gpu_name': f'GPU-{i}'}}))\n"
+        "os.utime(d, (1e9 + i, 1e9 + i))\n"
+        "ok = i == 2\n"
+        "print(json.dumps({'state': 'passed' if ok else 'failed', 'got_result_event': True,\n"
+        "  'machine_id': machines[i], 'instance_id': instances[i],\n"
+        "  'tests': [{'name': 'base/60-gpu-cuda', 'state': 'passed' if ok else 'failed'}]}))\n"
+        "sys.exit(0 if ok else 1)\n")
+    script = _isolated(_loop_script(), tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "python").write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n')
+    (bindir / "python").chmod(0o755)
+    (bindir / "sleep").write_text('#!/bin/bash\nexit 0\n')
+    (bindir / "sleep").chmod(0o755)
+    r, summary, out = _run(script, tmp_path, {"TM": str(tm), "LOG_PATHS": "", "EXTRA_ENV": "",
+                                              "QA_MAX_PRICE": "1.00", "QA_REPO": "vastai/x",
+                                              "QA_TAG": "t"})
+    assert r.returncode == 0, r.stderr
+    log = r.stdout + r.stderr
+    # The next draws still exclude the failed machines.
+    argv1 = json.loads((tm / "argv1").read_text())
+    argv2 = json.loads((tm / "argv2").read_text())
+    assert argv1[argv1.index("--exclude-machine") + 1] == str(MACHINES[0])
+    assert {argv2[i + 1] for i, a in enumerate(argv2) if a == "--exclude-machine"} == {
+        str(m) for m in MACHINES}
+    # The loop's log and annotations name instances and GPUs, never machines.
+    assert "::warning::attempt 1 failed on instance 50000001 (GPU-0;" in log
+    assert "DISCARDED-ATTEMPT attempt=2 instance=50000002 gpu=GPU-1" in log
+    assert "excluding 2 already-failed machine(s) from this draw" in log
+    # Then the report step, fed the loop's own output.
+    discarded = out.split("discarded-attempts<<DISCARDED_EOF\n", 1)[1].split("DISCARDED_EOF", 1)[0]
+    rr, report, _ = _report(tmp_path, discarded.strip(), "0")
+    assert rr.returncode == 0, rr.stderr
+    assert "| 1 | `50000001` | GPU-0 |" in report and "| 2 | `50000002` | GPU-1 |" in report
+    for text, where in ((log, "job log"), (summary, "loop summary"), (report, "report summary"),
+                        (rr.stdout + rr.stderr, "report log"), (discarded, "step output")):
+        for m in MACHINES:
+            assert str(m) not in text, f"machine {m} shown in the {where}"
+    # The job's own record keeps them for the exclusion.
+    assert str(MACHINES[0]) in (tmp_path / "qa-suspect-hosts.txt").read_text()

@@ -5,6 +5,8 @@ __pycache__
 
 # template_manager run logs (may reference account ids; never commit)
 tools/template_manager/output/
+# test_template.py run proofs (--proof-dir default: ./qa-proofs/), anywhere in the tree
+qa-proofs/
 .qa/
 .venv/
 

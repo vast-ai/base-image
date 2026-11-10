@@ -217,3 +217,24 @@ def test_interrupted_is_not_redrawn():
     g = _gate()
     assert '[ "$CODE" -ne 130 ]' in g, (
         "exit 130 (interrupted) is redrawn; a cancellation must not be retried")
+
+
+def test_the_launcher_never_prints_a_machine_id():
+    """Owner ruling: machine ids appear in no run output. The exclusion is still
+    applied, and the log says how many machines were excluded, not which."""
+    api, lines = _FakeApi(), []
+    tt.launch_with_retry(api, _offers(), lambda o: {}, 16, 5, lambda _i: None,
+                         lambda msg="", **k: lines.append(str(msg)),
+                         exclude_machines=[35974])
+    text = "\n".join(lines)
+    assert "Excluding 1 machine(s) that already failed" in text
+    assert "35974" not in text and "37922" not in text, text
+    assert 101 not in api.attempted and 102 not in api.attempted
+
+
+def test_the_proof_argv_never_records_an_excluded_machine():
+    import proof as P
+    rec = P.ProofRecorder("unused", ["abc", "--exclude-machine", "123", "--exclude-machine=456"],
+                          tt.redact_ips, env={})
+    assert rec._argv_clean() == ["abc", "--exclude-machine", P.REDACTED_ID,
+                                 f"--exclude-machine={P.REDACTED_ID}"]

@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114",
+    "L110", "L111", "L112", "L113", "L114", "L119",
 })
 
 
@@ -4469,6 +4469,17 @@ def test_L097_a_required_test_with_no_file_fires(tmp_path):
     assert _codes(repo, "L097")
 
 
+@pytest.mark.parametrize("name", ["external/chat-inference", "contract/identity",
+                                  "external/undeclared/chat"])
+def test_L097_an_external_check_in_require_tests_is_refused_and_says_why(tmp_path, name):
+    """External checks are launcher results (raw `external_checks`), never in-image
+    tests, so require_tests can never be satisfied by one: a gate naming one would
+    block on a rented GPU, silently from the config's point of view."""
+    repo = _wf_requiring(tmp_path, f"x.d/10-x-serving {name}", "x.d", ["10-x-serving.sh"])
+    msgs = [f.msg for f in _codes(repo, "L097")]
+    assert len(msgs) == 1 and "an external check" in msgs[0] and name in msgs[0]
+
+
 def test_L097_a_required_test_that_ships_is_clean(tmp_path):
     repo = _wf_requiring(tmp_path, "x.d/20-serverless-pyworker", "x.d",
                          ["20-serverless-pyworker.sh"])
@@ -5806,3 +5817,54 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     tpl.write_text(text.replace(anchor, extra + anchor, 1))
     codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
     assert codes == (["L106"] if fires else []), codes
+
+
+# ---- L119: bind-loopback is a POSITIVE predicate in every engine contract suite ----
+#
+# SGLang's and llama.cpp's check_bind listed the wildcard spellings and passed
+# everything else, so a bind on the docker bridge address read as loopback. vLLM's
+# names the good addresses instead. The mutation tests corrupt the REAL shipped file.
+
+_REAL_REPO = Path(__file__).resolve().parents[3]
+_SGLANG_CC = "external/sglang/ROOT/opt/instance-tools/tests/sglang.d/contract_check.py"
+_POSITIVE = "    exposed = [a for a in bound if not _is_loopback(a)]\n"
+_OLD_WILDCARD_FORM = '    exposed = [a for a in bound if a.startswith(("0.0.0.0:", "*:", "[::]:"))]\n'
+
+
+def _engine_suite(tmp_path, text):
+    f = tmp_path / _SGLANG_CC
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text)
+    return tmp_path
+
+
+def _real_sglang():
+    return (_REAL_REPO / _SGLANG_CC).read_text()
+
+
+def test_L119_the_shipped_suites_are_clean():
+    assert not _codes(_REAL_REPO, "L119")
+
+
+def test_L119_mutation_the_old_wildcard_only_form_fires(tmp_path):
+    real = _real_sglang()
+    assert _POSITIVE in real
+    repo = _engine_suite(tmp_path, real.replace(_POSITIVE, _OLD_WILDCARD_FORM))
+    assert [f.msg for f in _codes(repo, "L119")][0].startswith("check_bind enumerates wildcard")
+
+
+def test_L119_mutation_a_predicate_defined_but_not_used_fires(tmp_path):
+    real = _real_sglang()
+    repo = _engine_suite(tmp_path, real.replace(_POSITIVE, "    exposed = []\n"))
+    assert _codes(repo, "L119")
+
+
+def test_L119_mutation_a_suite_without_check_bind_fires(tmp_path):
+    real = _real_sglang()
+    repo = _engine_suite(tmp_path, real.replace("def check_bind(", "def check_bind_gone("))
+    assert any("no check_bind" in f.msg for f in _codes(repo, "L119"))
+
+
+def test_L119_a_suite_without_the_contract_probe_is_out_of_scope(tmp_path):
+    repo = _engine_suite(tmp_path, "def helper():\n    pass\n")
+    assert not _codes(repo, "L119")

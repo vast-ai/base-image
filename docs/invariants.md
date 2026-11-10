@@ -1441,9 +1441,12 @@ above — and two of those three ran on the same machine, so they had been count
 as independent exhibits. The redraw stands; its evidence base is half what it
 claimed.
 
-Every failed attempt records the `machine_id` it ran on (`SUSPECT-HOST`, and a
-job-summary table), because the instance is destroyed immediately afterwards and
-the evidence is otherwise lost. The table separates the readings deliberately: a
+Every failed attempt records the `machine_id` it ran on in the job's own
+`/tmp/qa-suspect-hosts.txt`, which feeds the next draw's `--exclude-machine`,
+because the instance is destroyed immediately afterwards and the evidence is
+otherwise lost. The machine id is never printed or uploaded: the
+`DISCARDED-ATTEMPT` line and the job-summary table name the attempt, instance, GPU
+and failure. The table separates the readings deliberately: a
 cell that PASSED after a redraw exonerates the image; a cell that never passed
 does not, and de-verifying those hosts would be wrong.
 
@@ -1579,6 +1582,28 @@ Excusing upstream log *noise* is a separate judgement outside L093.
 exclude, so it is left open pending a log excerpt from a live instance rather than
 fixed blind. See ADR 0039. llama.cpp now answers it with a 4xx rather than a 500 (see
 the table above), which may mean it no longer logs an error, but that is unverified.
+
+### An engine's bind-loopback verdict names the good addresses — **GATED (L119)**
+
+Each engine image's in-image contract suite (`<engine>.d/contract_check.py`, run by
+`12-<engine>-contract.sh`) asserts with `ss -tlnH` that the engine's own listener is
+bound to loopback, so that Caddy — which authenticates — is the only thing facing the
+network. The verdict must be the **positive** predicate: `_is_loopback` accepts
+127.0.0.0/8 and `::1`, and `exposed = [a for a in bound if not _is_loopback(a)]`.
+
+SGLang's and llama.cpp's copies used the older form, which listed the wildcard
+spellings (`0.0.0.0:`, `*:`, `[::]:`) and passed everything else. An engine bound to
+the docker bridge address (`172.17.0.2`) — reachable by co-tenant containers, never
+through Caddy — read as `bind-loopback ok`. vLLM and vLLM-Omni already had the positive
+form; all four now share it. No listener on the engine port is an error, not a pass.
+
+The check lives in the contract suite, not in `10-<engine>-serving.sh`: that is where
+every engine has it. L119 fires on an engine contract suite (a `contract_check.py`
+that defines `NO_SUCH_MODEL`) whose `check_bind` is missing, lists wildcards, or does not
+decide with the predicate. Mutation tests: `test_L119_mutation_*` in
+`tools/imagegen/tests/test_linter.py`; the shipped predicate of every engine runs
+against loopback v4/v6, wildcard, bridge and not-listening tables in
+`tools/imagegen/tests/test_bind_loopback.py`.
 
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 

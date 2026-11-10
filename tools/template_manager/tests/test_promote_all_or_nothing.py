@@ -137,9 +137,9 @@ def test_a_flaky_image_defect_can_now_pass_by_luck_AND_IS_RECORDED():
     as a pattern instead of being laundered into a green tick.
     """
     body = QA_GATE.read_text()
-    assert "SUSPECT-HOST" in body and ".machine_id" in body, (
-        "redrawing a red is only defensible if each failed attempt names the "
-        "host it failed on; without that a flaky image defect is invisible")
+    assert "DISCARDED-ATTEMPT" in body and ".machine_id" in body, (
+        "redrawing a red is only defensible if each failed attempt is named (by its "
+        "instance) and its host excluded; without that a flaky image defect is invisible")
     assert "qa-suspect-hosts.txt" in body, (
         "every failed attempt must be kept, not just the last — one machine "
         "failing is a bad host, five different machines failing is the image")

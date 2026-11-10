@@ -339,9 +339,11 @@ jobs:
                 EXCL+=(--exclude-machine "$_m")
               done
             fi
-            [ ${#EXCL[@]} -gt 0 ] && echo "excluding already-failed machines: ${EXCL[*]}"
+            # The count, never the ids: machine ids stay in the job's own files.
+            [ ${#EXCL[@]} -gt 0 ] && echo "excluding $(( ${#EXCL[@]} / 2 )) already-failed machine(s) from this draw"
             python "${TM}/test_template.py" "${{ steps.create.outputs.hash }}" \
               --destroy --raw --force --label "${{ inputs.label }}" \
+              --proof-dir /tmp/qa-proofs \
               --max-price "${QA_MAX_PRICE}" --timeout "${{ inputs.timeout }}" \
               "${EXCL[@]}" \
               "${ARGS[@]}" \
@@ -359,7 +361,12 @@ jobs:
             # qa_verdict.py short-circuits to `inconclusive` — and on the scheduled
             # comfyui/vllm gates `inconclusive` soft-passes and PROMOTES UNGATED.
             _REAL_CODE=$CODE
-            echo "---- attempt ${attempt} verdict ----"; cat /tmp/qa-raw.json || echo "(no --raw output)"
+            # Shown without machine_id (or ssh): the job log is public. The file
+            # itself stays whole — the redraw below reads machine_id from it.
+            echo "---- attempt ${attempt} verdict ----"
+            grep '^{.*}$' /tmp/qa-raw.json 2>/dev/null \
+              | jq -c 'del(.machine_id, .host_id, .ssh, .public_ipaddr, .ssh_host, .ssh_port)' 2>/dev/null \
+              || echo "(no --raw output)"
 
             # DRAW ANOTHER HOST ON ANY FAILURE, AND NAME THE HOST.
             #
@@ -401,9 +408,17 @@ jobs:
               _mid=$(jq -r '.machine_id // empty' /tmp/qa-raw-last.json 2>/dev/null || echo "")
               _iid=$(jq -r '.instance_id // empty' /tmp/qa-raw-last.json 2>/dev/null || echo "")
               _failed_names=$(jq -r '[.tests[]? | select(.state=="failed") | .name] | join(",")' /tmp/qa-raw-last.json 2>/dev/null || echo "")
-              echo "SUSPECT-HOST machine=${_mid:-unknown} instance=${_iid:-unknown} exit=${CODE} failed=${_failed_names:-none}"
+              # The GPU this attempt ran on, from its own proof (the newest one).
+              _proof=$(ls -1dt /tmp/qa-proofs/*/ 2>/dev/null | head -n1 || true)
+              _gpu=$(jq -r '.hardware.gpu_name // empty' "${_proof}proof.json" 2>/dev/null || echo "")
+              # Machine ids stay IN THE JOB: the suspects file feeds --exclude-machine
+              # above and is never printed or uploaded. Everything shown — log,
+              # annotations, summary — names the instance (a run maps an instance to
+              # its machine in the backend).
               echo "${_mid:-unknown}|${_iid:-unknown}|${CODE}|${_failed_names:-none}" >> /tmp/qa-suspect-hosts.txt
-              echo "::warning::cell failed on machine ${_mid:-unknown} (exit ${CODE}, failed: ${_failed_names:-none}) — drawing another host; if a redraw passes, this machine is a de-verification candidate"
+              echo "${attempt}|${_iid:-unknown}|${_gpu:-unknown}|${CODE}|${_failed_names:-none}" >> /tmp/qa-discarded-attempts.txt
+              echo "DISCARDED-ATTEMPT attempt=${attempt} instance=${_iid:-unknown} gpu=${_gpu:-unknown} exit=${CODE} failed=${_failed_names:-none}"
+              echo "::warning::attempt ${attempt} failed on instance ${_iid:-unknown} (${_gpu:-unknown}; exit ${CODE}, failed: ${_failed_names:-none}) — drawing another machine; if a redraw passes, the host was at fault"
               CODE=2      # treat as inconclusive: retry on a fresh offer
               _RETRY_REASON="host"
             fi
@@ -440,22 +455,21 @@ jobs:
             echo "This cell took **${attempt}** attempts (final exit ${_REAL_CODE})." >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::cell needed ${attempt} attempts (final exit ${_REAL_CODE})"
           fi
-          if [ -s /tmp/qa-suspect-hosts.txt ]; then
-            echo "suspect-hosts<<SUSPECT_EOF" >> "$GITHUB_OUTPUT"
-            cat /tmp/qa-suspect-hosts.txt >> "$GITHUB_OUTPUT"
-            echo "SUSPECT_EOF" >> "$GITHUB_OUTPUT"
+          if [ -s /tmp/qa-discarded-attempts.txt ]; then
+            echo "discarded-attempts<<DISCARDED_EOF" >> "$GITHUB_OUTPUT"
+            cat /tmp/qa-discarded-attempts.txt >> "$GITHUB_OUTPUT"
+            echo "DISCARDED_EOF" >> "$GITHUB_OUTPUT"
           fi
 
-      # A machine that failed a cell which then PASSED on another box is the
-      # actionable case: the image is exonerated by the redraw, so the fault is
-      # the host and it should be de-verified. If the cell never passed, the same
-      # machine list is NOT evidence against those hosts — the image is still a
-      # live suspect — so the two are reported differently rather than as one
-      # undifferentiated list.
-      - name: Report suspect hosts
-        if: always() && steps.test.outputs.suspect-hosts != ''
+      # An attempt that failed and was redrawn. If the cell then PASSED on another
+      # box, the image is exonerated and the host was at fault; if it never passed,
+      # the image is still a live suspect — so the two are reported differently
+      # rather than as one undifferentiated list. Rows name the instance (map it to
+      # its machine in the backend), never the machine id: this summary is public.
+      - name: Report discarded attempts
+        if: always() && steps.test.outputs.discarded-attempts != ''
         env:
-          SUSPECTS: ${{ steps.test.outputs.suspect-hosts }}
+          DISCARDED: ${{ steps.test.outputs.discarded-attempts }}
           FINAL_CODE: ${{ steps.test.outputs.exit_code }}
           # Via env:, not spliced into bash. Two reasons, and the second is why
           # the previous version could not be tested at all: a dispatch input is
@@ -467,29 +481,28 @@ jobs:
         run: |
           {
             if [ "${FINAL_CODE}" = "0" ]; then
-              echo "### De-verification candidates — ${QA_REPO} \`${QA_TAG}\`"
+              echo "### Discarded attempts, host at fault — ${QA_REPO} \`${QA_TAG}\`"
               echo ""
-              echo "These machines failed, then the SAME image passed on a fresh draw."
-              echo "The redraw exonerates the image, so the host is the fault:"
+              echo "These attempts failed, then the SAME image passed on a fresh draw."
+              echo "The redraw exonerates the image, so each failed host was at fault:"
             else
-              echo "### Failed hosts (image NOT exonerated) — ${QA_REPO} \`${QA_TAG}\`"
+              echo "### Discarded attempts (image NOT exonerated) — ${QA_REPO} \`${QA_TAG}\`"
               echo ""
-              echo "The cell never passed, so these are NOT de-verification"
-              echo "candidates — the image is still a live suspect:"
+              echo "The cell never passed, so these attempts do not show a host"
+              echo "fault — the image is still a live suspect:"
             fi
             echo ""
-            echo "| machine | instance | exit | failed tests |"
-            echo "|---|---|---|---|"
-            while IFS='|' read -r m i c f; do
-              # Skip rows with no machine. exit 3 (bad_instance) is emitted before
-              # any machine is bound, so it records `unknown` — and presenting
-              # that under "de-verification candidates" is a wrong accusation
-              # with no way to act on it.
-              case "$m" in ''|unknown) continue;; esac
-              echo "| \`$m\` | $i | $c | $f |"
-            done <<< "${SUSPECTS}"
+            echo "| attempt | instance | GPU | exit | failed tests |"
+            echo "|---|---|---|---|---|"
+            while IFS='|' read -r a i g c f; do
+              # Skip rows with no instance. exit 3 (bad_instance) can be emitted
+              # before any instance is bound, so it records `unknown` — a row
+              # that names nothing to look up.
+              case "$i" in ''|unknown) continue;; esac
+              echo "| $a | \`$i\` | $g | $c | $f |"
+            done <<< "${DISCARDED}"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "${SUSPECTS}"
+          echo "${DISCARDED}"
 
       - name: Delete the throwaway template (always)
         if: always() && steps.create.outputs.id != ''
@@ -550,13 +563,65 @@ jobs:
       # `always()` so a BLOCKed cell — the one a human most needs to read — still
       # uploads. The name must be unique per matrix cell; upload-artifact@v4 rejects
       # duplicates within a run.
+      #
+      # The artifact is public: it is a COPY of the payload without machine_id (and
+      # ssh, and any token-named key). The job's own /tmp/qa-raw.json stays whole,
+      # because the loop above reads machine_id from it to keep a redraw off a failed
+      # host. The instance id stays.
+      - name: Prepare verdict evidence for upload (no machine id)
+        if: always() && inputs.evidence_name != '' && steps.guard.outputs.run == 'true'
+        run: python "${TM}/public_evidence.py" /tmp/qa-raw.json /tmp/qa-evidence/qa-raw.json
+
       - name: Upload verdict evidence
         if: always() && inputs.evidence_name != '' && steps.guard.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.evidence_name }}
-          path: /tmp/qa-raw.json
+          path: /tmp/qa-evidence/qa-raw.json
           retention-days: 7
+          if-no-files-found: ignore
+
+      # Every launcher run leaves a proof (ADR 0059, D10): one directory per attempt,
+      # so a cell that redrew uploads every attempt's proof, not only the last. Unlike
+      # the verdict evidence above, this runs for EVERY caller. The name must be
+      # unique per cell and run attempt (upload-artifact@v4 rejects duplicates within a
+      # run): the evidence name or repo+tag, a hash of this cell's inputs, the attempt.
+      - name: Name the test proof artifact
+        id: proofname
+        if: always() && steps.guard.outputs.run == 'true'
+        env:
+          CELL_INPUTS: ${{ toJSON(inputs) }}
+          EVIDENCE: ${{ inputs.evidence_name }}
+          QA_REPO: ${{ inputs.repo }}
+          QA_TAG: ${{ inputs.tag }}
+        run: |
+          base="${EVIDENCE:-${QA_REPO}-${QA_TAG}}"
+          base=$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-80)
+          cell=$(printf '%s' "$CELL_INPUTS" | sha256sum | cut -c1-8)
+          echo "name=qa-proof-${base}-${cell}-attempt${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise and verify the test proofs
+        if: always() && steps.guard.outputs.run == 'true'
+        run: |
+          shopt -s nullglob
+          proofs=(/tmp/qa-proofs/*/)
+          if [ ${#proofs[@]} -eq 0 ]; then
+            echo "::warning::no test proof was written (the launcher never resolved the template)"
+            exit 0
+          fi
+          for d in "${proofs[@]}"; do
+            cat "${d}summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            python "${TM}/verify_proof.py" "$d" || echo "::warning::test proof ${d} does not verify"
+          done
+
+      - name: Upload test proofs
+        if: always() && steps.guard.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.proofname.outputs.name }}
+          path: /tmp/qa-proofs
+          retention-days: 90
           if-no-files-found: ignore
 
   # When an unattended scheduled run soft-passed (promoted UNGATED on an infra-

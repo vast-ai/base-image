@@ -1,0 +1,198 @@
+# Template QA — a one-off live test of ONE published template, dispatched by hand.
+#
+# Runs the launcher's one command (ADR 0059, D9) against a published template hash:
+#   test_template.py <hash> --destroy --proof-dir /tmp/qa-proofs [options]
+# Unlike qa-gate.yml it creates no throwaway template and does not redraw: it is a
+# thin job around one launcher run. The instance is always destroyed. The run leaves
+# a proof (ADR 0059, D10), summarised in the job summary and uploaded as an artifact.
+#
+# Inputs are untrusted text: they reach the scripts only through `env:`, are
+# validated, and are passed to the launcher as one bash-array element each — never
+# interpolated into a script.
+name: Template QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      template_hash:
+        description: "Published template hash (32 lowercase hex characters)"
+        required: true
+        type: string
+      capabilities:
+        description: "Override the capabilities checked (comma-separated, e.g. chat,embeddings); blank = from the template"
+        required: false
+        type: string
+        default: ""
+      gpu:
+        description: "Only draw this GPU model (e.g. RTX 5090); blank = any that fits the template"
+        required: false
+        type: string
+        default: ""
+      min_inet:
+        description: "Minimum download bandwidth in Mbps (--min-inet)"
+        required: false
+        type: string
+        default: "2000"
+      min_reliability:
+        description: "Minimum host reliability, 0-1 (--min-reliability)"
+        required: false
+        type: string
+        default: "0.99"
+      max_price:
+        description: "Max $/hr for the instance (--max-price), the same cap the QA gate applies"
+        required: false
+        type: string
+        default: "2.00"
+      extra_env:
+        description: "Instance env overrides, one KEY=VALUE per line (each becomes --env)"
+        required: false
+        type: string
+        default: ""
+      timeout:
+        description: "Test timeout in seconds (--timeout); blank = the launcher's default"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# Two dispatches of the SAME template queue; different templates run in parallel.
+concurrency:
+  group: template-qa-${{ inputs.template_hash }}
+  cancel-in-progress: false
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    # The same backstop as qa-gate.yml: the launcher's own timeouts sum to ~3h worst
+    # case and it destroys its instance well before this; 240m only catches a hang.
+    timeout-minutes: 240
+    env:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      TM: tools/template_manager
+    steps:
+      - name: Refresh runner CA trust store
+        run: |
+          sudo apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade ca-certificates || true
+          dpkg-query -W ca-certificates
+          for root in emSign_ECC_Root_CA_-_G3 Comodo_AAA_Services_root; do
+            if [ -e "/etc/ssl/certs/${root}.pem" ]; then
+              echo "::error::runner trust store still trusts ${root}"; exit 1
+            fi
+          done
+
+      - uses: actions/checkout@v4
+
+      - name: Require the QA account key
+        run: |
+          if [ -z "${VAST_API_KEY}" ]; then
+            echo "::error::VAST_API_KEY is not set: Template QA cannot rent an instance without the QA account key."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install template_manager deps
+        run: pip install -r "${TM}/requirements.txt"
+
+      # Validation, argument building and the run are one step so the argv the
+      # launcher receives is exactly the one built here (tests execute this step).
+      - name: Run the template test (DESTROY the instance after)
+        id: test
+        env:
+          TEMPLATE_HASH: ${{ inputs.template_hash }}
+          CAPABILITIES: ${{ inputs.capabilities }}
+          GPU: ${{ inputs.gpu }}
+          MIN_INET: ${{ inputs.min_inet }}
+          MIN_RELIABILITY: ${{ inputs.min_reliability }}
+          MAX_PRICE: ${{ inputs.max_price }}
+          EXTRA_ENV: ${{ inputs.extra_env }}
+          TEST_TIMEOUT: ${{ inputs.timeout }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          bad() { echo "::error::$1"; exit 2; }
+          [[ "${TEMPLATE_HASH}" =~ ^[0-9a-f]{32}$ ]] \
+            || bad "template_hash must be 32 lowercase hex characters (a published template hash)"
+          [[ "${CAPABILITIES}" =~ ^[a-z0-9,-]*$ ]] \
+            || bad "capabilities must be comma-separated capability names (e.g. chat,embeddings)"
+          [[ "${GPU}" =~ ^[A-Za-z0-9\ ._-]*$ ]] \
+            || bad "gpu must be a GPU model name (letters, digits, spaces, . _ -)"
+          [[ "${MIN_INET}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || bad "min_inet must be a number of Mbps"
+          [[ "${MIN_RELIABILITY}" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] \
+            || bad "min_reliability must be a number between 0 and 1"
+          [[ "${MAX_PRICE}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || bad "max_price must be a \$/hr amount"
+          [[ "${TEST_TIMEOUT}" =~ ^[0-9]*$ ]] || bad "timeout must be a whole number of seconds"
+
+          # Always --destroy, never kept: a one-off test must not leave a box billing.
+          # The label puts a leaked instance in the reaper's scope (qa-reaper.yml).
+          ARGS=("${TEMPLATE_HASH}" --destroy --label base-image-qa-template
+                --proof-dir /tmp/qa-proofs
+                --min-inet "${MIN_INET}" --min-reliability "${MIN_RELIABILITY}"
+                --max-price "${MAX_PRICE}")
+          [ -n "${CAPABILITIES}" ] && ARGS+=(--capabilities "${CAPABILITIES}")
+          [ -n "${GPU}" ] && ARGS+=(--gpu "${GPU}")
+          [ -n "${TEST_TIMEOUT}" ] && ARGS+=(--timeout "${TEST_TIMEOUT}")
+          while IFS= read -r kv; do
+            _t="${kv#"${kv%%[![:space:]]*}"}"          # lstrip
+            [ -z "$_t" ] && continue                    # blank / whitespace-only
+            [ "${_t:0:1}" = "#" ] && continue           # comment
+            [[ "$_t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || bad "extra_env line is not KEY=VALUE: ${_t%%=*}"
+            ARGS+=(--env "$_t")
+          done <<< "${EXTRA_ENV}"
+          # A secret reaching the instance does not travel through an input (inputs
+          # are plain text in the run's own record); appended from the secret here.
+          [ -n "${HF_TOKEN:-}" ] && ARGS+=(--env "HF_TOKEN=${HF_TOKEN}")
+
+          set +e
+          python "${TM}/test_template.py" "${ARGS[@]}"
+          CODE=$?
+          set -e
+          echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
+          exit "${CODE}"
+
+      - name: Name the test proof artifact
+        id: proofname
+        if: always()
+        env:
+          TEMPLATE_HASH: ${{ inputs.template_hash }}
+        run: |
+          base=$(printf '%s' "${TEMPLATE_HASH}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+          echo "name=template-qa-proof-${base}-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise and verify the test proof
+        if: always()
+        env:
+          TEMPLATE_HASH: ${{ inputs.template_hash }}
+          ARTIFACT: ${{ steps.proofname.outputs.name }}
+        run: |
+          shopt -s nullglob
+          {
+            echo "## Template QA — \`${TEMPLATE_HASH//\`/}\`"
+            echo ""
+            echo "Proof artifact: \`${ARTIFACT}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          proofs=(/tmp/qa-proofs/*/)
+          if [ ${#proofs[@]} -eq 0 ]; then
+            echo "::warning::no test proof was written (the launcher never resolved the template)"
+            echo "No proof was written: the launcher never resolved the template." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for d in "${proofs[@]}"; do
+            cat "${d}summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            python "${TM}/verify_proof.py" "$d" || echo "::warning::test proof ${d} does not verify"
+          done
+
+      - name: Upload test proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.proofname.outputs.name }}
+          path: /tmp/qa-proofs
+          retention-days: 90
+          if-no-files-found: ignore

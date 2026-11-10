@@ -443,13 +443,13 @@ def test_config_error_is_never_retried():
 
 
 def test_the_failing_machine_is_NAMED_before_the_instance_is_destroyed():
-    """A de-verification candidate is only actionable if the machine id is
-    captured at the moment it failed — the instance is destroyed immediately
-    after, and the offer is gone."""
+    """The redraw can only keep off a failed host if its machine id is captured at
+    the moment it failed — the instance is destroyed immediately after, and the
+    offer is gone. The id stays in the job; the log announces the instance."""
     run = _qa_gate_run()
     assert ".machine_id" in run, (
-        "the gate never reads machine_id, so a bad host cannot be identified")
-    assert "SUSPECT-HOST" in run, "the failing host is not announced in the log"
+        "the gate never reads machine_id, so a bad host cannot be excluded")
+    assert "DISCARDED-ATTEMPT" in run, "the failed attempt is not announced in the log"
     assert "qa-suspect-hosts.txt" in run, (
         "suspects must accumulate across attempts, not just the last one")
 
@@ -471,10 +471,10 @@ def test_exoneration_is_distinguished_from_a_still_suspect_image():
                            evidence and must not be de-verified on this basis.
     """
     d = yaml.safe_load(QA_GATE.read_text())
-    step = [s for s in d["jobs"]["qa"]["steps"] if s.get("name") == "Report suspect hosts"]
-    assert step, "no step reports the suspect hosts"
+    step = [s for s in d["jobs"]["qa"]["steps"] if s.get("name") == "Report discarded attempts"]
+    assert step, "no step reports the discarded attempts"
     body = str(step[0].get("run", ""))
-    assert "De-verification candidates" in body and "NOT exonerated" in body, (
+    assert "host at fault" in body and "NOT exonerated" in body, (
         "the report must distinguish a redraw-exonerated image from one that "
         "never passed; otherwise good hosts get de-verified for an image bug")
     assert 'FINAL_CODE' in body, "the distinction must key on the cell's final outcome"

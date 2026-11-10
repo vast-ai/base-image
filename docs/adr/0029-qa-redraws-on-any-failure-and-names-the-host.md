@@ -118,9 +118,13 @@ attempt names the machine it ran on.**
 
 2. **The machine id is captured at the moment of failure.** `test_template.py`
    carries `machine_id` out of the launch loop into `--raw`. The gate appends
-   every failed attempt to `/tmp/qa-suspect-hosts.txt`, prints a `SUSPECT-HOST`
-   line, and renders a job-summary table. Capture must happen there: the instance
-   is destroyed immediately afterwards and the offer is gone.
+   every failed attempt to `/tmp/qa-suspect-hosts.txt`, which feeds the next draw's
+   `--exclude-machine`. Capture must happen there: the instance is destroyed
+   immediately afterwards and the offer is gone. **Amended (owner ruling):** the
+   machine id stays in the job and is never printed or uploaded; the
+   `DISCARDED-ATTEMPT` log line, its annotation and the job-summary table name the
+   attempt, instance, GPU and failure instead, and an instance is mapped to its
+   machine in the backend when needed.
 
 3. **The report distinguishes exoneration from suspicion**, because the same list
    means opposite things:

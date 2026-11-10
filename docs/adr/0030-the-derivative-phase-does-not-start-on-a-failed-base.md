@@ -149,9 +149,10 @@ derivative layer. The redraw does. This trades per-run completeness for cost,
 and is only defensible because the redraw exists.
 
 **Accepted negative.** A chronically flaky base test would stop derivatives
-being exercised at all, quietly. The guard is the suspect-host record and the
-distinct-machine pattern from ADR 0029 — an image failing across many DIFFERENT
-machines is the signal, and it still shows.
+being exercised at all, quietly. The guard is the discarded-attempts record and
+the distinct-machine pattern from ADR 0029 — an image failing across many DIFFERENT
+machines is the signal; the record names each attempt's instance, which maps to its
+machine in the backend.
 
 **Known gap.** The gate keys on the `base/` prefix, not on what a test means. A
 cheap derivative test is blocked by a failed base just as an expensive one is,

@@ -22,6 +22,15 @@ bash for plumbing, Python for structured/tested logic).
 
 Usage:
     qa_verdict.py --exit-code N --raw FILE [--require-tests "a b,c"] [--github-output FILE]
+                  [--external-verdict [--require-external "external/x contract/y"]]
+
+External results (ADR 0059: `external/...`, `contract/...`, in the raw payload's
+`external_checks`) are advisory and do not affect the verdict unless the caller opts
+in with --external-verdict. No gate does yet. With the opt-in: passed passes, failed
+and error block (could not be checked is not a pass), skipped and advisory do not
+block but are listed, deviation does not block and is listed as a documented
+deviation, info is ignored; and a --require-external name that is absent, or present
+but not passed, blocks — declared but unchecked is never a pass.
 
 Exits 0 always — the caller maps verdict -> job outcome, so a verdict is never
 confused with this tool's own failure.
@@ -64,10 +73,63 @@ def parse_required(spec: str | None) -> list[str]:
     return [n for n in spec.replace(",", " ").split() if n]
 
 
-def classify(exit_code: int, raw: dict | None, required: list[str]) -> tuple[str, str]:
+# External result states (ADR 0059) -> how an opted-in verdict treats them.
+EXTERNAL_BLOCKS = ("failed", "error")
+EXTERNAL_LISTED = ("skipped", "advisory")
+EXTERNAL_DEVIATION = "deviation"
+EXTERNAL_IGNORED = ("info",)
+
+
+def classify_external(results, required=()) -> tuple[bool, str]:
+    """(blocks, summary) for the raw payload's `external_checks` under the opt-in.
+
+    failed/error block; skipped/advisory are listed; deviation is listed as a
+    documented deviation; info is ignored; any other state blocks (an unknown state
+    is not a pass). A required name absent, or present but not passed, blocks.
+    """
+    results = [r for r in results or () if isinstance(r, dict)]
+    blocking, listed, deviations, passed = [], [], [], 0
+    for r in results:
+        name, state = r.get("name", "?"), r.get("state")
+        if state == "passed":
+            passed += 1
+        elif state in EXTERNAL_IGNORED:
+            continue
+        elif state == EXTERNAL_DEVIATION:
+            deviations.append(name)
+        elif state in EXTERNAL_LISTED:
+            listed.append(f"{name}={state}")
+        else:                                   # failed, error, or a state we do not know
+            blocking.append(f"{name}={state}")
+    states = {}
+    for r in results:
+        states.setdefault(r.get("name"), []).append(r.get("state"))
+    missing = [n for n in required if n not in states]
+    not_passed = [f"{n}={','.join(map(str, states[n]))}" for n in required
+                  if n in states and any(st != "passed" for st in states[n])]
+    bits = []
+    if blocking:
+        bits.append("external checks did not pass: " + ", ".join(sorted(blocking)))
+    if missing:
+        bits.append("required external checks absent: " + ", ".join(sorted(missing)))
+    if not_passed:
+        bits.append("required external checks not passed: " + ", ".join(sorted(not_passed)))
+    blocks = bool(bits)
+    if listed:
+        bits.append("not checked: " + ", ".join(sorted(listed)))
+    if deviations:
+        bits.append("documented deviations: " + ", ".join(sorted(deviations)))
+    summary = f"{passed} external check(s) passed" + ("; " + "; ".join(bits) if bits else "")
+    return blocks, summary
+
+
+def classify(exit_code: int, raw: dict | None, required: list[str], *,
+             external: bool = False, require_external=()) -> tuple[str, str]:
     """Map (exit code, raw payload, required tests) -> (verdict, reason).
 
     Pure: no I/O, no environment, no policy. Unit-tested against real payload shapes.
+    With `external` off (the default) the raw payload's external_checks never affect
+    the verdict; with it on, see classify_external.
     """
     raw = raw or {}
     state = raw.get("state", "?")
@@ -109,8 +171,14 @@ def classify(exit_code: int, raw: dict | None, required: list[str]) -> tuple[str
                 bits.append("did not pass: " + ", ".join(sorted(not_passed)))
             return BLOCK, "required tests unsatisfied (" + "; ".join(bits) + ")"
 
-    return PASS, f"{state} with a result event" + (
+    reason = f"{state} with a result event" + (
         f"; {len(required)} required test(s) passed" if required else "")
+    if external:
+        blocks, summary = classify_external(raw.get("external_checks"), list(require_external))
+        if blocks:
+            return BLOCK, f"{reason}; {summary}"
+        reason = f"{reason}; {summary}"
+    return PASS, reason
 
 
 def main(argv=None) -> int:
@@ -122,6 +190,12 @@ def main(argv=None) -> int:
                     help="file holding test_template.py --raw output")
     ap.add_argument("--require-tests", default="",
                     help="space/comma-separated test names that must have passed")
+    ap.add_argument("--external-verdict", action="store_true",
+                    help="opt in: let external check results (raw external_checks) affect "
+                         "the verdict. Off by default, so verdicts are unchanged")
+    ap.add_argument("--require-external", default="",
+                    help="with --external-verdict: space/comma-separated external check "
+                         "names that must be present and passed")
     ap.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
                     help="file to append verdict=/reason= to (default: $GITHUB_OUTPUT)")
     args = ap.parse_args(argv)
@@ -152,7 +226,11 @@ def main(argv=None) -> int:
         # Exit 0 with no readable verdict payload is not a pass we can stand behind.
         verdict, reason = BLOCK, "exit 0 but no parseable --raw verdict" + parse_note
     else:
-        verdict, reason = classify(args.exit_code, raw, parse_required(args.require_tests))
+        if args.require_external and not args.external_verdict:
+            ap.error("--require-external needs --external-verdict")
+        verdict, reason = classify(args.exit_code, raw, parse_required(args.require_tests),
+                                   external=args.external_verdict,
+                                   require_external=parse_required(args.require_external))
 
     # Human-readable to stdout (safe to log, never parsed by the shell).
     print(f"{verdict}: {reason}")

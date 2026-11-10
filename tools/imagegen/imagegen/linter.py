@@ -116,6 +116,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L119", ERROR, "Every in-image engine contract suite (a `*.d/contract_check.py` that defines the NO_SUCH_MODEL probe) carries a `check_bind` whose bind-loopback verdict is the POSITIVE predicate: a `_is_loopback` that accepts only 127.0.0.0/8 and ::1, and `exposed = [a for a in bound if not _is_loopback(a)]`. The older form listed the wildcard spellings (`0.0.0.0:`, `*:`, `[::]:`) and passed everything else, so an engine bound to the docker bridge address (172.17.0.2) — reachable by co-tenant containers, never through Caddy's auth — reported bind-loopback ok. Enumerating bad addresses cannot be complete; enumerating good ones can. vLLM and vLLM-Omni had the positive form; SGLang and llama.cpp still had the wildcard list"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
@@ -3605,6 +3606,51 @@ def _contract_probe_suites(repo: Path):
             yield sub, sub.name[:-2], m.group(1)
 
 
+# L119 — bind-loopback is a POSITIVE predicate in every engine contract suite.
+_DEF_CHECK_BIND = re.compile(r"^def check_bind\(.*?(?=^\S)", re.M | re.S)
+_IS_LOOPBACK_DEF = re.compile(r"def _is_loopback\(")
+_EXPOSED_BY_PREDICATE = re.compile(
+    r"\[\s*(\w+)\s+for\s+\1\s+in\s+bound\s+if\s+not\s+_is_loopback\(\s*\1\s*\)\s*\]")
+_WILDCARD_LIST = re.compile(r"""startswith\(\s*\(\s*["']0\.0\.0\.0:""")
+
+
+def _engine_contract_checks(repo: Path):
+    """Every *.d/contract_check.py that defines the NO_SUCH_MODEL probe: the
+    in-image engine contract suites."""
+    roots = [repo / "ROOT/opt/instance-tools/tests"]
+    roots += sorted((repo / "derivatives").rglob("ROOT/opt/instance-tools/tests"))
+    roots += sorted((repo / "external").rglob("ROOT/opt/instance-tools/tests"))
+    for tests in dict.fromkeys(roots):
+        if not tests.is_dir():
+            continue
+        for cc in sorted(tests.glob("*.d/contract_check.py")):
+            text = cc.read_text(encoding="utf-8", errors="replace")
+            if _NO_SUCH_MODEL_DEF.search(text):
+                yield cc, text
+
+
+def check_bind_loopback_is_a_positive_predicate(repo: Path) -> Iterable[Finding]:
+    """L119 — the engine must be bound to loopback; a wildcard list is not that check."""
+    for cc, text in _engine_contract_checks(repo):
+        where = str(cc.relative_to(repo))
+        m = _DEF_CHECK_BIND.search(text + "\n_end_\n")
+        if not m:
+            yield Finding("L119", ERROR, "-", where,
+                          "an engine contract suite with no check_bind: nothing asserts the "
+                          "engine is bound to loopback behind Caddy (L119)")
+            continue
+        body = m.group(0)
+        if _WILDCARD_LIST.search(body):
+            yield Finding("L119", ERROR, "-", where,
+                          "check_bind enumerates wildcard addresses and passes everything "
+                          "else, so a docker-bridge bind (172.17.0.2) reads as loopback — "
+                          "use the positive _is_loopback predicate (L119)")
+        elif not (_IS_LOOPBACK_DEF.search(body) and _EXPOSED_BY_PREDICATE.search(body)):
+            yield Finding("L119", ERROR, "-", where,
+                          "check_bind does not decide with the positive predicate "
+                          "(`exposed = [a for a in bound if not _is_loopback(a)]`) (L119)")
+
+
 def check_probe_artifact_is_excluded_from_its_own_log_scan(repo: Path) -> Iterable[Finding]:
     """L093 — the engine-log scan must exclude the sibling contract probe's sentinel."""
     for sub, engine, sentinel in _contract_probe_suites(repo):
@@ -3988,6 +4034,18 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                                       f"which does not match the `<suite>/<NN>-<name>` "
                                       f"form this check resolves - it is ungated here "
                                       f"and runner.sh will still require it (L097)")
+                    elif tok.startswith(("external/", "contract/")):
+                        # An external check (ADR 0059) is a launcher result, reported
+                        # in the raw JSON's `external_checks`, never in `tests`, which
+                        # is all require_tests and runner.sh read. Naming one here is
+                        # certain to block, and no gate can require one yet: say so.
+                        yield Finding("L097", ERROR, "-", rel,
+                                      f"job `{jid}` requires `{tok}` in `{where}`, an "
+                                      f"external check: those are launcher results "
+                                      f"(raw `external_checks`), never in-image tests, so "
+                                      f"require_tests can never be satisfied by one - "
+                                      f"external checks are required through qa_verdict's "
+                                      f"opt-in, not here (L097)")
                     else:
                         # runner.sh only discovers `base/` and `*.d/` suites and names
                         # each test by its path under them, so a token without that
@@ -4670,6 +4728,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_copyleft_licence_path_resolves,
     check_workflow_if_has_no_folded_comment,
     check_probe_artifact_is_excluded_from_its_own_log_scan,
+    check_bind_loopback_is_a_positive_predicate,
     check_vllm_audio_extra_is_installed,
     check_workflow_required_tests_exist,
     check_qa_selection_is_validated,
