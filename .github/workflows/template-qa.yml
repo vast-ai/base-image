@@ -1,0 +1,63 @@
+# Template QA — placeholder.
+#
+# This file exists on the default branch so the workflow can be dispatched by hand.
+# The workflow itself lives on the branch that carries the template-test work: in
+# "Run workflow", choose that branch under "Use workflow from". Dispatched from this
+# branch it rents nothing and fails, so a run from here is never read as a pass.
+name: Template QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      template_hash:
+        description: "Published template hash (32 lowercase hex characters)"
+        required: true
+        type: string
+      capabilities:
+        description: "Override the capabilities checked (comma-separated, e.g. chat,embeddings); blank = from the template"
+        required: false
+        type: string
+        default: ""
+      gpu:
+        description: "Only draw this GPU model (e.g. RTX 5090); blank = any that fits the template"
+        required: false
+        type: string
+        default: ""
+      min_inet:
+        description: "Minimum download bandwidth in Mbps (--min-inet)"
+        required: false
+        type: string
+        default: "2000"
+      min_reliability:
+        description: "Minimum host reliability, 0-1 (--min-reliability)"
+        required: false
+        type: string
+        default: "0.99"
+      max_price:
+        description: "Max $/hr for the instance (--max-price), the same cap the QA gate applies"
+        required: false
+        type: string
+        default: "2.00"
+      extra_env:
+        description: "Instance env overrides, one KEY=VALUE per line (each becomes --env)"
+        required: false
+        type: string
+        default: ""
+      timeout:
+        description: "Test timeout in seconds (--timeout); blank = the launcher's default"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Placeholder — dispatch this workflow from the branch that carries it
+        run: |
+          echo "::error::Template QA is a placeholder on this branch. Re-run it and choose the template-test branch under 'Use workflow from'."
+          exit 1
