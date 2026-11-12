@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
+ARG PYTORCH_BASE=vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py313-2026-10-23
 FROM ${PYTORCH_BASE}
 
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
@@ -11,12 +11,12 @@ COPY ./ROOT /
 # strips the CUDA math dev headers, so GGML_CUDA needs cuBLAS (cublas/cublasLt) and
 # the CUDA runtime headers (cuda_runtime.h) back before nvcc can compile the .cu files.
 # cuobjdump (not in -mini) is needed by the post-build arch-coverage assertion below.
-ENV UV_TORCH_BACKEND=cu128
+ENV UV_TORCH_BACKEND=cu130
 ARG PYTORCH_BASE
 RUN \
     set -euo pipefail && \
     apt-get update && \
-    apt-get install -y --no-install-recommends "libcublas-dev-12-9" "cuda-cudart-dev-12-9" "cuda-cuobjdump-12-9" && \
+    apt-get install -y --no-install-recommends "libcublas-dev-13-2" "cuda-cudart-dev-13-2" "cuda-cuobjdump-13-2" && \
     ldconfig && \
     rm -rf /var/lib/apt/lists/* && \
     # Make CUDA driver stubs available for linking at build time (no GPU in Docker build)
@@ -34,8 +34,8 @@ RUN \
 # version, because a --depth 1 clone breaks build-info.cmake and llama-server answered
 # `version: 1`.
 #
-# Same artifact family as derivatives/llama-cpp: app-<ref>-linux-x64-cuda12-portable.
-# The CUDA-12 line is the one that matches this image's cu128 torch, and the image is
+# Same artifact family as derivatives/llama-cpp: app-<ref>-linux-x64-cuda13-portable.
+# The CUDA-13 line is the one that matches this image's cu130 torch (ADR 0067), and the image is
 # amd64-only, so there is exactly one asset — no matrix, unlike llama-cpp's two lines.
 #
 # Selection is by NAME and verification is by HASH, exactly as llama-cpp does it. The
@@ -48,7 +48,7 @@ RUN \
 # and a plain `docker build` should fail loudly rather than bake whatever version was
 # current when this file was last edited.
 ARG LLAMA_CPP_VERSION
-ARG LLAMA_BUNDLE=cuda12-portable
+ARG LLAMA_BUNDLE=cuda13-portable
 ENV LLAMA_CPP_RELEASE=${LLAMA_CPP_VERSION}
 RUN \
     set -euo pipefail && \
@@ -235,7 +235,7 @@ RUN \
     # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
     torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
     unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
-    uv pip install --no-cache-dir --torch-backend=cu128 "$unsloth_spec" && \
+    uv pip install --no-cache-dir --torch-backend=cu130 "$unsloth_spec" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
@@ -251,9 +251,9 @@ RUN \
     # could not import ship green, pass QA and fail at export on a rented GPU (L089, ADR 0036).
     /venv/main/bin/python /opt/llama-cpp/convert_hf_to_gguf.py --help >/dev/null || \
         { echo "FATAL: convert_hf_to_gguf.py does not execute under /venv/main — its import closure is incomplete at tag ${LLAMA_CPP_VERSION}, so GGUF export would fail at runtime (ADR 0036, L089)"; exit 1; } && \
-    # Patch install_python_stack.py to use cu128 torch backend instead of auto-detection
+    # Patch install_python_stack.py to use cu130 torch backend instead of auto-detection
     find /venv/main/lib -name 'install_python_stack.py' -path '*/studio/*' \
-        -exec sed -i 's|--torch-backend=auto|--torch-backend=cu128|' {} + && \
+        -exec sed -i 's|--torch-backend=auto|--torch-backend=cu130|' {} + && \
     # Point setup.sh at the VERIFIED bundle. Because this path differs from the canonical
     # install dir, setup.sh symlinks the canonical dir at it and sets
     # _NEED_LLAMA_SOURCE_BUILD=false + _SKIP_PREBUILT_INSTALL=true, so it neither

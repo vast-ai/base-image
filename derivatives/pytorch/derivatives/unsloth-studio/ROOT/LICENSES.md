@@ -25,7 +25,7 @@ as the canonical source for the license text.
   Apache-2.0 license for the core library.)
 - **Modifications:** This image modifies the AGPL-3.0 Studio component (AGPL §5a):
   `studio/install_python_stack.py` is patched to pin the CUDA torch backend
-  (`--torch-backend=cu128`), and `studio/setup.sh` to build llama.cpp with
+  (`--torch-backend=cu130`), and `studio/setup.sh` to build llama.cpp with
   portable CPU dispatch (`-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON …`) so it
   does not SIGILL on CPUs lacking AVX-512. The complete corresponding source —
   including these modifications — is public at

@@ -40,8 +40,8 @@ echo "$devices" | sed 's/^/    /'
 
 # ANCHORED to the listing format and case-SENSITIVE, for the reason the llama-cpp image
 # learned the hard way: stderr is folded in via 2>&1, ggml prints the .so PATH on a load
-# failure, and the bundle is named `x64-cuda12-portable`. An unanchored case-insensitive
-# match finds "cuda12" inside "failed to load backend from /opt/llama-cpp/...-cuda12-
+# failure, and the bundle is named `x64-cuda13-portable`. An unanchored case-insensitive
+# match finds "cuda13" inside "failed to load backend from /opt/llama-cpp/...-cuda13-
 # portable/..." and reports a GPU on the exact failure it exists to catch.
 _dev_re='^[[:space:]]*(CUDA|ROCm|Vulkan|SYCL)[: ]?[0-9]+'
 _arm_a="unknown"

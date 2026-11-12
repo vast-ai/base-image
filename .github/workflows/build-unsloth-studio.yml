@@ -158,7 +158,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
+          - vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py313-2026-10-23
         # arm64 is intentionally absent: `torchao` (transitive via
         # unsloth-zoo>=2026.5.3 -> unsloth) only publishes amd64 manylinux
         # wheels as of v0.17.0+cu128. Re-add when upstream torchao ships
@@ -246,7 +246,7 @@ jobs:
       set_filters: ${{ needs.preflight.outputs.qa-set-filters }}
       max_price: ${{ needs.preflight.outputs.qa-max-price }}
       repo: ${{ inputs.DOCKERHUB_REPO || 'unsloth-studio' }}
-      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.unsloth-version }}-cuda-12.9-py312-amd64
+      tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.unsloth-version }}-cuda-13.2-py313-amd64
       template_dir: derivatives/pytorch/derivatives/unsloth-studio/templates/unsloth-studio-qa
       label: base-image-qa-unsloth-studio
       log_paths: "/var/log/portal/unsloth-studio.log"
@@ -274,7 +274,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
+          - vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py313-2026-10-23
 
     steps:
       - name: Refresh runner CA trust store
