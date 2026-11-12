@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114",
+    "L110", "L111", "L112", "L113", "L114", "L117",
 })
 
 
@@ -3943,6 +3943,75 @@ def test_L091_unrecognised_upstream_shape_is_fatal(name):
     _, img = _real(name)
     assert re.search(r"else[^\n]*\\?\s*\n?[^\n]*FATAL[^\n]*unrecognised AI Toolkit",
                      img.text), "no FATAL fallthrough for an unknown launch shape"
+
+
+# ---- L117: Whisper WebUI's uvr import and audio decode are proven at build time ----
+
+
+_WHISPER_IMAGES = ["whisper", "aio-studio"]
+_UVR_PROOF = re.compile(r"[^\n]*python -c \"from uvr\.models import[^\n]*\n")
+_DECODE_PROOF = re.compile(r"[^\n]*python -c \"[^\n]*decode_audio\([^\n]*\n")
+
+
+@pytest.mark.parametrize("name", _WHISPER_IMAGES)
+def test_L117_real_whisper_images_are_clean(name):
+    """Both images that install Whisper WebUI import uvr and decode a file in the build."""
+    repo, img = _real(name)
+    assert "Whisper-WebUI" in img.text
+    assert "L117" not in errs(img, repo)
+
+
+@pytest.mark.parametrize("name", _WHISPER_IMAGES)
+def test_mut_whisper_ships_with_neither_proof(name):
+    """THE real defect, reported 2026-11-12 on aio-studio 2026-11-01: every upload came
+    back `not able to open or corrupted ... unexpected keyword argument 'metadata_errors'`
+    (PyAV 19.0.2 under faster-whisper 1.1.1) and BGM separation failed to import (no
+    audioread under librosa 1.0.0), with whisper-webui RUNNING. The whisper image had been
+    fixed; aio-studio installed the same app with neither proof. Remove both and L117 must
+    fire once for each."""
+    repo, img = _real(name)
+    text = _DECODE_PROOF.sub("", _UVR_PROOF.sub("", img.text))
+    assert "uvr.models" not in L.code_text(L.parse(text)), "mutation did not apply"
+    assert "decode_audio" not in L.code_text(L.parse(text)), "mutation did not apply"
+    mut = replace(img, text=text)
+    found = [f.msg for f in lint_image(mut, repo) if f.code == "L117"]
+    assert len(found) == 2, found
+
+
+@pytest.mark.parametrize("name", _WHISPER_IMAGES)
+def test_mut_whisper_uvr_import_never_proven(name):
+    """The decode proof alone says nothing about audioread. Drop the uvr import and L117
+    must fire, naming uvr."""
+    repo, img = _real(name)
+    mut = replace(img, text=_UVR_PROOF.sub("", img.text))
+    assert has(mut, repo, "L117", "uvr.models")
+    assert not has(mut, repo, "L117", "decodes a file")
+
+
+@pytest.mark.parametrize("name", _WHISPER_IMAGES)
+def test_mut_whisper_decode_never_proven(name):
+    """The uvr import alone says nothing about PyAV. Drop the decode and L117 must fire,
+    naming the decode."""
+    repo, img = _real(name)
+    mut = replace(img, text=_DECODE_PROOF.sub("", img.text))
+    assert has(mut, repo, "L117", "decodes a file")
+    assert not has(mut, repo, "L117", "uvr.models")
+
+
+@pytest.mark.parametrize("name", _WHISPER_IMAGES)
+def test_L117_the_pins_alone_do_not_satisfy_it(name):
+    """`av<19` and `audioread` are today's fix, not the obligation: with both still
+    installed and both proofs gone, the rule must fire. The comments beside the pins name
+    both modules, so this also shows a mention is not a proof."""
+    repo, img = _real(name)
+    text = _DECODE_PROOF.sub("", _UVR_PROOF.sub("", img.text))
+    assert "'av<19'" in text and "audioread" in text
+    assert "L117" in errs(replace(img, text=text), repo)
+
+
+def test_L117_an_image_without_whisper_is_out_of_scope(tmp_path):
+    """The rule keys off the Whisper-WebUI clone; unrelated images stay clean."""
+    assert "L117" not in errs(make(tmp_path), tmp_path)
 
 
 # ---- L092: a curl that writes a file must fail on an HTTP error ----

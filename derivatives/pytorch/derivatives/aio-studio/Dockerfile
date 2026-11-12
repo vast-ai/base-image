@@ -604,7 +604,14 @@ RUN \
     sed -i '/^torch[>=<]/d; /^torchaudio[>=<]/d; /^--extra-index-url.*pytorch/d' requirements.txt && \
     # Ensure setuptools<78 for legacy pkg_resources in build deps
     uv pip install --no-cache-dir 'setuptools<78' && \
-    uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt
+    # faster-whisper 1.1.1 (pinned upstream) calls av.open(..., metadata_errors=...), which PyAV 19 removed,
+    # and it does not cap av: without this every uploaded file fails to open. Same cap as the whisper image.
+    uv pip install --no-cache-dir --no-build-isolation -r requirements.txt -r backend/requirements-backend.txt 'av<19' && \
+    # uvr imports audioread without declaring it; librosa supplied it until 1.0 dropped the dependency,
+    # and without it BGM separation fails to import.
+    uv pip install --no-cache-dir audioread && \
+    python -c "from uvr.models import MDX, Demucs, VrNetwork, MDXC" && \
+    python -c "import tempfile, wave, faster_whisper.audio as fa; f = tempfile.NamedTemporaryFile(suffix='.wav', delete=False); w = wave.open(f.name, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(bytes(3200)); w.close(); fa.decode_audio(f.name)"
 
 # pytubefix depends on nodejs-wheel-binaries, which bundles its own Node (24.19.0 at the time of
 # writing, below the Node 24 trust floor, with no fixed release on PyPI). Node compiles its roots in,
