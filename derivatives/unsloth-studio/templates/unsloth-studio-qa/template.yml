@@ -45,7 +45,7 @@ extra_filters:
   compute_cap:
     gte: 800
   cuda_max_good:
-    gte: 13.2                     # matches the cu130 torch, the CUDA 13.2 base and the cuda13 bundle (ADR 0067)
+    gte: 13.2                     # the CUDA 13.2 base image, which carries the cu130 torch and the cuda13 bundle (ADR 0067)
   # The studio builds a frontend and loads a CUDA context; it does not load a model in
   # this smoke, so the floor is headroom for the toolchain rather than model size.
   gpu_ram:
@@ -58,4 +58,4 @@ extra_filters:
     gte: 64                       # see templates/base-qa for the measurement
   disk_space:
     gte: 60                       # L058: must match recommended_disk_space or the rent fails late
-recommended_disk_space: 60.0      # pytorch base + studio venv + node frontend + llama.cpp bundle
+recommended_disk_space: 60.0      # base image + torch + studio venv + node frontend + llama.cpp bundle

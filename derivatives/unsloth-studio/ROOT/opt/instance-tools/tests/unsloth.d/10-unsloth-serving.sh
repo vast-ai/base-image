@@ -42,7 +42,7 @@ esac
 # not publish itself. `ss` reports the LISTENER, which is the only thing that matters —
 # a template port entry is not what exposes it.
 # listener_is_public lives in BASE's lib.sh, and this image inherits lib.sh from the
-# pytorch base it pins — not from this repo. If that base predates the helper, bash
+# base image it pins — not from this repo. If that base predates the helper, bash
 # returns 127 for the missing function, `if` takes the ELSE branch, and the check prints
 # "bound to loopback" and PASSES having tested nothing. Assert the helper exists so a
 # pin that is too old is a loud red naming the cause, not a silent green.

@@ -158,7 +158,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py313-2026-10-23
+          - vastai/base-image:cuda-13.2-mini-py313-2026-10-23
         # arm64 is intentionally absent: `torchao` (transitive via
         # unsloth-zoo>=2026.5.3 -> unsloth) only publishes amd64 manylinux
         # wheels as of v0.17.0+cu128. Re-add when upstream torchao ships
@@ -185,14 +185,14 @@ jobs:
 
       - name: Derive staging tag
         run: |
-          PYTORCH_BASE="${{ matrix.base_image }}"
-          TAG="${PYTORCH_BASE##*:}"
+          BASE_IMAGE="${{ matrix.base_image }}"
+          TAG="${BASE_IMAGE##*:}"
 
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
           PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
 
           if [ -z "$CUDA_VERSION" ] || [ -z "$PYTHON_VERSION" ]; then
-            echo "Failed to parse base image: $PYTORCH_BASE"
+            echo "Failed to parse base image: $BASE_IMAGE"
             exit 1
           fi
 
@@ -212,11 +212,14 @@ jobs:
       - name: Build and push arch image to staging
         uses: ./.github/actions/build-arch-image
         with:
-          context: derivatives/pytorch/derivatives/unsloth-studio
+          context: derivatives/unsloth-studio
           arch: ${{ matrix.arch.platform }}
           tag-base: ${{ env.STAGING_TAG_BASE }}
+          # The torch tests and capability files come from the PyTorch image's tree (ADR 0067).
+          build-contexts: |
+            pytorch=derivatives/pytorch
           build-args: |
-            PYTORCH_BASE=${{ matrix.base_image }}
+            BASE_IMAGE=${{ matrix.base_image }}
             UNSLOTH_VERSION=${{ needs.preflight.outputs.unsloth-version }}
             LLAMA_CPP_VERSION=${{ needs.preflight.outputs.llama-cpp-version }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -247,7 +250,7 @@ jobs:
       max_price: ${{ needs.preflight.outputs.qa-max-price }}
       repo: ${{ inputs.DOCKERHUB_REPO || 'unsloth-studio' }}
       tag: ${{ inputs.CUSTOM_IMAGE_TAG || needs.preflight.outputs.unsloth-version }}-cuda-13.2-py313-amd64
-      template_dir: derivatives/pytorch/derivatives/unsloth-studio/templates/unsloth-studio-qa
+      template_dir: derivatives/unsloth-studio/templates/unsloth-studio-qa
       label: base-image-qa-unsloth-studio
       log_paths: "/var/log/portal/unsloth-studio.log"
       require_tests: "base/60-gpu-cuda base/61-cuda-compute base/62-gpu-libraries unsloth.d/10-unsloth-serving unsloth.d/11-llama-offload"
@@ -274,7 +277,7 @@ jobs:
       fail-fast: false
       matrix:
         base_image:
-          - vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py313-2026-10-23
+          - vastai/base-image:cuda-13.2-mini-py313-2026-10-23
 
     steps:
       - name: Refresh runner CA trust store
@@ -292,8 +295,8 @@ jobs:
 
       - name: Derive image tags
         run: |
-          PYTORCH_BASE="${{ matrix.base_image }}"
-          TAG="${PYTORCH_BASE##*:}"
+          BASE_IMAGE="${{ matrix.base_image }}"
+          TAG="${BASE_IMAGE##*:}"
 
           CUDA_VERSION=$(echo "$TAG" | sed -n 's/.*cuda-\([0-9.]*\).*/\1/p')
           PYTHON_VERSION=$(echo "$TAG" | sed -n 's/.*-py\([0-9]*\).*/py\1/p')
@@ -312,7 +315,7 @@ jobs:
           echo "STAGING_TAG_BASE=$STAGING_TAG_BASE" >> $GITHUB_ENV
           echo "PROD_TAG=$PROD_TAG" >> $GITHUB_ENV
 
-          MATRIX_ID=$(echo "$PYTORCH_BASE" | md5sum | cut -c1-8)
+          MATRIX_ID=$(echo "$BASE_IMAGE" | md5sum | cut -c1-8)
           echo "MATRIX_ID=$MATRIX_ID" >> $GITHUB_ENV
 
       - name: Assemble multi-arch index in production

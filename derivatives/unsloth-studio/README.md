@@ -1,6 +1,6 @@
 # Unsloth Studio Image
 
-An Unsloth Studio image derived from the Vast.ai [PyTorch image](../../README.md). This image includes Unsloth Studio pre-installed with llama.cpp (built with CUDA support), along with all features from the Vast.ai base image.
+An Unsloth Studio image built on the Vast.ai [base image](../../README.md), with the PyTorch stack Unsloth publishes for it installed in the image itself. This image includes Unsloth Studio pre-installed with llama.cpp (built with CUDA support), along with all features from the Vast.ai base image.
 
 For detailed documentation on Instance Portal, Supervisor, environment variables, and other features, see the [base image README](../../../../README.md).
 
@@ -68,25 +68,32 @@ The image uses a single shared venv (`/venv/main`) for both PyTorch and Unsloth 
 
 The following patches are applied at build time:
 
-- **Torch backend**: `--torch-backend=auto` is replaced with `--torch-backend=cu128` in both `install_python_stack.py` and `setup.sh` to ensure CUDA-enabled PyTorch is installed (no GPU available during Docker build).
+- **Torch backend**: `--torch-backend=auto` is replaced with `--torch-backend=cu130` in both `install_python_stack.py` and `setup.sh` to ensure CUDA-enabled PyTorch is installed (no GPU available during Docker build).
 - **Venv symlink**: `~/.unsloth/studio/.venv` symlinks to `/venv/main` to prevent venv recreation.
 - **CUDA stubs**: `/usr/local/cuda/lib64/stubs` is added to the linker path for llama.cpp compilation without a GPU.
 
 ## Building From Source
 
 ```bash
-cd base-image/derivatives/pytorch/derivatives/unsloth-studio
+cd base-image/derivatives/unsloth-studio
 
 docker buildx build \
-    --build-arg PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23 \
+    --build-context pytorch=../pytorch \
+    --build-arg LLAMA_CPP_VERSION=<unslothai/llama.cpp release tag> \
     -t yournamespace/unsloth-studio .
 ```
+
+The `pytorch` build context supplies the torch test suite and capability files from
+`derivatives/pytorch`; the build fails without it.
 
 ### Build Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PYTORCH_BASE` | `vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23` | PyTorch mini base image |
+| `BASE_IMAGE` | `vastai/base-image:cuda-13.2-mini-py313-2026-10-23` | Vast base image; this image installs its own torch |
+| `UNSLOTH_TORCH_EXTRA` | `cu130onlytorch2130` | The `unsloth` extra that pins torch, torchvision, torchaudio and xformers |
+| `UNSLOTH_VERSION` | latest | Unsloth PyPI version |
+| `LLAMA_CPP_VERSION` | none (required) | `unslothai/llama.cpp` release tag to bake |
 
 ## Licenses
 
@@ -102,6 +109,7 @@ for license details and file locations.
 
 - [Unsloth Documentation](https://github.com/unslothai/unsloth)
 - [Unsloth Studio Discussion](https://github.com/unslothai/unsloth/discussions/4370)
-- [PyTorch Image Documentation](../../README.md)
+- [Base Image Documentation](../../README.md)
+- [PyTorch Image Documentation](../pytorch/README.md)
 - [Base Image Documentation](../../../../README.md)
-- [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/pytorch/derivatives/unsloth-studio)
+- [Image Source](https://github.com/vast-ai/base-image/tree/main/derivatives/unsloth-studio)

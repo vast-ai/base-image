@@ -4505,7 +4505,7 @@ REFRESH_CA_DATA_DOCKERFILES = ("Dockerfile.extend", "derivatives/pytorch/Dockerf
                                "derivatives/pytorch/derivatives/ostris-ai-toolkit/Dockerfile",
                                "derivatives/pytorch/derivatives/sd-forge/Dockerfile",
                                "derivatives/pytorch/derivatives/swarmui/Dockerfile",
-                               "derivatives/pytorch/derivatives/unsloth-studio/Dockerfile",
+                               "derivatives/unsloth-studio/Dockerfile",
                                "derivatives/pytorch/derivatives/voicebox/Dockerfile",
                                "derivatives/pytorch/derivatives/wan2gp/Dockerfile",
                                "derivatives/pytorch/derivatives/whisper/Dockerfile")

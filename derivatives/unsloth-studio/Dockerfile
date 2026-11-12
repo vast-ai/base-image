@@ -1,5 +1,10 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.13.0-cu130-cuda-13.2-mini-py313-2026-10-23
-FROM ${PYTORCH_BASE}
+# Built directly on the base image; this image installs its own torch (ADR 0067). The
+# torch stack is the one Unsloth publishes for this CUDA line: UNSLOTH_TORCH_EXTRA below
+# names an extra of the `unsloth` package that pins torch, torchvision, torchaudio and
+# xformers together, so the pairing is upstream's and not a table kept here.
+ARG BASE_IMAGE=vastai/base-image:cuda-13.2-mini-py313-2026-10-23
+FROM ${BASE_IMAGE}
+ARG BASE_IMAGE
 
 LABEL org.opencontainers.image.source="https://github.com/vastai/"
 LABEL org.opencontainers.image.description="Unsloth Studio image suitable for Vast.ai."
@@ -7,12 +12,19 @@ LABEL maintainer="Vast.ai Inc <contact@vast.ai>"
 
 COPY ./ROOT /
 
+# The torch tests, capability block and agent notes are the PyTorch image's, taken from
+# its tree through the `pytorch` build context rather than copied into this one: an image
+# that carries torch runs the same torch suite whether or not it inherits it, and a second
+# copy of those files would drift.
+COPY --from=pytorch ROOT/opt/instance-tools/tests/pytorch.d /opt/instance-tools/tests/pytorch.d
+COPY --from=pytorch ROOT/etc/vast_capabilities.d/30-pytorch.yaml /etc/vast_capabilities.d/30-pytorch.yaml
+COPY --from=pytorch ROOT/etc/vast_agents/pytorch.md /etc/vast_agents/pytorch.md
+
 # Install CUDA dev libraries required by the llama.cpp CUDA build. The -mini base
 # strips the CUDA math dev headers, so GGML_CUDA needs cuBLAS (cublas/cublasLt) and
 # the CUDA runtime headers (cuda_runtime.h) back before nvcc can compile the .cu files.
 # cuobjdump (not in -mini) is needed by the post-build arch-coverage assertion below.
 ENV UV_TORCH_BACKEND=cu130
-ARG PYTORCH_BASE
 RUN \
     set -euo pipefail && \
     apt-get update && \
@@ -224,18 +236,32 @@ t.extractall('/opt/llama-cpp/'+d, members=[m for m in ms if m.name], filter='dat
     # build/bin mirror is a hardlink of the same inode, so this covers both.
     sha256sum /opt/llama-cpp/llama-server > /opt/llama-cpp.server.sha256
 
-# Install unsloth, symlink the studio venv to /venv/main so setup.sh installs
-# everything into our existing venv (avoids a duplicate torch install), then
-# run studio setup for frontend build + llama.cpp + all python deps.
+# Install unsloth WITH its torch stack, symlink the studio venv to /venv/main so
+# setup.sh installs everything into our existing venv (avoids a duplicate torch
+# install), then run studio setup for frontend build + llama.cpp + all python deps.
+#
+# UNSLOTH_TORCH_EXTRA is the one place this image chooses its torch. `cu130onlytorch2130`
+# is Unsloth's own extra for torch 2.13.0 on cu130, the route its installer takes for a
+# new install on a CUDA 13 machine (ADR 0067). Moving torch is a change to this value.
 ARG UNSLOTH_VERSION=
+ARG UNSLOTH_TORCH_EXTRA=cu130onlytorch2130
 RUN \
     set -euo pipefail && \
     . /opt/nvm/nvm.sh && \
     . /venv/main/bin/activate && \
-    # Snapshot the base's full torch ecosystem (torch + torchvision + torchaudio + torchcodec).
-    torch_versions_pre="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
-    unsloth_spec="unsloth${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
+    unsloth_spec="unsloth[${UNSLOTH_TORCH_EXTRA}]${UNSLOTH_VERSION:+==${UNSLOTH_VERSION}}" && \
     uv pip install --no-cache-dir --torch-backend=cu130 "$unsloth_spec" && \
+    # The install above is where torch arrives, so prove it did and that it is a CUDA
+    # build that can run: the checks the PyTorch image makes on its own torch.
+    python -c "import torch; assert torch.backends.cuda.is_built(), 'torch is not a CUDA build'; assert torch.version.cuda.split('.')[0] == '13', 'torch CUDA line is ' + torch.version.cuda; print('torch', torch.__version__, 'CUDA', torch.version.cuda)" && \
+    python -c "import torch; m = torch.nn.Linear(10, 2); y = m(torch.randn(5, 10)); assert y.shape == (5, 2) and not torch.isnan(y).any()" && \
+    # Snapshot the torch ecosystem Unsloth's extra installed (torch + torchvision +
+    # torchaudio + torchcodec + xformers); studio setup below must not move it. `uv pip
+    # freeze`, not `pip list`: the base venv has no pip, and the old `pip list ... || :`
+    # would have compared empty to empty. An empty snapshot is a failure, not a pass.
+    torch_versions_pre="$(uv pip freeze | grep -E '^(torch|torchvision|torchaudio|torchcodec|xformers)==' | sort)" && \
+    [[ "$torch_versions_pre" == *"torch=="* && "$torch_versions_pre" == *"xformers=="* ]] || { echo "FATAL: unsloth[${UNSLOTH_TORCH_EXTRA}] installed no torch stack: '$torch_versions_pre'"; exit 1; } && \
+    echo "torch stack from unsloth[${UNSLOTH_TORCH_EXTRA}]:" && echo "$torch_versions_pre" && \
     # Store unsloth data under /opt so it survives volume mounts over /root
     mkdir -p /opt/workspace-internal/unsloth/studio && \
     ln -sf /opt/workspace-internal/unsloth /root/.unsloth && \
@@ -347,9 +373,9 @@ RUN \
         [[ "$_elf" == *"$_a"* ]] || \
             { echo "FATAL: libggml-cuda.so has no $_a SASS — wrong bundle for this image's GPU floor"; exit 1; }; \
     done && \
-    # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec)
-    # versions are unchanged.
-    torch_versions_post="$({ pip list --format=freeze 2>/dev/null | grep -E '^(torch|torchvision|torchaudio|torchcodec)==' || :; } | sort)" && \
+    # Verify the torch ecosystem (torch + torchvision + torchaudio + torchcodec +
+    # xformers) is still what Unsloth's extra installed.
+    torch_versions_post="$(uv pip freeze | grep -E '^(torch|torchvision|torchaudio|torchcodec|xformers)==' | sort)" && \
     [[ "$torch_versions_pre" = "$torch_versions_post" ]] || { echo "torch ecosystem version drift:"; diff <(echo "$torch_versions_pre") <(echo "$torch_versions_post"); exit 1; }
 
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
