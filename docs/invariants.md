@@ -1613,6 +1613,33 @@ executing it — the artifact, not the transfer. That assertion is BRACED so its
 the check alone; left bare, `curl && check || FATAL` reports "not a script" for a download
 that never happened.
 
+### Whisper WebUI's uvr import and audio decode are proven at BUILD time — **GATED (L117)**
+
+An image that installs Whisper WebUI must, in the venv the app runs from, import
+`uvr.models` and call `faster_whisper.audio.decode_audio` on a real file during the build.
+
+Upstream pins `faster-whisper==1.1.1` and caps neither PyAV nor librosa, so every rebuild
+takes the newest of both. Two releases broke the app without stopping it:
+
+- **PyAV 19** removed the `metadata_errors` argument that faster-whisper 1.1.1 passes to
+  `av.open`. Every uploaded file is then reported as `not able to open or corrupted`.
+- **librosa 1.0** stopped depending on `audioread`, which `uvr` imports without declaring.
+  BGM separation fails to import.
+
+In both cases the service starts, supervisord reports RUNNING and the image's QA suite
+passes, which is why this is a build-time obligation. Measured 2026-11-12 on aio-studio
+`2026-11-01`: PyAV 19.0.2, librosa 1.0.0, no audioread, both failures present; installing
+`av<19` and `audioread` into `/venv/whisper` cleared both.
+
+The whisper image carried the fix (`av<19`, `audioread`, and the two proofs) from
+2026-10-23. aio-studio installs the same app from the same requirements files and did not.
+**Two images that install one app must carry one fix**; L117 keys off the upstream clone
+directory so it reaches every image that installs it.
+
+L117 requires the PROOFS, not the pins. `av<19` and `audioread` are what satisfy the proofs
+today and will change when upstream does; a rule that demanded the pins would pass the day a
+different dependency moved, and would have to be edited to allow a legitimate upgrade.
+
 ### AI Toolkit's public UI listener is pinned to loopback at BUILD time — **GATED (L091)**
 
 An image that installs AI Toolkit must pin its UI's public listener to `127.0.0.1` during
