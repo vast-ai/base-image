@@ -253,7 +253,6 @@ The Docker image uses `/opt/instance-tools/bin/entrypoint.sh` as its startup scr
 - Configures login settings to:
  - Automatically activate the default Python environment
  - Start in the `${WORKSPACE}` directory
-- Creates a backup of the default Python environments
 - Runs any custom setup script defined in the `PROVISIONING_SCRIPT` environment variable
 
 **Every Time the Instance Starts:**
@@ -270,17 +269,9 @@ The Docker image uses `/opt/instance-tools/bin/entrypoint.sh` as its startup scr
  - Open a terminal in Jupyter
  - Run Jupyter notebooks
 
-**Automatic Backups:**
-- Every 30 minutes, the system creates a backup of your Python packages
-- Backups are stored in `/workspace/.venv-backups/{INSTANCE_ID}/`
-- These backups let you:
- - Undo recent package changes
- - Recreate your exact environment on a new instance
-
-**Backup Settings:**
-- By default, keeps 48 backups (24 hours worth)
-- Adjust using the `VENV_BACKUP_COUNT` environment variable
-- Set to `0` to turn off backups
+**Saving Your Package List:**
+- To recreate your environment on another instance, save the package list first: `pip freeze > /workspace/venv-main.txt`
+- On the other instance, install it: `pip install --no-cache-dir -r /workspace/venv-main.txt`
 
 
 ## Environment Variables
@@ -294,7 +285,6 @@ Some more useful environment variables are provided for instance customization.
 | `AUTH_EXCLUDE` | string | | Disable authentication for specific ports. eg. `6006,8384` |
 | `ENABLE_HTTPS` | bool | `true` | Enable or disable TLS |
 | `PORTAL_CONFIG` | string | See note below | Configures the Instance Portal and application startup |
-| `VENV_BACKUP_COUNT` | int | `48` | Number of venv backups to retain |
 | `PROVISIONING_SCRIPT` | string | | URL pointing to a shell script (GitHub Repo, Gist) |
 | `TENSORBOARD_LOG_DIR` | string | `/workspace` | Log directory for Tensorboard |
 

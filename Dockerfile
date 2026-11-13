@@ -261,6 +261,9 @@ ENV UV_CACHE_DIR=/.uv/cache
 ENV UV_NO_CACHE=1
 # We have disabled caching but set default to copy.  Hardlinks will lead to issues with volumes/copy tools
 ENV UV_LINK_MODE=copy
+# Compile what each install adds, at build and at runtime (ADR 0060). Current uv compiles only the
+# packages the operation installed, about 0.03 s per small install.
+ENV UV_COMPILE_BYTECODE=1
 ENV UV_PYTHON_BIN_DIR=/.uv/python_bin
 ENV UV_PYTHON_INSTALL_DIR=/.uv/python_install
 RUN \
@@ -508,9 +511,10 @@ ENV PATH=/opt/instance-tools/bin:${PATH}
 # pip), after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
-# Defend against environment clashes when syncing to volume
+# Ship compiled bytecode (ADR 0060), then defend against environment clashes when syncing to volume
 RUN \
     set -euo pipefail && \
+    compile-bytecode && \
     env-hash > /.env_hash
 
 ENTRYPOINT ["/opt/instance-tools/bin/entrypoint.sh"]

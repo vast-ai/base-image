@@ -1,0 +1,59 @@
+#!/bin/bash
+# Print the host's NVIDIA driver version (e.g. "580.95.05").
+# Exit 0 with the version on stdout, or exit non-zero printing nothing.
+#
+# This is the one place that answers "which NVIDIA driver is this?" and, by
+# extension, "is there an NVIDIA driver at all?". Callers use it instead of
+# reading /proc/driver/nvidia/version themselves.
+#
+# WHY NOT JUST READ /proc
+# -----------------------
+# /proc/driver/nvidia/version is a kernel-module file, and whether a container
+# can see it depends on the runtime, not on the GPU. Under runc it is there.
+# Under gVisor (runsc) the GPU works through the device nodes and nvidia-smi
+# answers, but /proc/driver/nvidia/ holds only `params`. Code that read the
+# file got nothing there, and code that tested for it concluded there was no GPU
+# at all.
+#
+# ORDER
+# -----
+# 1. /proc/driver/nvidia/version, first line. Both module spellings carry the
+#    version as the first dotted-number token:
+#      NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.95.05  Tue Aug 26 ...
+#      NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.95.05  Release Build ...
+#    (and the aarch64 equivalents). A file that exists but yields no version
+#    falls through rather than ending the search.
+# 2. nvidia-smi's machine-readable query (one CSV line per GPU; the first is
+#    taken, they share a driver). Never its human-readable table (L063). It is
+#    time-bounded: a wedged driver can make nvidia-smi hang, and a caller at
+#    boot must not hang with it.
+#
+# Whatever is printed has been checked to look like a version. Anything else
+# ("No devices were found", "[N/A]", an empty line) is no answer.
+
+set -uo pipefail
+
+_PROC_VERSION=/proc/driver/nvidia/version
+_SMI_TIMEOUT=10
+_VERSION_RE='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+
+_v=""
+if [[ -r "$_PROC_VERSION" ]]; then
+    _v=$(head -n1 <"$_PROC_VERSION" 2>/dev/null \
+        | awk '{ for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) { print $i; exit } }')
+fi
+
+if [[ ! "$_v" =~ $_VERSION_RE ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    # No pipe: the command substitution ends when timeout does. -k covers an
+    # nvidia-smi that ignores SIGTERM.
+    if _out=$(timeout -k 2 "$_SMI_TIMEOUT" nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null); then
+        _v=${_out%%$'\n'*}
+        _v=${_v#"${_v%%[![:space:]]*}"}
+        _v=${_v%"${_v##*[![:space:]]}"}
+    else
+        _v=""
+    fi
+fi
+
+[[ "$_v" =~ $_VERSION_RE ]] || exit 1
+echo "$_v"

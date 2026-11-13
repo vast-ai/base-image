@@ -24,7 +24,11 @@ done
 [[ $(_service_status desktop) == RUNNING ]] || test_skip "the desktop program is not running (SUPERVISOR_AUTOSTART=desktop)"
 wait_for_port 16100 600 || test_fail "Selkies never listened on 16100 (is the desktop program started?)"
 
-if listener_is_public 16100; then
+# Bind addresses are verified under runc (ADR 0055). The declare -F keeps a lib.sh from an
+# older base on today's behaviour instead of skipping the check under runc.
+if declare -F bind_checks_apply >/dev/null && ! bind_checks_apply; then
+    echo "  bind: not checked under gVisor (verified under runc)"
+elif listener_is_public 16100; then
     fail_later "selkies-bind" "Selkies listens on a public address ($(listener_local_addr 16100 | tr '\n' ' ')); it must be loopback behind Caddy"
 else
     echo "  bind: $(listener_local_addr 16100 | tr '\n' ' ')"

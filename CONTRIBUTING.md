@@ -87,6 +87,8 @@ Scripts in `ROOT/etc/vast_boot.d/` run in numeric order:
 ```
 05-configure-cuda.sh    # CUDA setup
 10-prep-env.sh          # Environment preparation
+13-run-dirs.sh          # Recreate /run/user/1001 and /run/dbus
+14-instance-allocation.sh # Record the RAM and disk allocation (gVisor only)
 15-hotfix.sh            # Runtime hotfixes
 25-first-boot.sh        # First boot tasks
 35-sync-home-dirs.sh    # Home directory sync
@@ -95,7 +97,6 @@ Scripts in `ROOT/etc/vast_boot.d/` run in numeric order:
 45-user-write-bashrc.sh # User shell config
 46-user-propagate-ssh-keys.sh
 47-user-git-safe-dirs.sh
-48-venv-backup.sh       # Venv state backup
 55-tls-cert-gen.sh      # TLS certificate generation
 65-supervisor-launch.sh # Start supervisor
 75-provisioning-script.sh # Run PROVISIONING_SCRIPT (if set)
