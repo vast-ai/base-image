@@ -122,6 +122,14 @@ ENV MODEL_LOG=/var/log/portal/llama.log
 # on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
 EXPOSE 3000
 
+# SPIKE (not for merge): pre-install the uv-managed Python the serverless worker bootstrap
+# asks for (`uv venv --python-preference only-managed -p 3.10`), so the bootstrap reuses an
+# interpreter this build has brought to the pip trust floor instead of downloading one at boot.
+RUN set -euo pipefail && \
+    uv python install --no-bin 3.10 && \
+    for py in "${UV_PYTHON_INSTALL_DIR}"/cpython-3.10*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done && \
+    ls -l "${UV_PYTHON_INSTALL_DIR}"
+
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 

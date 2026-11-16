@@ -101,6 +101,28 @@ worker_ref=$(git -C "$WORKER_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || ech
 echo "  pyworker: ${WORKER_DIR} @ ${worker_ref} ${worker_rev}"
 echo "  (floating by design — this cell's verdict depends on an artifact this repo does not build)"
 
+# ── SPIKE (not for merge): which interpreter did the bootstrap build on? ──
+echo ""
+echo "  -- worker interpreter --"
+ENV_DIR="${ENV_PATH:-${WORKSPACE_DIR:-${WORKSPACE:-/workspace}}/worker-env}"
+PYDIR=$(uv python dir 2>/dev/null || echo "${UV_PYTHON_INSTALL_DIR:-}")
+echo "  uv $(uv --version 2>/dev/null); python dir: ${PYDIR}"
+ls -ld --time-style=+%FT%T /.env_hash "${PYDIR}"/* 2>&1 | sed 's/^/    /'
+[[ -f "${ENV_DIR}/pyvenv.cfg" ]] || test_fail "no ${ENV_DIR}/pyvenv.cfg — the worker environment was not found"
+sed 's/^/    pyvenv.cfg: /' "${ENV_DIR}/pyvenv.cfg"
+worker_home=$(sed -n 's/^home = //p' "${ENV_DIR}/pyvenv.cfg")
+worker_real=$(readlink -f "${worker_home}")
+worker_idir="${worker_real%/bin}"
+echo "  worker-env home: ${worker_home} -> ${worker_real}"
+echo "  interpreter pip: $("${worker_real}/python3" -m pip --version 2>&1 | cut -d' ' -f1-2)"
+ls "${worker_idir}"/lib/python3.*/ensurepip/_bundled/ 2>&1 | sed 's/^/    ensurepip: /'
+newer=$(find "${PYDIR}" -maxdepth 1 -mindepth 1 -newer /.env_hash 2>/dev/null | tr '\n' ' ')
+echo "  entries newer than the image build: ${newer:-none}"
+if [[ "${worker_idir}" -nt /.env_hash ]]; then
+    test_fail "SPIKE: the worker bootstrap installed its own interpreter (${worker_idir} is newer than the image build) — the pre-installed 3.10 was NOT reused"
+fi
+echo "  SPIKE RESULT: the worker bootstrap REUSED the image's pre-installed interpreter ${worker_idir}"
+
 # ── The score ────────────────────────────────────────────────────────
 # The anchor for "this run" is the pyworker process's own start time. /proc/<pid>
 # carries it as the directory mtime, which is exact and needs no clock arithmetic

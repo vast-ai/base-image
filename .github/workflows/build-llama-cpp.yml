@@ -202,13 +202,6 @@ jobs:
               "bundle": "cuda12-portable",
               "driver_floor": "12.9",
               "arches": ["amd64"]
-            },
-            {
-              "cuda": "13.2",
-              "base_tag": "cuda-13.2-mini-py312-2026-10-23",
-              "bundle": "cuda13-portable",
-              "driver_floor": "13.2",
-              "arches": ["amd64", "arm64"]
             }
           ]
           LINES_EOF
@@ -546,12 +539,7 @@ jobs:
     # per image is the shape ADR 0029 condition 5 was written against — a cell that
     # blocks on one image and not another means the same defect promotes or does
     # not depending on which workflow found it.
-    if: >-
-      !cancelled()
-      && needs.preflight.outputs.should-run == 'true'
-      && needs.build.result == 'success'
-      && needs.qa.result == 'success'
-      && needs.qa-serverless.result == 'success'
+    if: false   # SPIKE: never publish or notify from this branch
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
     strategy:
@@ -618,7 +606,7 @@ jobs:
 
   collect-tags:
     needs: [preflight, build, merge-manifests]
-    if: always() && needs.preflight.outputs.should-run == 'true'
+    if: false   # SPIKE: never publish or notify from this branch
     runs-on: ubuntu-latest
     outputs:
       all-tags: ${{ steps.collect.outputs.tags }}
@@ -655,7 +643,7 @@ jobs:
 
   notify:
     needs: [preflight, build, qa, qa-serverless, merge-manifests, collect-tags]
-    if: always() && needs.preflight.outputs.should-run == 'true'
+    if: false   # SPIKE: never publish or notify from this branch
     uses: ./.github/workflows/notify-slack.yml
     with:
       qa-override-note: ${{ needs.preflight.outputs.qa-override-note }}
