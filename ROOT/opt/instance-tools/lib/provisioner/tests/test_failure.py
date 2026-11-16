@@ -46,7 +46,8 @@ class TestVastaiCommand:
         monkeypatch.setenv("CONTAINER_API_KEY", "key123")
         _vastai_command("destroy")
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["vastai", "destroy", "instance", "12345", "--api-key", "key123"]
+        assert cmd == ["vastai", "destroy", "instance", "12345"]
+        assert mock_run.call_args.kwargs["env"]["VAST_API_KEY"] == "key123"
 
     @patch("provisioner.failure.subprocess.run")
     def test_stop_command(self, mock_run, monkeypatch):
@@ -54,7 +55,8 @@ class TestVastaiCommand:
         monkeypatch.setenv("CONTAINER_API_KEY", "key123")
         _vastai_command("stop")
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["vastai", "stop", "instance", "12345", "--api-key", "key123"]
+        assert cmd == ["vastai", "stop", "instance", "12345"]
+        assert mock_run.call_args.kwargs["env"]["VAST_API_KEY"] == "key123"
 
     def test_missing_container_id(self, monkeypatch):
         monkeypatch.delenv("CONTAINER_ID", raising=False)

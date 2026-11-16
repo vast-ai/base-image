@@ -54,10 +54,13 @@ def _vastai_command(action: str) -> None:
         log.error("Cannot %s instance: CONTAINER_API_KEY not set", action)
         return
 
-    cmd = ["vastai", action, "instance", container_id, "--api-key", api_key]
+    # The key goes in the environment, not argv, so it is never in the
+    # command line that gets logged, shown by ps, or echoed in str(e).
+    cmd = ["vastai", action, "instance", container_id]
     log.info("Running: %s", " ".join(cmd))
     try:
-        subprocess.run(cmd, check=True, timeout=30)
+        subprocess.run(cmd, check=True, timeout=30,
+                       env={**os.environ, "VAST_API_KEY": api_key})
         log.info("Instance %s command succeeded", action)
     except Exception as e:
         log.error("Instance %s command failed: %s", action, e)
