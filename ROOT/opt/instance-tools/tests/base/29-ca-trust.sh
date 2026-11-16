@@ -63,9 +63,11 @@ exempt_if_dpkg_owned() { dpkg-query -S "$1" >/dev/null 2>&1; }
 # Only on a serverless instance, and only an interpreter that appeared after the build finished
 # (newer than /.env_hash): a 3.10 the image itself ships is always checked.
 exempt_if_worker_bootstrap() {
+    local rest
     is_serverless || return 1
-    [[ -e /.env_hash && "$1" =~ ^(.*/cpython-3\.10\.[^/]+)/ ]] || return 1
-    [[ "${BASH_REMATCH[1]}" -nt /.env_hash ]]
+    [[ -e /.env_hash && -n "$UVPY" && "$1" == "$UVPY"/cpython-3.10.*/* ]] || return 1
+    rest=${1#"$UVPY"/}
+    [[ "$UVPY/${rest%%/*}" -nt /.env_hash ]]
 }
 
 UVPY=$(uv python dir 2>/dev/null || true)
@@ -160,7 +162,7 @@ echo "  bundles checked by content: ${bundles}"
 # 3. pip wheels bundled for ensurepip.
 while IFS= read -r w; do
     v=$(basename "$w" | sed -E 's/^pip-([^-]+)-.*/\1/')
-    if [[ "$w" == /usr/share/python-wheels/* ]]; then
+    if [[ "$w" == /usr/share/python-wheels/* ]] && dpkg-query -S "$w" >/dev/null 2>&1; then
         echo "  ok    pip ${v}  $w [not read as a trust store: Debian/Ubuntu's patched wheel reads the OS bundle]"
     elif version_ge "$v" "$PIP_FLOOR"; then
         echo "  ok    pip ${v}  $w"

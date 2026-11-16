@@ -26,9 +26,9 @@ fi
 found=0
 for py in "$(uv python dir)"/cpython-"${WORKER_PYTHON}".*/bin/python3; do
     [[ -x "$py" ]] || continue
-    # uv's managed interpreters carry the pip (and its vendored certifi) of their build date.
-    "$py" -m pip install --quiet --no-cache-dir --break-system-packages --root-user-action=ignore -U pip
-    echo "worker-python: $("$py" --version) at ${py%/bin/python3}, $("$py" -m pip --version | cut -d' ' -f1-2)"
+    # Its pip is the one of its build date, below the trust floor. It is not upgraded here:
+    # lib/refresh-ca-data.sh, which runs after this, installs the hash-verified floor wheel.
+    echo "worker-python: $("$py" --version) at ${py%/bin/python3}"
     found=1
 done
 (( found )) || { echo "worker-python: no Python ${WORKER_PYTHON} under $(uv python dir) after install" >&2; exit 1; }

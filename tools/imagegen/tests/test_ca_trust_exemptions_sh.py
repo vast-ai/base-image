@@ -97,3 +97,10 @@ def test_the_worker_row_never_applies_off_serverless_or_to_another_python():
 def test_a_row_the_test_cannot_stand_behind_fails_the_test(rows, why):
     out = run("bundle", "/opt/x/y", rows=rows)
     assert len(out) == 1 and out[0].startswith("TEST_FAIL: ") and why in out[0]
+
+
+def test_the_worker_row_needs_the_interpreter_directly_under_uvs_python_directory():
+    """A directory named like an interpreter, deeper in the tree or somewhere else, is not one."""
+    env = {"SERVERLESS": "true"}
+    elsewhere = "/srv/cpython-3.10.22-linux-x86_64-gnu/lib/python3.10/ensurepip/_bundled/pip-23.0.1-py3-none-any.whl"
+    assert run("pip-wheel", elsewhere, env=env) == ["rc=1 exempted=0"]

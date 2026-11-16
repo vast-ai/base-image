@@ -1851,9 +1851,9 @@ linter-gated; `tools/imagegen/tests/test_env_hash_sh.py` holds it.
 
 Each engine's serverless worker test reports which interpreter the worker environment runs on
 (`tests/ca-trust/worker-interpreter.sh`). If the bootstrap installed its own, the test prints the
-`worker-bootstrap` exemption line and the gate posts to Slack. Verified live on llama.cpp: the
-worker environment's `pyvenv.cfg` pointed at the interpreter installed at build, and nothing under
-uv's Python directory was newer than the build (ADR 0058, amendment 2026-11-16).
+`worker-bootstrap` exemption line and the gate posts to Slack; it prints the same line when it
+cannot make the check. That the bootstrap reuses a pre-installed interpreter was verified live
+on all five serverless images, in each image's own uv directory (ADR 0058, amendment 2026-11-16).
 
 ## 7. Application runtime conventions (how apps are launched & fed models)
 

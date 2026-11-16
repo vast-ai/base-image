@@ -142,10 +142,11 @@ line between "we fix it" and "upstream owns it" is the runtime that runs. They w
    - Every image installs the interpreter the serverless worker bootstrap asks for
      (`lib/worker-python.sh`: uv's managed Python 3.10), before the refresh. The bootstrap
      then reuses it and nothing below the floor arrives at boot.
-8. **The two Debian/Ubuntu files are not exemptions.** `python3-certifi` and `python3-pip`
-   are patched to read the OS bundle. The test reports their unread copies as checked and
-   unread, on two conditions it verifies: dpkg owns the file, and the sibling `core.py`
-   returns the OS bundle. Otherwise the file is judged like any other.
+8. **The Debian/Ubuntu files are not exemptions.** `python3-certifi` and `python3-pip` are
+   patched to read the OS bundle. The test reports their unread `cacert.pem` copies as checked
+   and unread, on two conditions it verifies: dpkg owns the file, and the sibling `core.py`
+   returns the OS bundle. A pip wheel under `/usr/share/python-wheels` is reported the same
+   way when dpkg owns it. Otherwise the file is judged like any other.
 9. **An exemption that remains has no date.** It is a row in `29-ca-trust.sh` with an id, the
    checks it may excuse, a path pattern, a condition the test verifies, and a reason. A
    pattern's `*` does not cross a path separator. A trailing `**` is allowed only on a row
@@ -156,7 +157,8 @@ line between "we fix it" and "upstream owns it" is the runtime that runs. They w
 11. **One exemption should never apply, and says so when it does.** With decision 7 the
     `worker-bootstrap` row is a fallback. Each engine's serverless worker test checks, after
     the worker is up, which interpreter the worker environment uses. If the bootstrap
-    installed its own, that check prints the exemption line and the gate posts to Slack.
+    installed its own, or the check cannot be made, it prints the exemption line and the gate
+    posts to Slack.
 
 ### Standing exemptions
 A row may be added only with an entry here that says why the image cannot fix the file. "Left
@@ -182,6 +184,9 @@ this table with the rows in the test (L127).
   crosses path separators, so an undated wildcard would cover files nobody reviewed.
 - **Fail in the image when an exemption no longer matches anything.** Rejected: the list is
   the same on every image and most rows match nothing on most images.
+- **Install the worker's interpreter only in images that have a serverless QA cell.**
+  Rejected: serverless mode is one environment variable on any image, so the interpreter is
+  needed wherever a customer may turn it on, and an image without it would fetch one at boot.
 
 ### Binding conditions added
 - `29-ca-trust.sh` carries no date and no expiry logic, and every row id is in the table above
@@ -196,9 +201,16 @@ this table with the rows in the test (L127).
 - `env-hash` now covers uv's managed interpreters and their pip. The environment sync replaces
   `/.uv` with the workspace copy stored under that hash, so without this an instance reusing a
   volume from an older build would lose the pre-installed interpreter. Every sync-enabled
-  volume re-syncs once on the first boot of an image built with this change.
-- No date makes an image fail. The pressure to remove a row is its warning on every run, and
-  for `worker-bootstrap` a Slack message.
+  volume re-syncs once on the first boot of an image built with this change. The sync never
+  removes the copy stored under the previous hash, so that volume holds both until the user
+  deletes the old one, and packages installed into the old copy do not carry over.
+- No date makes an image built from this change fail. The pressure to remove a row is its
+  warning on every run, and for `worker-bootstrap` a Slack message.
+- Images already built keep the dates they were built with. A derivative takes the test from
+  its dated base, so one still pinned to a base older than this amendment fails on any
+  rebuild from 2027-01-01, when the last of the old rows expires. The old dates stop mattering
+  for a derivative when its base pin moves, so every pin moves before then. A derivative that
+  cannot be re-pinned in time overlays the current files instead (the existing overlay rule).
 - Every image grows by one Python 3.10 interpreter, about 100 MB.
 - Python 3.10 is end-of-life. When a trust floor needs a pip that no longer supports it, the
   pre-installed interpreter fails the test and no row covers it. The lasting fix is for the
