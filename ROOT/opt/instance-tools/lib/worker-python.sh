@@ -12,10 +12,12 @@ set -euo pipefail
 
 WORKER_PYTHON=3.10
 
-# Installing a managed 3.10 must not change which interpreter a bare `uv venv` picks.
-before=$(uv python find 2>/dev/null || true)
+# Installing a managed 3.10 must not change which managed interpreter a bare `uv venv` picks.
+# An image with no managed Python before this has nothing to compare (uv prefers a managed
+# interpreter, so the first one installed always becomes the default).
+before=$(uv python find --python-preference only-managed 2>/dev/null || true)
 uv python install --no-bin "$WORKER_PYTHON"
-after=$(uv python find 2>/dev/null || true)
+after=$(uv python find --python-preference only-managed 2>/dev/null || true)
 if [[ -n "$before" && "$before" != "$after" ]]; then
     echo "worker-python: installing Python ${WORKER_PYTHON} changed uv's default interpreter (${before} -> ${after})" >&2
     exit 1

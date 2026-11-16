@@ -285,6 +285,7 @@ else:
             # whose embedded seed wheels put an old pip into every environment it creates.
             . /opt/instance-tools/lib/pip-trust-floor.env
             older() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]; }
+            engine_bin="$(dirname "$VAST_ENGINE_PYTHON")/uv"
             engine_uv=$("$VAST_ENGINE_PYTHON" -I -m uv --version 2>/dev/null | awk '{print $2}' || true)
             if [[ -n "$engine_uv" ]] && older "$engine_uv" 0.13.4; then
                 uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages -U 'uv>=0.13.4'
@@ -292,11 +293,20 @@ else:
                 older "$engine_uv" 0.13.4 && { echo "FATAL: engine uv is still ${engine_uv} after upgrade" >&2; exit 1; }
                 echo "convert: engine uv -> ${engine_uv}"
             fi
+            # A uv beside the engine interpreter that the package upgrade did not reach (one that
+            # was copied in, not installed) fails here, at build, and not later in QA.
+            if [[ -x "$engine_bin" && "$(readlink -f "$engine_bin")" != /usr/local/bin/uv ]]; then
+                bin_uv=$("$engine_bin" --version 2>/dev/null | awk '{print $2}' || true)
+                if [[ -z "$bin_uv" ]] || older "$bin_uv" 0.13.4; then
+                    echo "FATAL: ${engine_bin} is uv ${bin_uv:-unknown} (< 0.13.4) and is not the engine's uv package" >&2; exit 1
+                fi
+            fi
             seed_dir=$("$VAST_ENGINE_PYTHON" -I -c 'import os, virtualenv; print(os.path.join(os.path.dirname(virtualenv.__file__), "seed", "wheels", "embed"))' 2>/dev/null || true)
             if [[ -n "$seed_dir" && -d "$seed_dir" ]]; then
-                seed_pip=$(ls "$seed_dir"/pip-*.whl 2>/dev/null | sed -E 's#.*/pip-([^-]+)-.*#\1#' | sort -V | tail -1)
+                seed_pip=$(find "$seed_dir" -maxdepth 1 -name 'pip-*.whl' | sed -E 's#.*/pip-([^-]+)-.*#\1#' | sort -V | tail -1)
                 if [[ -n "$seed_pip" ]] && older "$seed_pip" "$PIP_FLOOR"; then
-                    uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages -U virtualenv
+                    # -P, not -U: -U would also upgrade every dependency the engine shares with virtualenv.
+                    uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages -P virtualenv virtualenv
                     # Proof, not inference: an environment this virtualenv seeds has a pip at the floor.
                     probe=$(mktemp -d)
                     "$VAST_ENGINE_PYTHON" -I -m virtualenv --quiet "$probe/env"

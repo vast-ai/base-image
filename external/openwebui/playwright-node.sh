@@ -10,11 +10,13 @@ set -euo pipefail
 PY="${VAST_ENGINE_PYTHON:?VAST_ENGINE_PYTHON is not set}"
 FLOORS=/opt/instance-tools/lib/node-trust-floor.txt
 
-driver=$("$PY" -c 'import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), "driver"))' 2>/dev/null || true)
-if [[ -z "$driver" || ! -x "$driver/node" ]]; then
-    echo "playwright-node: this image has no Playwright driver Node; nothing to do"
+# "Not installed" is nothing to do; installed but unusable is a build failure.
+if ! "$PY" -c 'import importlib.util, sys; sys.exit(importlib.util.find_spec("playwright") is None)'; then
+    echo "playwright-node: Playwright is not installed in this image; nothing to do"
     exit 0
 fi
+driver=$("$PY" -c 'import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), "driver"))')
+[[ -x "$driver/node" ]] || { echo "playwright-node: Playwright is installed but ${driver}/node is missing" >&2; exit 1; }
 
 older() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]; }
 have=$("$driver/node" -p 'process.versions.node')

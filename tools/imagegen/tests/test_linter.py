@@ -5936,3 +5936,20 @@ def test_L114_convert_refreshing_only_after_the_mirror_fires(tmp_path):
 
 def test_L115_covers_the_worker_python_script_and_the_worker_check():
     assert {"lib/worker-python.sh", "tests/ca-trust/worker-interpreter.sh"} <= set(L.CA_TRUST_OVERLAY_FILES)
+
+
+@pytest.mark.parametrize("line", ['[[ "$(date -u +%s)" -gt 1798675200 ]] && exit 1',
+                                  "now=$(date '+%Y%m%d'); (( now > 20261231 )) && exit 1",
+                                  "printf -v now '%(%s)T' -1"])
+def test_L127_a_clock_read_in_any_spelling_fires(tmp_path, line):
+    """No date literal in YYYY-MM-DD form is needed to bring an expiry back."""
+    assert any("carries a date" in m for m in _l127(tmp_path, mutate=lambda t: t.replace("exempted=0\n", "exempted=0\n" + line + "\n")))
+
+
+@pytest.mark.parametrize("mention", ['echo "skipping /opt/instance-tools/lib/worker-python.sh"',
+                                     "/opt/instance-tools/lib/worker-python.sh || true"])
+def test_L128_a_mention_or_a_call_whose_failure_is_discarded_is_not_a_call(tmp_path, mention):
+    repo = _mutated_tree(tmp_path, _L128_FILES, "Dockerfile.extend", lambda t: t.replace(
+        "/opt/instance-tools/lib/worker-python.sh && /opt/instance-tools/lib/refresh-ca-data.sh",
+        "/opt/instance-tools/lib/refresh-ca-data.sh") + "\nRUN " + mention + " && /opt/instance-tools/lib/refresh-ca-data.sh\n")
+    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == ["Dockerfile.extend"]

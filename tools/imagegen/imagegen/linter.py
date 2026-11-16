@@ -4705,7 +4705,8 @@ def check_ca_trust_exemptions_are_undated_and_recorded(repo: Path) -> Iterable[F
         return Finding("L127", ERROR, "repo", CA_TRUST_TEST_FILE, msg + " (ADR 0058, L127)")
 
     code = "\n".join(_SHELL_COMMENT.sub("", ln) for ln in text.splitlines())
-    if _DATE_LITERAL.search(code) or "EXPIRED" in code or re.search(r"\bdate\s+\+", code):
+    if (_DATE_LITERAL.search(code) or "EXPIRED" in code or re.search(r"\bdate\s+['\"+-]", code)
+            or re.search(r"\$\(\s*date\b", code) or re.search(r"printf\s+(-v\s+\w+\s+)?['\"]?%\(", code)):
         yield bad("carries a date or expiry logic; an exemption is fixed at build or stands without a date, "
                   "because a date that passes blocks publishing and fixes nothing")
     m = _EXEMPTIONS_BLOCK.search(text)
@@ -4745,6 +4746,8 @@ def check_ca_trust_exemptions_are_undated_and_recorded(repo: Path) -> Iterable[F
 
 WORKER_PYTHON_SCRIPT = "ROOT/opt/instance-tools/lib/worker-python.sh"
 WORKER_PYTHON_CALLERS = ("Dockerfile", "Dockerfile.extend", CONVERT_SCRIPT)
+# A call, not a mention: at the start of a command, and not with its failure discarded.
+_WORKER_PYTHON_CALL = re.compile(r"(^|&&|;|\bRUN)\s*/opt/instance-tools/lib/worker-python\.sh\b")
 
 
 def check_worker_python_is_installed_before_the_refresh(repo: Path) -> Iterable[Finding]:
@@ -4758,11 +4761,11 @@ def check_worker_python_is_installed_before_the_refresh(repo: Path) -> Iterable[
                       "the CA refresh (ADR 0058, L128)")
     for f in callers:
         lines = [ln for ln in f.read_text().splitlines() if not ln.lstrip().startswith("#")]
-        worker = [i for i, ln in enumerate(lines) if "worker-python.sh" in ln]
+        worker = [i for i, ln in enumerate(lines) if _WORKER_PYTHON_CALL.search(ln) and "|| true" not in ln]
         refresh = [i for i, ln in enumerate(lines) if "refresh-ca-data.sh" in ln]
         ordered = bool(worker) and bool(refresh) and (
             worker[0] < refresh[-1] or (worker[0] == refresh[-1]
-                                        and lines[worker[0]].index("worker-python.sh") < lines[worker[0]].index("refresh-ca-data.sh")))
+                                        and lines[worker[0]].index("worker-python.sh") < lines[worker[0]].rindex("refresh-ca-data.sh")))
         if not ordered:
             yield Finding("L128", ERROR, "repo", str(f.relative_to(repo)),
                           "must run /opt/instance-tools/lib/worker-python.sh before its last refresh-ca-data.sh: "
