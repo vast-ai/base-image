@@ -280,6 +280,35 @@ else:
             if (( ${#engine_up[@]} )); then
                 uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages --no-deps -U "${engine_up[@]}"
             fi
+            # The same rule for two more things an engine environment can carry (ADR 0058,
+            # amendment 2026-11-16): its own uv, which compiles its roots in, and virtualenv,
+            # whose embedded seed wheels put an old pip into every environment it creates.
+            . /opt/instance-tools/lib/pip-trust-floor.env
+            older() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]; }
+            engine_uv=$("$VAST_ENGINE_PYTHON" -I -m uv --version 2>/dev/null | awk '{print $2}' || true)
+            if [[ -n "$engine_uv" ]] && older "$engine_uv" 0.13.4; then
+                uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages -U 'uv>=0.13.4'
+                engine_uv=$("$VAST_ENGINE_PYTHON" -I -m uv --version | awk '{print $2}')
+                older "$engine_uv" 0.13.4 && { echo "FATAL: engine uv is still ${engine_uv} after upgrade" >&2; exit 1; }
+                echo "convert: engine uv -> ${engine_uv}"
+            fi
+            seed_dir=$("$VAST_ENGINE_PYTHON" -I -c 'import os, virtualenv; print(os.path.join(os.path.dirname(virtualenv.__file__), "seed", "wheels", "embed"))' 2>/dev/null || true)
+            if [[ -n "$seed_dir" && -d "$seed_dir" ]]; then
+                seed_pip=$(ls "$seed_dir"/pip-*.whl 2>/dev/null | sed -E 's#.*/pip-([^-]+)-.*#\1#' | sort -V | tail -1)
+                if [[ -n "$seed_pip" ]] && older "$seed_pip" "$PIP_FLOOR"; then
+                    uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages -U virtualenv
+                    # Proof, not inference: an environment this virtualenv seeds has a pip at the floor.
+                    probe=$(mktemp -d)
+                    "$VAST_ENGINE_PYTHON" -I -m virtualenv --quiet "$probe/env"
+                    probe_pip=$("$probe/env/bin/python" -m pip --version | awk '{print $2}')
+                    rm -rf "$probe"
+                    older "$probe_pip" "$PIP_FLOOR" && { echo "FATAL: engine virtualenv still seeds pip ${probe_pip} (< ${PIP_FLOOR})" >&2; exit 1; }
+                    echo "convert: engine virtualenv seed pip ${seed_pip} -> ${probe_pip}"
+                fi
+            fi
+            # Everything the refresh changes in the engine environment changes before the
+            # mirror is built, so the mirror links the files that stay (it runs again last).
+            /opt/instance-tools/lib/refresh-ca-data.sh
             /opt/instance-tools/bin/venv-mirror build --venv /venv/main \
                 --engine-python "$VAST_ENGINE_PYTHON"
         fi
@@ -319,10 +348,8 @@ rm -f /opt/syncthing.tar.gz
 # our venvs): uv-managed interpreters get a current pip; refresh-ca-data.sh links grpcio's
 # roots.pem and replaces stale bundled ensurepip wheels; stale uv caches would reinstall old
 # certifi into any new env.
-# The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's
-# managed Pythons. Installed here, it reuses this interpreter and the steps below cover it;
-# left to boot, uv downloads one whose bundled pip is below the trust floor.
-uv python install --no-bin 3.10
+# The interpreter the serverless worker bootstrap asks for, so it is not fetched at boot.
+/opt/instance-tools/lib/worker-python.sh
 for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
     [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
 done

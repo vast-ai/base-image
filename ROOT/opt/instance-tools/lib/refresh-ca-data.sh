@@ -14,11 +14,21 @@
 #    only for Python >= 3.11, so `conda install pip` leaves a 3.10 env on 26.2.1 and succeeds.
 #    Debian/Ubuntu's own pip under /usr/lib/python3 reads the OS store and is left alone.
 #
+# 4. botocore ships its own cacert.pem and reads it whenever certifi is not importable: link
+#    it to the OS bundle too. A copy dpkg owns is left to apt.
+#
 # Vendor tool bundles under /opt/nvidia (e.g. Nsight Compute's private Python) are left alone:
 # they are not on PATH and are not a runtime users or our services run, and patching a
-# vendor's bundled runtime is untestable here. tests/base/29-ca-trust.sh reports them on a
-# dated allowlist (ADR 0058).
+# vendor's bundled runtime is untestable here. tests/base/29-ca-trust.sh reports them as a
+# standing exemption (ADR 0058).
 set -euo pipefail
+
+while IFS= read -r bundle; do
+    dpkg-query -S "$bundle" >/dev/null 2>&1 && continue
+    ln -sf /etc/ssl/certs/ca-certificates.crt "$bundle"
+    [[ -s "$bundle" ]] || { echo "refresh-ca-data: $bundle does not resolve to a bundle after linking" >&2; exit 1; }
+    echo "refresh-ca-data: $bundle -> OS bundle"
+done < <(find / -xdev -path '*/botocore/cacert.pem' -type f -not -path '/proc/*' -not -path '/opt/nvidia/*' 2>/dev/null)
 
 find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f -not -path '/proc/*' -not -path '/opt/nvidia/*' \
     -exec ln -sf /etc/ssl/certs/ca-certificates.crt {} \;

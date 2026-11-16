@@ -319,6 +319,8 @@ RUN \
     . /opt/instance-tools/provisioner/venv/bin/activate && \
     uv pip install -r /opt/instance-tools/lib/provisioner/requirements.txt && \
     deactivate && \
+    # The interpreter the serverless worker bootstrap asks for, so it is not fetched at boot (ADR 0058).
+    /opt/instance-tools/lib/worker-python.sh && \
     # uv's managed interpreters carry the pip (and its vendored certifi) of their build date.
     for py in "${UV_PYTHON_INSTALL_DIR}"/*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done
 
