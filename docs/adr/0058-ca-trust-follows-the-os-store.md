@@ -165,7 +165,7 @@ this table with the rows in the test (L127).
 
 | Id | What it covers | Why the image does not fix it |
 |---|---|---|
-| `nsight-private-python` | The pip wheel and pip's vendored CA bundle in the Python that NVIDIA Nsight Compute embeds under `/opt/nvidia`, on CUDA base images that ship one. Applies only to files dpkg owns. | It belongs to a vendor profiler, is not on PATH, and nothing of ours runs it. Patching a profiler's bundled runtime cannot be tested here. |
+| `nsight-private-python` | The pip wheel and pip's vendored CA bundle in the Python that the NVIDIA Nsight tools (Nsight Compute, Nsight Systems) embed under `/opt/nvidia`, on CUDA base images that ship one. Applies only to files dpkg owns. | It belongs to a vendor profiler, is not on PATH, and nothing of ours runs it. Patching a profiler's bundled runtime cannot be tested here. |
 | `worker-bootstrap` | The pip wheel and bundle in a uv-managed Python 3.10 that appeared after the image was built, on a serverless instance. | The bootstrap that would install it lives in another repository. Decision 7 removes the need for it; this row keeps a change there from blocking image publishing, and decision 11 makes that change loud. |
 
 ### Options considered

@@ -56,7 +56,7 @@ echo "  positive control: ${control}/${total} chains verify against the publishe
 #   pattern    absolute path. `*` stops at a `/`. A trailing `/**` covers everything below,
 #              and is accepted only on a row that has a condition. @UVPY@ is `uv python dir`.
 #   condition  a function below, exempt_if_<condition>, that must also hold for the file.
-EXEMPTIONS='nsight-private-python|bundle pip-wheel|/opt/nvidia/nsight-*/**|dpkg-owned|Python embedded in NVIDIA Nsight Compute from the CUDA base image; not on PATH and nothing of ours runs it
+EXEMPTIONS='nsight-private-python|bundle pip-wheel|/opt/nvidia/nsight-*/**|dpkg-owned|Python embedded in the NVIDIA Nsight tools from the CUDA base image; not on PATH and nothing of ours runs it
 worker-bootstrap|bundle pip-wheel|@UVPY@/cpython-3.10.*/**|worker-bootstrap|Python 3.10 the serverless worker bootstrap installed at boot instead of using the one this image ships'
 
 exempt_if_dpkg_owned() { dpkg-query -S "$1" >/dev/null 2>&1; }
