@@ -319,6 +319,10 @@ rm -f /opt/syncthing.tar.gz
 # our venvs): uv-managed interpreters get a current pip; refresh-ca-data.sh links grpcio's
 # roots.pem and replaces stale bundled ensurepip wheels; stale uv caches would reinstall old
 # certifi into any new env.
+# The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's
+# managed Pythons. Installed here, it reuses this interpreter and the steps below cover it;
+# left to boot, uv downloads one whose bundled pip is below the trust floor.
+uv python install --no-bin 3.10
 for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
     [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
 done
