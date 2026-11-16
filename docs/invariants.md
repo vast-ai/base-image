@@ -1802,18 +1802,53 @@ An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its l
 and before `env-hash`. The base refreshes its own CA data, but each later install can bring a
 stale ensurepip wheel, pip or grpcio bundle back. In 2026-10 the pytorch multi images created
 supplementary venvs after the base's refresh, each bundling pip 25.0.1, and `base/29-ca-trust`
-blocked the pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
-llama-cpp, linux-desktop) and widens as each derivative moves to such a base (ADR 0058).
+blocked the pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (the pytorch
+images, the derivatives on such a base, and the five external images, which install after
+convert's own refresh) and widens as each derivative moves to such a base. It also requires
+`convert-non-vast-image.sh` to refresh before `venv-mirror build`: the refresh changes files in
+the engine environment, and a mirror built first links the old ones (ADR 0058).
 
 ### An overlay copy of a CA-trust file matches the base's — **GATED (L115)**
 
-A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` and
-`tests/base/29-ca-trust.sh` from its dated base. When its base predates a CA-trust fix, the image
+A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`,
+`lib/worker-python.sh`, `tests/base/29-ca-trust.sh` and `tests/ca-trust/worker-interpreter.sh`
+from its dated base. When its base predates a CA-trust fix, the image
 may overlay the current copies under its own `ROOT/opt/instance-tools/` as a one-off until the base
 is rebuilt; its `COPY ./ROOT /` then shadows the base. L115 requires every such copy to be
 byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy
 whose own test checks against the same stale floor. The copies are removed once the image is pinned
 to a base that ships the same files (ADR 0058).
+
+### A CA-trust exemption has no date, and is recorded in ADR 0058 — **GATED (L127)**
+
+What the image can fix, it fixes at build. An exemption that remains is a row in
+`tests/base/29-ca-trust.sh`: `id|checks|pattern|condition|reason`. It has no expiry date and the
+test has no expiry logic. A pattern's `*` stops at a path separator; a trailing `/**` is allowed
+only with a condition, and the test verifies the condition for each file (`dpkg-owned`,
+`worker-bootstrap`). Every row id has an entry in the "Standing exemptions" table of ADR 0058
+that says why the image cannot fix the file, and the table has no entry the test lacks.
+
+The test prints one `EXEMPT:` line for each exemption it applies and states the count on its PASS
+line. The QA gate turns those lines into a warning per cell and a table in the run summary
+(`tools/template_manager/qa_exemptions.py`); it does not change the verdict.
+
+Until 2026-11 each exemption carried a review date and the test failed once it passed. On
+2026-11-06 the first one did, and every serverless QA cell blocked for ten days. Moving a date
+needs a base rebuild, a promotion and a pin bump per derivative, and it fixes nothing. Most of
+the dated rows were files the image could have fixed (ADR 0058, amendment 2026-11-16).
+
+### The serverless worker's Python is installed at build — **GATED (L128)**
+
+`lib/worker-python.sh` installs uv's managed Python 3.10, the interpreter the serverless worker
+bootstrap asks for, and runs before `lib/refresh-ca-data.sh` in the base `Dockerfile`, in
+`Dockerfile.extend` and in `convert-non-vast-image.sh`. The bootstrap then reuses it. Without it
+uv downloads the interpreter at boot, after the refresh, with a bundled pip below the trust floor.
+
+Each engine's serverless worker test reports which interpreter the worker environment runs on
+(`tests/ca-trust/worker-interpreter.sh`). If the bootstrap installed its own, the test prints the
+`worker-bootstrap` exemption line and the gate posts to Slack. Verified live on llama.cpp: the
+worker environment's `pyvenv.cfg` pointed at the interpreter installed at build, and nothing under
+uv's Python directory was newer than the build (ADR 0058, amendment 2026-11-16).
 
 ## 7. Application runtime conventions (how apps are launched & fed models)
 

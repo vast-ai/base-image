@@ -118,6 +118,9 @@ ENV MODEL_LOG=/var/log/portal/vllm-omni.log
 # SERVERLESS=true -- so the port is reserved, not occupied.
 EXPOSE 3000
 
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Defend against environment clashes when syncing to volume
 RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 

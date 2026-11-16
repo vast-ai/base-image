@@ -99,6 +99,9 @@ ENV MODEL_LOG=/var/log/portal/sglang.log
 # on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
 EXPOSE 3000
 
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Defend against environment clashes when syncing to volume
 RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 

@@ -65,6 +65,13 @@ RUN mkdir -p /opt/workspace-internal/ollama && \
 # Register Jupyter kernel (ipykernel installed into /venv/main by convert-non-vast-image.sh)
 RUN /venv/main/bin/python -m ipykernel install --name "python3" --display-name "Python 3 (ipykernel)"
 
+# Playwright's driver bundles its own Node: bring it to the trust floor on the same major line (ADR 0058).
+COPY ./playwright-node.sh /tmp/playwright-node.sh
+RUN bash /tmp/playwright-node.sh && rm /tmp/playwright-node.sh
+
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Defend against environment clashes when syncing to volume
 RUN venv-mirror verify --build --engine-import "${VAST_ENGINE_IMPORT}" && env-hash > /.env_hash
 

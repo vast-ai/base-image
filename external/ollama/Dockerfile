@@ -52,6 +52,9 @@ RUN \
     set -euo pipefail && \
     mkdir -p /opt/workspace-internal
 
+# CA data that does not follow the OS store on its own, after every install above (ADR 0058).
+RUN /opt/instance-tools/lib/refresh-ca-data.sh
+
 # Defend against environment clashes when syncing to volume
 RUN env-hash > /.env_hash
 

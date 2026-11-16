@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114",
+    "L110", "L111", "L112", "L113", "L114", "L127", "L128",
 })
 
 
@@ -5806,3 +5806,133 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     tpl.write_text(text.replace(anchor, extra + anchor, 1))
     codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
     assert codes == (["L106"] if fires else []), codes
+
+
+# --- L127 / L128: CA-trust exemptions carry no date; the worker's Python is pre-installed --- #
+# (ADR 0058, amendment 2026-11-16)
+
+_L127_FILES = (L.CA_TRUST_TEST_FILE, L.CA_TRUST_ADR)
+_L128_FILES = (L.WORKER_PYTHON_SCRIPT,) + L.WORKER_PYTHON_CALLERS
+
+
+def _mutated_tree(tmp_path, files, rel=None, mutate=None, drop=None):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    for f in files:
+        if f == drop:
+            continue
+        dst = tmp_path / f
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (repo / f).read_text()
+        if f == rel:
+            new = mutate(text)
+            assert new != text, "mutation did not apply"
+            text = new
+        dst.write_text(text)
+    return tmp_path
+
+
+def _l127(tmp_path, rel=L.CA_TRUST_TEST_FILE, mutate=None):
+    return [f.msg for f in L.check_ca_trust_exemptions_are_undated_and_recorded(
+        _mutated_tree(tmp_path, _L127_FILES, rel, mutate))]
+
+
+_NSIGHT_ROW = "nsight-private-python|bundle pip-wheel|/opt/nvidia/nsight-*/**|dpkg-owned|"
+
+
+def test_L127_L128_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_ca_trust_exemptions_are_undated_and_recorded(repo)) == []
+    assert list(L.check_worker_python_is_installed_before_the_refresh(repo)) == []
+
+
+def test_L127_a_dated_row_fires(tmp_path):
+    """The shape that blocked every serverless cell: a row that fails on a calendar day."""
+    msgs = _l127(tmp_path, mutate=lambda t: t.replace(_NSIGHT_ROW, _NSIGHT_ROW + "until 2027-06-30; "))
+    assert any("carries a date" in m for m in msgs)
+
+
+def test_L127_expiry_logic_reintroduced_fires(tmp_path):
+    msgs = _l127(tmp_path, mutate=lambda t: t.replace(
+        "exempted=0\n", 'exempted=0\n[[ "$(date +%F)" > "$limit" ]] && echo "EXPIRED"\n'))
+    assert any("carries a date" in m for m in msgs)
+
+
+def test_L127_a_date_in_a_comment_is_not_a_date_in_the_test(tmp_path):
+    assert _l127(tmp_path, mutate=lambda t: t.replace("exempted=0\n", "# reviewed 2026-12-01\nexempted=0\n")) == []
+
+
+def test_L127_a_wildcard_that_crosses_directories_mid_pattern_fires(tmp_path):
+    msgs = _l127(tmp_path, mutate=lambda t: t.replace("/opt/nvidia/nsight-*/**|", "/opt/**/python/**|"))
+    assert any("only as a trailing" in m for m in msgs)
+
+
+def test_L127_a_row_with_no_condition_fires(tmp_path):
+    """An undated wildcard with nothing checked about the file it covers."""
+    msgs = _l127(tmp_path, mutate=lambda t: t.replace("|dpkg-owned|", "||"))
+    assert any("every field set" in m for m in msgs)
+
+
+def test_L127_an_unknown_condition_or_check_fires(tmp_path):
+    assert any("no exempt_if_ function" in m for m in _l127(tmp_path / "a", mutate=lambda t: t.replace("|dpkg-owned|", "|trust-me|")))
+    assert any("unknown check" in m for m in _l127(tmp_path / "b", mutate=lambda t: t.replace(
+        "nsight-private-python|bundle pip-wheel|", "nsight-private-python|bundle directory-store|")))
+
+
+def test_L127_a_row_the_adr_does_not_record_fires(tmp_path):
+    """Adding an exemption without saying why the image cannot fix the file."""
+    extra = "some-vendor|bundle|/opt/vendor/cacert.pem|dpkg-owned|left to upstream\n"
+    msgs = _l127(tmp_path, mutate=lambda t: t.replace("EXEMPTIONS='", "EXEMPTIONS='" + extra))
+    assert any("'some-vendor' has no entry in the Standing exemptions table" in m for m in msgs)
+
+
+def test_L127_an_adr_entry_for_a_row_that_is_gone_fires(tmp_path):
+    msgs = _l127(tmp_path, mutate=lambda t: re.sub(r"\nworker-bootstrap\|[^\n']*'", "'", t))
+    assert any("lists standing exemption 'worker-bootstrap'" in m for m in msgs)
+
+
+def test_L127_a_pass_line_that_hides_the_count_fires(tmp_path):
+    msgs = _l127(tmp_path, mutate=lambda t: t.replace("${exempted} exemption(s) applied", "exemptions applied"))
+    assert any("number of exemptions applied" in m for m in msgs)
+
+
+@pytest.mark.parametrize("caller", L.WORKER_PYTHON_CALLERS)
+def test_L128_a_build_without_the_worker_python_fires(tmp_path, caller):
+    """Dockerfile.extend is the one a rollout by extend depends on; convert covers the externals."""
+    repo = _mutated_tree(tmp_path, _L128_FILES, caller, lambda t: "\n".join(
+        ln.replace("/opt/instance-tools/lib/worker-python.sh && ", "") for ln in t.splitlines()
+        if ln.strip() != "/opt/instance-tools/lib/worker-python.sh" and "worker-python.sh && \\" not in ln))
+    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == [caller]
+
+
+def test_L128_the_worker_python_after_the_refresh_fires(tmp_path):
+    repo = _mutated_tree(tmp_path, _L128_FILES, "Dockerfile.extend", lambda t: t.replace(
+        "/opt/instance-tools/lib/worker-python.sh && /opt/instance-tools/lib/refresh-ca-data.sh",
+        "/opt/instance-tools/lib/refresh-ca-data.sh && /opt/instance-tools/lib/worker-python.sh"))
+    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == ["Dockerfile.extend"]
+
+
+def test_L128_the_script_missing_fires(tmp_path):
+    repo = _mutated_tree(tmp_path, _L128_FILES, drop=L.WORKER_PYTHON_SCRIPT)
+    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == [L.WORKER_PYTHON_SCRIPT]
+
+
+def test_L114_an_external_image_installing_after_its_refresh_fires(tmp_path):
+    """Externals install model-ui, Ray and audio extras after convert's own refresh."""
+    assert _l114_tree(tmp_path, "external/vllm/Dockerfile",
+                      lambda t: t.replace("RUN /opt/instance-tools/lib/refresh-ca-data.sh\n", "")) \
+        == ["external/vllm/Dockerfile"]
+
+
+def test_L114_convert_refreshing_only_after_the_mirror_fires(tmp_path):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    text = (repo / L.CONVERT_SCRIPT).read_text()
+    first = text.index("            /opt/instance-tools/lib/refresh-ca-data.sh\n")
+    assert first < text.index("venv-mirror build")
+    dst = tmp_path / L.CONVERT_SCRIPT
+    dst.parent.mkdir(parents=True)
+    dst.write_text(text[:first] + text[first:].replace("            /opt/instance-tools/lib/refresh-ca-data.sh\n", "", 1))
+    assert [f.path for f in L.check_refresh_ca_data_ends_installs(tmp_path)] == [L.CONVERT_SCRIPT]
+
+
+def test_L115_covers_the_worker_python_script_and_the_worker_check():
+    assert {"lib/worker-python.sh", "tests/ca-trust/worker-interpreter.sh"} <= set(L.CA_TRUST_OVERLAY_FILES)

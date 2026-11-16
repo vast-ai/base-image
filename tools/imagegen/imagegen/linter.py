@@ -117,6 +117,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
+    ("L127", ERROR, "`tests/base/29-ca-trust.sh` carries no date and no expiry logic, and its exemption rows are well formed and paired with ADR 0058. Each row of `EXEMPTIONS` is `id|checks|pattern|condition|reason` with every field present; ids are unique; `checks` are from `bundle pip-wheel node uv`; the condition names an `exempt_if_<condition>` function in the file; `**` appears only as a trailing `/**`; the PASS line states the count of exemptions applied; and the row ids are exactly the ids in the `Standing exemptions` table of ADR 0058, so a row cannot be added without recording why the image cannot fix the file. Until 2026-11 each exemption carried a review date and the test failed once it passed: on 2026-11-06 the first one did, every serverless QA cell blocked for ten days, and the only action the date allowed was to move it, through a base rebuild, a promotion and a pin bump per derivative. Most rows were also fixable by the image and marked `left to upstream` (ADR 0058, amendment 2026-11-16)"),
+    ("L128", ERROR, "`lib/worker-python.sh` exists and runs before `lib/refresh-ca-data.sh` in the base `Dockerfile`, in `Dockerfile.extend` and in `tools/convert-non-vast-image.sh`. The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's managed Pythons; when the image ships none, uv downloads one at boot, after the CA refresh, with a bundled pip below the trust floor. Installed at build and before the refresh, the bootstrap reuses it and nothing below the floor arrives at boot. `Dockerfile.extend` is listed because a base rebuilt by extend must carry it too (ADR 0058, amendment 2026-11-16)"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
     ("L102", ERROR, "Every Dockerfile that installs Selkies pins it: a concrete `ARG SELKIES_VERSION=X.Y.Z`, `ARG SELKIES_SHA256_AMD64` and `ARG SELKIES_SHA256_ARM64` as 64-hex digests checked with `sha256sum -c`, and no `releases/latest` lookup for it; and every such Dockerfile carries the SAME version and digests. Upstream deleted every 1.x release when 2.0 shipped, which broke both desktop images on the same day, and 2.0 changes behaviour under unchanged flag names (1.x `x264enc` became hardware-first `h264enc`; unknown flags only warn), so a float can change what ships with no build signal. Amends ADR 0027 for this artifact (ADR 0050)"),
@@ -4508,7 +4510,12 @@ REFRESH_CA_DATA_DOCKERFILES = ("Dockerfile.extend", "derivatives/pytorch/Dockerf
                                "derivatives/pytorch/derivatives/unsloth-studio/Dockerfile",
                                "derivatives/pytorch/derivatives/voicebox/Dockerfile",
                                "derivatives/pytorch/derivatives/wan2gp/Dockerfile",
-                               "derivatives/pytorch/derivatives/whisper/Dockerfile")
+                               "derivatives/pytorch/derivatives/whisper/Dockerfile",
+                               # External images: convert refreshes, and every one installs after it.
+                               "external/ollama/Dockerfile", "external/openwebui/Dockerfile",
+                               "external/sglang/Dockerfile", "external/vllm/Dockerfile",
+                               "external/vllm-omni/Dockerfile")
+CONVERT_SCRIPT = "tools/convert-non-vast-image.sh"
 _INSTALL_STEP = re.compile(r"pip install|uv pip|conda (?:create|install)|npm (?:ci|install)|install-torch-venv|apt-get install")
 
 
@@ -4527,6 +4534,18 @@ def check_refresh_ca_data_ends_installs(repo: Path) -> Iterable[Finding]:
                           "must run /opt/instance-tools/lib/refresh-ca-data.sh after its last install step and before "
                           "env-hash: every install can bring back a stale ensurepip wheel, pip or grpcio bundle, and "
                           "the base's own refresh ran before it (ADR 0058, L114)")
+    # The refresh rewrites files in the engine environment (pip, botocore's bundle); the mirror
+    # links that environment file by file, so it must be built from the refreshed one.
+    conv = repo / CONVERT_SCRIPT
+    if conv.is_file():
+        lines = [ln for ln in conv.read_text().splitlines() if not ln.lstrip().startswith("#")]
+        refresh = [i for i, ln in enumerate(lines) if "refresh-ca-data.sh" in ln]
+        mirror = [i for i, ln in enumerate(lines) if "venv-mirror build" in ln]
+        if mirror and (not refresh or refresh[0] > mirror[0]):
+            yield Finding("L114", ERROR, "repo", CONVERT_SCRIPT,
+                          "must run refresh-ca-data.sh before `venv-mirror build` as well as last: the refresh "
+                          "changes files in the engine environment, and a mirror built first links the old "
+                          "ones (ADR 0058, L114)")
 
 
 CA_TRUST_TEST = "base/29-ca-trust"
@@ -4637,7 +4656,8 @@ def check_no_port_mapped_for_both_protocols(repo: Path) -> Iterable[Finding]:
                                   "so give each protocol its own number (ADR 0050, L106)")
 
 
-CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env", "tests/base/29-ca-trust.sh")
+CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env", "tests/base/29-ca-trust.sh",
+                          "lib/worker-python.sh", "tests/ca-trust/worker-interpreter.sh")
 
 
 def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
@@ -4653,6 +4673,101 @@ def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
                               f"differs from ROOT/opt/instance-tools/{name}: an overlay copy shadows the "
                               "base's, so a stale one keeps an old floor or refresh while its own test "
                               "passes; copy the base's again or delete it (ADR 0058, L115)")
+
+
+CA_TRUST_TEST_FILE = "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh"
+CA_TRUST_ADR = "docs/adr/0058-ca-trust-follows-the-os-store.md"
+CA_TRUST_CHECKS = frozenset({"bundle", "pip-wheel", "node", "uv"})
+_EXEMPTIONS_BLOCK = re.compile(r"^EXEMPTIONS='(.*?)'$", re.M | re.S)
+_SHELL_COMMENT = re.compile(r"(^|\s)#.*$")
+_DATE_LITERAL = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_ADR_EXEMPTION_ROW = re.compile(r"^\|\s*`([a-z0-9-]+)`\s*\|")
+
+
+def _adr_standing_exemption_ids(text: str) -> set[str]:
+    ids, inside = set(), False
+    for ln in text.splitlines():
+        if ln.startswith("#"):
+            inside = ln.strip().lower() == "### standing exemptions"
+        elif inside and (m := _ADR_EXEMPTION_ROW.match(ln)):
+            ids.add(m.group(1))
+    return ids
+
+
+def check_ca_trust_exemptions_are_undated_and_recorded(repo: Path) -> Iterable[Finding]:
+    """L127 (repo) — the CA trust test has no dates; its rows are well formed and in ADR 0058."""
+    f = repo / CA_TRUST_TEST_FILE
+    if not f.is_file():
+        return
+    text = f.read_text()
+
+    def bad(msg: str) -> Finding:
+        return Finding("L127", ERROR, "repo", CA_TRUST_TEST_FILE, msg + " (ADR 0058, L127)")
+
+    code = "\n".join(_SHELL_COMMENT.sub("", ln) for ln in text.splitlines())
+    if _DATE_LITERAL.search(code) or "EXPIRED" in code or re.search(r"\bdate\s+\+", code):
+        yield bad("carries a date or expiry logic; an exemption is fixed at build or stands without a date, "
+                  "because a date that passes blocks publishing and fixes nothing")
+    m = _EXEMPTIONS_BLOCK.search(text)
+    if not m:
+        yield bad("has no EXEMPTIONS block; exemptions must be rows the linter can pair with ADR 0058")
+        return
+    ids: list[str] = []
+    for row in filter(None, (r.strip() for r in m.group(1).splitlines())):
+        fields = row.split("|")
+        if len(fields) != 5 or not all(x.strip() for x in fields):
+            yield bad(f"exemption row '{fields[0]}' is not id|checks|pattern|condition|reason with every field set")
+            continue
+        ident, checks, pattern, cond, _why = fields
+        ids.append(ident)
+        if unknown := set(checks.split()) - CA_TRUST_CHECKS:
+            yield bad(f"exemption '{ident}' names unknown check(s) {sorted(unknown)}")
+        if not re.search(rf"^exempt_if_{re.escape(cond.replace('-', '_'))}\(\)", text, re.M):
+            yield bad(f"exemption '{ident}' uses condition '{cond}', which no exempt_if_ function in the test defines")
+        if "**" in pattern.removesuffix("/**") or not (pattern.startswith("/") or pattern.startswith("@UVPY@/")):
+            yield bad(f"exemption '{ident}' has pattern '{pattern}': absolute, and `**` only as a trailing `/**`")
+    if len(ids) != len(set(ids)):
+        yield bad("has two exemption rows with the same id")
+    if "${exempted} exemption(s) applied" not in text:
+        yield bad("does not state the number of exemptions applied on its PASS line, so a pass by exemption "
+                  "reads like a clean one")
+    adr = repo / CA_TRUST_ADR
+    if adr.is_file():
+        recorded = _adr_standing_exemption_ids(adr.read_text())
+        for ident in sorted(set(ids) - recorded):
+            yield bad(f"exemption '{ident}' has no entry in the Standing exemptions table of {CA_TRUST_ADR}; "
+                      "a row is added only with the reason the image cannot fix the file")
+        for ident in sorted(recorded - set(ids)):
+            yield Finding("L127", ERROR, "repo", CA_TRUST_ADR,
+                          f"lists standing exemption '{ident}', which the test no longer has; remove the entry "
+                          "(ADR 0058, L127)")
+
+
+WORKER_PYTHON_SCRIPT = "ROOT/opt/instance-tools/lib/worker-python.sh"
+WORKER_PYTHON_CALLERS = ("Dockerfile", "Dockerfile.extend", CONVERT_SCRIPT)
+
+
+def check_worker_python_is_installed_before_the_refresh(repo: Path) -> Iterable[Finding]:
+    """L128 (repo) — worker-python.sh runs before refresh-ca-data.sh in base, extend and convert."""
+    callers = [repo / c for c in WORKER_PYTHON_CALLERS if (repo / c).is_file()]
+    if not callers:
+        return
+    if not (repo / WORKER_PYTHON_SCRIPT).is_file():
+        yield Finding("L128", ERROR, "repo", WORKER_PYTHON_SCRIPT,
+                      "missing; without it the serverless worker bootstrap downloads its Python at boot, after "
+                      "the CA refresh (ADR 0058, L128)")
+    for f in callers:
+        lines = [ln for ln in f.read_text().splitlines() if not ln.lstrip().startswith("#")]
+        worker = [i for i, ln in enumerate(lines) if "worker-python.sh" in ln]
+        refresh = [i for i, ln in enumerate(lines) if "refresh-ca-data.sh" in ln]
+        ordered = bool(worker) and bool(refresh) and (
+            worker[0] < refresh[-1] or (worker[0] == refresh[-1]
+                                        and lines[worker[0]].index("worker-python.sh") < lines[worker[0]].index("refresh-ca-data.sh")))
+        if not ordered:
+            yield Finding("L128", ERROR, "repo", str(f.relative_to(repo)),
+                          "must run /opt/instance-tools/lib/worker-python.sh before its last refresh-ca-data.sh: "
+                          "the interpreter the serverless worker asks for is installed at build so the refresh "
+                          "covers it (ADR 0058, L128)")
 
 
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
@@ -4678,7 +4793,9 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_jobs_refresh_runner_ca_first,
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
     check_ca_trust_test_gates_promotion, check_base_defaults_are_dated,
-    check_refresh_ca_data_ends_installs, check_ca_trust_overlays_match_base]
+    check_refresh_ca_data_ends_installs, check_ca_trust_overlays_match_base,
+    check_ca_trust_exemptions_are_undated_and_recorded,
+    check_worker_python_is_installed_before_the_refresh]
 
 
 def lint_repo(repo: Path) -> list[Finding]:
