@@ -145,6 +145,14 @@ RUN \
 ENV BACKEND=comfyui-json
 EXPOSE 3000
 
+# The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's
+# managed Pythons. Installed here, the bootstrap reuses this interpreter and the refresh below
+# covers it; left to boot, uv downloads one whose bundled pip is below the trust floor and
+# base/29-ca-trust fails the serverless cell. Interim: remove when the base image carries it.
+RUN set -euo pipefail && \
+    uv python install --no-bin 3.10 && \
+    for py in "${UV_PYTHON_INSTALL_DIR}"/cpython-3.10*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done
+
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
 
