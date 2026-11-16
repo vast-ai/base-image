@@ -1844,6 +1844,11 @@ bootstrap asks for, and runs before `lib/refresh-ca-data.sh` in the base `Docker
 `Dockerfile.extend` and in `convert-non-vast-image.sh`. The bootstrap then reuses it. Without it
 uv downloads the interpreter at boot, after the refresh, with a bundled pip below the trust floor.
 
+`env-hash` includes uv's managed interpreters and their pip (`get_uv_hash`). The environment
+sync replaces `/.uv` with the workspace copy stored under the hash; without the interpreters in
+it, an instance reusing a volume from an older build would lose the pre-installed one. Not
+linter-gated; `tools/imagegen/tests/test_env_hash_sh.py` holds it.
+
 Each engine's serverless worker test reports which interpreter the worker environment runs on
 (`tests/ca-trust/worker-interpreter.sh`). If the bootstrap installed its own, the test prints the
 `worker-bootstrap` exemption line and the gate posts to Slack. Verified live on llama.cpp: the

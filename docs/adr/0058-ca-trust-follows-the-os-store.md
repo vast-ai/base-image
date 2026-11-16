@@ -193,6 +193,10 @@ this table with the rows in the test (L127).
 
 ### Consequences
 - A cell that passes by an exemption no longer reads like a clean pass.
+- `env-hash` now covers uv's managed interpreters and their pip. The environment sync replaces
+  `/.uv` with the workspace copy stored under that hash, so without this an instance reusing a
+  volume from an older build would lose the pre-installed interpreter. Every sync-enabled
+  volume re-syncs once on the first boot of an image built with this change.
 - No date makes an image fail. The pressure to remove a row is its warning on every run, and
   for `worker-bootstrap` a Slack message.
 - Every image grows by one Python 3.10 interpreter, about 100 MB.
