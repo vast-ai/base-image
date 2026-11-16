@@ -45,34 +45,78 @@ control=$(accepted -no-CApath -CAfile "$FIXTURES/reference-roots.pem")
 [[ "$control" == "$total" ]] || test_fail "positive control verified ${control}/${total}: this openssl cannot run the check"
 echo "  positive control: ${control}/${total} chains verify against the published roots"
 
-# Exact paths, each with its reason and review date; the same list applies to every check below. Debian/Ubuntu patch certifi.where() and
-# pip's vendored copy to return the OS bundle, so those files are never read.
-ALLOW='/usr/lib/python3/dist-packages/certifi/cacert.pem|Debian/Ubuntu certifi reads the OS bundle|2099-12-31
-/usr/lib/python3/dist-packages/pip/_vendor/certifi/cacert.pem|Debian/Ubuntu pip reads the OS bundle|2099-12-31
-*/botocore/cacert.pem|upstream botocore bundle; botocore uses certifi when importable|2026-12-31
-/opt/nvidia/nsight-*/*|private Python of the NVIDIA Nsight tools from the CUDA base image; not on PATH, left to NVIDIA|2026-12-31
-/opt/sglang/bin/uv|upstream sglang engine environment uv; ours in /opt/instance-tools/bin runs first, left to upstream|2026-12-31
-/opt/sglang/lib/python3*/site-packages/virtualenv/seed/wheels/embed/*|upstream sglang engine environment virtualenv seed wheels; left to upstream|2026-12-31
-/usr/local/lib/python3.12/dist-packages/virtualenv/seed/wheels/embed/pip-26.2.1-py3-none-any.whl|upstream vllm-omni engine interpreter virtualenv seed wheel; left to upstream|2026-12-31
-/usr/local/lib/python3.12/site-packages/playwright/driver/node|upstream open-webui Playwright driver Node; left to upstream|2026-12-31'
-allowed() {
-    local pat why exp
-    while IFS='|' read -r pat why exp; do
-        [[ -n "$pat" && "$1" == $pat ]] || continue
-        [[ "$(date +%F)" > "$exp" ]] && { echo "EXPIRED ${exp}: ${why}"; return 1; }
-        echo "$why"; return 0
-    done <<< "$ALLOW"
-    # The serverless worker bootstrap (start_server.sh) installs a uv-managed Python 3.10 at boot, after this
-    # image's CA refresh ran, and that interpreter carries pip 23.0.1. Allowed until the bootstrap is fixed, and
-    # only for an interpreter created after the build finished (newer than /.env_hash), so a 3.10 the image
-    # itself ships is still checked.
-    # Where uv installs it: the base uses /.uv/python_install, externals /opt/uv/python, sglang /opt/python.
-    if [[ "$1" =~ ^(/opt/uv/python|/\.uv/python_install|/opt/python)/cpython-3\.10\.[0-9]+-[^/]+ && -e /.env_hash && "${BASH_REMATCH[0]}" -nt /.env_hash ]]; then
-        why="managed Python 3.10 installed at boot by the serverless worker bootstrap; remove when it is fixed"
-        [[ "$(date +%F)" > 2026-11-05 ]] && { echo "EXPIRED 2026-11-05: ${why}"; return 1; }
-        echo "$why"; return 0
+# ── Standing exemptions (ADR 0058, amendment 2026-11-16) ─────────────────────────────────
+# What the image can fix, it fixes at build. A row here is for a file it cannot, and every row
+# has an entry in ADR 0058's "Standing exemptions" table saying why (linter L127). No row
+# expires: an applied exemption is printed as an EXEMPT line on every run and counted on the
+# PASS line, and the QA gate turns those lines into warnings.
+#
+#   id|checks|pattern|condition|reason
+#   checks     which of: bundle pip-wheel node uv. The directory store cannot be exempted.
+#   pattern    absolute path. `*` stops at a `/`. A trailing `/**` covers everything below,
+#              and is accepted only on a row that has a condition. @UVPY@ is `uv python dir`.
+#   condition  a function below, exempt_if_<condition>, that must also hold for the file.
+EXEMPTIONS='nsight-private-python|bundle pip-wheel|/opt/nvidia/nsight-*/**|dpkg-owned|Python embedded in NVIDIA Nsight Compute from the CUDA base image; not on PATH and nothing of ours runs it
+worker-bootstrap|bundle pip-wheel|@UVPY@/cpython-3.10.*/**|worker-bootstrap|Python 3.10 the serverless worker bootstrap installed at boot instead of using the one this image ships'
+
+exempt_if_dpkg_owned() { dpkg-query -S "$1" >/dev/null 2>&1; }
+# Only on a serverless instance, and only an interpreter that appeared after the build finished
+# (newer than /.env_hash): a 3.10 the image itself ships is always checked.
+exempt_if_worker_bootstrap() {
+    is_serverless || return 1
+    [[ -e /.env_hash && "$1" =~ ^(.*/cpython-3\.10\.[^/]+)/ ]] || return 1
+    [[ "${BASH_REMATCH[1]}" -nt /.env_hash ]]
+}
+
+UVPY=$(uv python dir 2>/dev/null || true)
+# pattern -> anchored regex in EX_RE; fails on a pattern this test refuses to hold.
+exemption_regex() {   # $1 = pattern, $2 = condition
+    local pat=$1 tail=""
+    [[ "$pat" == /* || "$pat" == @UVPY@/* ]] || return 1
+    if [[ "$pat" == *'/**' ]]; then
+        [[ -n "$2" ]] || return 1
+        pat=${pat%'/**'}; tail='/.+'
     fi
+    [[ "$pat" != *'**'* ]] || return 1
+    pat=$(sed -e 's/[][\.^$+?(){}|]/\\&/g' -e 's/\*/[^\/]*/g' <<< "$pat")
+    EX_RE="^${pat//@UVPY@/$(sed -e 's/[][\.^$+?(){}|*]/\\&/g' <<< "$UVPY")}${tail}\$"
+}
+# A malformed row fails the test before anything is judged by it.
+while IFS='|' read -r ex_id ex_checks ex_pat ex_cond ex_why ex_extra; do
+    [[ -n "$ex_id" && -n "$ex_checks" && -n "$ex_cond" && -n "$ex_why" && -z "$ex_extra" ]] \
+        || test_fail "malformed exemption row '${ex_id}'"
+    for ex_c in $ex_checks; do
+        [[ " bundle pip-wheel node uv " == *" ${ex_c} "* ]] || test_fail "exemption '${ex_id}': unknown check '${ex_c}'"
+    done
+    declare -F "exempt_if_${ex_cond//-/_}" >/dev/null || test_fail "exemption '${ex_id}': unknown condition '${ex_cond}'"
+    exemption_regex "$ex_pat" "$ex_cond" || test_fail "exemption '${ex_id}': pattern '${ex_pat}' is not accepted"
+done <<< "$EXEMPTIONS"
+
+exempted=0
+# exempt CHECK PATH: true when a row covers the file; then prints its EXEMPT line and counts it.
+# Runs in the main shell (never in a command substitution), or the count would be lost.
+exempt() {
+    local id checks pat cond why
+    while IFS='|' read -r id checks pat cond why; do
+        [[ " ${checks} " == *" $1 "* ]] || continue
+        [[ "$pat" != *@UVPY@* || -n "$UVPY" ]] || continue
+        exemption_regex "$pat" "$cond" && [[ "$2" =~ $EX_RE ]] || continue
+        "exempt_if_${cond//-/_}" "$2" || continue
+        echo "EXEMPT: ${TEST_NAME}: ${id} $1 $2 [${why}]"
+        exempted=$((exempted + 1))
+        return 0
+    done <<< "$EXEMPTIONS"
     return 1
+}
+# Debian/Ubuntu patch python3-certifi and python3-pip so where() returns the OS bundle; the
+# cacert.pem beside it is then never read. Both legs are checked, or the file is judged as any other.
+debian_reads_os_bundle() {
+    local core
+    core="$(dirname "$1")/core.py"
+    [[ "$1" == */certifi/cacert.pem && -f "$core" ]] || return 1
+    dpkg-query -S "$1" >/dev/null 2>&1 || return 1
+    grep -qE "^DEBIAN_CA_CERTS_PATH = ['\"]/etc/ssl/certs/ca-certificates\.crt['\"]" "$core" \
+        && grep -qE '^\s+return DEBIAN_CA_CERTS_PATH\s*$' "$core"
 }
 # True when virtualenv seeds this embedded wheel only into Pythons below the floor's minimum, read from its
 # BUNDLE_SUPPORT table: no pip at the floor runs there, the same boundary lib/refresh-ca-data.sh skips.
@@ -85,14 +129,15 @@ seed_only_below_floor() {
     for py in $pys; do (( ${py#3.} < PIP_FLOOR_MIN_PYTHON )) || return 1; done
     echo $pys
 }
-judge() {   # $1 = label, $2 = chains accepted
-    local why
+judge() {   # $1 = label, $2 = chains accepted, $3 = check name (empty: cannot be exempted)
     if (( $2 == 0 )); then
         echo "  ok    0/${total}  $1"
-    elif why=$(allowed "$1"); then
-        echo "  allow $2/${total}  $1 [${why}]"
+    elif [[ -n "${3:-}" ]] && debian_reads_os_bundle "$1"; then
+        echo "  ok    $2/${total}  $1 [not read: Debian/Ubuntu's patched certifi returns the OS bundle]"
+    elif [[ -n "${3:-}" ]] && exempt "$3" "$1"; then
+        :
     else
-        fail_later "ca-trust:$1" "accepts $2/${total} chains through compromised intermediates${why:+ (${why})}"
+        fail_later "ca-trust:$1" "accepts $2/${total} chains through compromised intermediates"
     fi
 }
 
@@ -105,7 +150,7 @@ while IFS= read -r f; do
     if [[ ! -r "$f" || ! -s "$f" ]]; then fail_later "ca-trust:$f" "bundle is unreadable"; continue; fi
     (( $(grep -c 'BEGIN CERTIFICATE' "$f" 2>/dev/null) >= 20 )) || continue
     bundles=$((bundles + 1))
-    judge "$f" "$(accepted -no-CApath -CAfile "$f")"
+    judge "$f" "$(accepted -no-CApath -CAfile "$f")" bundle
 done < <(find / -xdev -type f \( -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name '*.txt' -o -name '*bundle*' \) \
             -size +20k -not -path '/proc/*' -not -path '/sys/*' -not -path "${FIXTURES}/*" \
             -exec grep -l -m1 'BEGIN CERTIFICATE' {} + 2>/dev/null | sort)
@@ -116,15 +161,15 @@ echo "  bundles checked by content: ${bundles}"
 while IFS= read -r w; do
     v=$(basename "$w" | sed -E 's/^pip-([^-]+)-.*/\1/')
     if [[ "$w" == /usr/share/python-wheels/* ]]; then
-        echo "  allow pip ${v}  $w [Debian/Ubuntu patched wheel reads the OS bundle]"
+        echo "  ok    pip ${v}  $w [not read as a trust store: Debian/Ubuntu's patched wheel reads the OS bundle]"
     elif version_ge "$v" "$PIP_FLOOR"; then
         echo "  ok    pip ${v}  $w"
     elif [[ "$w" == */virtualenv/seed/wheels/embed/* ]] && pys=$(seed_only_below_floor "$w"); then
-        echo "  allow pip ${v}  $w [virtualenv seeds it only for Python ${pys}; no pip at the floor supports those]"
-    elif why=$(allowed "$w") || why=$(allowed "$(readlink -f "$w")"); then   # a mirrored file is judged by its target
-        echo "  allow pip ${v}  $w [${why}]"
+        echo "  n/a   pip ${v}  $w [virtualenv seeds it only for Python ${pys}; no pip at the floor supports those]"
+    elif exempt pip-wheel "$w" || exempt pip-wheel "$(readlink -f "$w")"; then   # a mirrored file is judged by its target
+        :
     else
-        fail_later "ca-trust:$w" "bundled pip ${v} < ${PIP_FLOOR}; every venv made from this interpreter trusts the distrusted CAs${why:+ (${why})}"
+        fail_later "ca-trust:$w" "bundled pip ${v} < ${PIP_FLOOR}; every venv made from this interpreter trusts the distrusted CAs"
     fi
 done < <(find / -xdev -name 'pip-*.whl' \( -path '*/ensurepip/_bundled/*' -o -path '/usr/share/python-wheels/*' \
             -o -path '*/virtualenv/seed/wheels/embed/*' \) 2>/dev/null | sort)
@@ -136,7 +181,7 @@ while IFS= read -r node; do
     v=$("$node" -p 'process.versions.node')
     floor=$(awk -v m="${v%%.*}" '$1 == m {print $2}' "$NODE_FLOOR" 2>/dev/null)
     if [[ -n "$floor" ]] && version_ge "$v" "$floor"; then echo "  ok    node ${v}  $node"
-    elif why=$(allowed "$node"); then echo "  allow node ${v}  $node [${why}]"
+    elif exempt node "$node"; then :
     else fail_later "ca-trust:$node" "Node ${v} is below the trust floor for its line (${floor:-no fixed release listed})"; fi
 done < <( { type -ap node; find / -xdev -type f -name node -perm -u+x -not -path '/proc/*' 2>/dev/null; } \
             | xargs -r -n1 readlink -f | sort -u)
@@ -145,10 +190,13 @@ done < <( { type -ap node; find / -xdev -type f -name node -perm -u+x -not -path
 while IFS= read -r uv; do
     v=$("$uv" --version 2>/dev/null | awk '{print $2}')
     if [[ -n "$v" ]] && version_ge "$v" "$UV_FLOOR"; then echo "  ok    uv ${v}  $uv"
-    elif why=$(allowed "$uv"); then echo "  allow uv ${v}  $uv [${why}]"
+    elif exempt uv "$uv"; then :
     else fail_later "ca-trust:$uv" "uv ${v:-unknown} < ${UV_FLOOR} (compiled-in roots)"; fi
 done < <( { type -ap uv; find / -xdev -type f -name uv -perm -u+x -not -path '/proc/*' 2>/dev/null; } \
             | xargs -r -n1 readlink -f | sort -u)
 
 report_failures
-test_pass "no CA store accepts a chain through a distrusted CA"
+if (( exempted > 0 )); then
+    test_pass "no CA store accepts a chain through a distrusted CA; ${exempted} exemption(s) applied (EXEMPT lines above)"
+fi
+test_pass "no CA store accepts a chain through a distrusted CA; no exemptions applied"
