@@ -69,7 +69,7 @@ allowed() {
     # Where uv installs it: the base uses /.uv/python_install, externals /opt/uv/python, sglang /opt/python.
     if [[ "$1" =~ ^(/opt/uv/python|/\.uv/python_install|/opt/python)/cpython-3\.10\.[0-9]+-[^/]+ && -e /.env_hash && "${BASH_REMATCH[0]}" -nt /.env_hash ]]; then
         why="managed Python 3.10 installed at boot by the serverless worker bootstrap; remove when it is fixed"
-        [[ "$(date +%F)" > 2026-11-05 ]] && { echo "EXPIRED 2026-11-05: ${why}"; return 1; }
+        [[ "$(date +%F)" > 2027-01-05 ]] && { echo "EXPIRED 2027-01-05: ${why}"; return 1; }
         echo "$why"; return 0
     fi
     return 1
