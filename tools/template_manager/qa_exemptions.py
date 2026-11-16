@@ -29,22 +29,46 @@ LEGACY_NOTE = ("dated allowlist: this image's copy of the test fails these from 
 
 
 def load_raw(path: str) -> dict | None:
-    """The last complete {...} line, the same rule qa_verdict.py applies."""
+    """Every payload in the file, merged.
+
+    The gate redraws a host when a cell fails, and each attempt prints one payload line.
+    The verdict is the last attempt's, but an exemption applied on ANY attempt is reported:
+    an attempt that applied one and then failed elsewhere would otherwise take its warning
+    with it. Exemptions are the union (first seen wins); a declared count is kept only
+    from the last attempt that stated one for that test.
+    """
     try:
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return None
-    for line in reversed(lines):
+    merged: dict | None = None
+    seen = set()
+    for line in lines:
         line = line.strip()
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                loaded = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(loaded, dict):
-                return loaded
-    return None
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            loaded = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(loaded, dict):
+            continue
+        if merged is None:
+            merged = {"exemptions": [], "exemptions_declared": {}}
+        attempt = [ex for ex in loaded.get("exemptions") or [] if isinstance(ex, dict)]
+        for ex in attempt:
+            key = (ex.get("test"), ex.get("id"), ex.get("check"), ex.get("path"))
+            if key not in seen:
+                seen.add(key)
+                merged["exemptions"].append(ex)
+        declared = loaded.get("exemptions_declared")
+        if isinstance(declared, dict) and declared:
+            # Counted against this attempt's own lines, so a clean later attempt cannot
+            # make an earlier one look incomplete, and the reverse.
+            merged["exemptions_declared"] = declared
+            merged["_last_declared_lines"] = attempt
+    return merged
 
 
 def summarise(raw: dict | None) -> dict:
@@ -60,7 +84,9 @@ def summarise(raw: dict | None) -> dict:
     declared = (raw or {}).get("exemptions_declared") or {}
     if isinstance(declared, dict):
         for test, n in sorted(declared.items()):
-            seen = sum(1 for r in rows if r["test"] == test and not r["legacy"])
+            scope = (raw or {}).get("_last_declared_lines")
+            pool = rows if scope is None else [e for e in scope if isinstance(e, dict)]
+            seen = sum(1 for r in pool if str(r.get("test", "")) == test and not r.get("legacy"))
             if isinstance(n, int) and n != seen:
                 incomplete.append(f"{test} states {n}, {seen} line(s) received")
     return {

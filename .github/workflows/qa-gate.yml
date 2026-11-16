@@ -349,6 +349,10 @@ jobs:
               > /tmp/qa-raw.json
             CODE=$?
             set -e
+            # Keep every attempt's payload: the file above is overwritten by the next draw,
+            # and an exemption applied on an attempt that then failed elsewhere must still
+            # be reported (the exemptions step reads this; the verdict reads the last one).
+            cat /tmp/qa-raw.json >> /tmp/qa-raw-attempts.txt 2>/dev/null || true
             # WHY we may retry, which is not the same as the code we retry ON.
             # Exit 2 from the client means the market had nothing; the redraw
             # below ALSO sets CODE=2, for a host that failed. Both wait, but for
@@ -558,7 +562,7 @@ jobs:
           QA_REPO: ${{ inputs.repo }}
           QA_TAG: ${{ inputs.tag }}
         run: |
-          python "${TM}/qa_exemptions.py" --raw /tmp/qa-raw.json --cell "${QA_REPO}:${QA_TAG}"
+          python "${TM}/qa_exemptions.py" --raw /tmp/qa-raw-attempts.txt --cell "${QA_REPO}:${QA_TAG}"
 
       # Per-cell evidence for the approval summary: the verdict payload names the
       # GPU, driver, digest and per-test states the decision was actually made on.

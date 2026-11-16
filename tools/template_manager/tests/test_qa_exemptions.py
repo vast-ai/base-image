@@ -151,3 +151,28 @@ def test_gate_reports_after_the_verdict_even_on_a_block_and_wires_the_alert():
     notify = wf["jobs"]["notify-exemption"]
     assert notify["needs"] == "qa"
     assert "needs.qa.outputs.exemption_alert == 'true'" in notify["if"] and "always()" in notify["if"]
+
+
+def test_a_reason_with_brackets_does_not_move_the_path():
+    t = feed(["EXEMPT: base/29-ca-trust: some-id bundle /x/cacert.pem [vendor tool [dpkg-owned], left to vendor]"])
+    assert [(e["path"], e["reason"]) for e in t.exemptions] == [("/x/cacert.pem", "vendor tool [dpkg-owned], left to vendor")]
+
+
+def test_an_exemption_from_an_earlier_attempt_survives_a_redraw(tmp_path):
+    """The gate redraws on failure and each attempt overwrote the payload: an attempt that
+    applied worker-bootstrap and then failed another test lost its warning and its alert."""
+    first = {"state": "failed", "exemptions": feed(LEGACY_BLOCK).exemptions}
+    last = {"state": "passed", "exemptions": [], "exemptions_declared": {"base/29-ca-trust": 0}}
+    raw = tmp_path / "attempts.txt"
+    raw.write_text(json.dumps(first) + "\nnarration\n" + json.dumps(first) + "\n" + json.dumps(last) + "\n")
+    s = qa_exemptions.summarise(qa_exemptions.load_raw(str(raw)))
+    assert len(s["rows"]) == 3 and s["alert"] is True          # union, not doubled by the repeat
+    assert s["incomplete"] == []                               # the clean last attempt is judged on its own lines
+
+
+def test_the_gate_keeps_every_attempts_payload():
+    step = [s for s in yaml.safe_load(QA_GATE.read_text())["jobs"]["qa"]["steps"] if s.get("id") == "test"][0]
+    run = step["run"]
+    assert run.index("> /tmp/qa-raw.json") < run.index(">> /tmp/qa-raw-attempts.txt")
+    ex = [s for s in yaml.safe_load(QA_GATE.read_text())["jobs"]["qa"]["steps"] if s.get("id") == "exemptions"][0]
+    assert "--raw /tmp/qa-raw-attempts.txt" in ex["run"]

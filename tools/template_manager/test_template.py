@@ -837,7 +837,8 @@ def classify_verdict_marker(stripped):
 # Images built before that print `  allow <detail>  <path> [<reason>]` inside the
 # base/29-ca-trust block, from a list whose rows carry an expiry date.
 CA_TRUST_TEST = "base/29-ca-trust"
-_EXEMPT_RE = re.compile(r"^EXEMPT: (\S+): (\S+) (\S+) (.+) \[(.*)\]$")
+# The path is the shortest match: a reason may itself contain " [".
+_EXEMPT_RE = re.compile(r"^EXEMPT: (\S+): (\S+) (\S+) (.+?) \[(.*)\]$")
 _LEGACY_ALLOW_RE = re.compile(r"^allow\s+(?:(pip|node|uv)\s+\S+|\d+/\d+)\s+(\S.*?)\s+\[(.*)\]$")
 _DECLARED_RE = re.compile(r"(\d+) exemption\(s\) applied")
 # Legacy reasons that are not exemptions to act on: files Debian/Ubuntu patch to read the
