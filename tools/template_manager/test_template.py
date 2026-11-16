@@ -7,6 +7,7 @@ import errno
 import json
 import os
 import random
+import re
 import signal
 import sys
 import threading
@@ -827,6 +828,46 @@ def classify_verdict_marker(stripped):
     return None
 
 
+# ── CA-trust exemption lines (ADR 0058) ─────────────────────────────────────
+# base/29-ca-trust passes over a file it would otherwise fail when a listed exemption
+# covers it, and says so in its output. Those lines are lifted here so the gate can warn
+# about them: a passing cell that leaned on an exemption must not look like a clean one.
+#
+# Two shapes. Current images print `EXEMPT: <test>: <id> <check> <path> [<reason>]`.
+# Images built before that print `  allow <detail>  <path> [<reason>]` inside the
+# base/29-ca-trust block, from a list whose rows carry an expiry date.
+CA_TRUST_TEST = "base/29-ca-trust"
+# The path is the shortest match: a reason may itself contain " [".
+_EXEMPT_RE = re.compile(r"^EXEMPT: (\S+): (\S+) (\S+) (.+?) \[(.*)\]$")
+_LEGACY_ALLOW_RE = re.compile(r"^allow\s+(?:(pip|node|uv)\s+\S+|\d+/\d+)\s+(\S.*?)\s+\[(.*)\]$")
+_DECLARED_RE = re.compile(r"(\d+) exemption\(s\) applied")
+# Legacy reasons that are not exemptions to act on: files Debian/Ubuntu patch to read the
+# OS bundle (never read, no expiry that bites), and the seed wheel virtualenv keeps for
+# Pythons no pip at the floor supports (decided in code, not by a list row).
+_LEGACY_IGNORED_REASONS = ("Debian/Ubuntu", "virtualenv seeds it only for Python")
+_LEGACY_WORKER_REASON = "installed at boot by the serverless worker bootstrap"
+
+
+def parse_exemption_line(stripped, current_test):
+    """One output line -> an exemption record, or None."""
+    m = _EXEMPT_RE.match(stripped)
+    if m:
+        test, ident, check, path, reason = m.groups()
+        return {"test": test, "id": ident, "check": check, "path": path,
+                "reason": reason, "legacy": False}
+    if current_test == CA_TRUST_TEST:
+        m = _LEGACY_ALLOW_RE.match(stripped)
+        if m:
+            kind, path, reason = m.groups()
+            if any(r in reason for r in _LEGACY_IGNORED_REASONS):
+                return None
+            ident = "worker-bootstrap" if _LEGACY_WORKER_REASON in reason else "legacy"
+            return {"test": current_test, "id": ident,
+                    "check": {"pip": "pip-wheel", None: "bundle"}.get(kind, kind),
+                    "path": path, "reason": reason, "legacy": True}
+    return None
+
+
 class StreamTracker:
     """Per-test state accumulated from the runner's output stream.
 
@@ -846,9 +887,28 @@ class StreamTracker:
         self.tests = []                       # [{"name":..., "state":...}]
         self.counts = {"passed": 0, "failed": 0, "skipped": 0, "timedout": 0}
         self.skip_reasons = {}                # {test name: reason}
+        self.exemptions = []                  # see parse_exemption_line
+        self.exemptions_declared = {}         # {test name: count its PASS line states}
+        self._exemption_keys = set()
 
     def feed(self, stripped):
         """Consume one stripped output line."""
+        # First, and independent of the branches below: a reconnect replays the log
+        # from the start, so the same line can arrive twice. Keyed on its content.
+        ex = parse_exemption_line(stripped, self.current_test_name)
+        if ex:
+            key = (ex["test"], ex["id"], ex["check"], ex["path"])
+            if key not in self._exemption_keys:
+                self._exemption_keys.add(key)
+                self.exemptions.append(ex)
+            return
+        if stripped.startswith("PASS: "):
+            name = stripped[len("PASS: "):].split(": ", 1)[0]
+            m = _DECLARED_RE.search(stripped)
+            if m:
+                self.exemptions_declared[name] = int(m.group(1))
+            elif "no exemptions applied" in stripped:
+                self.exemptions_declared[name] = 0
         if stripped.startswith("\u2500\u2500\u2500 Running:") and stripped.endswith("\u2500\u2500\u2500"):
             self.current_test_name = stripped.split("Running:")[1].strip().rstrip(" \u2500")
         elif stripped.startswith("\u2192"):
@@ -1864,6 +1924,10 @@ def main():
         # bad": a gap means some per-test states were backfilled from the status
         # JSON rather than observed live.
         raw_output["stream_had_gap"] = stream_had_gap
+        # Exemptions the in-image tests applied (ADR 0058). Reported, never part of
+        # the verdict: qa_exemptions.py turns them into warnings on the gate.
+        raw_output["exemptions"] = tracker.exemptions
+        raw_output["exemptions_declared"] = tracker.exemptions_declared
         # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
         # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
         if machine_id is not None:
