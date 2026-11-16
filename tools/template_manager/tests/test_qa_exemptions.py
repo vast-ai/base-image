@@ -109,8 +109,25 @@ def test_text_from_the_image_cannot_start_a_second_workflow_command():
     line = qa_exemptions.warning_line("repo:tag%0A", s)
     assert "\n" not in line and "\r" not in line and "legacy%0A::error::forged" in line
     assert line.startswith("::warning title=CA-trust exemptions::repo:tag%250A: ")
-    table_rows = [ln for ln in qa_exemptions.summary_markdown("r:t", s).splitlines() if ln.startswith("| legacy")]
+    table_rows = [ln for ln in qa_exemptions.summary_markdown("r:t", s).splitlines() if ln.startswith("| `legacy")]
     assert len(table_rows) == 1 and "a\\|b" in table_rows[0]
+
+
+def test_a_link_from_inside_the_instance_is_shown_as_text_and_a_flood_is_bounded():
+    """The run summary is what a maintainer reads before approving a promotion."""
+    ex = {"test": "base/29-ca-trust", "id": "x", "check": "bundle", "path": "/p", "reason": "[Re-approve here](https://example.invalid)"}
+    md = qa_exemptions.summary_markdown("r:t", qa_exemptions.summarise({"exemptions": [ex]}))
+    assert "`[Re-approve here](https://example.invalid)`" in md
+    many = [dict(ex, path=f"/p{i}", reason="r" * 5000) for i in range(500)]
+    md = qa_exemptions.summary_markdown("r:t", qa_exemptions.summarise({"exemptions": many}))
+    assert len(md) < 60_000 and "450 more not shown" in md
+
+
+def test_a_dropped_stream_is_reported_even_when_no_exemption_line_arrived(tmp_path):
+    raw = tmp_path / "a.txt"
+    raw.write_text(json.dumps({"state": "passed", "exemptions": [], "stream_had_gap": True}) + "\n")
+    s = qa_exemptions.summarise(qa_exemptions.load_raw(str(raw)))
+    assert "stream dropped" in qa_exemptions.warning_line("r:t", s)
 
 
 def test_main_writes_the_alert_output_and_summary_and_exits_zero(tmp_path, capsys):
@@ -146,6 +163,7 @@ def test_gate_reports_after_the_verdict_even_on_a_block_and_wires_the_alert():
     step = steps[ids.index("exemptions")]
     assert ids.index("exemptions") > ids.index("verdict")
     assert step["if"].startswith("always()") and "qa_exemptions.py" in step["run"]
+    assert step["continue-on-error"] is True
     assert "${{" not in step["run"]             # inputs reach the shell through env, not interpolation
     assert wf["jobs"]["qa"]["outputs"]["exemption_alert"] == "${{ steps.exemptions.outputs.alert }}"
     notify = wf["jobs"]["notify-exemption"]

@@ -24,8 +24,12 @@ import sys
 
 ALERT_ID = "worker-bootstrap"
 # The date after which every row of the dated list in images built before 2026-11 fails.
-LEGACY_NOTE = ("dated allowlist: this image's copy of the test fails these from "
-               "2027-01-01 unless the image is rebuilt")
+LEGACY_NOTE = ("dated allowlist: this image's copy of the test fails these from 2027-01-01 "
+               "unless it is rebuilt on a base that carries the undated test (a derivative "
+               "takes the test from its base, so its base pin has to move)")
+# Text in a report comes from inside the instance under test: bound what one cell can print.
+MAX_ROWS = 50
+MAX_FIELD = 300
 
 
 def load_raw(path: str) -> dict | None:
@@ -55,7 +59,8 @@ def load_raw(path: str) -> dict | None:
         if not isinstance(loaded, dict):
             continue
         if merged is None:
-            merged = {"exemptions": [], "exemptions_declared": {}}
+            merged = {"exemptions": [], "exemptions_declared": {}, "stream_had_gap": False}
+        merged["stream_had_gap"] = merged["stream_had_gap"] or bool(loaded.get("stream_had_gap"))
         attempt = [ex for ex in loaded.get("exemptions") or [] if isinstance(ex, dict)]
         for ex in attempt:
             key = (ex.get("test"), ex.get("id"), ex.get("check"), ex.get("path"))
@@ -89,6 +94,10 @@ def summarise(raw: dict | None) -> dict:
             seen = sum(1 for r in pool if str(r.get("test", "")) == test and not r.get("legacy"))
             if isinstance(n, int) and n != seen:
                 incomplete.append(f"{test} states {n}, {seen} line(s) received")
+    # Exemption lines are read from the live stream only. If it dropped, lines printed during
+    # the gap never arrived, and a clean-looking report cannot be told from a partial one.
+    if (raw or {}).get("stream_had_gap"):
+        incomplete.append("the output stream dropped during the run, so exemption lines may be missing")
     return {
         "rows": rows,
         "incomplete": incomplete,
@@ -104,7 +113,11 @@ def escape_command(text: str) -> str:
 
 
 def escape_cell(text: str) -> str:
-    return text.replace("|", "\\|").replace("`", "'").replace("\r", " ").replace("\n", " ")
+    """One table cell, as a code span: links, images and HTML in it are shown, not rendered."""
+    text = text.replace("|", "\\|").replace("`", "'").replace("\r", " ").replace("\n", " ")
+    if len(text) > MAX_FIELD:
+        text = text[:MAX_FIELD] + "..."
+    return f"`{text}`" if text.strip() else ""
 
 
 def warning_line(cell: str, s: dict) -> str | None:
@@ -131,12 +144,15 @@ def summary_markdown(cell: str, s: dict) -> str:
     if not s["rows"] and not s["incomplete"]:
         return ""
     out = [f"### CA-trust exemptions applied — {escape_cell(cell)}", ""]
+    shown = s["rows"][:MAX_ROWS]
     if s["rows"]:
         out += ["| Exemption | Check | Path | Reason |", "|---|---|---|---|"]
-        for r in s["rows"]:
+        for r in shown:
             ident = r["id"] + (" (dated list)" if r["legacy"] else "")
             out.append("| " + " | ".join(escape_cell(v) for v in
                                          (ident, r["check"], r["path"], r["reason"])) + " |")
+        if len(s["rows"]) > len(shown):
+            out.append(f"| ... | | {len(s['rows']) - len(shown)} more not shown | |")
         out.append("")
     if s["legacy"]:
         out += [f"Rows marked \"dated list\": {LEGACY_NOTE}.", ""]

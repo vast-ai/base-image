@@ -558,6 +558,7 @@ jobs:
       - name: Report CA-trust exemptions
         id: exemptions
         if: always() && steps.guard.outputs.run == 'true'
+        continue-on-error: true   # a report: it must never be the reason a cell fails
         env:
           QA_REPO: ${{ inputs.repo }}
           QA_TAG: ${{ inputs.tag }}
