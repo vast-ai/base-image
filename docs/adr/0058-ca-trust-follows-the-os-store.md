@@ -113,3 +113,100 @@ rebuild, a pin bump or an upstream release.
 ## What would reverse this
 Node gaining a way to follow the OS store's distrust without changing its trust semantics for
 users, at which point the version floor could give way to that.
+
+## Amendment 2026-11-16 — exemptions are fixed at build or stand without a date
+
+This replaces "reported by the test on a dated allowlist" in the Consequences above, in both
+places it appears. The decisions and the other binding conditions are unchanged.
+
+### What happened
+The test's exemptions each carried a review date, and the test failed once a date passed. On
+2026-11-06 the first one did: the exemption for the Python 3.10 that the serverless worker
+bootstrap installs at boot. Every serverless QA cell then failed for ten days. Nothing about
+the exempted interpreter had changed, and the one action the date allowed was to move it,
+which needs a base rebuild, a promotion and a pin bump in every derivative. Six more rows were
+due on 2026-12-31, for every image at once.
+
+A review of the list found the larger fault. Most rows broke this ADR's own rule, that the
+line between "we fix it" and "upstream owns it" is the runtime that runs. They were marked
+"left to upstream" for files in environments that users and our services run.
+
+### Decision
+7. **The image fixes what it can at build.** Each former row is fixed, with one exception
+   (the table below):
+   - botocore's bundle becomes a link to the OS bundle, in `lib/refresh-ca-data.sh`.
+   - An engine environment's own `uv` and its `virtualenv` seed wheels are brought to the
+     floor in `convert-non-vast-image.sh`, before `venv-mirror build`.
+   - The Node that open-webui's Playwright driver bundles is replaced in that image's
+     Dockerfile with a fixed release on the same major line.
+   - Every image installs the interpreter the serverless worker bootstrap asks for
+     (`lib/worker-python.sh`: uv's managed Python 3.10), before the refresh. The bootstrap
+     then reuses it and nothing below the floor arrives at boot.
+8. **The two Debian/Ubuntu files are not exemptions.** `python3-certifi` and `python3-pip`
+   are patched to read the OS bundle. The test reports their unread copies as checked and
+   unread, on two conditions it verifies: dpkg owns the file, and the sibling `core.py`
+   returns the OS bundle. Otherwise the file is judged like any other.
+9. **An exemption that remains has no date.** It is a row in `29-ca-trust.sh` with an id, the
+   checks it may excuse, a path pattern, a condition the test verifies, and a reason. A
+   pattern's `*` does not cross a path separator. A trailing `**` is allowed only on a row
+   that has a condition. A malformed row or an unknown condition fails the test.
+10. **Every applied exemption is reported, on every run.** The test prints one `EXEMPT:` line
+    per file and states the count on its PASS line. The QA gate turns those lines into a
+    warning per cell and a table in the run summary. It never changes the verdict.
+11. **One exemption should never apply, and says so when it does.** With decision 7 the
+    `worker-bootstrap` row is a fallback. Each engine's serverless worker test checks, after
+    the worker is up, which interpreter the worker environment uses. If the bootstrap
+    installed its own, that check prints the exemption line and the gate posts to Slack.
+
+### Standing exemptions
+A row may be added only with an entry here that says why the image cannot fix the file. "Left
+to upstream" is not a reason for a runtime that users or our services run. The linter pairs
+this table with the rows in the test (L127).
+
+| Id | What it covers | Why the image does not fix it |
+|---|---|---|
+| `nsight-private-python` | The pip wheel and pip's vendored CA bundle in the Python that NVIDIA Nsight Compute embeds under `/opt/nvidia`, on CUDA base images that ship one. Applies only to files dpkg owns. | It belongs to a vendor profiler, is not on PATH, and nothing of ours runs it. Patching a profiler's bundled runtime cannot be tested here. |
+| `worker-bootstrap` | The pip wheel and bundle in a uv-managed Python 3.10 that appeared after the image was built, on a serverless instance. | The bootstrap that would install it lives in another repository. Decision 7 removes the need for it; this row keeps a change there from blocking image publishing, and decision 11 makes that change loud. |
+
+### Options considered
+- **Keep the dates and extend them.** Rejected: the date pressed on image publishing, which
+  cannot fix what the row exempts. Extending it costs a full rollout each time.
+- **Keep dates in the repository only, checked on pull requests.** Rejected: it keeps a
+  calendar as the trigger. What changes an exemption is a fix or a change upstream, and
+  neither follows a calendar.
+- **Deliver the exemption list from the QA client at run time.** Rejected: an image's verdict
+  would depend on which client ran it, and a customer who runs the suite has no client. It
+  also only made the date cheaper to move.
+- **Drop the dates and change nothing else.** Rejected: most rows were fixable, and an
+  undated list of fixable rows makes a defect permanent. A bare `*` in a bash pattern also
+  crosses path separators, so an undated wildcard would cover files nobody reviewed.
+- **Fail in the image when an exemption no longer matches anything.** Rejected: the list is
+  the same on every image and most rows match nothing on most images.
+
+### Binding conditions added
+- `29-ca-trust.sh` carries no date and no expiry logic, and every row id is in the table above
+  (L127).
+- `lib/worker-python.sh` runs before the refresh in the base build, the extend build and the
+  convert script (L128).
+- A build step that fixes a runtime proves it at build: the step fails the build unless the
+  fixed runtime still starts.
+
+### Consequences
+- A cell that passes by an exemption no longer reads like a clean pass.
+- No date makes an image fail. The pressure to remove a row is its warning on every run, and
+  for `worker-bootstrap` a Slack message.
+- Every image grows by one Python 3.10 interpreter, about 100 MB.
+- Python 3.10 is end-of-life. When a trust floor needs a pip that no longer supports it, the
+  pre-installed interpreter fails the test and no row covers it. The lasting fix is for the
+  bootstrap to use the image's interpreter or a supported Python. That is a change in the
+  bootstrap's repository, proposed separately.
+- On a serverless instance, a Python 3.10 that a provisioning script installs under uv's
+  Python directory is also covered by `worker-bootstrap`. It is reported, not silent.
+- The pre-install relies on the bootstrap asking for 3.10 with the image's `uv` in uv's
+  default Python directory. Decision 11 is what detects a change.
+- Images built before this amendment keep the dated list until they are rebuilt. The gate
+  reports their rows with the date they fail from.
+
+### What would reverse this
+The bootstrap using the image's interpreter removes the `worker-bootstrap` row and the
+pre-install. NVIDIA shipping a current pip in Nsight removes the other row.
