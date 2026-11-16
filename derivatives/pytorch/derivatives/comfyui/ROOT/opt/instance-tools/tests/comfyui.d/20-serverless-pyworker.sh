@@ -101,6 +101,13 @@ worker_ref=$(git -C "$WORKER_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || ech
 echo "  pyworker: ${WORKER_DIR} @ ${worker_ref} ${worker_rev}"
 echo "  (floating by design — this cell's verdict depends on an artifact this repo does not build)"
 
+# ── Which interpreter the worker runs on (ADR 0058) ──────────────────
+# Reports only, never fails. Guarded so this test still runs on a base older than the helper.
+if [[ -r "$(dirname "$0")/../ca-trust/worker-interpreter.sh" ]]; then
+    . "$(dirname "$0")/../ca-trust/worker-interpreter.sh"
+    report_worker_interpreter
+fi
+
 # ── The score ────────────────────────────────────────────────────────
 # The anchor for "this run" is the pyworker process's own start time. /proc/<pid>
 # carries it as the directory mtime, which is exact and needs no clock arithmetic
