@@ -49,6 +49,10 @@ fi
 if [[ -f /etc/Caddyfile ]]; then
     # Frontend log viewer will force a page reload if this string is detected
     echo "Starting Caddy..." 
+    # Plain TCP on every public port. Go 1.24+ listens as MPTCP by default, and an MPTCP
+    # listener is what the known attack on CVE-2026-98432 (host kernel) needs (ADR 0061).
+    # Appended because the last multipathtcp= in GODEBUG wins; a user's other settings stay.
+    export GODEBUG="${GODEBUG:+${GODEBUG},}multipathtcp=0"
     /opt/portal-aio/caddy_manager/caddy run --config /etc/Caddyfile 2>&1
     exit $?
 else

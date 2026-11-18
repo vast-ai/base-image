@@ -1815,6 +1815,21 @@ byte-identical to the base's, so a later base change cannot be silently overridd
 whose own test checks against the same stale floor. The copies are removed once the image is pinned
 to a base that ships the same files (ADR 0058).
 
+### The Go listeners the base ships are plain TCP — **GATED (L118)**
+
+Go 1.24+ opens MPTCP listeners by default. An MPTCP listener is what the published attack on
+CVE-2026-98432, a host-kernel IPv4 TCP handshake use-after-free, needs. Caddy holds every public
+port and Syncthing the public sync port, and measured on the 2026-10-23 base both were MPTCP. L118
+requires `caddy.sh` and `syncthing.sh` each to export `GODEBUG` with `multipathtcp=0` appended
+(the last value wins) before the line that starts the listener, and `base/31-no-mptcp-listeners`
+to exist. That test reads the kernel's socket table (`ss -M`), the only check that also sees a Go
+service an app brings. Loopback MPTCP listeners are allowed; no remote peer reaches them.
+
+The boundary: this protects a user who has not changed the setting. Someone with a shell in the
+container can turn it back on, and that is theirs to choose; nothing in an image can stop a tenant
+from reaching the host kernel. The host kernel is the fix. Images built before this get the same
+result from the portal release (ADR 0061).
+
 ## 7. Application runtime conventions (how apps are launched & fed models)
 
 These govern how an application's supervisor script launches the app and how a model
