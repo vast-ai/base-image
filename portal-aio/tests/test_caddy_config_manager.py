@@ -320,3 +320,57 @@ def test_admin_off_shares_the_global_block_with_servers(monkeypatch):
     src = pathlib.Path(ccm.__file__).read_text()
     assert "{admin_block}" in src and "{servers_block}" in src, \
         "the global block must still emit both placeholders"
+
+
+# --- control routes are localhost-only --------------------------- #
+
+def _render_with_portal(monkeypatch):
+    """Render a config that includes the portal (internal 11111) plus one other app."""
+    monkeypatch.setenv("VAST_CONTAINERLABEL", "testlabel")
+    monkeypatch.setenv("VAST_TCP_PORT_1111", "1")
+    monkeypatch.setenv("VAST_TCP_PORT_6006", "1")
+    monkeypatch.setenv("ENABLE_AUTH", "false")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    cfg = {
+        "Instance Portal": {
+            "external_port": 1111, "internal_port": 11111,
+            "hostname": "localhost", "open_path": "/", "name": "Instance Portal",
+        },
+        "Tensorboard": {
+            "external_port": 6006, "internal_port": 16006,
+            "hostname": "localhost", "open_path": "/", "name": "Tensorboard",
+        },
+    }
+    caddyfile, _u, _pw, _tok = ccm.generate_caddyfile(cfg)
+    return caddyfile
+
+
+def test_control_deny_block_covers_provision_and_supervisor():
+    b = ccm.get_control_route_deny_block()
+    assert "/capabilities/provision" in b
+    assert "/supervisor/*" in b
+    assert "403" in b
+
+
+def test_control_routes_denied_on_public_edge(monkeypatch):
+    cf = _render_with_portal(monkeypatch)
+    # exactly one deny block (the portal site), refusing the exec-capable routes
+    assert cf.count('respond "This control route is available on localhost only" 403') == 1
+    assert "/capabilities/provision" in cf
+    assert "/supervisor/*" in cf
+    assert 'respond "This control route is available on localhost only" 403' in cf
+    # it precedes the portal's reverse_proxy (localhost:11111) so it short-circuits first
+    assert cf.index("@vast_control_routes") < cf.index("localhost:11111")
+
+
+def test_no_control_deny_without_portal(monkeypatch):
+    # a config with no portal block (internal 11111) emits no control-route deny
+    monkeypatch.setenv("VAST_CONTAINERLABEL", "testlabel")
+    monkeypatch.setenv("VAST_TCP_PORT_6006", "1")
+    monkeypatch.setenv("ENABLE_AUTH", "false")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    cfg = {"Tensorboard": {"external_port": 6006, "internal_port": 16006,
+           "hostname": "localhost", "open_path": "/", "name": "Tensorboard"}}
+    cf, *_ = ccm.generate_caddyfile(cfg)
+    assert "vast_control_routes" not in cf
+    assert "/capabilities/provision" not in cf

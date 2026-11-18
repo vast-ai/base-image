@@ -7,6 +7,10 @@ import time
 import shortuuid
 
 CADDY_BIN = "/opt/portal-aio/caddy_manager/caddy"
+# The Instance Portal FastAPI (localhost:11111). Its exec-capable control routes
+# (/capabilities/provision, /supervisor/*) are served on localhost only; Caddy
+# refuses them on the public edge.
+PORTAL_INTERNAL_PORT = 11111
 CADDY_CONFIG = "/etc/Caddyfile"
 CERT_PATH = "/etc/instance.crt"
 KEY_PATH = "/etc/instance.key"
@@ -421,6 +425,13 @@ def generate_caddyfile(config):
         caddyfile += '    root * /opt/portal-aio/caddy_manager/public\n\n'
         caddyfile += '    ' + get_not_ready_handler_block() + '\n\n'
 
+        if internal_port == PORTAL_INTERNAL_PORT:
+            # Exec-capable control routes are localhost-only: refuse them on the
+            # public edge before any auth/proxy route. localhost:11111 (in-container,
+            # not via Caddy) still serves them, so the in-container provisioner,
+            # on-box agents and the boot path are unaffected.
+            caddyfile += get_control_route_deny_block()
+
         if enable_auth and not is_port_auth_excluded(external_port):
             caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, open_button_token, hostname, internal_port, flush_interval)
         else:
@@ -429,6 +440,26 @@ def generate_caddyfile(config):
         caddyfile += "}\n\n"
 
     return caddyfile, web_username, web_password, open_button_token
+
+def get_control_route_deny_block():
+    """Refuse the exec-capable portal control routes on the public edge.
+
+    `/capabilities/provision` (declarative root install+exec) and the
+    `/supervisor/*` service-control routes are reachable only on
+    `localhost:11111` in-container. This block is the FIRST route in the portal
+    site block, so a matching request over the public edge short-circuits to 403
+    before any auth/proxy route; non-matching requests fall through untouched.
+    The remote reach previously rode the unrotatable auto-login token; the
+    in-container callers (provisioner, on-box agents, boot path) hit
+    localhost:11111 directly and never traverse this edge.
+    """
+    return '''    @vast_control_routes path /capabilities/provision /capabilities/provision/* /supervisor /supervisor/*
+    route @vast_control_routes {
+        respond "This control route is available on localhost only" 403
+    }
+
+'''
+
 
 def get_not_ready_handler_block():
     """Placeholder shown while the backing service is still starting up.
