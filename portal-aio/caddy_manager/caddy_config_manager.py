@@ -444,17 +444,23 @@ def generate_caddyfile(config):
 def get_control_route_deny_block():
     """Refuse the exec-capable portal control routes on the public edge.
 
-    `/capabilities/provision` (declarative root install+exec) and the
-    `/supervisor/*` service-control routes are reachable only on
-    `localhost:11111` in-container. This block is the FIRST route in the portal
-    site block, so a matching request over the public edge short-circuits to 403
-    before any auth/proxy route; non-matching requests fall through untouched.
-    The remote reach previously rode the unrotatable auto-login token; the
-    in-container callers (provisioner, on-box agents, boot path) hit
-    localhost:11111 directly and never traverse this edge.
+    Covers the install+exec-as-root routes only: `/capabilities/provision` and
+    the mutating supervisor controls `/supervisor/process/<name>/<start|stop|
+    restart>` (matched by `/supervisor/process/*`). The read-only
+    `/supervisor/processes` status endpoint the Services UI polls is deliberately
+    NOT matched, so the panel keeps working for remote users; nor is
+    `/capabilities/services`.
+
+    Emitted as a `handle` (not a `route`): the Caddyfile adapter sorts the
+    `handle` directive BEFORE `route`, so a `route`-based deny loses to the
+    catch-all `handle` that `generate_noauth_config()` emits (ENABLE_AUTH=false
+    or the portal port in AUTH_EXCLUDE) and never fires. A matched `handle`
+    joins the same handle mutual-exclusion group as that catch-all and, being
+    first and matched, wins in BOTH the authed and noauth configs. localhost:11111
+    (in-container, not via Caddy) is never affected.
     """
-    return '''    @vast_control_routes path /capabilities/provision /capabilities/provision/* /supervisor /supervisor/*
-    route @vast_control_routes {
+    return '''    @vast_control_routes path /capabilities/provision /capabilities/provision/* /supervisor/process/*
+    handle @vast_control_routes {
         respond "This control route is available on localhost only" 403
     }
 

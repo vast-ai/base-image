@@ -20,6 +20,8 @@ import pathlib
 import re
 import sys
 
+import pytest
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PORTAL_AIO = os.path.dirname(_HERE)
 sys.path.insert(0, os.path.join(_PORTAL_AIO, "caddy_manager"))
@@ -345,22 +347,76 @@ def _render_with_portal(monkeypatch):
     return caddyfile
 
 
-def test_control_deny_block_covers_provision_and_supervisor():
+def test_control_deny_block_covers_exec_routes_only():
     b = ccm.get_control_route_deny_block()
     assert "/capabilities/provision" in b
-    assert "/supervisor/*" in b
+    assert "/supervisor/process/*" in b            # exec supervisor controls (start/stop/restart)
+    assert "/supervisor/processes" not in b        # read-only status must stay public
+    assert "handle @vast_control_routes" in b      # a handle, not a route, so it wins in noauth too
     assert "403" in b
 
 
-def test_control_routes_denied_on_public_edge(monkeypatch):
+def test_control_deny_emitted_once_scoped_to_portal(monkeypatch):
     cf = _render_with_portal(monkeypatch)
-    # exactly one deny block (the portal site), refusing the exec-capable routes
     assert cf.count('respond "This control route is available on localhost only" 403') == 1
-    assert "/capabilities/provision" in cf
-    assert "/supervisor/*" in cf
-    assert 'respond "This control route is available on localhost only" 403' in cf
-    # it precedes the portal's reverse_proxy (localhost:11111) so it short-circuits first
-    assert cf.index("@vast_control_routes") < cf.index("localhost:11111")
+    assert "/supervisor/process/*" in cf           # exec controls denied
+    assert "/supervisor/processes" not in cf       # read-only status not denied
+
+
+def _compiled_portal_routes(cf, caddy):
+    """Adapt the Caddyfile through real caddy and return the :1111 server's route list."""
+    import json, os, subprocess, tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".caddy", delete=False) as f:
+        f.write(cf)
+        path = f.name
+    try:
+        out = subprocess.run([caddy, "adapt", "--adapter", "caddyfile", "--config", path],
+                             capture_output=True, text=True, check=True).stdout
+    finally:
+        os.unlink(path)
+    servers = json.loads(out)["apps"]["http"]["servers"]
+    srv = next(s for s in servers.values()
+               if any(str(l).endswith(":1111") for l in s.get("listen", [])))
+    return srv["routes"]
+
+
+@pytest.mark.parametrize("enable_auth", ["true", "false"])
+def test_control_deny_precedes_proxy_in_compiled_caddy(monkeypatch, enable_auth):
+    """The deny must actually fire before the proxy in BOTH auth modes.
+
+    Caddy's Caddyfile adapter sorts `handle` BEFORE `route`, so a route-based
+    deny loses to the noauth catch-all `handle` and never runs. This adapts the
+    generated config through real caddy and asserts the 403 deny is ordered ahead
+    of the reverse_proxy — the string-order checks the earlier tests used could
+    not catch that (they passed while the deny was dead code in noauth mode).
+    """
+    import json, os, shutil
+    caddy = shutil.which("caddy")
+    if not caddy and os.path.exists(ccm.CADDY_BIN):
+        caddy = ccm.CADDY_BIN
+    if not caddy:
+        pytest.skip("needs a real caddy binary to adapt the config")
+    monkeypatch.setattr(ccm, "CADDY_BIN", caddy)  # hash-password is called in auth mode
+    monkeypatch.setenv("VAST_CONTAINERLABEL", "ci")
+    monkeypatch.setenv("VAST_TCP_PORT_1111", "1")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    monkeypatch.setenv("ENABLE_AUTH", enable_auth)
+    cfg = {"Instance Portal": {"external_port": 1111, "internal_port": 11111,
+           "hostname": "localhost", "open_path": "/", "name": "Instance Portal"}}
+    cf, *_ = ccm.generate_caddyfile(cfg)
+    routes = _compiled_portal_routes(cf, caddy)
+    deny = proxy = None
+    for i, r in enumerate(routes):
+        blob = json.dumps(r, separators=(",", ":"))
+        if deny is None and '"status_code":403' in blob and "/capabilities/provision" in blob:
+            deny = i
+        if proxy is None and "reverse_proxy" in blob:
+            proxy = i
+    assert deny is not None, "no 403 control-route deny in the compiled config"
+    assert proxy is not None, "no reverse_proxy in the compiled config"
+    assert deny < proxy, (
+        f"ENABLE_AUTH={enable_auth}: the 403 deny (route[{deny}]) must precede the "
+        f"reverse_proxy (route[{proxy}]); caddy runs `handle` before `route`")
 
 
 def test_no_control_deny_without_portal(monkeypatch):
