@@ -55,14 +55,27 @@ SITE_DIRS = ("import sysconfig\n"
              "p = sysconfig.get_paths()\n"
              "print('\\n'.join(sorted({p['purelib'], p['platlib']})))")
 
-# Run by the tree's own interpreter: cache_from_source names that interpreter's bytecode.
-COVERAGE = ("import importlib.util, os, sys\n"
+# Run by the tree's own interpreter: cache_from_source names that interpreter's bytecode. A source
+# counts only if its bytecode is timestamp-mode and matches the source's mtime and size, as Python
+# checks on import: a .pyc left from before, beside a source that no longer compiles, is not coverage.
+COVERAGE = ("import importlib.util, os, struct, sys\n"
             "total = ok = 0\n"
             "for r, ds, fs in os.walk(sys.argv[1]):\n"
             "    for f in fs:\n"
-            "        if f.endswith('.py'):\n"
-            "            total += 1\n"
-            "            ok += os.path.exists(importlib.util.cache_from_source(os.path.join(r, f)))\n"
+            "        if not f.endswith('.py'):\n"
+            "            continue\n"
+            "        src = os.path.join(r, f)\n"
+            "        total += 1\n"
+            "        try:\n"
+            "            with open(importlib.util.cache_from_source(src), 'rb') as fh:\n"
+            "                head = fh.read(16)\n"
+            "            st = os.stat(src)\n"
+            "        except OSError:\n"
+            "            continue\n"
+            "        if len(head) == 16 and head[:4] == importlib.util.MAGIC_NUMBER:\n"
+            "            flags, mtime, size = struct.unpack('<III', head[4:16])\n"
+            "            ok += (flags == 0 and mtime == int(st.st_mtime) & 0xFFFFFFFF\n"
+            "                   and size == st.st_size & 0xFFFFFFFF)\n"
             "print(total, ok)")
 
 
