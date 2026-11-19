@@ -843,7 +843,7 @@ async def get_supervisor_processes():
         logger.error(f"Failed to get supervisor processes: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
-@app.post("/supervisor/process/{name}/start", dependencies=[Depends(require_local_caller)])
+@app.post("/supervisor/process/{name}/start")
 async def supervisor_start_process(name: str):
     try:
         proxy = _get_supervisor_proxy()
@@ -855,7 +855,7 @@ async def supervisor_start_process(name: str):
         logger.error(f"Failed to start process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
-@app.post("/supervisor/process/{name}/stop", dependencies=[Depends(require_local_caller)])
+@app.post("/supervisor/process/{name}/stop")
 async def supervisor_stop_process(name: str):
     if name in UNSTOPPABLE_PROCESSES:
         raise HTTPException(status_code=403, detail=f"Process '{name}' cannot be stopped")
@@ -869,7 +869,7 @@ async def supervisor_stop_process(name: str):
         logger.error(f"Failed to stop process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
-@app.post("/supervisor/process/{name}/restart", dependencies=[Depends(require_local_caller)])
+@app.post("/supervisor/process/{name}/restart")
 async def supervisor_restart_process(name: str):
     try:
         proxy = _get_supervisor_proxy()

@@ -1,4 +1,4 @@
-# ADR 0064 — The portal's exec-capable control routes are localhost-only
+# ADR 0064 — The portal's provisioner control route is localhost-only
 
 Status: Proposed
 Date: 2026-11-19
@@ -17,13 +17,20 @@ Two of the portal's routes do more than read state — they execute:
 - `POST /supervisor/process/{name}/start|stop|restart` controls supervised
   processes.
 
+This ADR makes **only `/capabilities/provision`** localhost-only. The supervisor
+process controls are deliberately left reachable remotely (token-gated, as before):
+the Instance Portal is reached over the public edge, never on localhost, so the
+Services UI drives start/stop/restart remotely — denying them at the edge would
+make service management permanently unusable. See "Supervisor controls are out of
+scope" below.
+
 These are *container-native* capabilities: inside the container they grant no
 privilege the renter does not already have. The platform's own model is
 root-by-design — the platform builds an intermediate image that installs and
 launches Jupyter `--allow-root`, and a token holder already has a root shell one
 click away via the Jupyter terminal (and via SSH in every launch mode except
-entrypoint). Provisioning is strictly `≤` that shell. So the control routes are
-not a privilege-escalation vector on their own machine.
+entrypoint). Provisioning is strictly `≤` that shell. So the provisioner route is
+not a privilege-escalation vector on its own machine.
 
 They are, however, **exec-capable routes exposed on the public internet behind a
 single shared token**. The token is the platform's boundary, not base-image's, but
@@ -51,9 +58,13 @@ being trivially bypassed by the portal's own features.
   `cloudflared`, which exposes that local target on a public `trycloudflare.com`
   URL. The control-route deny lives on the `:1111` edge only; a quick tunnel
   pointed at `127.0.0.1:11111` reaches the FastAPI app *directly*, around the deny.
-- **The Services UI polls remotely.** The portal's Services tab polls read-only
-  supervisor status (`GET /supervisor/processes`) over the public edge. A deny
-  scoped to all of `/supervisor/*` would break that tab for remote users.
+- **The Services UI drives supervisor remotely.** The portal is served over the
+  public edge, so the Services tab both polls read-only status
+  (`GET /supervisor/processes`) and issues the write controls
+  (`POST /supervisor/process/*/{start,stop,restart}`) over that edge. Denying the
+  supervisor controls at the edge would leave the UI's Start/Stop/Restart buttons
+  permanently returning 403 — a regression we will not accept. This is why the
+  control is scoped to the provisioner route alone.
 - **Rollout is gradual.** A VERSION bump cuts a portal release that instances pull
   only at first boot (gated by the first-boot marker, ADR 0062). Running instances
   are unaffected until they are recreated; this control protects new boots, it is
@@ -70,8 +81,8 @@ concerns are recorded in the binding conditions below.
 
 ## Options considered
 
-### A. Remove the exec routes from base-image entirely
-Delete the provision endpoint and the supervisor exec routes.
+### A. Remove the provision endpoint from base-image entirely
+Delete the provision endpoint.
 **Rejected.** The declarative provisioner is a deliberate product capability —
 container-native automations that are not easily ported to other platforms.
 Deleting the route destroys that capability *locally as well as remotely*, which is
@@ -83,8 +94,8 @@ closes a public exec surface the platform's token boundary would otherwise have 
 carry alone. (Remote, token-triggered provisioning was a possible use; it is
 consciously surrendered here — see Consequences — not removed by accident.)
 
-### B. Add a second, stronger auth factor to the exec routes
-Require a separate secret or a signed request for provision/supervisor.
+### B. Add a second, stronger auth factor to the provision route
+Require a separate secret or a signed request for provision.
 **Rejected (for now).** The serverless path already proves the pattern (Legion
 signs with an Ed25519 key in KMS; workers verify with the public key). But the
 interactive portal has no key-distribution channel to the renter that is stronger
@@ -111,23 +122,23 @@ local" promise. Enumerating spellings is the wrong primitive. The chosen shape
 enforces locality where it can be judged authoritatively — at the asset — and keeps
 the cheaper refusals in front of it:
 
-1. **Authoritative: the portal app refuses the exec routes for any request that
-   arrived through a proxy.** `/capabilities/provision` and
-   `/supervisor/process/*` depend on `control_access.require_local_caller`, which
-   returns 403 when the request carries any forwarding header
-   (`X-Forwarded-*`, `X-Real-IP`, `Forwarded`). The Caddy edge stamps
-   `X-Forwarded-Proto`/`X-Real-IP` (and appends `X-Forwarded-For`/`Host`) on every
-   request to `:11111`; a `cloudflared` tunnel stamps the same family; a genuine
-   in-container caller stamps none. This judges *provenance*, not target spelling,
-   so it closes the edge, every tunnel hostname that resolves to loopback, and any
-   Caddy path-normalization evasion in one place — independent of how the request
-   was routed.
-2. **Edge deny (early refusal):** emit the control-route deny as a matched
-   **`handle`** (not `route`) so it shares the sort class of the no-auth catch-all
-   and compiles ahead of the proxy in *both* auth modes. Scope the matcher to the
-   exec routes only — `/capabilities/provision`, `/capabilities/provision/*`,
-   `/supervisor/process/*` — so read-only `/supervisor/processes` and
-   `/capabilities/services` still proxy and the Services UI keeps working remotely.
+1. **Authoritative: the portal app refuses the provision route for any request
+   that arrived through a proxy.** `/capabilities/provision` depends on
+   `control_access.require_local_caller`, which returns 403 when the request carries
+   any forwarding header (`X-Forwarded-*`, `X-Real-IP`, `Forwarded`,
+   `Cf-Connecting-Ip`, `Cf-Ray`). The Caddy edge stamps `X-Forwarded-Proto`/
+   `X-Real-IP` (and appends `X-Forwarded-For`/`Host`) on every request to `:11111`;
+   a `cloudflared` tunnel stamps the same family; a genuine in-container caller
+   stamps none. This judges *provenance*, not target spelling, so it closes the
+   edge, every tunnel hostname that resolves to loopback, and any Caddy
+   path-normalization evasion in one place — independent of how the request was
+   routed.
+2. **Edge deny (early refusal):** emit the deny as a matched **`handle`** (not
+   `route`) so it shares the sort class of the no-auth catch-all and compiles ahead
+   of the proxy in *both* auth modes. Scope the matcher to the provision route only
+   — `/capabilities/provision`, `/capabilities/provision/*` — so everything else,
+   including the supervisor process controls and read-only status, still proxies and
+   the Services UI keeps working remotely.
 3. **Tunnel guard (early refusal):** refuse the obvious literal spellings of a
    quick-tunnel target aimed at the loopback control port at the single create
    chokepoint, before any `cloudflared` spawns, so a plainly-local target does not
@@ -139,16 +150,26 @@ the cheaper refusals in front of it:
 
 ## Decision
 
-Adopt **Option D**. The portal's exec-capable control routes
-(`/capabilities/provision[...]`, `/supervisor/process/*`) are made localhost-only
-by enforcing locality at the portal app itself — the routes refuse any request that
-arrived through a proxy (edge or tunnel) — with the Caddy `handle`-based edge deny
-and the tunnel-target guard kept in front as early refusals. In-container access to
-`127.0.0.1:11111` is unchanged: the provisioner and supervisor controls remain
-fully usable locally and from any process inside the container. This is a
-defence-in-depth control that removes the *remote* exec surface; it is not a claim
-that the routes are privileged (they are `≤` a local root shell the renter already
-holds — see Consequences).
+Adopt **Option D**, scoped to the provisioner route. `/capabilities/provision` is
+made localhost-only by enforcing locality at the portal app itself — the route
+refuses any request that arrived through a proxy (edge or tunnel) — with the Caddy
+`handle`-based edge deny and the tunnel-target guard kept in front as early
+refusals. In-container access to `127.0.0.1:11111` is unchanged: the provisioner
+remains fully usable locally and from any process inside the container. The
+supervisor process controls stay token-gated and remotely reachable (the Services
+UI needs them). This is a defence-in-depth control that removes the *remote*
+provision surface; it is not a claim that the route is privileged (it is `≤` a local
+root shell the renter already holds — see Consequences).
+
+### Supervisor controls are out of scope
+
+An earlier cut of this change also made `/supervisor/process/*/{start,stop,restart}`
+localhost-only. That was wrong: the Instance Portal is reached over the public edge,
+never on localhost, so the Services UI drives those controls remotely. Denying them
+at the edge left the UI's Start/Stop/Restart buttons permanently returning 403 — an
+unacceptable regression. The supervisor controls are therefore left exactly as they
+were (token-gated at the edge). They remain `≤` a local root shell like provision;
+if they ever need narrowing, that is a separate decision with a UI story attached.
 
 ## Binding conditions
 
@@ -163,11 +184,13 @@ These are the panel's surviving concerns; the decision depends on all four holdi
    satisfy this condition. The test must also *execute in CI* (caddy on PATH at
    pytest time; `CI_REQUIRE_CADDY` makes it fail rather than skip) — a proof that
    silently skips is the same false-green trap as a source-string assertion.
-2. **The matcher stays exec-scoped.** Read-only status (`/supervisor/processes`)
-   and `/capabilities/services` must continue to proxy, or the Services UI breaks
-   for remote users. Broadening the matcher to `/supervisor/*` reintroduces that
-   regression and is forbidden without re-review.
-3. **Locality is enforced at the asset, not only at the edge.** The exec routes
+2. **The matcher stays scoped to the provision route.** Everything else —
+   the supervisor process controls (`/supervisor/process/*`), read-only
+   `/supervisor/processes`, and `/capabilities/services` — must continue to proxy,
+   or the Services UI breaks for remote users. Adding any `/supervisor` path to the
+   deny (or the app-side check) reintroduces that regression and is forbidden
+   without re-review and a UI story.
+3. **Locality is enforced at the asset, not only at the edge.** The provision route
    must refuse requests that arrived through a proxy
    (`control_access.require_local_caller`). The edge deny and the tunnel guard are
    early refusals in front of it; the app-side check is what makes the control hold
@@ -183,8 +206,8 @@ These are the panel's surviving concerns; the decision depends on all four holdi
 ## Consequences
 
 **Positive**
-- The two exec-capable routes are no longer reachable from the public internet,
-  on new boots, in either auth mode — closing a remotely-reachable exec surface
+- `/capabilities/provision` is no longer reachable from the public internet, on
+  new boots, in either auth mode — closing a remotely-reachable exec surface
   without removing any capability the renter has locally.
 - Because locality is enforced at the asset (by request provenance, not target
   spelling), the control holds against a tunnel to loopback by any hostname, and
@@ -205,9 +228,9 @@ These are the panel's surviving concerns; the decision depends on all four holdi
   provisioning appears, it is Option B (a signed request), not a relaxation here.
 - **Edge-only, by design.** Anyone with the token still reaches
   `127.0.0.1:11111` from inside the container (Jupyter terminal, SSH). This is
-  intentional: the control routes are `≤` a local root shell, which the platform
+  intentional: the provision route is `≤` a local root shell, which the platform
   grants by design. This ADR narrows the *remote* surface, it does not claim the
-  routes are privileged.
+  route is privileged.
 - **Not a fleet-wide fix.** Running instances pick up the change only when
   recreated (first-boot gate, ADR 0062). The platform's token boundary remains the
   primary control for existing instances.
@@ -219,12 +242,12 @@ These are the panel's surviving concerns; the decision depends on all four holdi
   free-form feature.
 - **No-auth mode still means an open portal.** The deny fires in no-auth mode, but
   a renter who set `ENABLE_AUTH=false` already has an unauthenticated portal; this
-  control does not make that configuration safe, it only ensures the exec routes
-  are not *additionally* reachable there.
+  control does not make that configuration safe, it only ensures the provision route
+  is not *additionally* reachable there.
 
 ## What would reverse this
 
-- The control routes stop being exec-capable, or gain a privilege a local shell
+- The provision route stops being exec-capable, or gains a privilege a local shell
   does not already have (then Option B — a real second factor — becomes necessary
   rather than disproportionate).
 - The platform moves the token boundary (e.g. per-route scoping, signed requests),

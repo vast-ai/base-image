@@ -2,7 +2,7 @@
 
 This is the authoritative half of ADR 0064: the Caddy edge deny and the
 tunnel-target guard are early refusals, but a request that reaches
-/capabilities/provision or /supervisor/process/* having passed through ANY proxy
+/capabilities/provision having passed through ANY proxy
 (the edge, or a cloudflared tunnel aimed at loopback by any hostname spelling)
 carries a forwarding header, and this check refuses it at the asset. A direct
 in-container caller carries none and passes.

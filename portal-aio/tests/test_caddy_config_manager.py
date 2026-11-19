@@ -347,11 +347,12 @@ def _render_with_portal(monkeypatch):
     return caddyfile
 
 
-def test_control_deny_block_covers_exec_routes_only():
+def test_control_deny_block_covers_provision_only():
     b = ccm.get_control_route_deny_block()
     assert "/capabilities/provision" in b
-    assert "/supervisor/process/*" in b            # exec supervisor controls (start/stop/restart)
-    assert "/supervisor/processes" not in b        # read-only status must stay public
+    # The supervisor process controls are NOT denied at the edge: the portal is
+    # reached remotely, so the Services UI must drive them (ADR 0064).
+    assert "/supervisor" not in b
     assert "handle @vast_control_routes" in b      # a handle, not a route, so it wins in noauth too
     assert "403" in b
 
@@ -359,8 +360,8 @@ def test_control_deny_block_covers_exec_routes_only():
 def test_control_deny_emitted_once_scoped_to_portal(monkeypatch):
     cf = _render_with_portal(monkeypatch)
     assert cf.count('respond "This control route is available on localhost only" 403') == 1
-    assert "/supervisor/process/*" in cf           # exec controls denied
-    assert "/supervisor/processes" not in cf       # read-only status not denied
+    assert "/capabilities/provision" in cf         # provisioner denied at the edge
+    assert "/supervisor" not in cf                 # supervisor routes stay reachable remotely
 
 
 def _compiled_portal_routes(cf, caddy):

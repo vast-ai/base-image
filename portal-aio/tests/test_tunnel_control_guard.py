@@ -1,6 +1,6 @@
 """The quick-tunnel guard that keeps the localhost-only control routes closed.
 
-The portal's /capabilities/provision and /supervisor/process/* routes are denied
+The portal's /capabilities/provision route is denied
 to non-local callers at the Caddy edge (test_caddy_config_manager.py proves the
 deny compiles ahead of the proxy). That deny sits on the public :1111 edge only.
 The portal's own quick-tunnel feature runs a user-driven cloudflared process that

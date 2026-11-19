@@ -1,10 +1,11 @@
-"""Locality enforcement for the portal's exec-capable control routes.
+"""Locality enforcement for the provisioner control route.
 
-The portal serves two exec-capable routes — ``POST /capabilities/provision`` and
-``POST /supervisor/process/{name}/{start,stop,restart}`` — that are meant to be
-reached only by a process *inside the container* talking to ``127.0.0.1:11111``
-directly. Every remote path to them arrives through a proxy that stamps standard
-forwarding headers:
+The portal serves ``POST /capabilities/provision`` (install+exec-as-root), which is
+meant to be reached only by a process *inside the container* talking to
+``127.0.0.1:11111`` directly. (The supervisor process controls are intentionally
+NOT guarded this way: the portal is reached over the public edge, so the Services
+UI must drive start/stop/restart remotely — see ADR 0064.) Every remote path to the
+provisioner arrives through a proxy that stamps standard forwarding headers:
 
 * the Caddy edge sets ``X-Forwarded-Proto`` and ``X-Real-IP`` on every request it
   proxies to :11111 (see ``caddy_manager/caddy_config_manager.get_reverse_proxy_block``),
