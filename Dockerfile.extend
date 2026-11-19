@@ -17,6 +17,10 @@ FROM ${BASE_IMAGE}
 # Overlay updated files (supervisor scripts, instance tools, portal, etc.)
 COPY ./ROOT /
 
+# COPY never deletes, so the source image keeps whatever ROOT no longer ships. The boot-time venv
+# backup is retired (ADR 0059): remove its stage and script from older images too.
+RUN rm -f /etc/vast_boot.d/48-venv-backup.sh /opt/instance-tools/bin/venv-backup.sh
+
 # Update the portal if present
 COPY portal-aio /opt/portal-aio
 

@@ -51,6 +51,8 @@ The boot stage `ROOT/etc/vast_boot.d/48-venv-backup.sh` and `ROOT/opt/instance-t
 are removed, together with every reference: `README.template.md`, the derivative READMEs that
 described the backups or the move, `CONTRIBUTING.md`, and `tools/convert-non-vast-image.sh`.
 The READMEs document the manual `pip freeze` step instead.
+`Dockerfile.extend` lays `ROOT/` over an already-built image, and a copy never deletes, so it
+removes the stage and the script explicitly; otherwise a hotfix built on an older image keeps the backup.
 
 ## Binding conditions
 1. No user-facing doc may describe automatic venv backups, `.venv-backups`, or `VENV_BACKUP_COUNT`.

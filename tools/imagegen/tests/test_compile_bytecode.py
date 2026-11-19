@@ -101,6 +101,19 @@ def test_too_little_compiled_fails_the_build(tmp_path):
     assert r.returncode == 1 and "too little compiled" in r.stderr
 
 
+
+def test_a_stale_pyc_beside_a_source_that_no_longer_compiles_is_not_coverage(tmp_path):
+    """compileall leaves the old .pyc when the new source fails; Python would reject it on import."""
+    env, site, app = _world(tmp_path)
+    assert _run(env).returncode == 0
+    for k in range(20):
+        src = site / "pkg" / f"m{k}.py"
+        src.write_text("def broken(:\n")
+        os.utime(src, (1, 1))
+    r = _run(env)
+    assert r.returncode == 1 and f"{site}: 0.0%" in r.stderr, r.stdout + r.stderr
+
+
 def test_on_an_external_image_the_mirror_is_compiled_not_the_engine(tmp_path):
     # The engine is imported through /venv/main; compiling its own site-packages too only doubles
     # the bytecode.
