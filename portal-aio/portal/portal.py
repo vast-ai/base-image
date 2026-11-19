@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +31,10 @@ import sys
 # Make the sibling `capabilities` package importable (portal runs with cwd
 # /opt/portal-aio/portal, so its parent dir must be on sys.path).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Make sibling modules in this directory importable regardless of how portal.py
+# is launched (fastapi run, uvicorn module, pytest).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from control_access import require_local_caller
 from capabilities import assemble_live
 from capabilities.models import (
     OpenAIEndpoint,
@@ -839,7 +843,7 @@ async def get_supervisor_processes():
         logger.error(f"Failed to get supervisor processes: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
-@app.post("/supervisor/process/{name}/start")
+@app.post("/supervisor/process/{name}/start", dependencies=[Depends(require_local_caller)])
 async def supervisor_start_process(name: str):
     try:
         proxy = _get_supervisor_proxy()
@@ -851,7 +855,7 @@ async def supervisor_start_process(name: str):
         logger.error(f"Failed to start process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
-@app.post("/supervisor/process/{name}/stop")
+@app.post("/supervisor/process/{name}/stop", dependencies=[Depends(require_local_caller)])
 async def supervisor_stop_process(name: str):
     if name in UNSTOPPABLE_PROCESSES:
         raise HTTPException(status_code=403, detail=f"Process '{name}' cannot be stopped")
@@ -865,7 +869,7 @@ async def supervisor_stop_process(name: str):
         logger.error(f"Failed to stop process {name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with supervisor")
 
-@app.post("/supervisor/process/{name}/restart")
+@app.post("/supervisor/process/{name}/restart", dependencies=[Depends(require_local_caller)])
 async def supervisor_restart_process(name: str):
     try:
         proxy = _get_supervisor_proxy()
@@ -1763,6 +1767,7 @@ async def get_capabilities_endpoints():
     "/capabilities/provision",
     response_model=ProvisionResponse,
     summary="Install more dependencies via the provisioner",
+    dependencies=[Depends(require_local_caller)],
 )
 async def post_capabilities_provision(req: ProvisionRequest):
     """Launch the declarative provisioner in the background.

@@ -395,6 +395,14 @@ def test_control_deny_precedes_proxy_in_compiled_caddy(monkeypatch, enable_auth)
     if not caddy and os.path.exists(ccm.CADDY_BIN):
         caddy = ccm.CADDY_BIN
     if not caddy:
+        # This is the only test that proves ADR 0064 binding condition 1 (the
+        # handle-based deny sorts ahead of the proxy in both auth modes). It must
+        # never silently skip in CI, or the control's correctness goes unverified
+        # while the suite stays green. CI sets CI_REQUIRE_CADDY and installs caddy
+        # before this step; a missing binary there is a harness bug, so fail.
+        if os.environ.get("CI_REQUIRE_CADDY"):
+            pytest.fail("CI_REQUIRE_CADDY set but no caddy binary on PATH — "
+                        "the compiled-order proof cannot run")
         pytest.skip("needs a real caddy binary to adapt the config")
     monkeypatch.setattr(ccm, "CADDY_BIN", caddy)  # hash-password is called in auth mode
     monkeypatch.setenv("VAST_CONTAINERLABEL", "ci")

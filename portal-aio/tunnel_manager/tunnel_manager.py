@@ -338,29 +338,39 @@ class CloudflareDaemon:
         await self.stop()
 
 
-# The Instance Portal's control API listens only on 127.0.0.1:PORTAL_INTERNAL_PORT,
-# behind the Caddy edge that denies its exec-capable control routes to non-local
-# callers (caddy_config_manager.get_control_route_deny_block). A quick tunnel is a
-# user-driven cloudflared process that exposes a local target to the public
-# internet; pointed at the portal's own control port it would re-expose exactly
-# those routes to the world and defeat the localhost-only control. Nothing
-# legitimately tunnels the portal's internal API, so refuse it. A public
-# <host>:11111 is some other machine's port, not this portal's loopback listener,
-# so the guard is scoped to local interfaces and leaves every other target (the
-# free-form quick-tunnel feature) untouched.
+# The Instance Portal's control API listens only on 127.0.0.1:PORTAL_INTERNAL_PORT.
+# A quick tunnel is a user-driven cloudflared process that exposes a local target
+# to the public internet; pointed at the portal's own control port it would put
+# the exec-capable control routes on a public URL. The AUTHORITATIVE defence is in
+# the portal app itself (portal/control_access.require_local_caller): it refuses
+# those routes for any request that arrived through a proxy, so a tunnelled request
+# is rejected regardless of what hostname was used to reach loopback.
+#
+# This check is only a cheap EARLY refusal of the obvious case, so we don't spawn
+# cloudflared and flash a public URL for a plainly-local target. It is deliberately
+# a literal-spelling match and is NOT relied on for completeness: a hostname that
+# resolves to loopback by DNS (e.g. *.nip.io), an IPv4-mapped IPv6 literal, or a
+# trailing-dot FQDN will pass this check and still be refused by the app-side guard.
+# Do not treat this function as the security boundary.
 PORTAL_INTERNAL_PORT = 11111
 
 
 def _targets_portal_control_api(target_url: str) -> bool:
-    """True if target_url points at this portal's loopback control API."""
-    parsed = urlparse(
-        target_url
-        if target_url.startswith(("http://", "https://"))
-        else "http://" + target_url
-    )
-    if parsed.port != PORTAL_INTERNAL_PORT:
+    """True if target_url is an obvious literal spelling of the loopback control
+    port. Early-exit optimisation only — see the module comment above; the
+    authoritative control is portal/control_access.require_local_caller."""
+    try:
+        parsed = urlparse(
+            target_url
+            if target_url.startswith(("http://", "https://"))
+            else "http://" + target_url
+        )
+        port = parsed.port
+    except ValueError:
         return False
-    host = (parsed.hostname or "").lower()
+    if port != PORTAL_INTERNAL_PORT:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
     if host in ("", "localhost"):
         return True
     try:
