@@ -20,6 +20,8 @@ import pathlib
 import re
 import sys
 
+import pytest
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PORTAL_AIO = os.path.dirname(_HERE)
 sys.path.insert(0, os.path.join(_PORTAL_AIO, "caddy_manager"))
@@ -320,3 +322,120 @@ def test_admin_off_shares_the_global_block_with_servers(monkeypatch):
     src = pathlib.Path(ccm.__file__).read_text()
     assert "{admin_block}" in src and "{servers_block}" in src, \
         "the global block must still emit both placeholders"
+
+
+# --- control routes are localhost-only --------------------------- #
+
+def _render_with_portal(monkeypatch):
+    """Render a config that includes the portal (internal 11111) plus one other app."""
+    monkeypatch.setenv("VAST_CONTAINERLABEL", "testlabel")
+    monkeypatch.setenv("VAST_TCP_PORT_1111", "1")
+    monkeypatch.setenv("VAST_TCP_PORT_6006", "1")
+    monkeypatch.setenv("ENABLE_AUTH", "false")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    cfg = {
+        "Instance Portal": {
+            "external_port": 1111, "internal_port": 11111,
+            "hostname": "localhost", "open_path": "/", "name": "Instance Portal",
+        },
+        "Tensorboard": {
+            "external_port": 6006, "internal_port": 16006,
+            "hostname": "localhost", "open_path": "/", "name": "Tensorboard",
+        },
+    }
+    caddyfile, _u, _pw, _tok = ccm.generate_caddyfile(cfg)
+    return caddyfile
+
+
+def test_control_deny_block_covers_provision_only():
+    b = ccm.get_control_route_deny_block()
+    assert "/capabilities/provision" in b
+    # The supervisor process controls are NOT denied at the edge: the portal is
+    # reached remotely, so the Services UI must drive them (ADR 0064).
+    assert "/supervisor" not in b
+    assert "handle @vast_control_routes" in b      # a handle, not a route, so it wins in noauth too
+    assert "403" in b
+
+
+def test_control_deny_emitted_once_scoped_to_portal(monkeypatch):
+    cf = _render_with_portal(monkeypatch)
+    assert cf.count('respond "This control route is available on localhost only" 403') == 1
+    assert "/capabilities/provision" in cf         # provisioner denied at the edge
+    assert "/supervisor" not in cf                 # supervisor routes stay reachable remotely
+
+
+def _compiled_portal_routes(cf, caddy):
+    """Adapt the Caddyfile through real caddy and return the :1111 server's route list."""
+    import json, os, subprocess, tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".caddy", delete=False) as f:
+        f.write(cf)
+        path = f.name
+    try:
+        out = subprocess.run([caddy, "adapt", "--adapter", "caddyfile", "--config", path],
+                             capture_output=True, text=True, check=True).stdout
+    finally:
+        os.unlink(path)
+    servers = json.loads(out)["apps"]["http"]["servers"]
+    srv = next(s for s in servers.values()
+               if any(str(l).endswith(":1111") for l in s.get("listen", [])))
+    return srv["routes"]
+
+
+@pytest.mark.parametrize("enable_auth", ["true", "false"])
+def test_control_deny_precedes_proxy_in_compiled_caddy(monkeypatch, enable_auth):
+    """The deny must actually fire before the proxy in BOTH auth modes.
+
+    Caddy's Caddyfile adapter sorts `handle` BEFORE `route`, so a route-based
+    deny loses to the noauth catch-all `handle` and never runs. This adapts the
+    generated config through real caddy and asserts the 403 deny is ordered ahead
+    of the reverse_proxy — the string-order checks the earlier tests used could
+    not catch that (they passed while the deny was dead code in noauth mode).
+    """
+    import json, os, shutil
+    caddy = shutil.which("caddy")
+    if not caddy and os.path.exists(ccm.CADDY_BIN):
+        caddy = ccm.CADDY_BIN
+    if not caddy:
+        # This is the only test that proves ADR 0064 binding condition 1 (the
+        # handle-based deny sorts ahead of the proxy in both auth modes). It must
+        # never silently skip in CI, or the control's correctness goes unverified
+        # while the suite stays green. CI sets CI_REQUIRE_CADDY and installs caddy
+        # before this step; a missing binary there is a harness bug, so fail.
+        if os.environ.get("CI_REQUIRE_CADDY"):
+            pytest.fail("CI_REQUIRE_CADDY set but no caddy binary on PATH — "
+                        "the compiled-order proof cannot run")
+        pytest.skip("needs a real caddy binary to adapt the config")
+    monkeypatch.setattr(ccm, "CADDY_BIN", caddy)  # hash-password is called in auth mode
+    monkeypatch.setenv("VAST_CONTAINERLABEL", "ci")
+    monkeypatch.setenv("VAST_TCP_PORT_1111", "1")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    monkeypatch.setenv("ENABLE_AUTH", enable_auth)
+    cfg = {"Instance Portal": {"external_port": 1111, "internal_port": 11111,
+           "hostname": "localhost", "open_path": "/", "name": "Instance Portal"}}
+    cf, *_ = ccm.generate_caddyfile(cfg)
+    routes = _compiled_portal_routes(cf, caddy)
+    deny = proxy = None
+    for i, r in enumerate(routes):
+        blob = json.dumps(r, separators=(",", ":"))
+        if deny is None and '"status_code":403' in blob and "/capabilities/provision" in blob:
+            deny = i
+        if proxy is None and "reverse_proxy" in blob:
+            proxy = i
+    assert deny is not None, "no 403 control-route deny in the compiled config"
+    assert proxy is not None, "no reverse_proxy in the compiled config"
+    assert deny < proxy, (
+        f"ENABLE_AUTH={enable_auth}: the 403 deny (route[{deny}]) must precede the "
+        f"reverse_proxy (route[{proxy}]); caddy runs `handle` before `route`")
+
+
+def test_no_control_deny_without_portal(monkeypatch):
+    # a config with no portal block (internal 11111) emits no control-route deny
+    monkeypatch.setenv("VAST_CONTAINERLABEL", "testlabel")
+    monkeypatch.setenv("VAST_TCP_PORT_6006", "1")
+    monkeypatch.setenv("ENABLE_AUTH", "false")
+    monkeypatch.setenv("ENABLE_HTTPS", "false")
+    cfg = {"Tensorboard": {"external_port": 6006, "internal_port": 16006,
+           "hostname": "localhost", "open_path": "/", "name": "Tensorboard"}}
+    cf, *_ = ccm.generate_caddyfile(cfg)
+    assert "vast_control_routes" not in cf
+    assert "/capabilities/provision" not in cf

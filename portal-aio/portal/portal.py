@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +31,10 @@ import sys
 # Make the sibling `capabilities` package importable (portal runs with cwd
 # /opt/portal-aio/portal, so its parent dir must be on sys.path).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Make sibling modules in this directory importable regardless of how portal.py
+# is launched (fastapi run, uvicorn module, pytest).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from control_access import require_local_caller
 from capabilities import assemble_live
 from capabilities.models import (
     OpenAIEndpoint,
@@ -1763,6 +1767,7 @@ async def get_capabilities_endpoints():
     "/capabilities/provision",
     response_model=ProvisionResponse,
     summary="Install more dependencies via the provisioner",
+    dependencies=[Depends(require_local_caller)],
 )
 async def post_capabilities_provision(req: ProvisionRequest):
     """Launch the declarative provisioner in the background.
@@ -1771,9 +1776,13 @@ async def post_capabilities_provision(req: ProvisionRequest):
     Returns immediately; follow progress in /var/log/portal/provisioning.log.
 
     SECURITY: this installs/runs caller-supplied code (pip/git/post_commands), so
-    it is an install+exec surface. It is gated by the Caddy token edge for remote
-    callers and, like the other /supervisor/* control routes, is unauthenticated
-    only on localhost inside the (single-tenant) container.
+    it is an install+exec surface. It is localhost-only: the ``require_local_caller``
+    dependency returns 403 for any request carrying a proxy/forwarding header (the
+    Caddy edge and a cloudflared tunnel both stamp one; a genuine in-container caller
+    does not), and the Caddy edge additionally denies the route outright. A remote
+    caller gets 403; only a caller inside the container (127.0.0.1:11111) reaches
+    this handler. This is NOT like the /supervisor/* routes, which remain token-gated
+    and remotely reachable so the Services UI keeps working over the edge (ADR 0064).
     """
     log_file = "/var/log/portal/provisioning.log"
     cmd: list[str] = ["/opt/instance-tools/bin/provisioner"]
