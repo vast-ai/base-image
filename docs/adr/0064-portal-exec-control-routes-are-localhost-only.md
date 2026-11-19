@@ -6,9 +6,9 @@ Date: 2026-11-19
 ## Context
 
 The Instance Portal (portal-aio) runs a FastAPI control app on `127.0.0.1:11111`,
-fronted by Caddy on the public per-instance edge (external `:1111`). A single
-per-instance token (`OPEN_BUTTON_TOKEN`, equal to the Jupyter token) authenticates
-every public route: Caddy accepts it as `?token=`, a cookie, or a bearer header.
+fronted by Caddy on the public per-instance edge (external `:1111`). Every public
+route sits behind the portal's existing per-instance authentication boundary, which
+is the platform's control, not base-image's.
 
 Two of the portal's routes do more than read state — they execute:
 
