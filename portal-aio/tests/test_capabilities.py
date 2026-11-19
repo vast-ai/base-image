@@ -217,12 +217,101 @@ def test_ldconfig_libs_is_set():
     assert isinstance(manifest._ldconfig_libs(), set)
 
 
-def test_gpu_render_caps_none_without_nvidia():
-    # No NVIDIA driver present (typical dev/CI) -> render caps not reported.
-    if os.path.exists("/proc/driver/nvidia/version"):
-        import pytest
-        pytest.skip("NVIDIA driver present; render-caps detection would run")
+# --- GPU presence / driver version ------------------------------------------ #
+# Under gVisor the kernel module's /proc version file is absent while the GPU and
+# nvidia-smi work, so neither presence nor the version may depend on that file.
+# Every test pins the three sources the manifest may consult (the helper, the
+# control node, nvidia-smi on PATH) so the host running the suite cannot leak in.
+
+FAKE_SMI = """#!/bin/sh
+case "$1" in
+  --query-gpu=driver_version) printf '%s' "$SMI_DRIVER" ;;
+  --query-gpu=compute_cap) printf '8.9\\n' ;;
+  *) exit 9 ;;
+esac
+"""
+
+
+@pytest.fixture
+def gpu_env(tmp_path, monkeypatch):
+    """No helper, no control node, an empty PATH; tests add what they need."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    monkeypatch.setattr(manifest, "_DRIVER_VERSION_HELPER", str(tmp_path / "no-helper"))
+    monkeypatch.setattr(manifest, "_NVIDIACTL", str(tmp_path / "no-nvidiactl"))
+    monkeypatch.setenv("PATH", str(bin_))
+
+    def add(name, body):
+        f = bin_ / name
+        f.write_text(body)
+        f.chmod(0o755)
+        return f
+    return add
+
+
+def test_no_gpu_when_nothing_answers(gpu_env):
+    assert manifest._driver_version() is None
+    assert manifest._has_nvidia_gpu() is False
     assert manifest._gpu_render_caps() is None
+    assert manifest._cuda_info() is None
+
+
+def test_driver_version_from_helper(gpu_env, tmp_path, monkeypatch):
+    helper = gpu_env("nvidia-driver-version", "#!/bin/sh\necho 580.95.05\n")
+    monkeypatch.setattr(manifest, "_DRIVER_VERSION_HELPER", str(helper))
+    gpu_env("nvidia-smi", "#!/bin/sh\necho 1.2.3\n")   # must not be consulted
+    assert manifest._driver_version() == "580.95.05"
+
+
+def test_driver_version_helper_found_on_path(gpu_env):
+    gpu_env("nvidia-driver-version", "#!/bin/sh\necho 575.57.08\n")
+    assert manifest._driver_version() == "575.57.08"
+
+
+def test_driver_version_helper_silent_means_none(gpu_env, monkeypatch):
+    # The helper already tried nvidia-smi; a refusal is the answer.
+    helper = gpu_env("nvidia-driver-version", "#!/bin/sh\nexit 1\n")
+    monkeypatch.setattr(manifest, "_DRIVER_VERSION_HELPER", str(helper))
+    assert manifest._driver_version() is None
+
+
+def test_driver_version_fallback_without_helper(gpu_env, monkeypatch):
+    # An image built before the helper existed, running the latest portal.
+    # Two GPUs: first line only, whitespace trimmed.
+    gpu_env("nvidia-smi", FAKE_SMI)
+    monkeypatch.setenv("SMI_DRIVER", " 580.95.05 \n580.95.05\n")
+    assert manifest._driver_version() == "580.95.05"
+
+
+@pytest.mark.parametrize("smi", [
+    "#!/bin/sh\nexit 6\n",                                   # failing
+    "#!/bin/sh\necho 580.95.05; exit 6\n",                   # failing despite output
+    "#!/bin/sh\n",                                            # empty
+    "#!/bin/sh\necho 'No devices were found'\n",             # not a version
+])
+def test_driver_version_fallback_refuses(gpu_env, smi):
+    gpu_env("nvidia-smi", smi)
+    assert manifest._driver_version() is None
+
+
+def test_nvidiactl_alone_means_gpu(gpu_env, tmp_path, monkeypatch):
+    ctl = tmp_path / "nvidiactl"
+    ctl.write_text("")
+    monkeypatch.setattr(manifest, "_NVIDIACTL", str(ctl))
+    assert manifest._has_nvidia_gpu() is True
+    assert manifest._gpu_render_caps() is not None
+
+
+def test_gpu_section_reported_without_proc_file(gpu_env, monkeypatch):
+    # The gVisor shape: no /proc version file, no helper, nvidia-smi answers.
+    gpu_env("nvidia-smi", FAKE_SMI)
+    monkeypatch.setenv("SMI_DRIVER", "580.95.05\n")
+    m = manifest.assemble(services=[],
+                          fragments={"tools": [], "python_environments": [], "openai_endpoints": []})
+    gpu = m["hardware"]["gpu"]
+    assert "render" in gpu
+    assert gpu["cuda"]["driver_version"] == "580.95.05"
+    assert gpu["cuda"]["compute_capability"] == "8.9"
 
 
 def test_min_cuda_for_compute_cap():
@@ -310,13 +399,6 @@ def test_cuda_forward_compat_absent(tmp_path, monkeypatch):
     assert manifest._cuda_forward_compat() is None
 
 
-def test_cuda_info_none_without_nvidia():
-    if os.path.exists("/proc/driver/nvidia/version"):
-        import pytest
-        pytest.skip("NVIDIA driver present; CUDA detection would run")
-    assert manifest._cuda_info() is None
-
-
 def test_assemble_null_direct_url_without_public_ip(monkeypatch):
     monkeypatch.delenv("PUBLIC_IPADDR", raising=False)
     monkeypatch.setenv("VAST_TCP_PORT_8000", "40080")
@@ -352,3 +434,92 @@ def test_assembled_keys_covered_by_models(net_env):
     m = manifest.assemble(services=svc, fragments=frag, processes=[])
     assert set(m["services"][0]).issubset(set(ServiceInfo.model_fields))
     assert set(m["endpoints_openai"][0]).issubset(set(OpenAIEndpoint.model_fields))
+
+
+# --- listener visibility: tcp6/udp6 tables absent (gVisor) ------------------- #
+
+def _proc_net(tmp_path, monkeypatch, tables):
+    d = tmp_path / "net"
+    d.mkdir()
+    header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+    for name in tables:
+        (d / name).write_text(header)
+    monkeypatch.setattr(manifest, "PROC_NET", str(d))
+
+
+def _ports(monkeypatch, *env):
+    for key in [k for k in os.environ if k.startswith(("VAST_TCP_PORT_", "VAST_UDP_PORT_"))]:
+        monkeypatch.delenv(key)
+    for key in env:
+        monkeypatch.setenv(key, "40000")
+    m = manifest.assemble(services=[], fragments={}, processes=[])
+    return {(p["proto"], p["container_port"]): p for p in m["instance"]["open_ports"]}
+
+
+def test_tcp6_absent_ipv6_listener_reported_in_use(tmp_path, monkeypatch):
+    import socket
+    _proc_net(tmp_path, monkeypatch, ["tcp", "udp"])
+    try:
+        srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        srv.bind(("::1", 0))
+    except OSError:
+        pytest.skip("no IPv6 loopback on this host")
+    with srv:
+        srv.listen(1)
+        busy = srv.getsockname()[1]
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            free = s.getsockname()[1]
+        ports = _ports(monkeypatch, f"VAST_TCP_PORT_{busy}", f"VAST_TCP_PORT_{free}")
+    assert ports[("tcp", busy)]["in_use"] is True
+    assert ports[("tcp", free)]["in_use"] is False
+
+
+def test_tcp6_present_never_probes(tmp_path, monkeypatch):
+    _proc_net(tmp_path, monkeypatch, ["tcp", "tcp6", "udp", "udp6"])
+
+    def boom(port):
+        raise AssertionError("probed although tcp6 exists")
+
+    monkeypatch.setattr(manifest, "_tcp_port_accepts", boom)
+    ports = _ports(monkeypatch, "VAST_TCP_PORT_8080", "VAST_UDP_PORT_9000")
+    assert ports[("tcp", 8080)]["in_use"] is False
+    assert "in_use_verified" not in ports[("udp", 9000)]
+
+
+def test_udp6_absent_free_udp_is_unverified(tmp_path, monkeypatch):
+    _proc_net(tmp_path, monkeypatch, ["tcp", "udp"])
+    monkeypatch.setattr(manifest, "_tcp_port_accepts", lambda port: False)
+    ports = _ports(monkeypatch, "VAST_TCP_PORT_8080", "VAST_UDP_PORT_9000")
+    assert ports[("udp", 9000)]["in_use"] is False
+    assert ports[("udp", 9000)]["in_use_verified"] is False
+    assert "in_use_verified" not in ports[("tcp", 8080)]
+
+
+# --- supervisord control socket -------------------------------------------- #
+
+def test_supervisor_socket_plain(tmp_path, monkeypatch):
+    import socket
+    sock = tmp_path / "supervisor.sock"
+    with socket.socket(socket.AF_UNIX) as s:
+        s.bind(str(sock))
+        monkeypatch.setattr(manifest, "SUPERVISOR_SOCK", str(sock))
+        m = manifest.assemble(services=[], fragments={}, processes=[])
+    assert m["supervisor"]["control_socket"] == {
+        "path": str(sock), "present": True, "fallback": False, "target": None,
+    }
+
+
+def test_supervisor_socket_fallback_symlink(tmp_path, monkeypatch):
+    import socket
+    real = tmp_path / "shm" / "supervisor.sock"
+    real.parent.mkdir()
+    link = tmp_path / "supervisor.sock"
+    link.symlink_to(real)
+    with socket.socket(socket.AF_UNIX) as s:
+        s.bind(str(real))
+        monkeypatch.setattr(manifest, "SUPERVISOR_SOCK", str(link))
+        m = manifest.assemble(services=[], fragments={}, processes=[])
+    assert m["supervisor"]["control_socket"] == {
+        "path": str(link), "present": True, "fallback": True, "target": str(real),
+    }

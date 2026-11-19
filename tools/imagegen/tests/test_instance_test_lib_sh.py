@@ -16,6 +16,8 @@ import itertools
 import re
 import json
 import os
+import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -401,3 +403,197 @@ def test_it_returns_nothing_rather_than_garbage_when_unreadable(tmp_path):
                        capture_output=True, text=True, env=env, timeout=60)
     out = p.stdout.strip()
     assert out == "" or re.fullmatch(r"0[0-7]{3}", out), repr(out)
+
+
+# ── listener visibility ───────────────────────────────────────────────
+#
+# Under gVisor `ss` reports "Cannot open netlink socket" and there is no tcp6 table,
+# so a dual-stack listener is absent from its output. The bind helpers must then fail
+# as undecided: "not public" and "nothing holds it" would otherwise be guesses.
+
+REAL_SS = shutil.which("ss")
+needs_ss = pytest.mark.skipif(REAL_SS is None, reason="iproute2 ss not installed")
+
+
+def _ss_env(tmp_path, body):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "ss"
+    stub.write_text(f"#!/bin/bash\n{body}\n")
+    stub.chmod(0o755)
+    return dict(os.environ, REAL_SS=REAL_SS, PATH=f"{bindir}:{os.environ['PATH']}")
+
+
+def _lib(script, env=None):
+    return subprocess.run(["bash", "-c", f'source "{LIB}"\n{script}\necho FELL-THROUGH'],
+                          capture_output=True, text=True, env=env, timeout=60)
+
+
+def _v6_bindable():
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+@needs_ss
+@pytest.mark.parametrize("call", ["listener_is_public 1", "listener_owner 1",
+                                  "listener_local_addr 1 || exit 1"])
+def test_a_failing_ss_makes_the_bind_helpers_undecided(tmp_path, call):
+    env = _ss_env(tmp_path, 'echo "Cannot open netlink socket: Protocol not supported" >&2\n'
+                            '"$REAL_SS" "$@"')
+    p = _lib(call, env)
+    assert p.returncode == 1 and "FELL-THROUGH" not in p.stdout
+    assert "cannot determine" in p.stderr
+
+
+@needs_ss
+@pytest.mark.skipif(not _v6_bindable(), reason="no IPv6 loopback on this host")
+def test_an_invisible_tcp6_family_fails_instead_of_reading_as_loopback(tmp_path):
+    env = _ss_env(tmp_path, "\"$REAL_SS\" \"$@\" | grep -v '\\['")
+    p = _lib("listener_is_public 1", env)
+    assert p.returncode == 1 and "FELL-THROUGH" not in p.stdout
+    assert "tcp6" in p.stderr
+
+
+@needs_ss
+def test_when_ss_sees_every_family_the_helpers_answer_as_before(tmp_path):
+    p = _lib("listener_is_public 1 || listener_owner 1 || echo NOT-PUBLIC-NO-OWNER")
+    assert "NOT-PUBLIC-NO-OWNER" in p.stdout and "FELL-THROUGH" in p.stdout, p.stderr
+
+
+# ── base/28-inadvertent-exposure under partial visibility ─────────────
+#
+# The legacy verdict reads `ss -ltnp`/`-lunp`. Replayed from gVisor: `ss` exits 0 with
+# the netlink error, lists tcp4 only, and `ss -lun` lists nothing although udp4 is in
+# /proc/self/net/udp. Test 28 must fail as undecided there, and stay as it was where
+# `ss` sees every family.
+
+TESTS = LIB.parent
+T28 = TESTS / "base/28-inadvertent-exposure.sh"
+ROOT_GUARD = '[[ "$EUID" -eq 0 ]] || test_skip'
+
+
+def _t28(tmp_path, ss_body, t28_src=None, lib_src=None):
+    tree = tmp_path / "tests"
+    (tree / "base").mkdir(parents=True)
+    (tree / "lib.sh").write_text(lib_src if lib_src is not None else LIB.read_text())
+    shutil.copy(TESTS / "base/exposure_scan.py", tree / "base/exposure_scan.py")
+    shutil.copytree(TESTS / "exposure-allowlist", tree / "exposure-allowlist")
+    src = t28_src if t28_src is not None else T28.read_text()
+    # The scan skips unless root; CI is not. Drop only that guard, and prove it was there.
+    assert ROOT_GUARD in src
+    (tree / "base/28.sh").write_text(src.replace(ROOT_GUARD, "true ||"))
+    # The legacy scan's own listings (-ltnp/-lunp) are emptied so the result does not
+    # depend on what the CI host happens to be serving; the sentinel probe is not.
+    body = ('case "$1" in -ltnp|-lunp) echo "Netid State Recv-Q Send-Q Local Peer";'
+            ' [[ -n "${SS_ERR:-}" ]] && echo "$SS_ERR" >&2; exit 0;; esac\n' + ss_body)
+    env = _ss_env(tmp_path, body)
+    env.pop("SERVERLESS", None)
+    env["EXPOSURE_ENFORCE"] = "false"
+    return subprocess.run(["bash", str(tree / "base/28.sh")], capture_output=True,
+                          text=True, env=env, timeout=120)
+
+
+GVISOR_SS = ('export SS_ERR="Cannot open netlink socket: Protocol not supported"\n'
+             'echo "$SS_ERR" >&2\n'
+             'case "$1" in -lun*) exit 0;; esac\n'
+             '"$REAL_SS" "$@" | grep -v "\\["')
+
+
+@needs_ss
+def test_28_fails_undecided_on_the_gvisor_listing(tmp_path):
+    p = _t28(tmp_path, GVISOR_SS)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert "FAIL:" in p.stdout and "undecided" in p.stdout and "netlink" in p.stdout
+
+
+@needs_ss
+def test_28_fails_undecided_when_ss_is_blind_to_udp4_without_an_error(tmp_path):
+    p = _t28(tmp_path, 'case "$1" in -lun*) exit 0;; esac\n"$REAL_SS" "$@"')
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert "FAIL:" in p.stdout and "undecided" in p.stdout and "udp4" in p.stdout
+
+
+@needs_ss
+def test_28_passes_as_before_when_ss_sees_every_family(tmp_path):
+    p = _t28(tmp_path, '"$REAL_SS" "$@"')
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "PASS:" in p.stdout and "undecided" not in p.stdout
+
+
+# ── under gVisor: exposure and bind checks are runc's (ADR 0055) ──────
+#
+# Under gVisor the listener tables are incomplete, so test 28 skips and the bind helpers
+# say the check was not run instead of failing. Under runc nothing changes: a blind `ss`
+# still fails them. The runtime check is a fixed path in lib.sh, staged here at a stub.
+
+REPO = Path(__file__).resolve().parents[3]
+IS_GVISOR_PATH = "_VAST_IS_GVISOR=/opt/instance-tools/bin/is-gvisor"
+GUARD = "declare -F bind_checks_apply >/dev/null && ! bind_checks_apply"
+DERIVATIVE_BIND_TESTS = [
+    REPO / "derivatives/pytorch/derivatives/unsloth-studio/ROOT/opt/instance-tools/tests/unsloth.d/10-unsloth-serving.sh",
+    REPO / "derivatives/pytorch/derivatives/aio-studio/ROOT_BASE/opt/instance-tools/tests/aio-base.d/25-selkies-live.sh",
+]
+
+
+def _runtime_lib(tmp_path, gvisor: bool) -> Path:
+    stub = tmp_path / "is-gvisor"
+    stub.write_text(f"#!/bin/bash\nexit {0 if gvisor else 1}\n")
+    stub.chmod(0o755)
+    text = LIB.read_text()
+    assert text.count(IS_GVISOR_PATH) == 1
+    staged = tmp_path / "lib.sh"
+    staged.write_text(text.replace(IS_GVISOR_PATH, f"_VAST_IS_GVISOR={stub}"))
+    return staged
+
+
+BLIND_SS = 'echo "Cannot open netlink socket: Protocol not supported" >&2\n"$REAL_SS" "$@"'
+
+
+@needs_ss
+@pytest.mark.parametrize("call", ["listener_is_public 1", "listener_owner 1", "listener_local_addr 1"])
+def test_under_gvisor_a_blind_ss_skips_the_bind_check_instead_of_failing(tmp_path, call):
+    lib = _runtime_lib(tmp_path, gvisor=True)
+    env = _ss_env(tmp_path, BLIND_SS)
+    p = subprocess.run(["bash", "-c", f'source "{lib}"\n{call} || echo NOT-DECIDED\necho FELL-THROUGH'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert "NOT-DECIDED" in p.stdout and "FELL-THROUGH" in p.stdout and "FAIL:" not in p.stdout
+    assert "not run under gVisor" in p.stderr
+
+
+@needs_ss
+@pytest.mark.parametrize("gvisor,expected", [(True, "NO"), (False, "YES")])
+def test_bind_checks_apply_only_where_they_can_decide(tmp_path, gvisor, expected):
+    # Under runc they always apply, even with a blind ss: there that blindness is a failure.
+    lib = _runtime_lib(tmp_path, gvisor=gvisor)
+    env = _ss_env(tmp_path, BLIND_SS)
+    p = subprocess.run(["bash", "-c", f'source "{lib}"\nbind_checks_apply && echo YES || echo NO'],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert p.stdout.strip() == expected
+
+
+@needs_ss
+def test_28_skips_under_gvisor(tmp_path):
+    lib = _runtime_lib(tmp_path, gvisor=True)
+    p = _t28(tmp_path, GVISOR_SS, lib_src=lib.read_text())
+    assert p.returncode == 77, p.stdout + p.stderr
+    assert "SKIP:" in p.stdout and "runc" in p.stdout
+
+
+@pytest.mark.parametrize("path", DERIVATIVE_BIND_TESTS, ids=lambda p: p.parts[-2])
+@pytest.mark.parametrize("lib_kind,skips", [("older base", False), ("runc", False), ("gvisor", True)])
+def test_derivative_bind_checks_skip_only_under_gvisor(tmp_path, path, lib_kind, skips):
+    # An image built on an older base has a lib.sh without bind_checks_apply; its bind
+    # check must keep running under runc rather than be skipped by a missing function.
+    assert GUARD in path.read_text()
+    if lib_kind == "older base":
+        lib = tmp_path / "lib.sh"
+        lib.write_text(LIB.read_text().replace("bind_checks_apply()", "_removed_bind_checks_apply()"))
+    else:
+        lib = _runtime_lib(tmp_path, gvisor=(lib_kind == "gvisor"))
+    p = subprocess.run(["bash", "-c", f'source "{lib}"\nif {GUARD}; then echo SKIPPED; else echo CHECKED; fi'],
+                       capture_output=True, text=True, timeout=60)
+    assert p.stdout.strip() == ("SKIPPED" if skips else "CHECKED"), p.stderr
