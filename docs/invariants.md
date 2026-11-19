@@ -1796,6 +1796,16 @@ as `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever 
 In 2026-10 all five externals defaulted to that tag and no workflow overrode it; its last write
 was in January, so every external shipped January's Caddy and base tooling (ADR 0058).
 
+### Every xcaddy `--with` names a version — **GATED (L120)**
+
+Each `--with` in an `xcaddy build` carries `@<version>`, including the one that swaps the Caddy
+module for the patched local clone (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`).
+xcaddy turns a `--with` with no version into `go get <module>`, which Go reads as the latest
+release. For the Caddy module that sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the
+two agree only while the pin is the latest release: when Caddy v2.11.8 and v2.11.9 were published,
+every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`. For any
+other module the version would float silently. ADR 0057 pins every Caddy build input.
+
 ### refresh-ca-data.sh ends every install on the new base — **GATED (L114)**
 
 An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step
