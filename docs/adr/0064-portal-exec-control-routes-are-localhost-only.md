@@ -47,17 +47,16 @@ being trivially bypassed by the portal's own features.
 
 ### Forces
 
-- **Caddy directive ordering is not source order.** The Caddyfile adapter sorts
-  `handle` ahead of `route` regardless of where they appear in the file. A `route`
-  deny placed "first" in the source still loses to a catch-all `handle` — which is
-  exactly the shape of the no-auth config (`generate_noauth_config` emits a
-  catch-all `handle { reverse_proxy }`). A deny that compiles *after* the proxy is
-  dead.
-- **The portal can tunnel itself.** The portal exposes a free-form quick-tunnel
-  feature: `POST /start-quick-tunnel/{target}` hands a caller-supplied target to
-  `cloudflared`, which exposes that local target on a public `trycloudflare.com`
-  URL. The control-route deny lives on the `:1111` edge only; a quick tunnel
-  pointed at `127.0.0.1:11111` reaches the FastAPI app *directly*, around the deny.
+- **Caddy directive ordering is not source order.** The Caddyfile adapter can sort
+  a `handle` ahead of a `route`, so a deny authored one way can compile *after* the
+  proxy and never run. The deny must be emitted so it compiles ahead of the proxy
+  in every auth mode, and that ordering must be proven against a real Caddy build
+  rather than assumed from the source text.
+- **An edge-only deny is not sufficient on its own.** The portal has features (its
+  own tunnelling, among others) that can route a request to the in-container app
+  without traversing the public Caddy edge. A control that lives only at the edge
+  can therefore be reached around. Enforcement has to sit where it cannot be routed
+  around — at the asset.
 - **The Services UI drives supervisor remotely.** The portal is served over the
   public edge, so the Services tab both polls read-only status
   (`GET /supervisor/processes`) and issues the write controls
@@ -71,13 +70,14 @@ being trivially bypassed by the portal's own features.
   not a fleet-wide retroactive fix.
 
 This change was run through a blind expert panel (security-auditor, code-reviewer,
-test-engineer, red-team) twice. The first panel turned up the ordering bug, the
-quick-tunnel bypass, and the over-broad `/supervisor/*` matcher. The second panel,
-on the reworked edge-deny-plus-tunnel-guard design, showed that a target-spelling
-tunnel guard is bypassable by DNS-to-loopback / IPv4-mapped IPv6 / trailing-dot
-hostnames, and that the compiled-order proof was silently skipping in CI — which is
-why the authoritative control moved to the asset (Option D). Their surviving
-concerns are recorded in the binding conditions below.
+test-engineer, red-team) twice. The first panel turned up the ordering bug, a
+self-reach-around path, and an over-broad matcher. The second panel showed that a
+guard which inspects the *spelling* of a tunnel target is not sufficient — a tunnel
+can reach the loopback app by means a static check cannot enumerate — and that the
+ordering proof was silently skipping in CI; both are why the authoritative control
+moved to the asset (Option D). The detailed attack analysis is in the internal
+tracker (it is not reproduced here — see ADR 0012); the surviving concerns are
+distilled into the binding conditions below.
 
 ## Options considered
 
@@ -103,22 +103,20 @@ than the token they already hold, and inventing one for routes that are `≤` a
 local root shell is disproportionate. Worth revisiting only if these routes ever
 grant more than the local shell does.
 
-### C. `route`-based deny, placed first in the source (the first cut)
-Emit a `route @control { respond 403 }` as the first block in the portal site.
-**Rejected — it does not hold.** Because `handle` sorts before `route`, the deny
-compiles *after* the catch-all `handle` in no-auth mode and never fires there. The
-unit tests asserted source-string order, so they stayed green while the control
-was bypassed. This is the trap the panel caught: a security control whose test
-checks the source text, not the compiled handler order, is decoration.
+### C. Edge-only deny, authored so the ordering happens to work (the first cut)
+Rely on a Caddy edge deny alone, authored in a way that *looked* first in the
+source. **Rejected — it does not hold.** The Caddyfile adapter's directive ordering
+meant the deny could compile after the proxy and not fire, and the tests asserted
+source-string order rather than compiled handler order, so they stayed green while
+the control was ineffective. The lesson: a security control whose test checks the
+source text, not the compiled behaviour, is decoration.
 
 ### D. Enforce locality at the asset, with edge + tunnel refusals in front (chosen)
-A second blind panel on the first implementation of this option showed that an
-edge deny plus a *target-spelling* tunnel guard is not enough: the guard matched
-literal spellings of loopback, but `cloudflared` resolves the target at dial time,
-so a public DNS name that resolves to `127.0.0.1` (`*.nip.io`, `localtest.me`), an
-IPv4-mapped IPv6 literal (`::ffff:127.0.0.1`), or a trailing-dot FQDN would pass
-the guard and still reach the control port — defeating the "every spelling of
-local" promise. Enumerating spellings is the wrong primitive. The chosen shape
+A second blind panel on the first implementation of this option showed that an edge
+deny plus a tunnel guard that inspects the *spelling* of the target is not enough:
+the tunnel client resolves the target at dial time, so a target that resolves to
+loopback without looking like it can slip past a static check and still reach the
+in-container app. Enumerating spellings is the wrong primitive. The chosen shape
 enforces locality where it can be judged authoritatively — at the asset — and keeps
 the cheaper refusals in front of it:
 
@@ -199,9 +197,9 @@ These are the panel's surviving concerns; the decision depends on all four holdi
 4. **Completeness is judged by provenance, not by enumerating spellings of
    "local".** The authoritative check must refuse every request carrying a
    forwarding header; the tunnel-target guard is explicitly *not* required to be
-   complete (it may miss DNS-to-loopback, IPv4-mapped IPv6, trailing-dot forms —
-   those are caught by condition 3). Do not re-introduce a spelling-enumeration
-   guard as if it were the boundary.
+   complete (a static spelling check cannot be — condition 3 is what makes the
+   control hold). Do not re-introduce a spelling-enumeration guard as if it were the
+   boundary.
 
 ## Consequences
 
