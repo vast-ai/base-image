@@ -30,7 +30,7 @@ ENV CGO_ENABLED=0
 ARG TARGETARCH
 RUN cd /src && GOOS=linux GOARCH=$TARGETARCH xcaddy build "${CADDY_VERSION}" \
     --output /go/caddy \
-    --with github.com/caddyserver/caddy/v2=/src/caddy \
+    --with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy \
     --with github.com/caddyserver/replace-response@${REPLACE_RESPONSE_COMMIT} \
     --replace golang.org/x/net=golang.org/x/net@${XNET_VERSION}
 
