@@ -1,43 +1,45 @@
 #!/usr/bin/env python3
 """GRPO reinforcement learning on one GPU with Unsloth.
 
-Teaches a small model to solve math word problems: it writes several answers per
-question, a scoring function grades each one, and training nudges the model toward the
-higher-scoring answers.
+The model writes several answers per prompt, a scoring function grades each one, and
+training nudges the model toward the higher-scoring answers.
+
+What to learn comes from a task file: a small Python file with the data, the prompt and
+the scoring. Two are built in (tasks/): "math" (the default, grade-school math) and
+"toolcall" (answer a request with JSON function calls). Point --task at your own file or
+a URL to train on anything a program can check. See tasks/README.md.
 
 Every setting is a command-line flag, and every flag also reads an environment variable
 (GRPO_<FLAG>), so the same script works from a terminal, a notebook, a template's env
-vars, or an agent. Each run writes `results.json` (time, peak GPU memory, reward before
-and after, accuracy before and after) next to the LoRA adapter.
+vars, or an agent. Each run writes `results.json` (time, peak GPU memory, reward trend,
+accuracy before and after) next to the LoRA adapter.
 
-    python train_grpo.py                          # defaults: Qwen3-1.7B, GSM8K, 100 steps
+    python train_grpo.py                          # defaults: Qwen3-1.7B, math (GSM8K), 100 steps
     python train_grpo.py --max-steps 20           # quick smoke test
-    GRPO_MODEL=unsloth/Qwen3-8B-Base python train_grpo.py
+    python train_grpo.py --task toolcall          # built-in tool-calling task
+    python train_grpo.py --task ./my_task.py      # your own task
+    GRPO_TASK=https://example.com/my_task.py python train_grpo.py
     python train_grpo.py --help                   # every option
 """
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 # Lets vLLM and training share GPU memory; Unsloth's recipe turns it on (~30% more context).
 os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
 
-REASONING_START = "<start_working_out>"
-REASONING_END = "<end_working_out>"
-SOLUTION_START = "<SOLUTION>"
-SOLUTION_END = "</SOLUTION>"
-SYSTEM_PROMPT = (
-    "You are given a problem.\n"
-    "Think about the problem and provide your working out.\n"
-    f"Place it between {REASONING_START} and {REASONING_END}.\n"
-    f"Then, provide your solution between {SOLUTION_START}{SOLUTION_END}"
-)
+HERE = os.path.dirname(os.path.abspath(__file__))
+TASKS_DIR = os.path.join(HERE, "tasks")
 
 
 def env(name, default):
@@ -56,19 +58,22 @@ def parse_args(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     a = p.add_argument
+    a("--task", default=env("TASK", "math"),
+      help="What to train on: a built-in task (math, toolcall), a task file path, or an "
+           "http(s) URL to one. [GRPO_TASK]")
     a("--model", default=env("MODEL", "unsloth/Qwen3-1.7B-Base"),
       help="Hugging Face model id. [GRPO_MODEL]")
-    a("--dataset", default=env("DATASET", "gsm8k"), choices=["gsm8k", "dapo-math"],
-      help="Training questions. gsm8k = grade-school math (fast gains); "
-           "dapo-math = harder competition math. [GRPO_DATASET]")
+    a("--dataset", default=env("DATASET", ""),
+      help="Dataset choice, for tasks that offer one. math: gsm8k (default, grade-school "
+           "math) or dapo-math (harder competition math). [GRPO_DATASET]")
     a("--max-steps", type=int, default=int(env("MAX_STEPS", 100)),
       help="GRPO training steps. [GRPO_MAX_STEPS]")
     a("--max-seq-length", type=int, default=int(env("MAX_SEQ_LENGTH", 2048)),
       help="Prompt + answer length in tokens. Biggest driver of memory. [GRPO_MAX_SEQ_LENGTH]")
     a("--num-generations", type=int, default=int(env("NUM_GENERATIONS", 4)),
-      help="Answers sampled per question. Lower if out of memory. [GRPO_NUM_GENERATIONS]")
+      help="Answers sampled per prompt. Lower if out of memory. [GRPO_NUM_GENERATIONS]")
     a("--batch-size", type=int, default=int(env("BATCH_SIZE", 1)),
-      help="Questions per step. [GRPO_BATCH_SIZE]")
+      help="Prompts per step. [GRPO_BATCH_SIZE]")
     a("--grad-accum", type=int, default=int(env("GRAD_ACCUM", 1)),
       help="Gradient accumulation steps. [GRPO_GRAD_ACCUM]")
     a("--learning-rate", type=float, default=float(env("LEARNING_RATE", 5e-6)),
@@ -87,14 +92,14 @@ def parse_args(argv=None):
            "[GRPO_GPU_MEMORY_UTILIZATION]")
     a("--warmup-sft-steps", type=int, default=int(env("WARMUP_SFT_STEPS", 0)),
       help="Short supervised pass first, to teach the answer format to a model that "
-           "can't follow it. Off by default: on Qwen3-4B-Base it lowered accuracy. "
-           "[GRPO_WARMUP_SFT_STEPS]")
+           "can't follow it (tasks with worked answers only, e.g. math on gsm8k). Off by "
+           "default: on Qwen3-4B-Base it lowered accuracy. [GRPO_WARMUP_SFT_STEPS]")
     a("--eval-samples", type=int, default=int(env("EVAL_SAMPLES", 200)),
-      help="Held-out questions scored before and after training. 0 to skip. "
+      help="Held-out prompts scored before and after training. 0 to skip. "
            "Needs --fast-inference. [GRPO_EVAL_SAMPLES]")
     a("--output-dir", default=env("OUTPUT_DIR", ""),
       help="Where checkpoints, the LoRA and results.json go. "
-           "Default /workspace/grpo-runs/<timestamp>. [GRPO_OUTPUT_DIR]")
+           "Default /workspace/grpo-runs/<timestamp>-<task>. [GRPO_OUTPUT_DIR]")
     a("--save-steps", type=int, default=int(env("SAVE_STEPS", 50)),
       help="Checkpoint every N steps. [GRPO_SAVE_STEPS]")
     a("--save-merged", action=argparse.BooleanOptionalAction,
@@ -111,9 +116,88 @@ def parse_args(argv=None):
     if not args.output_dir:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         root = "/workspace" if os.path.isdir("/workspace") else "."
-        args.output_dir = os.path.join(root, "grpo-runs", stamp)
+        args.output_dir = os.path.join(root, "grpo-runs", f"{stamp}-{task_name(args.task)}")
     return args
 
+
+# ---------------------------------------------------------------- tasks
+
+REQUIRED = ("load", "prompt", "rewards", "check")
+
+
+def task_name(spec):
+    base = os.path.basename(spec.split("?")[0].rstrip("/"))
+    base = re.sub(r"\.py$", "", base)
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", base) or "task"
+
+
+def resolve_task(spec, dest):
+    """Copy the task file named by spec (built-in name, path or URL) to dest, and return
+    where it came from. The copy in the run folder is what runs, so a run always records
+    the exact task code it trained with."""
+    if re.match(r"https?://", spec):
+        with urllib.request.urlopen(spec, timeout=60) as r:
+            data = r.read()
+        with open(dest, "wb") as f:
+            f.write(data)
+        return spec
+    path = spec
+    if os.sep not in spec and not spec.endswith(".py"):
+        path = os.path.join(TASKS_DIR, f"{spec}_task.py")
+        if not os.path.isfile(path):
+            builtins = sorted(f[:-8] for f in os.listdir(TASKS_DIR) if f.endswith("_task.py"))
+            raise SystemExit(f"[grpo] unknown task {spec!r}. Built-in tasks: {', '.join(builtins)}; "
+                             "or pass a path or URL to a task file.")
+    if not os.path.isfile(path):
+        raise SystemExit(f"[grpo] task file not found: {path}")
+    shutil.copyfile(path, dest)
+    return os.path.abspath(path)
+
+
+def import_task(path):
+    """Load a task file as a module and check it has what the trainer needs."""
+    # A unique module name, so a task file called math.py can't shadow the stdlib module.
+    spec = importlib.util.spec_from_file_location("grpo_task", path)
+    task = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(task)
+    missing = [name for name in REQUIRED if not callable(getattr(task, name, None))]
+    if missing:
+        raise SystemExit(f"[grpo] task file {path} is missing: {', '.join(missing)}. "
+                         "See tasks/README.md.")
+    return task
+
+
+def load_task(spec, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    dest = os.path.join(output_dir, "task.py")
+    source = resolve_task(spec, dest)
+    with open(dest, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    return import_task(dest), {"task": task_name(spec), "task_source": source,
+                               "task_sha256": digest}
+
+
+def check_result(task, reply, answer):
+    """task.check returns a bool or a dict with "correct" and any other fields to record."""
+    result = task.check(reply, answer)
+    return dict(result) if isinstance(result, dict) else {"correct": bool(result)}
+
+
+def summarize(checks):
+    """Averages every bool or number field across checks: {"correct": 0.61, ...}."""
+    totals = {}
+    for c in checks:
+        for k, v in c.items():
+            if isinstance(v, (bool, int, float)):
+                totals.setdefault(k, []).append(float(v))
+    return {k: round(sum(v) / len(v), 4) for k, v in totals.items()}
+
+
+def stop_strings(task, tokenizer):
+    return [tokenizer.eos_token] + list(getattr(task, "STOP", []))
+
+
+# ---------------------------------------------------------------- memory
 
 class GpuMemoryWatcher:
     """Samples nvidia-smi so peak memory includes vLLM's share, which torch can't see."""
@@ -153,98 +237,11 @@ class GpuMemoryWatcher:
         self._thread.join(timeout=5)
 
 
-# ---------------------------------------------------------------- data
+# ---------------------------------------------------------------- model and eval
 
-def extract_gsm8k_answer(text):
-    return text.split("####")[-1].strip().replace(",", "")
-
-
-def load_questions(name, split):
-    """Returns a dataset with `question`, `answer` (number as text), and `reasoning`."""
-    from datasets import load_dataset
-
-    if name == "gsm8k":
-        ds = load_dataset("openai/gsm8k", "main", split=split)
-        return ds.map(lambda x: {
-            "question": x["question"],
-            "reasoning": x["answer"].split("####")[0].strip(),
-            "answer": extract_gsm8k_answer(x["answer"]),
-        })
-    # dapo-math has no test split and no worked solutions; hold out the tail for eval.
-    ds = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
-    ds = ds.select(range(len(ds) - 500, len(ds))) if split == "test" else ds.select(range(len(ds) - 500))
-    return ds.map(lambda x: {"question": x["prompt"], "reasoning": "", "answer": x["solution"].strip()})
-
-
-def chat_template():
-    # Unsloth's GRPO recipe: the prompt ends with the reasoning tag, so the model
-    # always starts by thinking.
-    return (
-        "{% if messages[0]['role'] == 'system' %}"
-        "{{ messages[0]['content'] + eos_token }}"
-        "{% set loop_messages = messages[1:] %}"
-        "{% else %}"
-        f"{{{{ '{SYSTEM_PROMPT}' + eos_token }}}}"
-        "{% set loop_messages = messages %}"
-        "{% endif %}"
-        "{% for message in loop_messages %}"
-        "{% if message['role'] == 'user' %}{{ message['content'] }}"
-        "{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}"
-        "{% endif %}{% endfor %}"
-        f"{{% if add_generation_prompt %}}{{{{ '{REASONING_START}' }}}}{{% endif %}}"
-    )
-
-
-def prompt_messages(question):
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": question}]
-
-
-# ---------------------------------------------------------------- rewards
-
-def make_reward_functions(eos_token):
-    match_format = re.compile(
-        rf"{REASONING_END}.*?{SOLUTION_START}(.+?){SOLUTION_END}[\s]*"
-        rf"(?:{re.escape(eos_token)})?[\s]*$",
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    match_number = re.compile(SOLUTION_START + r".*?([-]?[\d\.\,]+)", flags=re.MULTILINE | re.DOTALL)
-
-    def format_exact(completions, **kwargs):
-        """+3 when the answer follows the format exactly."""
-        return [3.0 if match_format.search(c[0]["content"]) else 0.0 for c in completions]
-
-    def format_partial(completions, **kwargs):
-        """+0.5 per tag used exactly once, -1 otherwise."""
-        scores = []
-        for c in completions:
-            text = c[0]["content"]
-            scores.append(sum(0.5 if text.count(tag) == 1 else -1.0
-                              for tag in (REASONING_END, SOLUTION_START, SOLUTION_END)))
-        return scores
-
-    def correct_answer(completions, answer, **kwargs):
-        """+5 for the right number, -1.5 for a wrong one, -2.5 for no answer."""
-        scores = []
-        for c, truth in zip(completions, answer):
-            found = match_number.search(c[0]["content"])
-            if not found:
-                scores.append(-2.5)
-                continue
-            try:
-                guess = float(found.group(1).replace(",", "").rstrip("."))
-                scores.append(5.0 if abs(guess - float(truth)) < 1e-6 else -1.5)
-            except ValueError:
-                scores.append(0.0)
-        return scores
-
-    return [format_exact, format_partial, correct_answer], match_number
-
-
-# ---------------------------------------------------------------- eval
-
-def load_model(settings, gpu_memory_utilization=None):
-    """Base model + LoRA wrapper + chat template, from a settings dict (parsed args, or the
-    "settings" saved in a run's results.json)."""
+def load_model(settings, task=None, gpu_memory_utilization=None):
+    """Base model + LoRA wrapper, from a settings dict (parsed args, or the "settings"
+    saved in a run's results.json). Applies the task's chat template if it has one."""
     from unsloth import FastLanguageModel
 
     kwargs = dict(
@@ -265,50 +262,51 @@ def load_model(settings, gpu_memory_utilization=None):
         use_gradient_checkpointing="unsloth",
         random_state=settings["seed"],
     )
-    tokenizer.chat_template = chat_template()
+    if getattr(task, "CHAT_TEMPLATE", None):
+        tokenizer.chat_template = task.CHAT_TEMPLATE
     return model, tokenizer
 
 
 def load_trained(run_dir, gpu_memory_utilization=0.6):
-    """Reload a finished run for inference: (model, tokenizer, lora_request) for
-    model.fast_generate. Uses the run's own saved settings, so the base model matches the
-    one the LoRA was trained on."""
+    """Reload a finished run for inference: (model, tokenizer, lora_request, task) for
+    model.fast_generate. Uses the run's own saved settings and task file, so the base
+    model and prompt format match what the LoRA was trained on."""
     with open(os.path.join(run_dir, "results.json")) as f:
         settings = json.load(f)["settings"]
-    model, tokenizer = load_model(settings, gpu_memory_utilization)
-    return model, tokenizer, model.load_lora(os.path.join(run_dir, "lora"))
+    task = import_task(os.path.join(run_dir, "task.py"))
+    model, tokenizer = load_model(settings, task, gpu_memory_utilization)
+    return model, tokenizer, model.load_lora(os.path.join(run_dir, "lora")), task
 
 
-def evaluate(model, tokenizer, questions, match_number, max_tokens, lora_request=None,
-             save_path=None):
-    """Share of held-out questions answered with the right number (greedy decoding).
-    Writes every question, answer and verdict to save_path (JSON lines) if given."""
+def evaluate(model, tokenizer, task, rows, max_tokens, lora_request=None, save_path=None):
+    """Scores held-out rows with task.check (greedy decoding) and returns the averages,
+    e.g. {"correct": 0.61}. Writes every prompt, reply and verdict to save_path (JSON
+    lines) if given."""
     from vllm import SamplingParams
 
-    prompts = [tokenizer.apply_chat_template(prompt_messages(q), tokenize=False,
-                                             add_generation_prompt=True)
-               for q in questions["question"]]
-    params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
+    prompts = [tokenizer.apply_chat_template(task.prompt(r), tokenize=False,
+                                             add_generation_prompt=True) for r in rows]
+    params = SamplingParams(temperature=0.0, max_tokens=max_tokens,
+                            stop=stop_strings(task, tokenizer))
     outputs = model.fast_generate(prompts, sampling_params=params, lora_request=lora_request,
                                   use_tqdm=False)
-    correct = 0
-    rows = []
-    for q, out, truth in zip(questions["question"], outputs, questions["answer"]):
+    checks, out_rows = [], []
+    for r, out in zip(rows, outputs):
         text = out.outputs[0].text
-        found = match_number.search(text)
-        ok = False
-        try:
-            ok = found is not None and abs(
-                float(found.group(1).replace(",", "").rstrip(".")) - float(truth)) < 1e-6
-        except ValueError:
-            pass
-        correct += ok
-        rows.append({"question": q, "answer": truth, "correct": ok,
-                     "extracted": found.group(1) if found else None, "output": text})
+        c = check_result(task, text, r["answer"])
+        checks.append(c)
+        out_rows.append({"prompt": task.prompt(r)[-1]["content"], "answer": r["answer"],
+                         **c, "output": text})
     if save_path:
         with open(save_path, "w") as f:
-            f.writelines(json.dumps(r) + "\n" for r in rows)
-    return round(correct / len(prompts), 4)
+            f.writelines(json.dumps(x) + "\n" for x in out_rows)
+    return summarize(checks)
+
+
+def record_eval(results, metrics, when):
+    """accuracy_<when> for "correct", <field>_<when> for any other field."""
+    for k, v in metrics.items():
+        results[f"accuracy_{when}" if k == "correct" else f"{k}_{when}"] = v
 
 
 # ---------------------------------------------------------------- main
@@ -316,6 +314,8 @@ def evaluate(model, tokenizer, questions, match_number, max_tokens, lora_request
 def main(argv=None):
     args = parse_args(argv)
     os.makedirs(args.output_dir, exist_ok=True)
+    task, task_info = load_task(args.task, args.output_dir)
+    print(f"[grpo] task: {json.dumps(task_info)}", flush=True)
     print(f"[grpo] settings: {json.dumps(vars(args))}", flush=True)
 
     if args.fast_inference:
@@ -334,80 +334,87 @@ def main(argv=None):
 
     import unsloth  # noqa: F401  # side effect: must load before trl/transformers so its patches apply
     import torch
-    from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
 
-    model, tokenizer = load_model(vars(args))
+    model, tokenizer = load_model(vars(args), task)
     timings["load_s"] = round(time.time() - t0, 1)
 
-    train = load_questions(args.dataset, "train").shuffle(seed=args.seed)
-    test = load_questions(args.dataset, "test").shuffle(seed=args.seed)
-    reward_funcs, match_number = make_reward_functions(tokenizer.eos_token)
+    settings = vars(args)
+    train = task.load("train", settings).shuffle(seed=args.seed)
+    test = task.load("test", settings).shuffle(seed=args.seed)
 
-    # Prompt length: cover 90% of questions, drop the long tail.
-    lengths = [len(tokenizer.apply_chat_template(prompt_messages(q), add_generation_prompt=True))
-               for q in train["question"]]
-    max_prompt_length = int(sorted(lengths)[int(len(lengths) * 0.9)]) + 1
-    keep = [i for i, n in enumerate(lengths) if n <= max_prompt_length]
-    train = train.select(keep)
+    def prompt_tokens(row):
+        return len(tokenizer.apply_chat_template(task.prompt(row), add_generation_prompt=True))
+
+    # Prompt length: cover 90% of prompts, drop the long tail.
+    sample = train.select(range(min(5000, len(train))))
+    lengths = sorted(prompt_tokens(r) for r in sample)
+    max_prompt_length = lengths[int(len(lengths) * 0.9)] + 1
+    train = train.filter(lambda r: prompt_tokens(r) <= max_prompt_length)
     max_completion_length = args.max_seq_length - max_prompt_length
-    print(f"[grpo] {len(train)} training questions, prompt <= {max_prompt_length} tokens, "
+    if getattr(task, "MAX_ANSWER_TOKENS", None):
+        max_completion_length = min(max_completion_length, task.MAX_ANSWER_TOKENS)
+    # The held-out set keeps long prompts (scoring the same questions as published runs);
+    # only prompts with no room left for an answer are dropped.
+    test = test.filter(lambda r: prompt_tokens(r) <= args.max_seq_length - min(256, max_completion_length))
+    print(f"[grpo] {len(train)} training prompts, prompt <= {max_prompt_length} tokens, "
           f"answer <= {max_completion_length} tokens", flush=True)
 
     results = {
         "model": args.model,
-        "dataset": args.dataset,
-        "settings": vars(args),
+        **task_info,
+        "dataset": args.dataset or getattr(task, "DATASET", None),
+        "settings": settings,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
     eval_set = test.select(range(min(args.eval_samples, len(test)))) if args.eval_samples else None
     if eval_set is not None:
         t = time.time()
-        results["accuracy_before"] = evaluate(
-            model, tokenizer, eval_set, match_number, max_completion_length,
-            save_path=os.path.join(args.output_dir, "eval_before.jsonl"))
+        record_eval(results, evaluate(model, tokenizer, task, eval_set, max_completion_length,
+                                      save_path=os.path.join(args.output_dir, "eval_before.jsonl")),
+                    "before")
         timings["eval_before_s"] = round(time.time() - t, 1)
-        print(f"[grpo] accuracy before: {results['accuracy_before']}", flush=True)
+        print(f"[grpo] accuracy before: {results.get('accuracy_before')}", flush=True)
 
-    # 1. Short supervised pass so a base model learns the answer format.
-    has_reasoning = any(r for r in train.select(range(min(50, len(train))))["reasoning"])
-    if args.warmup_sft_steps and has_reasoning:
+    # 1. Optional short supervised pass so a base model learns the answer format.
+    warmup_reply = getattr(task, "warmup_reply", None)
+    if args.warmup_sft_steps and warmup_reply is None:
+        print("[grpo] this task has no warmup_reply(); skipping --warmup-sft-steps.")
+    elif args.warmup_sft_steps:
         t = time.time()
+        sft_rows = train.select(range(min(len(train), args.warmup_sft_steps * 2)))
+        sft_data = sft_rows.map(lambda r: {"text": tokenizer.apply_chat_template(
+            task.prompt(r) + [{"role": "assistant", "content": warmup_reply(r) or ""}],
+            tokenize=False)}).filter(lambda r: bool(warmup_reply(r)))
+        if len(sft_data):
+            SFTTrainer(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=sft_data,
+                args=SFTConfig(
+                    dataset_text_field="text",
+                    per_device_train_batch_size=1,
+                    gradient_accumulation_steps=1,
+                    max_steps=args.warmup_sft_steps,
+                    warmup_steps=5,
+                    learning_rate=2e-4,
+                    logging_steps=10,
+                    optim="adamw_8bit",
+                    seed=args.seed,
+                    output_dir=os.path.join(args.output_dir, "sft-warmup"),
+                    save_strategy="no",
+                    report_to="none",
+                ),
+            ).train()
+            timings["warmup_sft_s"] = round(time.time() - t, 1)
+            torch.cuda.empty_cache()
+        else:
+            print("[grpo] no worked answers in this dataset; skipping --warmup-sft-steps.")
 
-        def to_text(x):
-            messages = prompt_messages(x["question"]) + [{
-                "role": "assistant",
-                "content": f"{REASONING_START}{x['reasoning']}{REASONING_END}"
-                           f"{SOLUTION_START}{x['answer']}{SOLUTION_END}",
-            }]
-            return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
-
-        sft_data = train.select(range(min(len(train), args.warmup_sft_steps * 2))).map(to_text)
-        SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=sft_data,
-            args=SFTConfig(
-                dataset_text_field="text",
-                per_device_train_batch_size=1,
-                gradient_accumulation_steps=1,
-                max_steps=args.warmup_sft_steps,
-                warmup_steps=5,
-                learning_rate=2e-4,
-                logging_steps=10,
-                optim="adamw_8bit",
-                seed=args.seed,
-                output_dir=os.path.join(args.output_dir, "sft-warmup"),
-                save_strategy="no",
-                report_to="none",
-            ),
-        ).train()
-        timings["warmup_sft_s"] = round(time.time() - t, 1)
-        torch.cuda.empty_cache()
-
-    # 2. GRPO.
-    grpo_data = train.map(lambda x: {"prompt": prompt_messages(x["question"]), "answer": x["answer"]})
+    # 2. GRPO. Other columns pass through to the reward functions as keyword arguments.
+    grpo_data = train.map(lambda r: {"prompt": task.prompt(r)},
+                          remove_columns=[c for c in train.column_names if c == "prompt"])
     config = dict(
         temperature=1.0,
         learning_rate=args.learning_rate,
@@ -431,12 +438,12 @@ def main(argv=None):
         from vllm import SamplingParams
         config["vllm_sampling_params"] = SamplingParams(
             min_p=0.1, top_p=1.0, top_k=-1, seed=args.seed,
-            stop=[tokenizer.eos_token], include_stop_str_in_output=True,
+            stop=stop_strings(task, tokenizer), include_stop_str_in_output=True,
         )
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
-        reward_funcs=reward_funcs,
+        reward_funcs=task.rewards(tokenizer),
         args=GRPOConfig(**config),
         train_dataset=grpo_data,
     )
@@ -469,13 +476,12 @@ def main(argv=None):
 
     if eval_set is not None:
         t = time.time()
-        results["accuracy_after"] = evaluate(model, tokenizer, eval_set, match_number,
-                                             max_completion_length,
-                                             lora_request=model.load_lora(lora_dir),
-                                             save_path=os.path.join(args.output_dir,
-                                                                    "eval_after.jsonl"))
+        record_eval(results, evaluate(model, tokenizer, task, eval_set, max_completion_length,
+                                      lora_request=model.load_lora(lora_dir),
+                                      save_path=os.path.join(args.output_dir, "eval_after.jsonl")),
+                    "after")
         timings["eval_after_s"] = round(time.time() - t, 1)
-        print(f"[grpo] accuracy after: {results['accuracy_after']}", flush=True)
+        print(f"[grpo] accuracy after: {results.get('accuracy_after')}", flush=True)
 
     watcher.stop()
     timings["total_s"] = round(time.time() - t0, 1)
