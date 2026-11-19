@@ -44,8 +44,14 @@ jobs:
           # the gate is deterministic (e.g. a future pydantic 3.x can't silently break it).
           # tunnel_manager's own imports, so test_cloudflared_contract.py can ask
           # the SHIPPED module what argv it builds instead of restating it.
+          # Jinja2 lets test_provision_route_wiring.py import the REAL portal app
+          # object (it builds Jinja2Templates at import) to assert the provision
+          # route actually carries the require_local_caller dependency (ADR 0064,
+          # binding condition 3); pinned to portal-aio/requirements.txt for a
+          # deterministic gate. The portal's hardware/IO libs (GPUtil/psutil/httpx/
+          # aiofiles) are stubbed by that test, not installed.
           pip install pytest pydantic==2.9.2 PyYAML==6.0.2 shortuuid==1.0.13 \
-                      requests fastapi aiohttp cachetools
+                      Jinja2==3.1.6 requests fastapi aiohttp cachetools
 
       # Install Caddy BEFORE the test suite: test_caddy_config_manager.py's
       # compiled-order test (the one that proves the localhost-only control-route

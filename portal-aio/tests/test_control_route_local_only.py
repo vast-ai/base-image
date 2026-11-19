@@ -7,9 +7,11 @@ tunnel-target guard are early refusals, but a request that reaches
 carries a forwarding header, and this check refuses it at the asset. A direct
 in-container caller carries none and passes.
 
-These tests pin that boundary at the unit level; the wiring (that the dependency
-is actually attached to the real routes) is proved end-to-end by the live test on
-a real instance.
+These tests pin the check's behaviour at the unit level; that the dependency is
+actually attached to POST /capabilities/provision (and NOT to the supervisor
+routes) is gated separately by test_provision_route_wiring.py, which imports the
+real app and inspects the route. A live test on a real instance confirms the
+end-to-end path.
 """
 from __future__ import annotations
 

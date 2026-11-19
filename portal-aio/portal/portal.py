@@ -1776,9 +1776,13 @@ async def post_capabilities_provision(req: ProvisionRequest):
     Returns immediately; follow progress in /var/log/portal/provisioning.log.
 
     SECURITY: this installs/runs caller-supplied code (pip/git/post_commands), so
-    it is an install+exec surface. It is gated by the Caddy token edge for remote
-    callers and, like the other /supervisor/* control routes, is unauthenticated
-    only on localhost inside the (single-tenant) container.
+    it is an install+exec surface. It is localhost-only: the ``require_local_caller``
+    dependency returns 403 for any request carrying a proxy/forwarding header (the
+    Caddy edge and a cloudflared tunnel both stamp one; a genuine in-container caller
+    does not), and the Caddy edge additionally denies the route outright. A remote
+    caller gets 403; only a caller inside the container (127.0.0.1:11111) reaches
+    this handler. This is NOT like the /supervisor/* routes, which remain token-gated
+    and remotely reachable so the Services UI keeps working over the edge (ADR 0064).
     """
     log_file = "/var/log/portal/provisioning.log"
     cmd: list[str] = ["/opt/instance-tools/bin/provisioner"]

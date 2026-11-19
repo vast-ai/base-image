@@ -205,8 +205,15 @@ These are the panel's surviving concerns; the decision depends on all four holdi
 
 **Positive**
 - `/capabilities/provision` is no longer reachable from the public internet, on
-  new boots, in either auth mode — closing a remotely-reachable exec surface
-  without removing any capability the renter has locally.
+  new boots, in either auth mode — removing a clean, scriptable install-and-exec
+  primitive without taking away any capability the renter has locally. The
+  marginal value is narrower than "closes remote RCE": a legitimate token holder
+  already has remote root via the Jupyter terminal and SSH, so this does not
+  reduce *their* reach. Where it bites is the leaked-token / `ENABLE_AUTH=false`
+  case — there, a one-shot POST-JSON RCE endpoint is far easier to weaponise at
+  fleet scale than driving an interactive terminal (cf. the token-leak miner
+  campaigns), so denying it is defence-in-depth that removes the cheapest tool,
+  not the last one.
 - Because locality is enforced at the asset (by request provenance, not target
   spelling), the control holds against a tunnel to loopback by any hostname, and
   against Caddy path-normalization evasions — not just the literal `:11111` target.
