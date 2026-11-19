@@ -1,6 +1,6 @@
 # ADR 0064 — The portal's provisioner control route is localhost-only
 
-Status: Proposed
+Status: Accepted
 Date: 2026-11-19
 
 ## Context
