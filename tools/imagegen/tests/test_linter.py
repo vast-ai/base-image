@@ -5647,7 +5647,7 @@ def _l120(tmp_path, mutate):
     new = mutate(text)
     assert new != text, "mutation did not apply"
     (tmp_path / "Dockerfile").write_text(new)
-    return [f.path for f in L.check_xcaddy_with_is_versioned(tmp_path)]
+    return [f.path.split(":")[0] for f in L.check_xcaddy_with_is_versioned(tmp_path)]
 
 
 def test_L120_real_tree_is_clean():
@@ -5663,6 +5663,29 @@ def test_mut_L120_versionless_caddy_replacement_fires(tmp_path):
 def test_mut_L120_versionless_plugin_fires(tmp_path):
     assert _l120(tmp_path, lambda t: t.replace("replace-response@${REPLACE_RESPONSE_COMMIT}", "replace-response")) \
         == ["Dockerfile"]
+
+
+
+def test_L120_a_comment_line_inside_the_run_does_not_hide_a_versionless_with(tmp_path):
+    """Docker drops the comment line and still runs the --with after it."""
+    assert _l120(tmp_path, lambda t: t.replace(
+        "    --with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy \\\n",
+        "    # the patched clone\n    --with github.com/caddyserver/caddy/v2=/src/caddy \\\n")) == ["Dockerfile"]
+
+
+def _l120_text(tmp_path, text):
+    (tmp_path / "Dockerfile").write_text(text)
+    return list(L.check_xcaddy_with_is_versioned(tmp_path))
+
+
+def test_L120_text_that_never_runs_is_clean(tmp_path):
+    assert _l120_text(tmp_path, (
+        "FROM golang:1\n"
+        "# RUN xcaddy build --with github.com/example/mod\n"
+        "RUN cat > /notes.txt <<EOF\n"
+        "xcaddy build --with github.com/example/mod\n"
+        "EOF\n"
+        "RUN xcaddy build v2.11.7 --with github.com/example/mod@v1.0.0 && echo --with github.com/x/y\n")) == []
 
 
 # --- L114: refresh-ca-data.sh ends every install ----------------------------------- #

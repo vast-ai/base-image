@@ -4656,23 +4656,30 @@ def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
                               "passes; copy the base's again or delete it (ADR 0058, L115)")
 
 
-_XCADDY_BUILD = re.compile(r"\bxcaddy\s+build\b(?:[^\n]*\\\n)*[^\n]*")
 _XCADDY_WITH = re.compile(r"--with[\s=]+(\S+)")
+# One shell command: an xcaddy build ends at the next operator, not at the end of the RUN.
+_SHELL_OPERATOR = re.compile(r"&&|\|\||[;|]")
 
 
 def check_xcaddy_with_is_versioned(repo: Path) -> Iterable[Finding]:
-    """L120 (repo) — every `--with` in an xcaddy build names a version (ADR 0057)."""
+    """L120 (repo) — every `--with` in an xcaddy build names a version (ADR 0057). Reads the
+    executed shell of each RUN, so comments and heredoc data neither hide nor raise a finding."""
     for df in sorted(repo.glob("**/Dockerfile*")):
         if ".git" in df.parts or not df.is_file():
             continue
-        for build in _XCADDY_BUILD.finditer(df.read_text()):
-            for m in _XCADDY_WITH.finditer(build.group(0)):
-                module = m.group(1).split("=", 1)[0]
-                if "@" not in module:
-                    yield Finding("L120", ERROR, "repo", str(df.relative_to(repo)),
-                                  f"xcaddy --with {m.group(1)} names no version, so xcaddy asks Go for the latest "
-                                  f"{module}; name the pinned version (`{module}@<version>`) (ADR 0057, L120)")
-
+        for ins in parse(df.read_text()):
+            if ins.cmd != "RUN":
+                continue
+            for command in _SHELL_OPERATOR.split(ins.exec):
+                if not re.search(r"\bxcaddy\s+build\b", command):
+                    continue
+                for m in _XCADDY_WITH.finditer(command):
+                    module = m.group(1).split("=", 1)[0]
+                    if "@" not in module:
+                        yield Finding("L120", ERROR, "repo", f"{df.relative_to(repo)}:{ins.line}",
+                                      f"xcaddy --with {m.group(1)} names no version, so xcaddy asks Go for the "
+                                      f"latest {module}; name the pinned version (`{module}@<version>`) "
+                                      "(ADR 0057, L120)")
 
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
