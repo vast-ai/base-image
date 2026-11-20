@@ -119,7 +119,6 @@ RULES: list[tuple[str, str, str]] = [
     ("L120", ERROR, "Every `--with` in an `xcaddy build` names a version, including one that replaces the module with a local path (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`). xcaddy turns a `--with` that has no version into `go get <module>`, which Go reads as the latest release. On the Caddy module that request sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the two agree only while the pin IS the latest release: the base built while v2.11.7 was the latest, and once upstream published v2.11.8 and v2.11.9 every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`, though the local replacement meant v2.11.9 would never have been compiled. On any other module a versionless `--with` floats silently. ADR 0057 requires every Caddy build input to be pinned"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L127", ERROR, "`tests/base/29-ca-trust.sh` carries no date and no expiry logic, and its exemption rows are well formed and paired with ADR 0058. Each row of `EXEMPTIONS` is `id|checks|pattern|condition|reason` with every field present; ids are unique; `checks` are from `bundle pip-wheel node uv`; the condition names an `exempt_if_<condition>` function in the file; `**` appears only as a trailing `/**`; the PASS line states the count of exemptions applied; and the row ids are exactly the ids in the `Standing exemptions` table of ADR 0058, so a row cannot be added without recording why the image cannot fix the file. Until 2026-11 each exemption carried a review date and the test failed once it passed: on 2026-11-06 the first one did, every serverless QA cell blocked for ten days, and the only action the date allowed was to move it, through a base rebuild, a promotion and a pin bump per derivative. Most rows were also fixable by the image and marked `left to upstream` (ADR 0058, amendment 2026-11-16)"),
-    ("L128", ERROR, "`lib/worker-python.sh` exists and runs before `lib/refresh-ca-data.sh` in the base `Dockerfile`, in `Dockerfile.extend` and in `tools/convert-non-vast-image.sh`. The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's managed Pythons; when the image ships none, uv downloads one at boot, after the CA refresh, with a bundled pip below the trust floor. Installed at build and before the refresh, the bootstrap reuses it and nothing below the floor arrives at boot. `Dockerfile.extend` is listed because a base rebuilt by extend must carry it too (ADR 0058, amendment 2026-11-16)"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
     ("L102", ERROR, "Every Dockerfile that installs Selkies pins it: a concrete `ARG SELKIES_VERSION=X.Y.Z`, `ARG SELKIES_SHA256_AMD64` and `ARG SELKIES_SHA256_ARM64` as 64-hex digests checked with `sha256sum -c`, and no `releases/latest` lookup for it; and every such Dockerfile carries the SAME version and digests. Upstream deleted every 1.x release when 2.0 shipped, which broke both desktop images on the same day, and 2.0 changes behaviour under unchanged flag names (1.x `x264enc` became hardware-first `h264enc`; unknown flags only warn), so a float can change what ships with no build signal. Amends ADR 0027 for this artifact (ADR 0050)"),
@@ -4657,8 +4656,7 @@ def check_no_port_mapped_for_both_protocols(repo: Path) -> Iterable[Finding]:
                                   "so give each protocol its own number (ADR 0050, L106)")
 
 
-CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env", "tests/base/29-ca-trust.sh",
-                          "lib/worker-python.sh", "tests/ca-trust/worker-interpreter.sh")
+CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env", "tests/base/29-ca-trust.sh")
 
 
 def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
@@ -4774,34 +4772,6 @@ def check_ca_trust_exemptions_are_undated_and_recorded(repo: Path) -> Iterable[F
                           "(ADR 0058, L127)")
 
 
-WORKER_PYTHON_SCRIPT = "ROOT/opt/instance-tools/lib/worker-python.sh"
-WORKER_PYTHON_CALLERS = ("Dockerfile", "Dockerfile.extend", CONVERT_SCRIPT)
-# A call, not a mention: at the start of a command, and not with its failure discarded.
-_WORKER_PYTHON_CALL = re.compile(r"(^|&&|;|\bRUN)\s*/opt/instance-tools/lib/worker-python\.sh\b")
-
-
-def check_worker_python_is_installed_before_the_refresh(repo: Path) -> Iterable[Finding]:
-    """L128 (repo) — worker-python.sh runs before refresh-ca-data.sh in base, extend and convert."""
-    callers = [repo / c for c in WORKER_PYTHON_CALLERS if (repo / c).is_file()]
-    if not callers:
-        return
-    if not (repo / WORKER_PYTHON_SCRIPT).is_file():
-        yield Finding("L128", ERROR, "repo", WORKER_PYTHON_SCRIPT,
-                      "missing; without it the serverless worker bootstrap downloads its Python at boot, after "
-                      "the CA refresh (ADR 0058, L128)")
-    for f in callers:
-        lines = [ln for ln in f.read_text().splitlines() if not ln.lstrip().startswith("#")]
-        worker = [i for i, ln in enumerate(lines) if _WORKER_PYTHON_CALL.search(ln) and "|| true" not in ln]
-        refresh = [i for i, ln in enumerate(lines) if "refresh-ca-data.sh" in ln]
-        ordered = bool(worker) and bool(refresh) and (
-            worker[0] < refresh[-1] or (worker[0] == refresh[-1]
-                                        and lines[worker[0]].index("worker-python.sh") < lines[worker[0]].rindex("refresh-ca-data.sh")))
-        if not ordered:
-            yield Finding("L128", ERROR, "repo", str(f.relative_to(repo)),
-                          "must run /opt/instance-tools/lib/worker-python.sh before its last refresh-ca-data.sh: "
-                          "the interpreter the serverless worker asks for is installed at build so the refresh "
-                          "covers it (ADR 0058, L128)")
-
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
@@ -4827,8 +4797,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_ca_trust_test_gates_promotion, check_base_defaults_are_dated,
     check_refresh_ca_data_ends_installs, check_ca_trust_overlays_match_base,
     check_xcaddy_with_is_versioned,
-    check_ca_trust_exemptions_are_undated_and_recorded,
-    check_worker_python_is_installed_before_the_refresh]
+    check_ca_trust_exemptions_are_undated_and_recorded]
 
 
 def lint_repo(repo: Path) -> list[Finding]:

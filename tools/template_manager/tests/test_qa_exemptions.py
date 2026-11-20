@@ -79,7 +79,7 @@ def test_current_format_is_lifted_from_any_test_and_counted_against_the_pass_lin
     ]
     assert t.exemptions_declared == {"base/29-ca-trust": 1}
     s = qa_exemptions.summarise({"exemptions": t.exemptions, "exemptions_declared": t.exemptions_declared})
-    assert s["incomplete"] == [] and s["alert"] is True and s["legacy"] is False
+    assert s["incomplete"] == [] and s["legacy"] is False
 
 
 def test_a_replayed_stream_does_not_double_count():
@@ -130,22 +130,19 @@ def test_a_dropped_stream_is_reported_even_when_no_exemption_line_arrived(tmp_pa
     assert "stream dropped" in qa_exemptions.warning_line("r:t", s)
 
 
-def test_main_writes_the_alert_output_and_summary_and_exits_zero(tmp_path, capsys):
+def test_main_writes_the_warning_and_summary_and_exits_zero(tmp_path, capsys):
     t = feed(LEGACY_BLOCK)
     raw = tmp_path / "raw.json"
     raw.write_text("narration\n" + json.dumps({"state": "passed", "exemptions": t.exemptions}) + "\n")
-    out, summ = tmp_path / "out", tmp_path / "summary.md"
+    summ = tmp_path / "summary.md"
     rc = qa_exemptions.main(["--raw", str(raw), "--cell", "llama-cpp:b1-cuda-12.9-amd64",
-                             "--github-output", str(out), "--step-summary", str(summ)])
+                             "--step-summary", str(summ)])
     assert rc == 0
-    assert out.read_text() == "alert=true\n"
     printed = capsys.readouterr().out
     assert "3 CA-trust exemption(s) applied (legacy x2, worker-bootstrap x1)" in printed
     assert "2027-01-01" in printed and "2027-01-01" in summ.read_text()
-    # A missing payload (the client died before printing) still exits 0 and alerts nothing.
-    assert qa_exemptions.main(["--raw", str(tmp_path / "absent"), "--cell", "c",
-                               "--github-output", str(out)]) == 0
-    assert out.read_text().endswith("alert=false\n")
+    # A missing payload (the client died before printing) still exits 0.
+    assert qa_exemptions.main(["--raw", str(tmp_path / "absent"), "--cell", "c"]) == 0
 
 
 def test_exemptions_do_not_change_the_verdict():
@@ -156,7 +153,7 @@ def test_exemptions_do_not_change_the_verdict():
     assert classify(EXIT_PASSED, with_ex, ["base/29-ca-trust"]) == classify(EXIT_PASSED, base, ["base/29-ca-trust"])
 
 
-def test_gate_reports_after_the_verdict_even_on_a_block_and_wires_the_alert():
+def test_gate_reports_after_the_verdict_even_on_a_block_and_alerts_nobody():
     wf = yaml.safe_load(QA_GATE.read_text())
     steps = wf["jobs"]["qa"]["steps"]
     ids = [s.get("id") for s in steps]
@@ -165,10 +162,8 @@ def test_gate_reports_after_the_verdict_even_on_a_block_and_wires_the_alert():
     assert step["if"].startswith("always()") and "qa_exemptions.py" in step["run"]
     assert step["continue-on-error"] is True
     assert "${{" not in step["run"]             # inputs reach the shell through env, not interpolation
-    assert wf["jobs"]["qa"]["outputs"]["exemption_alert"] == "${{ steps.exemptions.outputs.alert }}"
-    notify = wf["jobs"]["notify-exemption"]
-    assert notify["needs"] == "qa"
-    assert "needs.qa.outputs.exemption_alert == 'true'" in notify["if"] and "always()" in notify["if"]
+    # No exemption pages anyone: the worker's own interpreter is expected on serverless cells.
+    assert "exemption_alert" not in wf["jobs"]["qa"]["outputs"] and "notify-exemption" not in wf["jobs"]
 
 
 def test_a_reason_with_brackets_does_not_move_the_path():
@@ -178,13 +173,13 @@ def test_a_reason_with_brackets_does_not_move_the_path():
 
 def test_an_exemption_from_an_earlier_attempt_survives_a_redraw(tmp_path):
     """The gate redraws on failure and each attempt overwrote the payload: an attempt that
-    applied worker-bootstrap and then failed another test lost its warning and its alert."""
+    applied worker-bootstrap and then failed another test lost its warning."""
     first = {"state": "failed", "exemptions": feed(LEGACY_BLOCK).exemptions}
     last = {"state": "passed", "exemptions": [], "exemptions_declared": {"base/29-ca-trust": 0}}
     raw = tmp_path / "attempts.txt"
     raw.write_text(json.dumps(first) + "\nnarration\n" + json.dumps(first) + "\n" + json.dumps(last) + "\n")
     s = qa_exemptions.summarise(qa_exemptions.load_raw(str(raw)))
-    assert len(s["rows"]) == 3 and s["alert"] is True          # union, not doubled by the repeat
+    assert len(s["rows"]) == 3                                 # union, not doubled by the repeat
     assert s["incomplete"] == []                               # the clean last attempt is judged on its own lines
 
 

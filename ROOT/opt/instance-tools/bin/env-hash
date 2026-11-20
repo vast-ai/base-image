@@ -15,10 +15,8 @@ main() {
         [[ -d "$real_path" ]] && VENV_HASHES+=$(get_venv_hash "$real_path")
     done
 
-    UV_HASH=$(get_uv_hash)
-
     # Combine all hashes and hash the result
-    ENV_HASH=$(echo "${SYSTEM_HASH}${APT_HASH}${VENV_HASHES}${UV_HASH}" | sha256sum | cut -d' ' -f1 | head -c 12)
+    ENV_HASH=$(echo "${SYSTEM_HASH}${APT_HASH}${VENV_HASHES}" | sha256sum | cut -d' ' -f1 | head -c 12)
     echo "$ENV_HASH"
 }
 
@@ -59,24 +57,6 @@ print(platform.machine())
 
 get_apt_hash() {
     dpkg -l | grep '^ii' | awk '{print $2 "=" $3}' | grep -E '(^lib|dev$|cuda|rocm)' | sort | sha256sum | cut -d' ' -f1 | head -c 12
-}
-
-# uv's managed interpreters live under /.uv, and the environment sync (37-sync-environment.sh)
-# replaces /.uv with the workspace copy kept for this hash. If they were not part of the hash,
-# an image that adds or upgrades one would reuse a volume's older /.uv and lose it: the
-# serverless worker's Python 3.10 (lib/worker-python.sh) would be gone and fetched again at
-# boot (ADR 0058). Each interpreter is named with its pip, the part the CA refresh changes.
-# Prints nothing when there is no such directory, so the hash of an image without one is unchanged.
-get_uv_hash() {
-    local root="${1:-/.uv/python_install}" dir
-    [[ -d "$root" ]] || return 0
-    for dir in "$root"/cpython-*/; do
-        dir=${dir%/}
-        [[ -d "$dir" && ! -L "$dir" ]] || continue     # the minor-version entries are links
-        # The installed pip and the wheel ensurepip bundles: the refresh can replace either alone.
-        echo "$(basename "$dir") $(find "$dir/lib" -maxdepth 3 -type d -name 'pip-*.dist-info' -path '*-packages/*' -printf '%f ' 2>/dev/null)" \
-             "$(find "$dir/lib" -maxdepth 4 -type f -name 'pip-*.whl' -path '*/ensurepip/_bundled/*' -printf '%f ' 2>/dev/null)"
-    done | sort | sha256sum | cut -d' ' -f1 | head -c 12
 }
 
 get_venv_hash() {

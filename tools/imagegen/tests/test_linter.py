@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114", "L120", "L127", "L128",
+    "L110", "L111", "L112", "L113", "L114", "L120", "L127",
 })
 
 
@@ -5858,11 +5858,10 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     assert codes == (["L106"] if fires else []), codes
 
 
-# --- L127 / L128: CA-trust exemptions carry no date; the worker's Python is pre-installed --- #
+# --- L127: CA-trust exemptions carry no date --- #
 # (ADR 0058, amendment 2026-11-16)
 
 _L127_FILES = (L.CA_TRUST_TEST_FILE, L.CA_TRUST_ADR)
-_L128_FILES = (L.WORKER_PYTHON_SCRIPT,) + L.WORKER_PYTHON_CALLERS
 
 
 def _mutated_tree(tmp_path, files, rel=None, mutate=None, drop=None):
@@ -5889,10 +5888,9 @@ def _l127(tmp_path, rel=L.CA_TRUST_TEST_FILE, mutate=None):
 _NSIGHT_ROW = "nsight-private-python|bundle pip-wheel|/opt/nvidia/nsight-*/**|dpkg-owned|"
 
 
-def test_L127_L128_real_tree_is_clean():
+def test_L127_real_tree_is_clean():
     repo = find_repo_root(Path(__file__).resolve().parent)
     assert list(L.check_ca_trust_exemptions_are_undated_and_recorded(repo)) == []
-    assert list(L.check_worker_python_is_installed_before_the_refresh(repo)) == []
 
 
 def test_L127_a_dated_row_fires(tmp_path):
@@ -5952,27 +5950,6 @@ def test_L127_a_pass_line_that_hides_the_count_fires(tmp_path):
     assert any("number of exemptions applied" in m for m in msgs)
 
 
-@pytest.mark.parametrize("caller", L.WORKER_PYTHON_CALLERS)
-def test_L128_a_build_without_the_worker_python_fires(tmp_path, caller):
-    """Dockerfile.extend is the one a rollout by extend depends on; convert covers the externals."""
-    repo = _mutated_tree(tmp_path, _L128_FILES, caller, lambda t: "\n".join(
-        ln.replace("/opt/instance-tools/lib/worker-python.sh && ", "") for ln in t.splitlines()
-        if ln.strip() != "/opt/instance-tools/lib/worker-python.sh" and "worker-python.sh && \\" not in ln))
-    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == [caller]
-
-
-def test_L128_the_worker_python_after_the_refresh_fires(tmp_path):
-    repo = _mutated_tree(tmp_path, _L128_FILES, "Dockerfile.extend", lambda t: t.replace(
-        "/opt/instance-tools/lib/worker-python.sh && /opt/instance-tools/lib/refresh-ca-data.sh",
-        "/opt/instance-tools/lib/refresh-ca-data.sh && /opt/instance-tools/lib/worker-python.sh"))
-    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == ["Dockerfile.extend"]
-
-
-def test_L128_the_script_missing_fires(tmp_path):
-    repo = _mutated_tree(tmp_path, _L128_FILES, drop=L.WORKER_PYTHON_SCRIPT)
-    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == [L.WORKER_PYTHON_SCRIPT]
-
-
 def test_L114_an_external_image_installing_after_its_refresh_fires(tmp_path):
     """Externals install model-ui, Ray and audio extras after convert's own refresh."""
     assert _l114_tree(tmp_path, "external/vllm/Dockerfile",
@@ -5991,22 +5968,9 @@ def test_L114_convert_refreshing_only_after_the_mirror_fires(tmp_path):
     assert [f.path for f in L.check_refresh_ca_data_ends_installs(tmp_path)] == [L.CONVERT_SCRIPT]
 
 
-def test_L115_covers_the_worker_python_script_and_the_worker_check():
-    assert {"lib/worker-python.sh", "tests/ca-trust/worker-interpreter.sh"} <= set(L.CA_TRUST_OVERLAY_FILES)
-
-
 @pytest.mark.parametrize("line", ['[[ "$(date -u +%s)" -gt 1798675200 ]] && exit 1',
                                   "now=$(date '+%Y%m%d'); (( now > 20261231 )) && exit 1",
                                   "printf -v now '%(%s)T' -1"])
 def test_L127_a_clock_read_in_any_spelling_fires(tmp_path, line):
     """No date literal in YYYY-MM-DD form is needed to bring an expiry back."""
     assert any("carries a date" in m for m in _l127(tmp_path, mutate=lambda t: t.replace("exempted=0\n", "exempted=0\n" + line + "\n")))
-
-
-@pytest.mark.parametrize("mention", ['echo "skipping /opt/instance-tools/lib/worker-python.sh"',
-                                     "/opt/instance-tools/lib/worker-python.sh || true"])
-def test_L128_a_mention_or_a_call_whose_failure_is_discarded_is_not_a_call(tmp_path, mention):
-    repo = _mutated_tree(tmp_path, _L128_FILES, "Dockerfile.extend", lambda t: t.replace(
-        "/opt/instance-tools/lib/worker-python.sh && /opt/instance-tools/lib/refresh-ca-data.sh",
-        "/opt/instance-tools/lib/refresh-ca-data.sh") + "\nRUN " + mention + " && /opt/instance-tools/lib/refresh-ca-data.sh\n")
-    assert [f.path for f in L.check_worker_python_is_installed_before_the_refresh(repo)] == ["Dockerfile.extend"]

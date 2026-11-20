@@ -170,7 +170,6 @@ jobs:
     # silent no-op surfaces instead of decaying quietly.
     outputs:
       soft_pass: ${{ steps.verdict.outputs.soft_pass }}
-      exemption_alert: ${{ steps.exemptions.outputs.alert }}   # see notify-exemption below
       gated: ${{ steps.guard.outputs.run }}   # did the live test actually run (secret present)
     # NOTE: no account-wide concurrency group. A single `qa-vast-account` group
     # (cancel-in-progress: false) only ever allows 1 running + 1 pending and
@@ -595,26 +594,6 @@ jobs:
       image-ref: ${{ inputs.tag }}
       image-tags: ${{ format('["{0}"]', inputs.tag) }}
       trigger: "schedule — QA inconclusive"
-      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    secrets:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-  # The images pre-install the interpreter the serverless worker needs, so the
-  # `worker-bootstrap` exemption is expected never to apply. When it does, the worker
-  # bootstrap has stopped using the image's Python and is fetching its own at boot,
-  # outside the image's CA refresh. The cell still passes; this is what tells someone.
-  notify-exemption:
-    needs: qa
-    if: always() && needs.qa.outputs.exemption_alert == 'true'
-    uses: ./.github/workflows/notify-slack.yml
-    with:
-      build-result: "success"
-      status: "warning"
-      headline: "${{ inputs.repo }} serverless worker installed its own Python at boot — CA-trust exemption applied (worker-bootstrap)"
-      image-name: ${{ inputs.repo }}
-      image-ref: ${{ inputs.tag }}
-      image-tags: ${{ format('["{0}"]', inputs.tag) }}
-      trigger: "QA — CA-trust exemption applied"
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

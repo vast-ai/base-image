@@ -132,16 +132,13 @@ line between "we fix it" and "upstream owns it" is the runtime that runs. They w
 "left to upstream" for files in environments that users and our services run.
 
 ### Decision
-7. **The image fixes what it can at build.** Each former row is fixed, with one exception
-   (the table below):
+7. **The image fixes what it ships, at build.** Each former row for a file the image ships
+   is fixed, with one exception (the table below):
    - botocore's bundle becomes a link to the OS bundle, in `lib/refresh-ca-data.sh`.
    - An engine environment's own `uv` and its `virtualenv` seed wheels are brought to the
      floor in `convert-non-vast-image.sh`, before `venv-mirror build`.
    - The Node that open-webui's Playwright driver bundles is replaced in that image's
      Dockerfile with a fixed release on the same major line.
-   - Every image installs the interpreter the serverless worker bootstrap asks for
-     (`lib/worker-python.sh`: uv's managed Python 3.10), before the refresh. The bootstrap
-     then reuses it and nothing below the floor arrives at boot.
 8. **The Debian/Ubuntu files are not exemptions.** `python3-certifi` and `python3-pip` are
    patched to read the OS bundle. The test reports their unread `cacert.pem` copies as checked
    and unread, on two conditions it verifies: dpkg owns the file, and the sibling `core.py`
@@ -154,21 +151,22 @@ line between "we fix it" and "upstream owns it" is the runtime that runs. They w
 10. **Every applied exemption is reported, on every run.** The test prints one `EXEMPT:` line
     per file and states the count on its PASS line. The QA gate turns those lines into a
     warning per cell and a table in the run summary. It never changes the verdict.
-11. **One exemption should never apply, and says so when it does.** With decision 7 the
-    `worker-bootstrap` row is a fallback. Each engine's serverless worker test checks, after
-    the worker is up, which interpreter the worker environment uses. If the bootstrap
-    installed its own, or the check cannot be made, it prints the exemption line and the gate
-    posts to Slack.
+11. **The test judges what the image ships.** The serverless worker bootstrap is fetched at
+    boot from its own repository and installs the interpreter it wants then. That interpreter
+    is not part of the image, and the image does not install it ahead of time. On a serverless
+    instance, a uv-managed interpreter that appeared after the build is covered by the
+    `worker-bootstrap` row and reported under decision 10. An interpreter the image ships is
+    always judged, whatever its version.
 
 ### Standing exemptions
 A row may be added only with an entry here that says why the image cannot fix the file. "Left
-to upstream" is not a reason for a runtime that users or our services run. The linter pairs
+to upstream" is not a reason for a runtime the image ships that users or our services run. The linter pairs
 this table with the rows in the test (L127).
 
 | Id | What it covers | Why the image does not fix it |
 |---|---|---|
 | `nsight-private-python` | The pip wheel and pip's vendored CA bundle in the Python that the NVIDIA Nsight tools (Nsight Compute, Nsight Systems) embed under `/opt/nvidia`, on CUDA base images that ship one. Applies only to files dpkg owns. | It belongs to a vendor profiler, is not on PATH, and nothing of ours runs it. Patching a profiler's bundled runtime cannot be tested here. |
-| `worker-bootstrap` | The pip wheel and bundle in a uv-managed Python, of any version, that appeared after the image was built, on a serverless instance. | The image did not ship it: the test judges what the image ships. The bootstrap that installs it lives in another repository and is fetched at boot, so it can change the version it asks for without a change here. Decision 7 removes the need for the row today; the row keeps such a change from blocking image publishing, and decision 11 makes it loud. |
+| `worker-bootstrap` | The pip wheel and bundle in a uv-managed Python, of any version, that appeared after the image was built, on a serverless instance. | The image did not ship it (decision 11). The bootstrap that installs it lives in another repository and is fetched at boot, so it can change the version it asks for without a change here. Its pip is that repository's to bring to the floor. |
 
 ### Options considered
 - **Keep the dates and extend them.** Rejected: the date pressed on image publishing, which
@@ -184,50 +182,46 @@ this table with the rows in the test (L127).
   crosses path separators, so an undated wildcard would cover files nobody reviewed.
 - **Fail in the image when an exemption no longer matches anything.** Rejected: the list is
   the same on every image and most rows match nothing on most images.
-- **Install the worker's interpreter only in images that have a serverless QA cell.**
-  Rejected: serverless mode is one environment variable on any image, so the interpreter is
-  needed wherever a customer may turn it on, and an image without it would fetch one at boot.
+- **Install the worker's interpreter in every image at build, so the refresh covers it.**
+  Built, shown to work on all five serverless images, and then withdrawn. It made the image
+  carry another project's runtime: about 100 MB in every image, a version to follow whenever
+  the bootstrap changed the one it asks for, an end-of-life Python that a later trust floor
+  could fail with no row to cover it, and a wider environment hash that would have re-synced
+  every volume once. Each of those is a new way for an image build or a boot to fail, for a
+  file the image does not need. The bootstrap's interpreter is fixed where it is installed.
+- **Limit the `worker-bootstrap` row to the Python version the bootstrap asks for today.**
+  Rejected: a bootstrap that moved to another version would block every serverless image
+  until a base rebuild and the derivative pin moves had followed it.
 
 ### Binding conditions added
 - `29-ca-trust.sh` carries no date and no expiry logic, and every row id is in the table above
   (L127).
-- `lib/worker-python.sh` runs before the refresh in the base build, the extend build and the
-  convert script (L128).
 - A build step that fixes a runtime proves it at build: the step fails the build unless the
   fixed runtime still starts.
 
 ### Consequences
 - A cell that passes by an exemption no longer reads like a clean pass.
-- `env-hash` now covers uv's managed interpreters, their pip and the pip wheel `ensurepip` bundles in each. The environment sync replaces
-  `/.uv` with the workspace copy stored under that hash, so without this an instance reusing a
-  volume from an older build would lose the pre-installed interpreter. Every sync-enabled
-  volume re-syncs once on the first boot of an image built with this change. The sync never
-  removes the copy stored under the previous hash, so that volume holds both until the user
-  deletes the old one, and packages installed into the old copy do not carry over.
 - No date makes an image built from this change fail. The pressure to remove a row is its
-  warning on every run, and for `worker-bootstrap` a Slack message.
+  warning on every run.
 - Images already built keep the dates they were built with. A derivative takes the test from
   its dated base, so one still pinned to a base older than this amendment fails on any
   rebuild from 2027-01-01, when the last of the old rows expires. The old dates stop mattering
   for a derivative when its base pin moves, so every pin moves before then. A derivative that
   cannot be re-pinned in time overlays the current files instead (the existing overlay rule).
-- Every image grows by one Python 3.10 interpreter, about 100 MB.
-- Python 3.10 is end-of-life. When a trust floor needs a pip that no longer supports it, the
-  pre-installed interpreter fails the test and no row covers it. The lasting fix is for the
-  bootstrap to use the image's interpreter or a supported Python. That is a change in the
-  bootstrap's repository, proposed separately.
+- On a serverless instance the worker environment runs on an interpreter whose bundled pip
+  is below the trust floor until the bootstrap brings it up. A serverless cell reports
+  it when the test runs after the bootstrap has, so the `worker-bootstrap` warning is
+  expected on those cells and is not an alarm. The fix is a change in the bootstrap's
+  repository, proposed separately.
 - On a serverless instance, a Python of any version that a provisioning script installs under
   uv's Python directory after the build is also covered by `worker-bootstrap`. It is reported,
-  not silent. An earlier draft limited the row to Python 3.10; a bootstrap that moved to
-  another version would then have blocked every serverless image until a base rebuild and the
-  derivative pin moves had followed it.
-- The pre-install relies on the bootstrap asking for 3.10 with the image's `uv` in uv's
-  default Python directory. When that changes, workers still start and images still publish:
-  uv downloads the new interpreter at boot, decision 11 reports it on every run, and
-  `lib/worker-python.sh` is moved to the new version in the next base build.
+  not silent.
+- Two serverless derivatives (llama.cpp and ComfyUI) install a Python 3.10 at build as a
+  stopgap, because their pinned base still carries the dated test, whose row for the worker's
+  interpreter has expired. Each drops that step when its base pin moves.
 - Images built before this amendment keep the dated list until they are rebuilt. The gate
   reports their rows with the date they fail from.
 
 ### What would reverse this
-The bootstrap using the image's interpreter removes the `worker-bootstrap` row and the
-pre-install. NVIDIA shipping a current pip in Nsight removes the other row.
+The bootstrap using an interpreter the image ships, or bringing its own interpreter's pip
+to the floor, removes the `worker-bootstrap` row. NVIDIA shipping a current pip in Nsight removes the other row.

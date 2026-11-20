@@ -122,10 +122,12 @@ ENV MODEL_LOG=/var/log/portal/llama.log
 # on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
 EXPOSE 3000
 
-# The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's
-# managed Pythons. Installed here, the bootstrap reuses this interpreter and the refresh below
-# covers it; left to boot, uv downloads one whose bundled pip is below the trust floor and
-# base/29-ca-trust fails the serverless cell. Interim: remove when the base image carries it.
+# Stopgap for the pinned base only. The serverless worker bootstrap creates its environment with
+# `uv venv -p 3.10`; left to boot, uv downloads an interpreter whose bundled pip is below the
+# trust floor, and this base's copy of base/29-ca-trust fails the serverless cell on it (its
+# dated row for that interpreter has expired). Installed here, the bootstrap reuses this one and
+# the refresh below covers it. Remove this step when the base pin moves to a base whose test
+# does not judge what the bootstrap installs (ADR 0058, amendment 2026-11-16).
 RUN set -euo pipefail && \
     uv python install --no-bin 3.10 && \
     for py in "${UV_PYTHON_INSTALL_DIR}"/cpython-3.10*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done

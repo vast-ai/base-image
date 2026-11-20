@@ -1820,9 +1820,8 @@ the engine environment, and a mirror built first links the old ones (ADR 0058).
 
 ### An overlay copy of a CA-trust file matches the base's — **GATED (L115)**
 
-A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`,
-`lib/worker-python.sh`, `tests/base/29-ca-trust.sh` and `tests/ca-trust/worker-interpreter.sh`
-from its dated base. When its base predates a CA-trust fix, the image
+A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` and
+`tests/base/29-ca-trust.sh` from its dated base. When its base predates a CA-trust fix, the image
 may overlay the current copies under its own `ROOT/opt/instance-tools/` as a one-off until the base
 is rebuilt; its `COPY ./ROOT /` then shadows the base. L115 requires every such copy to be
 byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy
@@ -1847,23 +1846,14 @@ Until 2026-11 each exemption carried a review date and the test failed once it p
 needs a base rebuild, a promotion and a pin bump per derivative, and it fixes nothing. Most of
 the dated rows were files the image could have fixed (ADR 0058, amendment 2026-11-16).
 
-### The serverless worker's Python is installed at build — **GATED (L128)**
+### The image does not ship the serverless worker's Python — not gated
 
-`lib/worker-python.sh` installs uv's managed Python 3.10, the interpreter the serverless worker
-bootstrap asks for, and runs before `lib/refresh-ca-data.sh` in the base `Dockerfile`, in
-`Dockerfile.extend` and in `convert-non-vast-image.sh`. The bootstrap then reuses it. Without it
-uv downloads the interpreter at boot, after the refresh, with a bundled pip below the trust floor.
-
-`env-hash` includes uv's managed interpreters and their pip (`get_uv_hash`). The environment
-sync replaces `/.uv` with the workspace copy stored under the hash; without the interpreters in
-it, an instance reusing a volume from an older build would lose the pre-installed one. Not
-linter-gated; `tools/imagegen/tests/test_env_hash_sh.py` holds it.
-
-Each engine's serverless worker test reports which interpreter the worker environment runs on
-(`tests/ca-trust/worker-interpreter.sh`). If the bootstrap installed its own, the test prints the
-`worker-bootstrap` exemption line and the gate posts to Slack; it prints the same line when it
-cannot make the check. That the bootstrap reuses a pre-installed interpreter was verified live
-on all five serverless images, in each image's own uv directory (ADR 0058, amendment 2026-11-16).
+The serverless worker bootstrap is fetched at boot from its own repository and creates the worker
+environment on an interpreter it asks uv for. The image does not install that interpreter: the
+test judges what the image ships, and the version the bootstrap asks for is not ours to follow.
+On a serverless instance, a uv-managed interpreter that appeared after the build is covered by
+the `worker-bootstrap` row and reported like any other exemption. An interpreter the image ships
+is always judged (ADR 0058, amendment 2026-11-16).
 
 ## 7. Application runtime conventions (how apps are launched & fed models)
 

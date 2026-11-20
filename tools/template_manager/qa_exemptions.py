@@ -7,10 +7,7 @@ exemption reads exactly like a clean one. This turns what test_template.py lifte
 from the test output (`exemptions` in its --raw payload) into:
 
   - one GitHub `::warning` for the cell,
-  - a table in the run summary,
-  - `alert=true` in $GITHUB_OUTPUT when the `worker-bootstrap` exemption was applied:
-    the image pre-installs the interpreter the serverless worker needs, so that
-    exemption firing means the worker bootstrap stopped using it.
+  - a table in the run summary.
 
 It reports and never decides: the verdict is qa_verdict.py's, and this always exits 0.
 """
@@ -22,7 +19,6 @@ import json
 import os
 import sys
 
-ALERT_ID = "worker-bootstrap"
 # The date after which every row of the dated list in images built before 2026-11 fails.
 LEGACY_NOTE = ("dated allowlist: this image's copy of the test fails these from 2027-01-01 "
                "unless it is rebuilt on a base that carries the undated test (a derivative "
@@ -77,7 +73,7 @@ def load_raw(path: str) -> dict | None:
 
 
 def summarise(raw: dict | None) -> dict:
-    """Pure: payload -> {rows, incomplete, alert, legacy}."""
+    """Pure: payload -> {rows, incomplete, legacy}."""
     rows = []
     for ex in (raw or {}).get("exemptions") or []:
         if isinstance(ex, dict) and ex.get("id") and ex.get("path"):
@@ -101,7 +97,6 @@ def summarise(raw: dict | None) -> dict:
     return {
         "rows": rows,
         "incomplete": incomplete,
-        "alert": any(r["id"] == ALERT_ID for r in rows),
         "legacy": any(r["legacy"] for r in rows),
     }
 
@@ -132,9 +127,6 @@ def warning_line(cell: str, s: dict) -> str | None:
         parts.append(f"{len(s['rows'])} CA-trust exemption(s) applied ({ids})")
     if s["legacy"]:
         parts.append(LEGACY_NOTE)
-    if s["alert"]:
-        parts.append("the serverless worker bootstrap installed its own Python instead "
-                     "of using the image's")
     if s["incomplete"]:
         parts.append("exemption report incomplete: " + "; ".join(s["incomplete"]))
     return f"::warning title=CA-trust exemptions::{escape_command(cell + ': ' + '; '.join(parts))}"
@@ -156,9 +148,6 @@ def summary_markdown(cell: str, s: dict) -> str:
         out.append("")
     if s["legacy"]:
         out += [f"Rows marked \"dated list\": {LEGACY_NOTE}.", ""]
-    if s["alert"]:
-        out += ["`worker-bootstrap` applied: the serverless worker bootstrap installed its "
-                "own Python at boot instead of using the one the image ships.", ""]
     for note in s["incomplete"]:
         out += [f"Exemption report incomplete: {escape_cell(note)}.", ""]
     return "\n".join(out) + "\n"
@@ -170,7 +159,6 @@ def main(argv=None) -> int:
     ap.add_argument("--raw", metavar="FILE", required=True,
                     help="file holding test_template.py --raw output")
     ap.add_argument("--cell", required=True, help="how to name this cell, e.g. repo:tag")
-    ap.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
     ap.add_argument("--step-summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
     args = ap.parse_args(argv)
 
@@ -184,9 +172,6 @@ def main(argv=None) -> int:
     if md and args.step_summary:
         with open(args.step_summary, "a", encoding="utf-8") as fh:
             fh.write(md)
-    if args.github_output:
-        with open(args.github_output, "a", encoding="utf-8") as fh:
-            fh.write(f"alert={'true' if s['alert'] else 'false'}\n")
     return 0
 
 

@@ -375,8 +375,6 @@ rm -f /opt/syncthing.tar.gz
 # our venvs): uv-managed interpreters get a current pip; refresh-ca-data.sh links grpcio's
 # roots.pem and replaces stale bundled ensurepip wheels; stale uv caches would reinstall old
 # certifi into any new env.
-# The interpreter the serverless worker bootstrap asks for, so it is not fetched at boot.
-/opt/instance-tools/lib/worker-python.sh
 for py in "$(uv python dir 2>/dev/null)"/*/bin/python3; do
     [[ -x "$py" ]] && "$py" -m pip install --no-cache-dir --break-system-packages -U pip
 done
