@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114", "L127", "L128",
+    "L110", "L111", "L112", "L113", "L114", "L120", "L127", "L128",
 })
 
 
@@ -5636,6 +5636,56 @@ def test_L113_a_floating_external_base_fires(tmp_path):
                          r"\1", (repo / "external/vllm/Dockerfile").read_text(), count=1))
     found = list(L.check_base_defaults_are_dated(tmp_path))
     assert [f.path for f in found] == ["external/vllm/Dockerfile"], found
+
+
+
+# --- L120: every xcaddy --with names a version ------------------------------------- #
+
+def _l120(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    text = (repo / "Dockerfile").read_text()
+    new = mutate(text)
+    assert new != text, "mutation did not apply"
+    (tmp_path / "Dockerfile").write_text(new)
+    return [f.path.split(":")[0] for f in L.check_xcaddy_with_is_versioned(tmp_path)]
+
+
+def test_L120_real_tree_is_clean():
+    assert list(L.check_xcaddy_with_is_versioned(find_repo_root(Path(__file__).resolve().parent))) == []
+
+
+def test_mut_L120_versionless_caddy_replacement_fires(tmp_path):
+    """The line that broke every base build once Caddy v2.11.8 was published."""
+    assert _l120(tmp_path, lambda t: t.replace("caddy/v2@${CADDY_VERSION}=/src/caddy", "caddy/v2=/src/caddy")) \
+        == ["Dockerfile"]
+
+
+def test_mut_L120_versionless_plugin_fires(tmp_path):
+    assert _l120(tmp_path, lambda t: t.replace("replace-response@${REPLACE_RESPONSE_COMMIT}", "replace-response")) \
+        == ["Dockerfile"]
+
+
+
+def test_L120_a_comment_line_inside_the_run_does_not_hide_a_versionless_with(tmp_path):
+    """Docker drops the comment line and still runs the --with after it."""
+    assert _l120(tmp_path, lambda t: t.replace(
+        "    --with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy \\\n",
+        "    # the patched clone\n    --with github.com/caddyserver/caddy/v2=/src/caddy \\\n")) == ["Dockerfile"]
+
+
+def _l120_text(tmp_path, text):
+    (tmp_path / "Dockerfile").write_text(text)
+    return list(L.check_xcaddy_with_is_versioned(tmp_path))
+
+
+def test_L120_text_that_never_runs_is_clean(tmp_path):
+    assert _l120_text(tmp_path, (
+        "FROM golang:1\n"
+        "# RUN xcaddy build --with github.com/example/mod\n"
+        "RUN cat > /notes.txt <<EOF\n"
+        "xcaddy build --with github.com/example/mod\n"
+        "EOF\n"
+        "RUN xcaddy build v2.11.7 --with github.com/example/mod@v1.0.0 && echo --with github.com/x/y\n")) == []
 
 
 # --- L114: refresh-ca-data.sh ends every install ----------------------------------- #

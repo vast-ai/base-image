@@ -338,6 +338,48 @@ class CloudflareDaemon:
         await self.stop()
 
 
+# The Instance Portal's control API listens only on 127.0.0.1:PORTAL_INTERNAL_PORT.
+# A quick tunnel is a user-driven cloudflared process that exposes a local target
+# to the public internet; pointed at the portal's own control port it would put
+# the exec-capable control routes on a public URL. The AUTHORITATIVE defence is in
+# the portal app itself (portal/control_access.require_local_caller): it refuses
+# those routes for any request that arrived through a proxy, so a tunnelled request
+# is rejected regardless of what hostname was used to reach loopback.
+#
+# This check is only a cheap EARLY refusal of the obvious case, so we don't spawn
+# cloudflared and flash a public URL for a plainly-local target. It is deliberately
+# a literal-spelling match and is NOT relied on for completeness: a hostname that
+# resolves to loopback by DNS (e.g. *.nip.io), an IPv4-mapped IPv6 literal, or a
+# trailing-dot FQDN will pass this check and still be refused by the app-side guard.
+# Do not treat this function as the security boundary.
+PORTAL_INTERNAL_PORT = 11111
+
+
+def _targets_portal_control_api(target_url: str) -> bool:
+    """True if target_url is an obvious literal spelling of the loopback control
+    port. Early-exit optimisation only — see the module comment above; the
+    authoritative control is portal/control_access.require_local_caller."""
+    try:
+        parsed = urlparse(
+            target_url
+            if target_url.startswith(("http://", "https://"))
+            else "http://" + target_url
+        )
+        port = parsed.port
+    except ValueError:
+        return False
+    if port != PORTAL_INTERNAL_PORT:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host in ("", "localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
 async def create_quick_tunnel(target_url: str) -> QuickTunnel:
     tunnel = QuickTunnel(target_url)
     await tunnel.start()
@@ -345,9 +387,18 @@ async def create_quick_tunnel(target_url: str) -> QuickTunnel:
 
 
 async def get_or_create_quick_tunnel(target_url: str) -> QuickTunnel:
+    if _targets_portal_control_api(target_url):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Refusing to tunnel the Instance Portal control API "
+                f"(127.0.0.1:{PORTAL_INTERNAL_PORT}); its control routes are "
+                "localhost-only."
+            ),
+        )
     if target_url in quick_tunnels:
         return quick_tunnels[target_url]
-    
+
     tunnel = await create_quick_tunnel(target_url)
     quick_tunnels[target_url] = tunnel
     return tunnel
@@ -435,6 +486,9 @@ async def get_quick_tunnel(target_url: str):
     try:
         tunnel = await get_or_create_quick_tunnel(target_url)
         return {"tunnel_url": tunnel.tunnel_url}
+    except HTTPException:
+        # Preserve the deny (403) and any other explicit status unchanged.
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

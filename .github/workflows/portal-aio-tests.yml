@@ -44,22 +44,24 @@ jobs:
           # the gate is deterministic (e.g. a future pydantic 3.x can't silently break it).
           # tunnel_manager's own imports, so test_cloudflared_contract.py can ask
           # the SHIPPED module what argv it builds instead of restating it.
+          # Jinja2 lets test_provision_route_wiring.py import the REAL portal app
+          # object (it builds Jinja2Templates at import) to assert the provision
+          # route actually carries the require_local_caller dependency (ADR 0064,
+          # binding condition 3); pinned to portal-aio/requirements.txt for a
+          # deterministic gate. The portal's hardware/IO libs (GPUtil/psutil/httpx/
+          # aiofiles) are stubbed by that test, not installed.
           pip install pytest pydantic==2.9.2 PyYAML==6.0.2 shortuuid==1.0.13 \
-                      requests fastapi aiohttp cachetools
-      - name: Run portal-aio test suite
-        working-directory: portal-aio
-        # -m "not live" deselects the cloudflared contract's live half. Those
-        # tests create REAL trycloudflare tunnels, and running them here spends
-        # the per-IP quota on `releases/latest` — which is explicitly not the
-        # binary that ships. The build-time job extracts cloudflared from the
-        # image it just built and is the run that should spend it; burning the
-        # quota here is how that run ends up rate-limited and proves nothing.
-        run: python -m pytest -q -m "not live"
+                      Jinja2==3.1.6 requests fastapi aiohttp cachetools
 
-      # The unit tests assert the generator emits the right STRINGS; they cannot
-      # catch a block that is syntactically illegal Caddy (ADR 0017 finding 4).
-      # Install upstream Caddy and actually load a generated config through it.
-      - name: Install Caddy (for config validation)
+      # Install Caddy BEFORE the test suite: test_caddy_config_manager.py's
+      # compiled-order test (the one that proves the localhost-only control-route
+      # deny sorts ahead of the reverse_proxy, ADR 0064 binding condition 1)
+      # pytest.skips when no caddy binary is on PATH. With this step after the
+      # tests, that proof silently skipped on every run. It must be on PATH at
+      # pytest time; CI_REQUIRE_CADDY makes the test FAIL rather than skip here,
+      # so a missing binary can never turn the load-bearing proof back into a
+      # silent green.
+      - name: Install Caddy (on PATH for the test suite + config validation)
         run: |
           CADDY_VERSION=2.8.4
           for i in 1 2 3; do
@@ -69,6 +71,18 @@ jobs:
           tar -xzf /tmp/caddy.tgz -C /tmp caddy
           sudo install /tmp/caddy /usr/local/bin/caddy
           caddy version
+
+      - name: Run portal-aio test suite
+        working-directory: portal-aio
+        # -m "not live" deselects the cloudflared contract's live half. Those
+        # tests create REAL trycloudflare tunnels, and running them here spends
+        # the per-IP quota on `releases/latest` — which is explicitly not the
+        # binary that ships. The build-time job extracts cloudflared from the
+        # image it just built and is the run that should spend it; burning the
+        # quota here is how that run ends up rate-limited and proves nothing.
+        env:
+          CI_REQUIRE_CADDY: "1"   # compiled-order test must run, not skip
+        run: python -m pytest -q -m "not live"
 
       - name: Validate generated Caddyfile through real Caddy
         working-directory: portal-aio/caddy_manager

@@ -7,6 +7,10 @@ import time
 import shortuuid
 
 CADDY_BIN = "/opt/portal-aio/caddy_manager/caddy"
+# The Instance Portal FastAPI (localhost:11111). Its provisioner control route
+# (/capabilities/provision) is served on localhost only; Caddy refuses it on the
+# public edge.
+PORTAL_INTERNAL_PORT = 11111
 CADDY_CONFIG = "/etc/Caddyfile"
 CERT_PATH = "/etc/instance.crt"
 KEY_PATH = "/etc/instance.key"
@@ -421,6 +425,13 @@ def generate_caddyfile(config):
         caddyfile += '    root * /opt/portal-aio/caddy_manager/public\n\n'
         caddyfile += '    ' + get_not_ready_handler_block() + '\n\n'
 
+        if internal_port == PORTAL_INTERNAL_PORT:
+            # Exec-capable control routes are localhost-only: refuse them on the
+            # public edge before any auth/proxy route. localhost:11111 (in-container,
+            # not via Caddy) still serves them, so the in-container provisioner,
+            # on-box agents and the boot path are unaffected.
+            caddyfile += get_control_route_deny_block()
+
         if enable_auth and not is_port_auth_excluded(external_port):
             caddyfile += generate_auth_config(caddy_identifier, web_username, web_password, open_button_token, hostname, internal_port, flush_interval)
         else:
@@ -429,6 +440,33 @@ def generate_caddyfile(config):
         caddyfile += "}\n\n"
 
     return caddyfile, web_username, web_password, open_button_token
+
+def get_control_route_deny_block():
+    """Refuse the provisioner control route on the public edge.
+
+    Covers `/capabilities/provision` (install+exec-as-root) only. The supervisor
+    process controls (`/supervisor/process/<name>/<start|stop|restart>`) are
+    deliberately NOT matched: the Instance Portal is reached over the public edge,
+    never on localhost, so the Services UI drives start/stop/restart remotely —
+    denying them here would make service management permanently unusable. They stay
+    token-gated like the rest of the portal. Read-only `/supervisor/processes` and
+    `/capabilities/services` are likewise not matched.
+
+    Emitted as a `handle` (not a `route`): the Caddyfile adapter sorts the
+    `handle` directive BEFORE `route`, so a `route`-based deny loses to the
+    catch-all `handle` that `generate_noauth_config()` emits (ENABLE_AUTH=false
+    or the portal port in AUTH_EXCLUDE) and never fires. A matched `handle`
+    joins the same handle mutual-exclusion group as that catch-all and, being
+    first and matched, wins in BOTH the authed and noauth configs. localhost:11111
+    (in-container, not via Caddy) is never affected.
+    """
+    return '''    @vast_control_routes path /capabilities/provision /capabilities/provision/*
+    handle @vast_control_routes {
+        respond "This control route is available on localhost only" 403
+    }
+
+'''
+
 
 def get_not_ready_handler_block():
     """Placeholder shown while the backing service is still starting up.

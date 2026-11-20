@@ -116,6 +116,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L120", ERROR, "Every `--with` in an `xcaddy build` names a version, including one that replaces the module with a local path (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`). xcaddy turns a `--with` that has no version into `go get <module>`, which Go reads as the latest release. On the Caddy module that request sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the two agree only while the pin IS the latest release: the base built while v2.11.7 was the latest, and once upstream published v2.11.8 and v2.11.9 every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`, though the local replacement meant v2.11.9 would never have been compiled. On any other module a versionless `--with` floats silently. ADR 0057 requires every Caddy build input to be pinned"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L127", ERROR, "`tests/base/29-ca-trust.sh` carries no date and no expiry logic, and its exemption rows are well formed and paired with ADR 0058. Each row of `EXEMPTIONS` is `id|checks|pattern|condition|reason` with every field present; ids are unique; `checks` are from `bundle pip-wheel node uv`; the condition names an `exempt_if_<condition>` function in the file; `**` appears only as a trailing `/**`; the PASS line states the count of exemptions applied; and the row ids are exactly the ids in the `Standing exemptions` table of ADR 0058, so a row cannot be added without recording why the image cannot fix the file. Until 2026-11 each exemption carried a review date and the test failed once it passed: on 2026-11-06 the first one did, every serverless QA cell blocked for ten days, and the only action the date allowed was to move it, through a base rebuild, a promotion and a pin bump per derivative. Most rows were also fixable by the image and marked `left to upstream` (ADR 0058, amendment 2026-11-16)"),
     ("L128", ERROR, "`lib/worker-python.sh` exists and runs before `lib/refresh-ca-data.sh` in the base `Dockerfile`, in `Dockerfile.extend` and in `tools/convert-non-vast-image.sh`. The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's managed Pythons; when the image ships none, uv downloads one at boot, after the CA refresh, with a bundled pip below the trust floor. Installed at build and before the refresh, the bootstrap reuses it and nothing below the floor arrives at boot. `Dockerfile.extend` is listed because a base rebuilt by extend must carry it too (ADR 0058, amendment 2026-11-16)"),
@@ -4675,6 +4676,32 @@ def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
                               "passes; copy the base's again or delete it (ADR 0058, L115)")
 
 
+_XCADDY_WITH = re.compile(r"--with[\s=]+(\S+)")
+# One shell command: an xcaddy build ends at the next operator, not at the end of the RUN.
+_SHELL_OPERATOR = re.compile(r"&&|\|\||[;|]")
+
+
+def check_xcaddy_with_is_versioned(repo: Path) -> Iterable[Finding]:
+    """L120 (repo) — every `--with` in an xcaddy build names a version (ADR 0057). Reads the
+    executed shell of each RUN, so comments and heredoc data neither hide nor raise a finding."""
+    for df in sorted(repo.glob("**/Dockerfile*")):
+        if ".git" in df.parts or not df.is_file():
+            continue
+        for ins in parse(df.read_text()):
+            if ins.cmd != "RUN":
+                continue
+            for command in _SHELL_OPERATOR.split(ins.exec):
+                if not re.search(r"\bxcaddy\s+build\b", command):
+                    continue
+                for m in _XCADDY_WITH.finditer(command):
+                    module = m.group(1).split("=", 1)[0]
+                    if "@" not in module:
+                        yield Finding("L120", ERROR, "repo", f"{df.relative_to(repo)}:{ins.line}",
+                                      f"xcaddy --with {m.group(1)} names no version, so xcaddy asks Go for the "
+                                      f"latest {module}; name the pinned version (`{module}@<version>`) "
+                                      "(ADR 0057, L120)")
+
+
 CA_TRUST_TEST_FILE = "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh"
 CA_TRUST_ADR = "docs/adr/0058-ca-trust-follows-the-os-store.md"
 CA_TRUST_CHECKS = frozenset({"bundle", "pip-wheel", "node", "uv"})
@@ -4772,7 +4799,6 @@ def check_worker_python_is_installed_before_the_refresh(repo: Path) -> Iterable[
                           "the interpreter the serverless worker asks for is installed at build so the refresh "
                           "covers it (ADR 0058, L128)")
 
-
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
@@ -4797,6 +4823,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
     check_ca_trust_test_gates_promotion, check_base_defaults_are_dated,
     check_refresh_ca_data_ends_installs, check_ca_trust_overlays_match_base,
+    check_xcaddy_with_is_versioned,
     check_ca_trust_exemptions_are_undated_and_recorded,
     check_worker_python_is_installed_before_the_refresh]
 
