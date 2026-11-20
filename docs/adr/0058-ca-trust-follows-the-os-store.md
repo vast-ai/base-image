@@ -168,7 +168,7 @@ this table with the rows in the test (L127).
 | Id | What it covers | Why the image does not fix it |
 |---|---|---|
 | `nsight-private-python` | The pip wheel and pip's vendored CA bundle in the Python that the NVIDIA Nsight tools (Nsight Compute, Nsight Systems) embed under `/opt/nvidia`, on CUDA base images that ship one. Applies only to files dpkg owns. | It belongs to a vendor profiler, is not on PATH, and nothing of ours runs it. Patching a profiler's bundled runtime cannot be tested here. |
-| `worker-bootstrap` | The pip wheel and bundle in a uv-managed Python 3.10 that appeared after the image was built, on a serverless instance. | The bootstrap that would install it lives in another repository. Decision 7 removes the need for it; this row keeps a change there from blocking image publishing, and decision 11 makes that change loud. |
+| `worker-bootstrap` | The pip wheel and bundle in a uv-managed Python, of any version, that appeared after the image was built, on a serverless instance. | The image did not ship it: the test judges what the image ships. The bootstrap that installs it lives in another repository and is fetched at boot, so it can change the version it asks for without a change here. Decision 7 removes the need for the row today; the row keeps such a change from blocking image publishing, and decision 11 makes it loud. |
 
 ### Options considered
 - **Keep the dates and extend them.** Rejected: the date pressed on image publishing, which
@@ -216,10 +216,15 @@ this table with the rows in the test (L127).
   pre-installed interpreter fails the test and no row covers it. The lasting fix is for the
   bootstrap to use the image's interpreter or a supported Python. That is a change in the
   bootstrap's repository, proposed separately.
-- On a serverless instance, a Python 3.10 that a provisioning script installs under uv's
-  Python directory is also covered by `worker-bootstrap`. It is reported, not silent.
+- On a serverless instance, a Python of any version that a provisioning script installs under
+  uv's Python directory after the build is also covered by `worker-bootstrap`. It is reported,
+  not silent. An earlier draft limited the row to Python 3.10; a bootstrap that moved to
+  another version would then have blocked every serverless image until a base rebuild and the
+  derivative pin moves had followed it.
 - The pre-install relies on the bootstrap asking for 3.10 with the image's `uv` in uv's
-  default Python directory. Decision 11 is what detects a change.
+  default Python directory. When that changes, workers still start and images still publish:
+  uv downloads the new interpreter at boot, decision 11 reports it on every run, and
+  `lib/worker-python.sh` is moved to the new version in the next base build.
 - Images built before this amendment keep the dated list until they are rebuilt. The gate
   reports their rows with the date they fail from.
 

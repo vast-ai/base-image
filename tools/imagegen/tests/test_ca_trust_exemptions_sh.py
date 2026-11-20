@@ -6,11 +6,11 @@ The dated list this replaced matched with a bare bash `[[ == ]]`, where `*` cros
 any depth. These tests run the real block from the shipped test with stubbed commands.
 
 The time half of the `worker-bootstrap` condition (interpreter newer than /.env_hash) reads
-a fixed path and is not reachable here; it was exercised in a container built from the base
-image and is checked on every serverless QA run.
+a fixed path; the tests of it point that path and uv's Python directory at a temporary tree.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -22,7 +22,7 @@ PRELUDE = r'''
 TEST_NAME=base/29-ca-trust
 test_fail() { echo "TEST_FAIL: $1"; exit 3; }
 is_serverless() { [[ "${SERVERLESS:-}" == true ]]; }
-uv() { echo /.uv/python_install; }
+uv() { echo "${UVPY_STUB:-/.uv/python_install}"; }
 dpkg-query() { [[ "$2" == *"${DPKG_OWNS:-nothing}"* ]]; }
 '''
 
@@ -33,8 +33,11 @@ def block(text: str) -> str:
     return text[start:end]
 
 
-def run(check: str, path: str, *, rows: str | None = None, env: dict | None = None):
+def run(check: str, path: str, *, rows: str | None = None, env: dict | None = None, marker: str | None = None):
     body = block(TEST.read_text())
+    if marker:
+        assert "/.env_hash" in body
+        body = body.replace("/.env_hash", marker)
     if rows is not None:
         body = "EXEMPTIONS='" + rows + "'" + body[body.index("'\n", len("EXEMPTIONS='")) + 1:]
     script = PRELUDE + body + f'\nexempt {check} "{path}"; echo "rc=$? exempted=$exempted"\n'
@@ -79,11 +82,35 @@ def test_a_star_does_not_cross_a_directory():
         == ["rc=1 exempted=0"]
 
 
-def test_the_worker_row_never_applies_off_serverless_or_to_another_python():
-    py310 = "/.uv/python_install/cpython-3.10.22-linux-x86_64-gnu/lib/python3.10/ensurepip/_bundled/pip-23.0.1-py3-none-any.whl"
-    assert run("pip-wheel", py310) == ["rc=1 exempted=0"]                       # not serverless
-    py311 = py310.replace("3.10.22", "3.11.9")
-    assert run("pip-wheel", py311, env={"SERVERLESS": "true"}) == ["rc=1 exempted=0"]
+def _uv_tree(tmp_path, shipped: str, arrived: str):
+    """uv's Python directory with one interpreter older than the build marker and one newer."""
+    uvpy, marker = tmp_path / "python_install", tmp_path / "env_hash"
+    wheel = {}
+    for name in (shipped, arrived):
+        minor = ".".join(name.split("-")[1].split(".")[:2])
+        wheel[name] = uvpy / name / f"lib/python{minor}/ensurepip/_bundled/pip-23.0.1-py3-none-any.whl"
+        wheel[name].parent.mkdir(parents=True)
+    marker.touch()
+    os.utime(uvpy / shipped, (1_000_000, 1_000_000))
+    os.utime(marker, (2_000_000, 2_000_000))
+    os.utime(uvpy / arrived, (3_000_000, 3_000_000))
+    return str(uvpy), str(marker), str(wheel[shipped]), str(wheel[arrived])
+
+
+def test_the_worker_row_covers_any_python_that_arrived_after_the_build_and_none_the_image_shipped(tmp_path):
+    """The bootstrap can change the version it asks for; an interpreter the image ships is always judged."""
+    uvpy, marker, shipped, arrived = _uv_tree(tmp_path, "cpython-3.10.22-linux-x86_64-gnu",
+                                              "cpython-3.12.9-linux-x86_64-gnu")
+    env = {"SERVERLESS": "true", "UVPY_STUB": uvpy}
+    out = run("pip-wheel", arrived, env=env, marker=marker)
+    assert out[0].startswith("EXEMPT: base/29-ca-trust: worker-bootstrap pip-wheel ") and out[-1] == "rc=0 exempted=1"
+    assert run("pip-wheel", shipped, env=env, marker=marker) == ["rc=1 exempted=0"]
+
+
+def test_the_worker_row_never_applies_off_serverless(tmp_path):
+    uvpy, marker, _shipped, arrived = _uv_tree(tmp_path, "cpython-3.10.22-linux-x86_64-gnu",
+                                               "cpython-3.12.9-linux-x86_64-gnu")
+    assert run("pip-wheel", arrived, env={"UVPY_STUB": uvpy}, marker=marker) == ["rc=1 exempted=0"]
 
 
 @pytest.mark.parametrize("rows, why", [

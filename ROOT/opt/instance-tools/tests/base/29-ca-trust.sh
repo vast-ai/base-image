@@ -57,15 +57,16 @@ echo "  positive control: ${control}/${total} chains verify against the publishe
 #              and is accepted only on a row that has a condition. @UVPY@ is `uv python dir`.
 #   condition  a function below, exempt_if_<condition>, that must also hold for the file.
 EXEMPTIONS='nsight-private-python|bundle pip-wheel|/opt/nvidia/nsight-*/**|dpkg-owned|Python embedded in the NVIDIA Nsight tools from the CUDA base image; not on PATH and nothing of ours runs it
-worker-bootstrap|bundle pip-wheel|@UVPY@/cpython-3.10.*/**|worker-bootstrap|Python 3.10 the serverless worker bootstrap installed at boot instead of using the one this image ships'
+worker-bootstrap|bundle pip-wheel|@UVPY@/cpython-*/**|worker-bootstrap|a Python the serverless worker bootstrap installed at boot; this image did not ship it'
 
 exempt_if_dpkg_owned() { dpkg-query -S "$1" >/dev/null 2>&1; }
 # Only on a serverless instance, and only an interpreter that appeared after the build finished
-# (newer than /.env_hash): a 3.10 the image itself ships is always checked.
+# (newer than /.env_hash), whatever its version: this test judges what the image ships, and an
+# interpreter the image ships is always checked.
 exempt_if_worker_bootstrap() {
     local rest
     is_serverless || return 1
-    [[ -e /.env_hash && -n "$UVPY" && "$1" == "$UVPY"/cpython-3.10.*/* ]] || return 1
+    [[ -e /.env_hash && -n "$UVPY" && "$1" == "$UVPY"/cpython-*/* ]] || return 1
     rest=${1#"$UVPY"/}
     [[ "$UVPY/${rest%%/*}" -nt /.env_hash ]]
 }
