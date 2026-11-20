@@ -303,7 +303,20 @@ else:
             fi
             seed_dir=$("$VAST_ENGINE_PYTHON" -I -c 'import os, virtualenv; print(os.path.join(os.path.dirname(virtualenv.__file__), "seed", "wheels", "embed"))' 2>/dev/null || true)
             if [[ -n "$seed_dir" && -d "$seed_dir" ]]; then
-                seed_pip=$(find "$seed_dir" -maxdepth 1 -name 'pip-*.whl' | sed -E 's#.*/pip-([^-]+)-.*#\1#' | sort -V | tail -1)
+                # The LOWEST pip virtualenv seeds into a Python the floor supports, from its own
+                # table: one release can give Python 3.10 an older pip than it gives 3.13. Wheels
+                # it seeds only into older Pythons are out of scope, as they are in the test.
+                engine_seed_pip_low() {
+                    "$VAST_ENGINE_PYTHON" -I -c '
+import sys
+from virtualenv.seed.wheels.embed import BUNDLE_SUPPORT
+for py, wheels in BUNDLE_SUPPORT.items():
+    if int(py.split(".")[1]) >= int(sys.argv[1]) and "pip" in wheels:
+        print(wheels["pip"].split("-")[1])' "$PIP_FLOOR_MIN_PYTHON" 2>/dev/null | sort -V | head -1
+                }
+                seed_pip=$(engine_seed_pip_low || true)
+                # A virtualenv too old to have the table: judge by its oldest wheel, which upgrades it.
+                [[ -n "$seed_pip" ]] || seed_pip=$(find "$seed_dir" -maxdepth 1 -name 'pip-*.whl' | sed -E 's#.*/pip-([^-]+)-.*#\1#' | sort -V | head -1)
                 if [[ -n "$seed_pip" ]] && older "$seed_pip" "$PIP_FLOOR"; then
                     # -P, not -U: -U would also upgrade every dependency the engine shares with virtualenv.
                     uv pip install --python "$VAST_ENGINE_PYTHON" --break-system-packages -P virtualenv virtualenv
@@ -313,6 +326,10 @@ else:
                     probe_pip=$("$probe/env/bin/python" -m pip --version | awk '{print $2}')
                     rm -rf "$probe"
                     older "$probe_pip" "$PIP_FLOOR" && { echo "FATAL: engine virtualenv still seeds pip ${probe_pip} (< ${PIP_FLOOR})" >&2; exit 1; }
+                    low_pip=$(engine_seed_pip_low || true)
+                    if [[ -z "$low_pip" ]] || older "$low_pip" "$PIP_FLOOR"; then
+                        echo "FATAL: engine virtualenv still seeds pip ${low_pip:-unknown} (< ${PIP_FLOOR}) into a Python >= 3.${PIP_FLOOR_MIN_PYTHON}" >&2; exit 1
+                    fi
                     echo "convert: engine virtualenv seed pip ${seed_pip} -> ${probe_pip}"
                 fi
             fi
