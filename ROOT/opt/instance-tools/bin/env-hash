@@ -73,7 +73,9 @@ get_uv_hash() {
     for dir in "$root"/cpython-*/; do
         dir=${dir%/}
         [[ -d "$dir" && ! -L "$dir" ]] || continue     # the minor-version entries are links
-        echo "$(basename "$dir") $(find "$dir/lib" -maxdepth 3 -type d -name 'pip-*.dist-info' -path '*-packages/*' -printf '%f ' 2>/dev/null)"
+        # The installed pip and the wheel ensurepip bundles: the refresh can replace either alone.
+        echo "$(basename "$dir") $(find "$dir/lib" -maxdepth 3 -type d -name 'pip-*.dist-info' -path '*-packages/*' -printf '%f ' 2>/dev/null)" \
+             "$(find "$dir/lib" -maxdepth 4 -type f -name 'pip-*.whl' -path '*/ensurepip/_bundled/*' -printf '%f ' 2>/dev/null)"
     done | sort | sha256sum | cut -d' ' -f1 | head -c 12
 }
 

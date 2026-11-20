@@ -24,6 +24,17 @@ def interpreter(root: Path, name: str, minor: str, pip: str):
     (root / name / "lib" / f"python{minor}" / "site-packages" / f"pip-{pip}.dist-info").mkdir(parents=True)
 
 
+def test_replacing_only_the_bundled_ensurepip_wheel_changes_the_hash(tmp_path):
+    """The refresh can raise the bundled wheel while the installed pip is already current."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root, wheel in ((a, "23.0.1"), (b, "26.2.2")):
+        interpreter(root, "cpython-3.10.22-linux-x86_64-gnu", "3.10", "26.3")
+        bundled = root / "cpython-3.10.22-linux-x86_64-gnu/lib/python3.10/ensurepip/_bundled"
+        bundled.mkdir(parents=True)
+        (bundled / f"pip-{wheel}-py3-none-any.whl").touch()
+    assert uv_hash(a) != uv_hash(b)
+
+
 def test_adding_an_interpreter_or_upgrading_its_pip_changes_the_hash(tmp_path):
     a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
     for root in (a, b, c):

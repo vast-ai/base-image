@@ -198,7 +198,7 @@ this table with the rows in the test (L127).
 
 ### Consequences
 - A cell that passes by an exemption no longer reads like a clean pass.
-- `env-hash` now covers uv's managed interpreters and their pip. The environment sync replaces
+- `env-hash` now covers uv's managed interpreters, their pip and the pip wheel `ensurepip` bundles in each. The environment sync replaces
   `/.uv` with the workspace copy stored under that hash, so without this an instance reusing a
   volume from an older build would lose the pre-installed interpreter. Every sync-enabled
   volume re-syncs once on the first boot of an image built with this change. The sync never
