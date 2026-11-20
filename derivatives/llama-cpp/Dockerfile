@@ -122,13 +122,10 @@ ENV MODEL_LOG=/var/log/portal/llama.log
 # on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
 EXPOSE 3000
 
-# The serverless worker bootstrap creates its environment with `uv venv -p 3.10` from uv's
-# managed Pythons. Installed here, the bootstrap reuses this interpreter and the refresh below
-# covers it; left to boot, uv downloads one whose bundled pip is below the trust floor and
-# base/29-ca-trust fails the serverless cell. Interim: remove when the base image carries it.
-RUN set -euo pipefail && \
-    uv python install --no-bin 3.10 && \
-    for py in "${UV_PYTHON_INSTALL_DIR}"/cpython-3.10*/bin/python3; do "$py" -m pip install --no-cache-dir -U pip; done
+# The pinned base still ships tests/base/29-ca-trust.sh. That test is withdrawn (ADR 0058,
+# amendment 2026-11-20) and fails the serverless cell on the interpreter the worker bootstrap
+# installs at boot. Remove this step when the base pin moves to a base without the test.
+RUN rm -f /opt/instance-tools/tests/base/29-ca-trust.sh
 
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
