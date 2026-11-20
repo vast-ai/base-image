@@ -5935,6 +5935,13 @@ def test_L127_a_row_the_adr_does_not_record_fires(tmp_path):
     assert any("'some-vendor' has no entry in the Standing exemptions table" in m for m in msgs)
 
 
+def test_L127_rows_with_the_adr_gone_fire(tmp_path):
+    """Deleting or moving the ADR must not switch the pairing off."""
+    msgs = [f.msg for f in L.check_ca_trust_exemptions_are_undated_and_recorded(
+        _mutated_tree(tmp_path, _L127_FILES, drop=L.CA_TRUST_ADR))]
+    assert any("is missing, so no row has a recorded reason" in m for m in msgs)
+
+
 def test_L127_an_adr_entry_for_a_row_that_is_gone_fires(tmp_path):
     msgs = _l127(tmp_path, mutate=lambda t: re.sub(r"\nworker-bootstrap\|[^\n']*'", "'", t))
     assert any("lists standing exemption 'worker-bootstrap'" in m for m in msgs)

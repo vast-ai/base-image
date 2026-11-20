@@ -4760,7 +4760,10 @@ def check_ca_trust_exemptions_are_undated_and_recorded(repo: Path) -> Iterable[F
         yield bad("does not state the number of exemptions applied on its PASS line, so a pass by exemption "
                   "reads like a clean one")
     adr = repo / CA_TRUST_ADR
-    if adr.is_file():
+    if not adr.is_file():
+        if ids:
+            yield bad(f"has exemption rows but {CA_TRUST_ADR} is missing, so no row has a recorded reason")
+    else:
         recorded = _adr_standing_exemption_ids(adr.read_text())
         for ident in sorted(set(ids) - recorded):
             yield bad(f"exemption '{ident}' has no entry in the Standing exemptions table of {CA_TRUST_ADR}; "
