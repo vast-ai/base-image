@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312-2026-10-23
+ARG BASE_IMAGE=vastai/base-image:cuda-12.9-mini-py312-2026-11-20
 
 FROM ${BASE_IMAGE}
 ARG BASE_IMAGE
@@ -121,11 +121,6 @@ ENV MODEL_LOG=/var/log/portal/llama.log
 # port entry. Only on these serverless images (not base-inherited); unbound and harmless
 # on-demand (the worker binds 3000 only under SERVERLESS=true). 3000 stays reserved for the worker.
 EXPOSE 3000
-
-# The pinned base still ships tests/base/29-ca-trust.sh. That test is withdrawn (ADR 0058,
-# amendment 2026-11-20) and fails the serverless cell on the interpreter the worker bootstrap
-# installs at boot. Remove this step when the base pin moves to a base without the test.
-RUN rm -f /opt/instance-tools/tests/base/29-ca-trust.sh
 
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh

@@ -1,4 +1,4 @@
-ARG VAST_BASE=vastai/base-image:cuda-12.4.1-cudnn-devel-ubuntu22.04-2026-10-23
+ARG VAST_BASE=vastai/base-image:cuda-12.4.1-cudnn-devel-ubuntu22.04-2026-11-20
 
 FROM ${VAST_BASE}
 

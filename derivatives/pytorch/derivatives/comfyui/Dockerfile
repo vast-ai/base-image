@@ -1,4 +1,4 @@
-ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-10-23
+ARG PYTORCH_BASE=vastai/pytorch:2.10.0-cu128-cuda-12.9-mini-py312-2026-11-20
 
 FROM ${PYTORCH_BASE}
 
@@ -144,11 +144,6 @@ RUN \
 # model-specific benchmark comes from PROVISIONING_COMFYUI_WORKFLOWS via convert-workflows.sh.
 ENV BACKEND=comfyui-json
 EXPOSE 3000
-
-# The pinned base still ships tests/base/29-ca-trust.sh. That test is withdrawn (ADR 0058,
-# amendment 2026-11-20) and fails the serverless cell on the interpreter the worker bootstrap
-# installs at boot. Remove this step when the base pin moves to a base without the test.
-RUN rm -f /opt/instance-tools/tests/base/29-ca-trust.sh
 
 # CA data that does not follow the OS store on its own, after every install above (ADR 0058).
 RUN /opt/instance-tools/lib/refresh-ca-data.sh
