@@ -1744,6 +1744,22 @@ workflows already did with `has-mini` / `has-multi`. L108 requires a job whose m
 `needs.<job>.outputs` in its `if:`. The main build and merge lists are out of scope: an
 empty one means `FILTER` matched nothing, and failing the run is right.
 
+### An upstream tag is built only on the architectures upstream published — **gated by L129**
+
+The vLLM and SGLang workflows crossed every upstream variant tag with a fixed
+`[amd64, arm64]` list. Upstream publishes some tags for one architecture only (measured
+2026-11-23 on `lmsysorg/sglang`: `dev-ernie-55-flash` is amd64 only,
+`dev-inkling-2-small-cu134` and `qwen38-fn-rubin` are arm64 only). The build for the missing
+architecture failed, and because promotion requires every build job to succeed, the run
+published nothing, including a sibling variant that had built on both. Preflight now reads
+the published architectures from the image config, as it reads the CUDA version (ADR 0035,
+amendment 2026-11-23): the build matrix and the manifest merge cover exactly those. A tag
+with no amd64 image is skipped with a warning, because live QA runs on amd64 only and the
+image could only be published untested. L129 requires the three parts (the matrix entry
+records `arches`, the cross-product filters on it, the merge is passed it) of any workflow
+with a `check-dockerhub-release` step and an `ARCHES_JSON` naming `linux/arm64`.
+`build-vllm-omni.yml` names amd64 alone and is out of scope.
+
 ### Every CI job refreshes the runner's CA store first — **GATED (L109)**
 
 A GitHub-hosted runner image is built days before it serves jobs, so an Ubuntu CA distrust

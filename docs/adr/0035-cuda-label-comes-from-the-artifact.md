@@ -114,3 +114,56 @@ exception pending the same treatment.
 Upstream ceasing to set `CUDA_VERSION` in the image config, which would make the
 artifact no longer self-describing and force a different observation point (for
 example, the CUDA runtime package version in the image's package database).
+
+## Amendment 2026-11-23: the architectures come from the artifact too
+
+### Context
+
+The vLLM and SGLang workflows built every selected variant tag on amd64 and on arm64. That
+was a fixed list in the workflow, an assumption about upstream of the same kind as the CUDA
+suffix rule this ADR removed. On 2026-11-23 three `lmsysorg/sglang` tags broke it:
+
+| Upstream tag | Published for | What failed |
+|---|---|---|
+| `dev-ernie-55-flash` | amd64 | arm64 build: `no match for platform in manifest` |
+| `dev-inkling-2-small-cu134` | arm64 | amd64 build: `no match for platform in manifest` |
+| `qwen38-fn-rubin` | arm64 (a bare manifest, not an index) | amd64 build pulled the arm64 image: `exec format error` |
+
+Promotion requires every build job to succeed, so each run published nothing. For
+`dev-inkling-2-small` that included the CUDA 13.0 variant, which upstream publishes for both
+architectures and which had built on both.
+
+### Options considered
+
+1. **Read the published architectures from the image config and build only those; skip a
+   tag with no amd64 image.** Chosen.
+2. **Read them and also publish arm64-only tags.** Rejected for now: live QA runs on amd64
+   hosts only, so an arm64-only image would be the one kind of image published with no live
+   test at all. An arm64 image that ships beside an amd64 one is not tested either, but its
+   amd64 twin from the same build is.
+3. **Let one architecture's build fail without failing the run.** Rejected: a real arm64
+   build failure would then publish an amd64-only index silently.
+4. **A dispatch input naming the architectures.** Rejected: it moves the knowledge to
+   whoever dispatches, and the scheduled build has nobody to ask.
+
+### Decision
+
+1. Preflight reads each selected tag's architectures from the image config (the config
+   names its architecture whether the tag is an index or a bare manifest) and records them
+   on the matrix entry.
+2. The build matrix is the cross-product filtered to those architectures, and the manifest
+   merge is given the same list. A tag published for amd64 only yields an amd64-only index.
+3. A tag with no amd64 image is skipped with a warning. If that empties the matrix, the
+   existing hard error stands.
+4. A matrix entry with no recorded architectures (the nightly path) builds both, as before.
+
+Enforced by lint rule L129.
+
+### Consequences
+
+- An amd64-only upstream tag now builds, is tested and publishes.
+- An arm64-only upstream tag is not built. Publishing those needs a decision on arm64 live
+  QA first.
+- `build-vllm-omni.yml` still names amd64 alone in the workflow. It can move to the same
+  mechanism when upstream publishes arm64 images for its stable tags.
+
