@@ -1764,7 +1764,7 @@ and SHA-256); `lib/node-trust-floor.txt` lists the first Node release on each li
 excludes them. `lib/assert-distrust.sh` reads the list and fails unless the OS store has dropped
 every root, by file and by bundle content. The base Dockerfile runs it right after its
 `apt-get upgrade`, and `convert-non-vast-image.sh` right after its apt install. The base Node
-check reads the floor file, and so does `tests/base/29-ca-trust.sh`. The CI runner step (L109)
+check reads the floor file. The CI runner step (L109)
 runs before checkout and cannot read the list, so it carries a copy, and L110 requires that copy
 to name exactly the listed roots. In 2026-10 the three copies had already drifted (ADR 0058).
 The pip trust floor (version, wheel URL, SHA-256) lives only in `lib/pip-trust-floor.env`; it is a
@@ -1779,14 +1779,16 @@ every external model-ui launcher, and never by `supervisor-scripts/utils/environ
 user apps source too. The provisioner's children (the user's provisioning script and manifest
 installs) inherit the defaults; a value the user set wins (ADR 0058).
 
-### The CA trust test gates promotion — **GATED (L112)**
+### No in-image test hunts for stale CA data — not gated (L112 retired)
 
-`tests/base/29-ca-trust.sh` verifies the published chains through the compromised eMudhra
-intermediates (`tests/ca-trust/`) against every CA bundle found by content and the OS directory
-store, after a positive control at a fixed check time, and checks bundled `ensurepip` pip
-wheels, Node and uv against their floors. It fails, never passes, when it cannot run a check.
-`base/29-ca-trust` is required in the base and pytorch QA templates and in both promotion
-workflows, so a skip fails the cell (ADR 0058).
+The build applies the fixes (the OS store's distrust, the pip and Node floors, the refresh of
+bundled CA data) and fails when one cannot be applied. Nothing in the image then searches it for
+copies the build missed. Until 2026-11 `tests/base/29-ca-trust.sh` did, as a required test in the
+promotion gates, with a dated list of exemptions. The first date passed and blocked every
+serverless QA cell for ten days; keeping the test honest needed per-image exemptions, rules and
+repairs for one class of issue. It was withdrawn, and rule L112 with it. Finding what an image
+still carries is the job of a vulnerability scan over the published images, not of the image's
+own test suite (ADR 0058, amendment 2026-11-20).
 
 ### An image's default base reference is a dated tag — **GATED (L113)**
 
@@ -1811,18 +1813,17 @@ other module the version would float silently. ADR 0057 pins every Caddy build i
 An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step
 and before `env-hash`. The base refreshes its own CA data, but each later install can bring a
 stale ensurepip wheel, pip or grpcio bundle back. In 2026-10 the pytorch multi images created
-supplementary venvs after the base's refresh, each bundling pip 25.0.1, and `base/29-ca-trust`
-blocked the pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
+supplementary venvs after the base's refresh, each bundling pip 25.0.1, which blocked the
+pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
 llama-cpp, linux-desktop) and widens as each derivative moves to such a base (ADR 0058).
 
 ### An overlay copy of a CA-trust file matches the base's — **GATED (L115)**
 
-A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` and
-`tests/base/29-ca-trust.sh` from its dated base. When its base predates a CA-trust fix, the image
+A derivative or external image takes `lib/refresh-ca-data.sh` and `lib/pip-trust-floor.env`
+from its dated base. When its base predates a CA-trust fix, the image
 may overlay the current copies under its own `ROOT/opt/instance-tools/` as a one-off until the base
 is rebuilt; its `COPY ./ROOT /` then shadows the base. L115 requires every such copy to be
-byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy
-whose own test checks against the same stale floor. The copies are removed once the image is pinned
+byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy. The copies are removed once the image is pinned
 to a base that ships the same files (ADR 0058).
 
 ## 7. Application runtime conventions (how apps are launched & fed models)

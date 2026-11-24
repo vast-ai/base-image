@@ -16,8 +16,7 @@
 #
 # Vendor tool bundles under /opt/nvidia (e.g. Nsight Compute's private Python) are left alone:
 # they are not on PATH and are not a runtime users or our services run, and patching a
-# vendor's bundled runtime is untestable here. tests/base/29-ca-trust.sh reports them on a
-# dated allowlist (ADR 0058).
+# vendor's bundled runtime is untestable here (ADR 0058).
 set -euo pipefail
 
 find / -xdev -path '*/grpc/_cython/_credentials/roots.pem' -type f -not -path '/proc/*' -not -path '/opt/nvidia/*' \

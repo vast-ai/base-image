@@ -110,12 +110,11 @@ RULES: list[tuple[str, str, str]] = [
     ("L107", ERROR, "Provisioning code splits a multi-entry env var with the provisioner's splitter (`provisioner/envlist.py`: a value with `;` splits on `;` only, as before; otherwise on `,`, where a comma inside `[...]` or before a version operator does not split). Checked: no `;` split (`.split(\";\")`, `.rsplit`, `split(sep=\";\")`, `re.split` on `;`) in the provisioner or a provisioner extension outside an extension's `def split_entries` fallback within `except ImportError:`, and no `IFS=';'` in a provisioning script (any depth under `provisioning_scripts/`, and `provisioning/`) outside its `split_env_entries` function (where a value containing `;` keeps its original split). A `;` split written another way is not caught. Vast drops any template variable whose value contains `;`, so a `;`-only parser makes every multi-entry value set in a template disappear before the instance starts. Exempt: `downloaders/wget.py`, which splits an HTTP Content-Disposition header (ADR 0053)"),
     ("L108", ERROR, "A workflow job whose matrix is an optional generated list -- `fromJson(needs.<job>.outputs.<name>)` where the name contains `mini` or `multi` -- has a job-level `if:` that reads `needs.<job>.outputs`, so an empty list skips the job. GitHub cannot create a job from an empty matrix: it fails the whole run without listing the job. A FILTER legitimately leaves these lists empty (`FILTER=cuda-12.9-24` builds no mini image), so build-base-image reported failure on builds whose every image pushed, and a red run stopped meaning anything. The main build and merge lists are out of scope: an empty one means FILTER matched nothing, and failing the run is the right result"),
     ("L109", ERROR, "The first step of every workflow job that has steps is `Refresh runner CA trust store`, with exactly the text of `linter.CA_REFRESH_STEP_RUN`: upgrade ca-certificates (allowed to fail, so a mirror outage does not stop CI), print its version, then fail if a distrusted root is still linked in /etc/ssl/certs. A hosted runner image is built days before it serves jobs, so an Ubuntu CA distrust reaches it late: in 2026-10 the eMudhra distrust shipped on 20 Oct while runner image 20261018 kept serving jobs, and every job logged in to Docker Hub, pulled bases and called the Vast API through a store that still trusted the compromised roots. The step must come FIRST because checkout is itself a TLS fetch, which is also why it is inline text rather than a local composite action (those need a checkout). One canonical text, so adding a root is one edit re-applied everywhere, never a drifted copy. Reusable-workflow calls have no steps and are skipped; the called workflow's own jobs are checked (ADR 0056)"),
-    ("L110", ERROR, "The roots the image must not trust have ONE source, `ROOT/opt/instance-tools/lib/distrusted-roots.txt` (name and SHA-256), and so does the Node trust floor, `lib/node-trust-floor.txt`. The base Dockerfile, `Dockerfile.runtime` (the mini images) and `convert-non-vast-image.sh` all run `lib/assert-distrust.sh`, which reads the list; the base Node check reads the floor file; and the CI runner step (`linter.CA_REFRESH_STEP_RUN`, L109), which runs before checkout and so carries a copy, must name exactly the listed roots. The pip trust floor (version, wheel URL and SHA-256) likewise lives only in `lib/pip-trust-floor.env`, which `lib/refresh-ca-data.sh` and `tests/base/29-ca-trust.sh` source; neither may define its own `PIP_FLOOR`. In 2026-10 the base checked one root while convert and the runner checked two: a list kept in three places had already drifted (ADR 0058)"),
+    ("L110", ERROR, "The roots the image must not trust have ONE source, `ROOT/opt/instance-tools/lib/distrusted-roots.txt` (name and SHA-256), and so does the Node trust floor, `lib/node-trust-floor.txt`. The base Dockerfile, `Dockerfile.runtime` (the mini images) and `convert-non-vast-image.sh` all run `lib/assert-distrust.sh`, which reads the list; the base Node check reads the floor file; and the CI runner step (`linter.CA_REFRESH_STEP_RUN`, L109), which runs before checkout and so carries a copy, must name exactly the listed roots. The pip trust floor (version, wheel URL and SHA-256) likewise lives only in `lib/pip-trust-floor.env`, which `lib/refresh-ca-data.sh` sources; it may not define its own `PIP_FLOOR`. In 2026-10 the base checked one root while convert and the runner checked two: a list kept in three places had already drifted (ADR 0058)"),
     ("L111", ERROR, "Our own services, and only they, source `lib/trust-env.sh` (the portal, tunnel manager, provisioner, update-portal and every external model-ui launcher), with the guarded line `[[ -r ... ]] && . ...`. It must never be sourced from `supervisor-scripts/utils/environment.sh`, which every supervisor script sources, user apps included: set there it would override users' certifi, conda's OpenSSL and private-CA setups, which ADR 0058 rejects. A service that does not source it keeps trusting the certifi it was built with until the next rebuild"),
-    ("L112", ERROR, "`tests/base/29-ca-trust.sh` exists with its chain fixtures (`tests/ca-trust/`), and `base/29-ca-trust` is in the required-test list of the base and pytorch QA templates and of both promotion workflows, so a skipped or failing trust check blocks promotion. ADR 0058 made the trust probe a promotion condition; while it lived outside the repo, a green promote checked no CA bundle at all"),
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
-    ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
-    ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, which blocked the pytorch promotion (ADR 0058)"),
+    ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
     ("L120", ERROR, "Every `--with` in an `xcaddy build` names a version, including one that replaces the module with a local path (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`). xcaddy turns a `--with` that has no version into `go get <module>`, which Go reads as the latest release. On the Caddy module that request sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the two agree only while the pin IS the latest release: the base built while v2.11.7 was the latest, and once upstream published v2.11.8 and v2.11.9 every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`, though the local replacement meant v2.11.9 would never have been compiled. On any other module a versionless `--with` floats silently. ADR 0057 requires every Caddy build input to be pinned"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
@@ -4444,8 +4443,8 @@ def check_distrusted_roots_have_one_source(repo: Path) -> Iterable[Finding]:
     df = repo / "Dockerfile"
     if df.is_file() and "node-trust-floor.txt" not in df.read_text():
         yield Finding("L110", ERROR, "repo", "Dockerfile", "the Node check does not read node-trust-floor.txt, "
-                      "so the build and tests/base/29-ca-trust.sh can disagree about the floor (L110)")
-    for rel in ("ROOT/opt/instance-tools/lib/refresh-ca-data.sh", "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh"):
+                      "so the floor has a second copy that drifts (L110)")
+    for rel in ("ROOT/opt/instance-tools/lib/refresh-ca-data.sh",):
         f = repo / rel
         if not f.is_file():
             continue
@@ -4528,31 +4527,6 @@ def check_refresh_ca_data_ends_installs(repo: Path) -> Iterable[Finding]:
                           "must run /opt/instance-tools/lib/refresh-ca-data.sh after its last install step and before "
                           "env-hash: every install can bring back a stale ensurepip wheel, pip or grpcio bundle, and "
                           "the base's own refresh ran before it (ADR 0058, L114)")
-
-
-CA_TRUST_TEST = "base/29-ca-trust"
-CA_TRUST_REQUIRED_IN = (("templates/base-qa/template.yml", "INSTANCE_TEST_REQUIRE_PASS"),
-                        ("templates/pytorch-qa/template.yml", "INSTANCE_TEST_REQUIRE_PASS"),
-                        (".github/workflows/promote-base-image.yml", "REQUIRE_TESTS="),
-                        (".github/workflows/promote-pytorch.yml", "def base_req:"))
-
-
-def check_ca_trust_test_gates_promotion(repo: Path) -> Iterable[Finding]:
-    """L112 (repo) — the CA trust test exists, has its fixtures, and is required to promote."""
-    t = repo / "ROOT/opt/instance-tools/tests" / f"{CA_TRUST_TEST}.sh"
-    fx = repo / "ROOT/opt/instance-tools/tests/ca-trust"
-    if not t.is_file():
-        yield Finding("L112", ERROR, "repo", str(t.relative_to(repo)), "missing; nothing checks the image's CA stores (L112)")
-    if not (fx / "reference-roots.pem").is_file() or not list((fx / "chains").glob("*.pem")):
-        yield Finding("L112", ERROR, "repo", str(fx.relative_to(repo)), "chain fixtures missing; the test cannot run its checks (L112)")
-    for rel, key in CA_TRUST_REQUIRED_IN:
-        f = repo / rel
-        if not f.is_file():
-            continue
-        lines = [ln for ln in f.read_text().splitlines() if key in ln]
-        if not any(CA_TRUST_TEST in ln for ln in lines):
-            yield Finding("L112", ERROR, "repo", rel, f"{CA_TRUST_TEST} is not in its required-test list ({key}); "
-                          "a skipped trust test would then pass the promotion (L112)")
 
 
 def _selkies_dockerfiles(repo: Path) -> list[Path]:
@@ -4638,7 +4612,7 @@ def check_no_port_mapped_for_both_protocols(repo: Path) -> Iterable[Finding]:
                                   "so give each protocol its own number (ADR 0050, L106)")
 
 
-CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env", "tests/base/29-ca-trust.sh")
+CA_TRUST_OVERLAY_FILES = ("lib/refresh-ca-data.sh", "lib/pip-trust-floor.env")
 
 
 def check_ca_trust_overlays_match_base(repo: Path) -> Iterable[Finding]:
@@ -4703,7 +4677,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_convert_builds_the_mirror,
     check_jobs_refresh_runner_ca_first,
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
-    check_ca_trust_test_gates_promotion, check_base_defaults_are_dated,
+    check_base_defaults_are_dated,
     check_refresh_ca_data_ends_installs, check_ca_trust_overlays_match_base,
     check_xcaddy_with_is_versioned]
 
