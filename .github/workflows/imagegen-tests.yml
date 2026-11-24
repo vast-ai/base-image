@@ -67,6 +67,8 @@ on:
       - "portal-aio/**"
       - "configs/**"
       - "templates/**"
+      # L120 and the lint baseline read every Dockerfile, the root one included.
+      - "**/Dockerfile*"
   push:
     branches: [main]
     paths:
@@ -130,6 +132,8 @@ on:
       - "portal-aio/**"
       - "configs/**"
       - "templates/**"
+      # L120 and the lint baseline read every Dockerfile, the root one included.
+      - "**/Dockerfile*"
 
 jobs:
   # The gated invariants are only invariants if something checks them. Until this

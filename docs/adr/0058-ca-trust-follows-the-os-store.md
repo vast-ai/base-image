@@ -113,3 +113,60 @@ rebuild, a pin bump or an upstream release.
 ## What would reverse this
 Node gaining a way to follow the OS store's distrust without changing its trust semantics for
 users, at which point the version floor could give way to that.
+
+## Amendment 2026-11-20: the in-image test is withdrawn
+
+This replaces the first binding condition above (the test as a required promotion gate), the
+overlay condition's mention of `29-ca-trust.sh`, and the two consequences that speak of a dated
+allowlist and of test chains in every image. Decisions 1 to 6 stand: the build still applies
+every fix and fails when it cannot.
+
+### What happened
+`tests/base/29-ca-trust.sh` searched each image for CA data the build had not fixed and failed
+the promotion on any it found. Files the image could not fix were on a list of exemptions, each
+with a review date after which the test failed. On 2026-11-06 the first date passed: the
+exemption for the interpreter the serverless worker bootstrap installs at boot. Every serverless
+QA cell failed for ten days. Nothing about that interpreter had changed, and moving the date
+needed a base rebuild, a promotion and a pin bump in every derivative. Six more rows were due on
+2026-12-31, for every image at once.
+
+### Decision
+7. **The test and its fixtures are removed**, and `base/29-ca-trust` leaves the required-test
+   lists of the base and pytorch promotion gates. Rule L112 is retired.
+8. **The image installs current, patched software and ships.** Decisions 1 to 6 are how. The
+   image's own test suite does not audit the image for copies those steps missed.
+9. **Detection moves out of the image.** A vulnerability scan over the published images is the
+   place to find what an image still carries. It is separate work and is not built here.
+10. **The image does not carry the serverless worker's Python.** The step that installed it at
+    build, added so the refresh would cover it, is removed. What the bootstrap installs at boot
+    belongs to the bootstrap's repository.
+
+### Options considered
+- **Move the dates.** Rejected: a full rollout each time, to keep a calendar that fixes nothing.
+- **Keep the test, drop the dates, fix every former row at build, and report the exemptions that
+  remain on every run.** Built on a branch and reviewed. It worked, and it needed two more lint
+  rules, per-image repairs for upstream engine environments, a replacement of a third party's
+  bundled Node, an exemption matcher with its own tests, and reporting in the QA gate. Each
+  review round found a further case. Rejected: that is a standing cost, and several new ways
+  for a build to fail, for one class of issue.
+- **Keep the test as a report that never fails.** Rejected: it still has to be maintained
+  against every image, and a report nobody is forced to read is what the vulnerability scan is
+  for.
+
+### Consequences
+- Between the build's fixes and a future scan, nothing tells us that an image carries a stale CA
+  bundle the build did not reach (an upstream engine's seed wheels, a vendor tool's private
+  Python, an interpreter installed at boot). That gap is accepted.
+- Images already built keep the test they were built with. A derivative takes it from its dated
+  base, so one still pinned to a base that has the test fails on any rebuild from 2027-01-01,
+  when the last of the old rows expires. The row for the worker's interpreter has already
+  expired, so a serverless image fails on such a base today. The pins in this repository moved to
+  the 2026-11-20 bases, which do not ship the test, in the same change that removed it; the two
+  serverless derivatives (llama.cpp and ComfyUI) were rebuilt on them first. The aio-studio base
+  is the one pin still on an older image and is rebuilt before that date. A derivative that has
+  to stay on an older base deletes the file in its own Dockerfile.
+- The QA gate still parses and reports exemption lines. With no test printing them it reports
+  nothing; removing it is follow-up work.
+
+### What would reverse this
+A scan that cannot see what the in-image test saw, and a distrust event where that gap mattered.

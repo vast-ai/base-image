@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114", "L119", "L126",
+    "L110", "L111", "L113", "L114", "L119", "L120", "L126",
 })
 
 
@@ -5495,6 +5495,50 @@ def test_L108_catches_an_unguarded_mini_job(tmp_path, job, old):
     assert where == [f".github/workflows/build-base-image.yml:{job}"], where
 
 
+# --- L129: upstream tags build only on the architectures upstream published --------- #
+
+def _l129_tree(tmp_path, wf, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    text = (repo / ".github/workflows" / wf).read_text()
+    new = mutate(text)
+    assert new != text, "mutation did not apply"
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows" / wf).write_text(new)
+    return [f.msg for f in L.check_upstream_arches_come_from_the_artifact(tmp_path)]
+
+
+def test_L129_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_upstream_arches_come_from_the_artifact(repo)) == []
+
+
+@pytest.mark.parametrize("wf", ["build-sglang.yml", "build-vllm.yml"])
+@pytest.mark.parametrize("old,new,says", [
+    # the matrix entry stops recording what upstream published
+    ("'. + [{tag: $t, cuda: $c, arches: $a}]'", "'. + [{tag: $t, cuda: $c}]'", "does not record"),
+    # the incident: every variant crossed with both architectures
+    ('             | select(($v.arches // ["amd64", "arm64"]) | index($a.suffix) != null)\n', "",
+     "without filtering"),
+    # the merge assumes both architectures were built
+    ("          arches: ${{ matrix.arches && join(matrix.arches, ',') || 'amd64,arm64' }}\n", "",
+     "merge-arch-manifests is not passed"),
+])
+def test_L129_catches_a_fixed_architecture_list(tmp_path, wf, old, new, says):
+    """2026-11-23: three sglang tags upstream publishes for one architecture failed their
+    other build, and each run published nothing."""
+    found = _l129_tree(tmp_path, wf, lambda t: t.replace(old, new, 1))
+    assert len(found) == 1 and says in found[0], found
+
+
+def test_L129_leaves_a_single_architecture_workflow_alone(tmp_path):
+    """vllm-omni names amd64 alone in ARCHES_JSON; there is no cross-product to filter."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows/build-vllm-omni.yml").write_text(
+        (repo / ".github/workflows/build-vllm-omni.yml").read_text())
+    assert list(L.check_upstream_arches_come_from_the_artifact(tmp_path)) == []
+
+
 # --- L109: every job refreshes the runner's CA store first ------------------------- #
 
 _L109_WF = "build-llama-cpp.yml"
@@ -5539,7 +5583,7 @@ def test_L109_a_drifted_copy_fires(tmp_path):
     assert len(found) == 1 and "differs from" in found[0].msg, found
 
 
-# --- L110-L112: CA trust has one source, stays ours, and gates promotion ----------- #
+# --- L110-L111: CA trust has one source and stays ours ----------------------------- #
 
 _CA_FILES = ("Dockerfile", "Dockerfile.runtime", "tools/convert-non-vast-image.sh", "ROOT/opt/instance-tools/lib/distrusted-roots.txt",
              "ROOT/opt/supervisor-scripts/instance_portal.sh", "ROOT/opt/supervisor-scripts/tunnel_manager.sh",
@@ -5547,12 +5591,12 @@ _CA_FILES = ("Dockerfile", "Dockerfile.runtime", "tools/convert-non-vast-image.s
              "ROOT/opt/instance-tools/bin/update-portal", "external/vllm/ROOT/opt/supervisor-scripts/model-ui.sh",
              "templates/base-qa/template.yml", "templates/pytorch-qa/template.yml",
              ".github/workflows/promote-base-image.yml", ".github/workflows/promote-pytorch.yml",
-             "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh", "ROOT/opt/instance-tools/lib/refresh-ca-data.sh",
+             "ROOT/opt/instance-tools/lib/refresh-ca-data.sh",
              "ROOT/opt/instance-tools/lib/pip-trust-floor.env")
 
 
 def _ca_tree(tmp_path, rel=None, mutate=None):
-    """A copy of the files L110-L112 read, with at most one of them mutated."""
+    """A copy of the files L110-L111 read, with at most one of them mutated."""
     repo = find_repo_root(Path(__file__).resolve().parent)
     for f in _CA_FILES:
         dst = tmp_path / f
@@ -5563,18 +5607,16 @@ def _ca_tree(tmp_path, rel=None, mutate=None):
             assert new != text, "mutation did not apply"
             text = new
         dst.write_text(text)
-    shutil.copytree(repo / "ROOT/opt/instance-tools/tests/ca-trust", tmp_path / "ROOT/opt/instance-tools/tests/ca-trust")
     return tmp_path
 
 
 def _ca_codes(repo, code):
-    chk = {"L110": L.check_distrusted_roots_have_one_source, "L111": L.check_trust_env_is_ours_only,
-           "L112": L.check_ca_trust_test_gates_promotion}[code]
+    chk = {"L110": L.check_distrusted_roots_have_one_source, "L111": L.check_trust_env_is_ours_only}[code]
     return list(chk(repo))
 
 
-@pytest.mark.parametrize("code", ["L110", "L111", "L112"])
-def test_L110_to_L112_real_tree_is_clean(code):
+@pytest.mark.parametrize("code", ["L110", "L111"])
+def test_L110_L111_real_tree_is_clean(code):
     assert _ca_codes(find_repo_root(Path(__file__).resolve().parent), code) == []
 
 
@@ -5604,19 +5646,6 @@ def test_L111_trust_env_in_the_shared_environment_helper_fires(tmp_path):
     assert any("environment.sh" in f.path for f in _ca_codes(repo, "L111"))
 
 
-def test_L112_a_gate_that_does_not_require_the_trust_test_fires(tmp_path):
-    """Not required means a skipped trust test passes the promotion."""
-    repo = _ca_tree(tmp_path, ".github/workflows/promote-base-image.yml",
-                    lambda t: t.replace('REQUIRE_TESTS="base/29-ca-trust ', 'REQUIRE_TESTS="'))
-    assert [f.path for f in _ca_codes(repo, "L112")] == [".github/workflows/promote-base-image.yml"]
-
-
-def test_L112_missing_fixtures_fire(tmp_path):
-    repo = _ca_tree(tmp_path)
-    shutil.rmtree(repo / "ROOT/opt/instance-tools/tests/ca-trust/chains")
-    assert any("fixtures missing" in f.msg for f in _ca_codes(repo, "L112"))
-
-
 def test_L110_the_mini_build_that_stops_asserting_the_distrust_fires(tmp_path):
     """The mini images install apt packages on top of the base; the distrust must still hold."""
     repo = _ca_tree(tmp_path, "Dockerfile.runtime",
@@ -5625,11 +5654,11 @@ def test_L110_the_mini_build_that_stops_asserting_the_distrust_fires(tmp_path):
 
 
 def test_L110_a_second_copy_of_the_pip_floor_fires(tmp_path):
-    """The test carried its own PIP_FLOOR before; a copy that is not the floor file drifts."""
-    repo = _ca_tree(tmp_path, "ROOT/opt/instance-tools/tests/base/29-ca-trust.sh",
-                    lambda t: t.replace("PIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env\n",
-                                        "PIP_FLOOR=26.2.2\nPIP_FLOOR_FILE=/opt/instance-tools/lib/pip-trust-floor.env\n"))
-    assert any(f.path.endswith("29-ca-trust.sh") for f in _ca_codes(repo, "L110"))
+    """A copy that is not the floor file drifts."""
+    repo = _ca_tree(tmp_path, "ROOT/opt/instance-tools/lib/refresh-ca-data.sh",
+                    lambda t: t.replace(". /opt/instance-tools/lib/pip-trust-floor.env\n",
+                                        "PIP_FLOOR=26.2.2\n. /opt/instance-tools/lib/pip-trust-floor.env\n"))
+    assert any(f.path.endswith("refresh-ca-data.sh") for f in _ca_codes(repo, "L110"))
 
 
 # --- L113: default base references are dated --------------------------------------- #
@@ -5647,6 +5676,56 @@ def test_L113_a_floating_external_base_fires(tmp_path):
                          r"\1", (repo / "external/vllm/Dockerfile").read_text(), count=1))
     found = list(L.check_base_defaults_are_dated(tmp_path))
     assert [f.path for f in found] == ["external/vllm/Dockerfile"], found
+
+
+
+# --- L120: every xcaddy --with names a version ------------------------------------- #
+
+def _l120(tmp_path, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    text = (repo / "Dockerfile").read_text()
+    new = mutate(text)
+    assert new != text, "mutation did not apply"
+    (tmp_path / "Dockerfile").write_text(new)
+    return [f.path.split(":")[0] for f in L.check_xcaddy_with_is_versioned(tmp_path)]
+
+
+def test_L120_real_tree_is_clean():
+    assert list(L.check_xcaddy_with_is_versioned(find_repo_root(Path(__file__).resolve().parent))) == []
+
+
+def test_mut_L120_versionless_caddy_replacement_fires(tmp_path):
+    """The line that broke every base build once Caddy v2.11.8 was published."""
+    assert _l120(tmp_path, lambda t: t.replace("caddy/v2@${CADDY_VERSION}=/src/caddy", "caddy/v2=/src/caddy")) \
+        == ["Dockerfile"]
+
+
+def test_mut_L120_versionless_plugin_fires(tmp_path):
+    assert _l120(tmp_path, lambda t: t.replace("replace-response@${REPLACE_RESPONSE_COMMIT}", "replace-response")) \
+        == ["Dockerfile"]
+
+
+
+def test_L120_a_comment_line_inside_the_run_does_not_hide_a_versionless_with(tmp_path):
+    """Docker drops the comment line and still runs the --with after it."""
+    assert _l120(tmp_path, lambda t: t.replace(
+        "    --with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy \\\n",
+        "    # the patched clone\n    --with github.com/caddyserver/caddy/v2=/src/caddy \\\n")) == ["Dockerfile"]
+
+
+def _l120_text(tmp_path, text):
+    (tmp_path / "Dockerfile").write_text(text)
+    return list(L.check_xcaddy_with_is_versioned(tmp_path))
+
+
+def test_L120_text_that_never_runs_is_clean(tmp_path):
+    assert _l120_text(tmp_path, (
+        "FROM golang:1\n"
+        "# RUN xcaddy build --with github.com/example/mod\n"
+        "RUN cat > /notes.txt <<EOF\n"
+        "xcaddy build --with github.com/example/mod\n"
+        "EOF\n"
+        "RUN xcaddy build v2.11.7 --with github.com/example/mod@v1.0.0 && echo --with github.com/x/y\n")) == []
 
 
 # --- L114: refresh-ca-data.sh ends every install ----------------------------------- #

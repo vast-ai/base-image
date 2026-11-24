@@ -183,6 +183,7 @@ jobs:
     # silent no-op surfaces instead of decaying quietly.
     outputs:
       soft_pass: ${{ steps.verdict.outputs.soft_pass }}
+      exemption_alert: ${{ steps.exemptions.outputs.alert }}   # see notify-exemption below
       gated: ${{ steps.guard.outputs.run }}   # did the live test actually run (secret present)
     # NOTE: no account-wide concurrency group. A single `qa-vast-account` group
     # (cancel-in-progress: false) only ever allows 1 running + 1 pending and
@@ -363,6 +364,10 @@ jobs:
               > /tmp/qa-raw.json
             CODE=$?
             set -e
+            # Keep every attempt's payload: the file above is overwritten by the next draw,
+            # and an exemption applied on an attempt that then failed elsewhere must still
+            # be reported (the exemptions step reads this; the verdict reads the last one).
+            cat /tmp/qa-raw.json >> /tmp/qa-raw-attempts.txt 2>/dev/null || true
             # WHY we may retry, which is not the same as the code we retry ON.
             # Exit 2 from the client means the market had nothing; the redraw
             # below ALSO sets CODE=2, for a host that failed. Both wait, but for
@@ -581,6 +586,21 @@ jobs:
               exit 1 ;;
           esac
 
+      # A cell that passed by leaning on a CA-trust exemption must not read like a
+      # clean one (ADR 0058). The in-image test prints each exemption it applied, the
+      # client lifts those lines into the payload, and this turns them into a warning
+      # annotation and a run-summary table. It reports only: the verdict above is
+      # already decided, and `always()` so a BLOCKed cell is reported too.
+      - name: Report CA-trust exemptions
+        id: exemptions
+        if: always() && steps.guard.outputs.run == 'true'
+        continue-on-error: true   # a report: it must never be the reason a cell fails
+        env:
+          QA_REPO: ${{ inputs.repo }}
+          QA_TAG: ${{ inputs.tag }}
+        run: |
+          python "${TM}/qa_exemptions.py" --raw /tmp/qa-raw-attempts.txt --cell "${QA_REPO}:${QA_TAG}"
+
       # Per-cell evidence for the approval summary: the verdict payload names the
       # GPU, driver, digest and per-test states the decision was actually made on.
       # `always()` so a BLOCKed cell — the one a human most needs to read — still
@@ -663,6 +683,26 @@ jobs:
       image-ref: ${{ inputs.tag }}
       image-tags: ${{ format('["{0}"]', inputs.tag) }}
       trigger: "schedule — QA inconclusive"
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # The images pre-install the interpreter the serverless worker needs, so the
+  # `worker-bootstrap` exemption is expected never to apply. When it does, the worker
+  # bootstrap has stopped using the image's Python and is fetching its own at boot,
+  # outside the image's CA refresh. The cell still passes; this is what tells someone.
+  notify-exemption:
+    needs: qa
+    if: always() && needs.qa.outputs.exemption_alert == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      build-result: "success"
+      status: "warning"
+      headline: "${{ inputs.repo }} serverless worker installed its own Python at boot — CA-trust exemption applied (worker-bootstrap)"
+      image-name: ${{ inputs.repo }}
+      image-ref: ${{ inputs.tag }}
+      image-tags: ${{ format('["{0}"]', inputs.tag) }}
+      trigger: "QA — CA-trust exemption applied"
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

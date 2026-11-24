@@ -243,10 +243,25 @@ jobs:
                   echo "  ${tag}: same image as an already-selected tag (${digest:0:19}); skipping the alias"
                   continue
               fi
+              # Which architectures upstream published for this tag, read off the
+              # ARTIFACT like the CUDA version (ADR 0035, amendment 2026-11-23). A tag
+              # can be an index of both, an index of one, or a bare single-arch
+              # manifest; the image config names its architecture in all three.
+              arches=$(printf '%s' "$config" \
+                  | jq -c '[.. | objects | select(has("architecture") and has("os"))
+                            | select(.os == "linux") | .architecture
+                            | select(. == "amd64" or . == "arm64")] | unique' 2>/dev/null || true)
+              [[ -n "$arches" ]] || arches='[]'
+              # Live QA runs on amd64 only, so a tag with no amd64 image could only be
+              # published untested. Skip it, as an unreadable CUDA version is skipped.
+              if [[ "$(jq 'index("amd64") != null' <<< "$arches")" != "true" ]]; then
+                  echo "::warning::${tag}: upstream publishes no linux/amd64 image (found: ${arches}); live QA is amd64-only, skipping this variant"
+                  continue
+              fi
               seen_digests="$seen_digests $digest"
               cuda="${cuda_full%.*}"
-              echo "  ${tag} -> CUDA ${cuda} (image reports ${cuda_full})"
-              MATRIX=$(echo "$MATRIX" | jq -c --arg t "$tag" --arg c "$cuda" '. + [{tag: $t, cuda: $c}]')
+              echo "  ${tag} -> CUDA ${cuda} (image reports ${cuda_full}), arches ${arches}"
+              MATRIX=$(echo "$MATRIX" | jq -c --arg t "$tag" --arg c "$cuda" --argjson a "$arches" '. + [{tag: $t, cuda: $c, arches: $a}]')
           done <<< "$CANDIDATES"
 
           # Two DIFFERENT images resolving to one CUDA version would publish to a
@@ -333,8 +348,12 @@ jobs:
             {"platform": "linux/amd64", "suffix": "amd64", "runs_on": "ubuntu-latest"},
             {"platform": "linux/arm64", "suffix": "arm64", "runs_on": "ubuntu-24.04-arm"}
           ]'
+          # Only the architectures upstream published for that variant. A matrix entry
+          # with no `arches` (the nightly path) gets both.
           BUILD_MATRIX=$(echo "$MERGE_MATRIX" | jq -c --argjson arches "$ARCHES_JSON" '
-            [.[] as $v | $arches[] as $a | $v + {arch: $a}]
+            [.[] as $v | $arches[] as $a
+             | select(($v.arches // ["amd64", "arm64"]) | index($a.suffix) != null)
+             | $v + {arch: $a}]
           ')
 
           echo "Merge matrix: $MERGE_MATRIX"
@@ -691,6 +710,7 @@ jobs:
         with:
           target-tag: ${{ env.PROD_TAG }}
           source-tag-base: ${{ env.STAGING_TAG_BASE }}
+          arches: ${{ matrix.arches && join(matrix.arches, ',') || 'amd64,arm64' }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 

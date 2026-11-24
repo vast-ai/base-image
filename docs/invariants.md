@@ -1822,6 +1822,22 @@ workflows already did with `has-mini` / `has-multi`. L108 requires a job whose m
 `needs.<job>.outputs` in its `if:`. The main build and merge lists are out of scope: an
 empty one means `FILTER` matched nothing, and failing the run is right.
 
+### An upstream tag is built only on the architectures upstream published — **gated by L129**
+
+The vLLM and SGLang workflows crossed every upstream variant tag with a fixed
+`[amd64, arm64]` list. Upstream publishes some tags for one architecture only (measured
+2026-11-23 on `lmsysorg/sglang`: `dev-ernie-55-flash` is amd64 only,
+`dev-inkling-2-small-cu134` and `qwen38-fn-rubin` are arm64 only). The build for the missing
+architecture failed, and because promotion requires every build job to succeed, the run
+published nothing, including a sibling variant that had built on both. Preflight now reads
+the published architectures from the image config, as it reads the CUDA version (ADR 0035,
+amendment 2026-11-23): the build matrix and the manifest merge cover exactly those. A tag
+with no amd64 image is skipped with a warning, because live QA runs on amd64 only and the
+image could only be published untested. L129 requires the three parts (the matrix entry
+records `arches`, the cross-product filters on it, the merge is passed it) of any workflow
+with a `check-dockerhub-release` step and an `ARCHES_JSON` naming `linux/arm64`.
+`build-vllm-omni.yml` names amd64 alone and is out of scope.
+
 ### Every CI job refreshes the runner's CA store first — **GATED (L109)**
 
 A GitHub-hosted runner image is built days before it serves jobs, so an Ubuntu CA distrust
@@ -1842,7 +1858,7 @@ and SHA-256); `lib/node-trust-floor.txt` lists the first Node release on each li
 excludes them. `lib/assert-distrust.sh` reads the list and fails unless the OS store has dropped
 every root, by file and by bundle content. The base Dockerfile runs it right after its
 `apt-get upgrade`, and `convert-non-vast-image.sh` right after its apt install. The base Node
-check reads the floor file, and so does `tests/base/29-ca-trust.sh`. The CI runner step (L109)
+check reads the floor file. The CI runner step (L109)
 runs before checkout and cannot read the list, so it carries a copy, and L110 requires that copy
 to name exactly the listed roots. In 2026-10 the three copies had already drifted (ADR 0058).
 The pip trust floor (version, wheel URL, SHA-256) lives only in `lib/pip-trust-floor.env`; it is a
@@ -1857,14 +1873,16 @@ every external model-ui launcher, and never by `supervisor-scripts/utils/environ
 user apps source too. The provisioner's children (the user's provisioning script and manifest
 installs) inherit the defaults; a value the user set wins (ADR 0058).
 
-### The CA trust test gates promotion — **GATED (L112)**
+### No in-image test hunts for stale CA data — not gated (L112 retired)
 
-`tests/base/29-ca-trust.sh` verifies the published chains through the compromised eMudhra
-intermediates (`tests/ca-trust/`) against every CA bundle found by content and the OS directory
-store, after a positive control at a fixed check time, and checks bundled `ensurepip` pip
-wheels, Node and uv against their floors. It fails, never passes, when it cannot run a check.
-`base/29-ca-trust` is required in the base and pytorch QA templates and in both promotion
-workflows, so a skip fails the cell (ADR 0058).
+The build applies the fixes (the OS store's distrust, the pip and Node floors, the refresh of
+bundled CA data) and fails when one cannot be applied. Nothing in the image then searches it for
+copies the build missed. Until 2026-11 `tests/base/29-ca-trust.sh` did, as a required test in the
+promotion gates, with a dated list of exemptions. The first date passed and blocked every
+serverless QA cell for ten days; keeping the test honest needed per-image exemptions, rules and
+repairs for one class of issue. It was withdrawn, and rule L112 with it. Finding what an image
+still carries is the job of a vulnerability scan over the published images, not of the image's
+own test suite (ADR 0058, amendment 2026-11-20).
 
 ### An image's default base reference is a dated tag — **GATED (L113)**
 
@@ -1874,23 +1892,32 @@ as `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever 
 In 2026-10 all five externals defaulted to that tag and no workflow overrode it; its last write
 was in January, so every external shipped January's Caddy and base tooling (ADR 0058).
 
+### Every xcaddy `--with` names a version — **GATED (L120)**
+
+Each `--with` in an `xcaddy build` carries `@<version>`, including the one that swaps the Caddy
+module for the patched local clone (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`).
+xcaddy turns a `--with` with no version into `go get <module>`, which Go reads as the latest
+release. For the Caddy module that sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the
+two agree only while the pin is the latest release: when Caddy v2.11.8 and v2.11.9 were published,
+every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`. For any
+other module the version would float silently. ADR 0057 pins every Caddy build input.
+
 ### refresh-ca-data.sh ends every install on the new base — **GATED (L114)**
 
 An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step
 and before `env-hash`. The base refreshes its own CA data, but each later install can bring a
 stale ensurepip wheel, pip or grpcio bundle back. In 2026-10 the pytorch multi images created
-supplementary venvs after the base's refresh, each bundling pip 25.0.1, and `base/29-ca-trust`
-blocked the pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
+supplementary venvs after the base's refresh, each bundling pip 25.0.1, which blocked the
+pytorch promotion. L114 covers `linter.REFRESH_CA_DATA_DOCKERFILES` (pytorch,
 llama-cpp, linux-desktop) and widens as each derivative moves to such a base (ADR 0058).
 
 ### An overlay copy of a CA-trust file matches the base's — **GATED (L115)**
 
-A derivative or external image takes `lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` and
-`tests/base/29-ca-trust.sh` from its dated base. When its base predates a CA-trust fix, the image
+A derivative or external image takes `lib/refresh-ca-data.sh` and `lib/pip-trust-floor.env`
+from its dated base. When its base predates a CA-trust fix, the image
 may overlay the current copies under its own `ROOT/opt/instance-tools/` as a one-off until the base
 is rebuilt; its `COPY ./ROOT /` then shadows the base. L115 requires every such copy to be
-byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy
-whose own test checks against the same stale floor. The copies are removed once the image is pinned
+byte-identical to the base's, so a later base change cannot be silently overridden by a stale copy. The copies are removed once the image is pinned
 to a base that ships the same files (ADR 0058).
 
 ## 7. Application runtime conventions (how apps are launched & fed models)

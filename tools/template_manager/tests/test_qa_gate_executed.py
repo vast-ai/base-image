@@ -196,6 +196,7 @@ def _loop_script(retries="2"):
 # suite at once (parallel CI, two shells) cannot read each other's raw payload or
 # suspect list — a run once saw a machine id from another test's data.
 _LOOP_TMP_FILES = ("/tmp/qa-suspect-hosts.txt", "/tmp/qa-discarded-attempts.txt",
+                   "/tmp/qa-raw-attempts.txt",
                    "/tmp/qa-raw-last.json", "/tmp/qa-raw.json", "/tmp/qa-proofs")
 
 
