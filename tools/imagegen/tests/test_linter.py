@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L112", "L113", "L114", "L119",
+    "L110", "L111", "L112", "L113", "L114", "L119", "L126",
 })
 
 
@@ -5868,3 +5868,178 @@ def test_L119_mutation_a_suite_without_check_bind_fires(tmp_path):
 def test_L119_a_suite_without_the_contract_probe_is_out_of_scope(tmp_path):
     repo = _engine_suite(tmp_path, "def helper():\n    pass\n")
     assert not _codes(repo, "L119")
+
+
+# ---- L126: a qa-gate caller's require_external names only a structural check the
+# launcher can pass for the image that workflow gates ----
+#
+# `require_external` hands names to qa_verdict's `--require-external`, which blocks
+# when a named result is absent or not passed. A name the launcher never reports for
+# that image, or never reports passed, can therefore only ever block -- on a rented
+# GPU, after a full build. An answer check must not gate image promotion at all (ADR
+# 0059 D4). The mutation tests inject one bad value into a REAL caller workflow and
+# lint a copy of it, its QA template and the launcher modules the rule reads.
+
+_L126_LAUNCHER = ("tools/template_manager/external_checks.py",
+                  "tools/template_manager/contract.py")
+_L126_VLLM, _L126_COMFY = "build-vllm.yml", "build-comfyui.yml"
+_L126_LLAMA, _L126_BASE = "build-llama-cpp.yml", "promote-base-image.yml"
+
+
+def _l126_caller(tmp_path, caller, value, launcher=True):
+    """A copy of a real qa-gate caller with `require_external: <value>` injected into
+    its first qa-gate job (`value` is YAML text), plus every QA template it boots and,
+    unless told otherwise, the launcher modules."""
+    src = (_REAL_REPO / ".github/workflows" / caller).read_text()
+    m = re.search(r"^(\s+)template_dir: .*$", src, re.M)
+    assert m, f"{caller} has no template_dir line to inject beside"
+    text = src[:m.start()] + f"{m.group(1)}require_external: {value}\n" + src[m.start():]
+    wf = tmp_path / ".github/workflows" / caller
+    wf.parent.mkdir(parents=True, exist_ok=True)
+    wf.write_text(text)
+    for tdir in set(re.findall(r"^\s+template_dir: (\S+)\s*$", src, re.M)):
+        tpl = tmp_path / tdir / "template.yml"
+        tpl.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(_REAL_REPO / tdir / "template.yml", tpl)
+    if launcher:
+        for f in _L126_LAUNCHER:
+            (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(_REAL_REPO / f, tmp_path / f)
+    return tmp_path
+
+
+def _l126(repo, severity=ERROR):
+    return [f for f in L.lint_repo(repo) if f.code == "L126" and f.severity == severity]
+
+
+def test_L126_the_tree_is_clean():
+    """No caller sets require_external yet: nothing to refuse, nothing unread."""
+    assert not [f for f in L.lint_repo(_REAL_REPO) if f.code == "L126"]
+
+
+@pytest.mark.parametrize("caller,token,why", [
+    # Not a name the launcher can emit at all.
+    (_L126_VLLM, "contract/identty", "not a result the launcher reports"),
+    (_L126_VLLM, "external/chat", "not a result the launcher reports"),
+    (_L126_VLLM, "vllm.d/12-vllm-contract", "an in-image test"),
+    # Answer checks never gate image promotion (ADR 0059 D4).
+    (_L126_VLLM, "external/embeddings-ranking", "an answer check"),
+    (_L126_VLLM, "external/transcriptions-accuracy", "an answer check"),
+    (_L126_COMFY, "external/comfyui/sd15-txt2img/SaveImage#9/1:content", "an answer check"),
+    # The informational row says what was checked; it is not a check.
+    (_L126_VLLM, "external/capabilities", "informational"),
+    # Reported, but never as passed: a requirement on it can only block.
+    (_L126_VLLM, "contract/engine-args", "never reported passed"),
+    (_L126_VLLM, "external/rerank", "never reported passed"),
+    (_L126_COMFY, "external/comfyui", "never reported passed"),
+    (_L126_LLAMA, "contract/error-unknown-model", "declared deviation"),
+    # Produced only for other images.
+    (_L126_COMFY, "contract/identity", "has no contract"),
+    (_L126_BASE, "contract/streaming", "has no contract"),
+    (_L126_COMFY, "external/chat-inference", "has no OpenAI engine"),
+    (_L126_BASE, "external/undeclared/chat", "has no OpenAI engine"),
+    (_L126_COMFY, "external/embeddings", "has no OpenAI engine"),
+    (_L126_VLLM, "external/comfyui/sd15-txt2img", "not a ComfyUI image"),
+])
+def test_L126_mutation_a_name_the_gate_can_never_pass_fires(tmp_path, caller, token, why):
+    repo = _l126_caller(tmp_path, caller, f'"{token}"')
+    errs = _l126(repo)
+    assert len(errs) == 1, [f.msg for f in errs]
+    assert f"`{token}`" in errs[0].msg and why in errs[0].msg, errs[0].msg
+    assert errs[0].path == f".github/workflows/{caller}"
+
+
+@pytest.mark.parametrize("caller,value", [
+    (_L126_VLLM, "contract/identity contract/streaming external/chat-inference "
+                 "external/completions external/undeclared/chat"),
+    # Skippable per template: allowed here, blocked by qa_verdict when not passed.
+    (_L126_VLLM, "contract/cap:tools,external/embeddings external/transcriptions"),
+    (_L126_LLAMA, "contract/identity contract/token-arithmetic external/chat-inference"),
+    (_L126_COMFY, "external/comfyui/sd15-txt2img external/comfyui/sd15-txt2img/SaveImage#9/1"),
+    ("build-sglang.yml", "contract/identity external/chat-inference"),
+    ("build-vllm-omni.yml", "contract/identity external/speech"),
+])
+def test_L126_a_structural_check_the_image_produces_is_clean(tmp_path, caller, value):
+    repo = _l126_caller(tmp_path, caller, f'"{value}"')
+    assert not [f for f in L.lint_repo(repo) if f.code == "L126"]
+
+
+def test_L126_every_bad_token_is_named_not_only_the_first(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM,
+                        '"external/chat-inference, external/speech-audio contract/nope"')
+    msgs = [f.msg for f in _l126(repo)]
+    assert len(msgs) == 2 and any("`external/speech-audio`" in m for m in msgs) \
+        and any("`contract/nope`" in m for m in msgs), msgs
+
+
+def test_L126_a_runtime_expression_is_named_not_dropped(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM, "${{ matrix.require_external }}")
+    warns = _l126(repo, L.WARN)
+    assert len(warns) == 1 and "runtime expression" in warns[0].msg, [f.msg for f in warns]
+    assert not _l126(repo)
+
+
+def test_L126_a_non_string_value_is_named_not_dropped(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM, "[external/chat-inference]")
+    warns = _l126(repo, L.WARN)
+    assert len(warns) == 1 and "other than a string" in warns[0].msg, [f.msg for f in warns]
+
+
+def test_L126_an_empty_value_is_no_requirement(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM, '"  "')
+    assert not [f for f in L.lint_repo(repo) if f.code == "L126"]
+
+
+def test_L126_a_tree_without_the_launcher_is_named_not_passed(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM, '"external/chat-inference"', launcher=False)
+    warns = _l126(repo, L.WARN)
+    assert len(warns) == 1 and "external_checks.py" in warns[0].msg, [f.msg for f in warns]
+
+
+def test_L126_a_runtime_template_dir_is_named_not_guessed(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM, '"contract/identity"')
+    wf = repo / ".github/workflows" / _L126_VLLM
+    wf.write_text(wf.read_text().replace("template_dir: external/vllm/templates/vllm-qa",
+                                         "template_dir: ${{ matrix.template_dir }}", 1))
+    warns = _l126(repo, L.WARN)
+    assert len(warns) == 1 and "runtime" in warns[0].msg, [f.msg for f in warns]
+    assert not _l126(repo)
+
+
+def test_L126_a_template_that_declares_no_image_is_named(tmp_path):
+    repo = _l126_caller(tmp_path, _L126_VLLM, '"contract/identity"')
+    tpl = repo / "external/vllm/templates/vllm-qa/template.yml"
+    tpl.write_text(tpl.read_text().replace("image: vastai/vllm\n", "", 1))
+    warns = _l126(repo, L.WARN)
+    assert len(warns) == 1 and "declares no image" in warns[0].msg, [f.msg for f in warns]
+
+
+def test_L126_lint_accepts_exactly_what_the_launcher_can_pass(tmp_path):
+    """The lint reads the launcher's table (external_checks.RESULT_NAMES) and nothing
+    else. For every row, on every kind of image, a name is accepted exactly when the
+    launcher reports it as a STRUCTURAL check that can pass on that image; the drift
+    between that table and what the launcher actually emits is pinned on the launcher
+    side (tools/template_manager/tests/test_result_names.py)."""
+    ec, why = L._launcher_external_checks(_REAL_REPO)
+    assert ec is not None, why
+    samples = {"<workflow>": "wf", "<class>": "SaveImage", "<node>": "9", "<n>": "1"}
+    images = ("vastai/vllm", "vastai/llama-cpp", "vastai/comfyui", "vastai/base-image")
+    seen_accepted = set()
+    for row in ec.RESULT_NAMES:
+        name = row.shape
+        for k, v in samples.items():
+            name = name.replace(k, v)
+        assert ec.result_name(name) == row, (name, row)
+        for image in images:
+            repo_ = image.split(":", 1)[0]
+            deviation = (row.images == ec.CONTRACT and name.startswith("contract/")
+                         and name[len("contract/"):] in
+                         (ec.contract.ENGINES.get(repo_) or {}).get("deviations", {}))
+            expected = (row.kind == ec.STRUCTURAL and row.passes
+                        and ec.produced_on(row.images, image) and not deviation)
+            problem = L._external_name_problem(ec, name, image)
+            assert (problem is None) == expected, (name, image, problem)
+            if expected:
+                seen_accepted.add((name, image))
+    # Each kind of image that has external checks accepts something; base has none.
+    assert {img for _, img in seen_accepted} == set(images) - {"vastai/base-image"}

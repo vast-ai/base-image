@@ -1605,6 +1605,59 @@ decide with the predicate. Mutation tests: `test_L119_mutation_*` in
 against loopback v4/v6, wildcard, bridge and not-listening tables in
 `tools/imagegen/tests/test_bind_loopback.py`.
 
+### A gate requires only external checks the launcher can pass for its image — **GATED (L126)**
+
+qa-gate's `require_external` input names launcher results (ADR 0059: `external/...`,
+`contract/...`) that must be present and passed. When it is non-empty the Verdict step
+passes `--external-verdict --require-external "<value>"` to `qa_verdict.py`; empty, the
+command is unchanged and external results stay advisory. qa_verdict blocks when a
+required name is absent or not passed, so a name the launcher never reports passed for
+the gated image blocks every run, on a rented GPU after a full build. No caller sets the
+input yet.
+
+L126 reads each job's `require_external` with L097's machinery (the parsed workflow,
+`jobs.<id>.with`, the job's `template_dir`, tokens split on commas and whitespace) and
+judges each token against the image the job's QA template declares (`image:`). It is an
+ERROR when the token:
+
+- is not a name the launcher reports (a typo, or an in-image test, which belongs in
+  `require_tests`);
+- is an answer check: answer checks gate model-library approval, never image promotion
+  (ADR 0059 D4);
+- is `external/capabilities`, the informational first row of every run;
+- is only ever reported skipped or as an error: `contract/engine-args`,
+  `contract/capabilities`, `contract` (the contract step itself), `external/comfyui`,
+  `external/comfyui/object_info`, a ComfyUI output node's own name (its files are
+  reported under `/<n>`), and a declared route with no check yet (`external/rerank` and
+  the rest);
+- is a `contract/*` check on an image with no contract (`contract.ENGINES`), or one that
+  image's engine declares as a deviation (llama.cpp's `error-unknown-model` and
+  `error-context-overflow` are reported as `deviation`, never passed);
+- is a route check (chat, completions, embeddings, transcriptions, speech, the
+  undeclared-chat guard) on an image with no OpenAI engine (`OPENAI_ENGINE_IMAGES`);
+- is a ComfyUI check on an image that is not a ComfyUI image.
+
+The names, their kinds and the images each comes from are the launcher's own table,
+`external_checks.RESULT_NAMES` (contract names from `contract.CHECKS`), which L126 loads
+from the linted tree's `tools/template_manager`; the rule keeps no list of its own.
+`tools/template_manager/tests/test_result_names.py` runs the launcher against fakes
+covering every row and fails if it reports a name, kind or pass the table does not
+allow, or never reports a row; it reads contract.py's source for every check name it
+reports and with which outcome.
+
+**Allowed, deliberately: checks that run or not depending on the template.**
+`contract/cap:tools` without the tools flag, the chat-only contract checks on a template
+that does not declare chat, `external/undeclared/chat` on one that does, and a ComfyUI
+workflow or file by name all depend on the template's env and provisioning, not on the
+image. They pass the lint; qa_verdict blocks at run time when one is absent or not
+passed.
+
+A value or `template_dir` built at runtime, a value that is not a string, a template
+that declares no image and a tree whose launcher cannot be loaded are each a WARN naming
+itself. Mutation tests: `test_L126_*` in `tools/imagegen/tests/test_linter.py` inject
+each class into a real caller workflow; the wiring is executed in
+`tools/template_manager/tests/test_qa_gate_require_external.py`.
+
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 
 Without `-f`/`--fail`, curl writes the ERROR BODY to the target and exits 0. The build then

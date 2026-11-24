@@ -24,7 +24,8 @@ workflow and checks every output node. When chat is NOT declared, the
 States: passed, failed, skipped, info, and error — the check could not be run (no
 HTTP response, an unexpected exception, the deadline) — plus the contract's
 deviation and advisory. Every result is advisory: it never changes the run's state
-or exit code until `require_tests` names it (ADR 0059, D7 step 3).
+or exit code. A QA gate can require one by name through its `require_external` input
+(ADR 0059, D7 step 3).
 
 One deadline (EXTERNAL_DEADLINE) covers the readiness wait, the contract and every
 check; checks it leaves no time for are reported by name as errors.
@@ -57,10 +58,16 @@ import re
 import uuid
 import time
 import urllib.error
+from typing import NamedTuple
 
 # The check names the launcher reports. Prefixed so they can never collide with an
-# in-image test name (`base/..`, `vllm.d/..`).
+# in-image test name (`base/..`, `vllm.d/..`). RESULT_NAMES (below) lists them all.
 CHAT_CHECK = "external/chat-inference"
+# The first result of every run: what was checked and why. Informational, not a check.
+CAPABILITIES_RESULT = "external/capabilities"
+# The name a contract run is reported under when it raises or the deadline leaves it
+# no time; its own results are `contract/<check>`.
+CONTRACT_STEP = "contract"
 
 # The in-image serving test. The external check runs once one of these has RUN,
 # passed or failed: that test bundles readiness, log scans, port exposure and
@@ -170,7 +177,7 @@ TEST_ENDPOINT_VARS = {
 
 def endpoint_test_var(image):
     """The *_TEST_ENDPOINT variable an image's serving test reads (vLLM's by default)."""
-    return TEST_ENDPOINT_VARS.get(str(image or "").split(":", 1)[0], "VLLM_TEST_ENDPOINT")
+    return TEST_ENDPOINT_VARS.get(contract.image_repo(image), "VLLM_TEST_ENDPOINT")
 
 
 def chat_disabled(template_env, env_overrides=(), variable="VLLM_TEST_ENDPOINT"):
@@ -677,6 +684,11 @@ def check_tts(endpoint, text=TTS_TEXT):
 
 # ---------------------------------------------------------------- ComfyUI workflows
 
+# ComfyUI results are this name, or this name followed by `/<workflow>` and so on
+# (RESULT_NAMES). The bare name and `object_info` are reported only when the workflows
+# could not be run or their output nodes could not be read.
+COMFYUI_CHECK = "external/comfyui"
+COMFYUI_OBJECT_INFO = f"{COMFYUI_CHECK}/object_info"
 COMFY_WRAPPER_INTERNAL_PORT = 18288
 COMFY_PAYLOADS_DIR = "opt/comfyui-api-wrapper/payloads"
 # A `modifier` payload names one of the wrapper's built-in workflows instead of
@@ -787,7 +799,7 @@ def _media_kind(data):
 
 def check_output_file(name, data):
     """(structural result, answer result) for one workflow output file."""
-    prefix = f"external/comfyui/{name}"
+    prefix = f"{COMFYUI_CHECK}/{name}"
     info = _image_info(data)
     if info:
         fmt, w, h = info
@@ -992,7 +1004,7 @@ def comfy_output_node_classes(comfy):
 
 def _check_node(wf, node_id, cls, kind, wants_audio, files):
     """Results for one expected output node and the files it produced."""
-    name = f"external/comfyui/{wf}/{cls}#{node_id}"
+    name = f"{COMFYUI_CHECK}/{wf}/{cls}#{node_id}"
     if kind == "preview":
         return [{"name": name, "state": "skipped", "kind": "structural",
                  "detail": "preview node: the wrapper does not return preview files"}]
@@ -1039,7 +1051,7 @@ def _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results
     except ValueError as e:
         payload, err = None, f"not valid JSON: {e}"
     if payload is None:
-        results.append({"name": f"external/comfyui/{wf}", "state": _unreached_state(err),
+        results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": _unreached_state(err),
                         "kind": "structural", "detail": f"cannot read payload: {err}"})
         return
     inp = payload.get("input") or {}
@@ -1052,7 +1064,7 @@ def _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results
         except ValueError as e:
             workflow, err = None, f"not valid JSON: {e}"
         if not workflow:
-            results.append({"name": f"external/comfyui/{wf}", "state": "error",
+            results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "error",
                             "kind": "structural",
                             "detail": f"modifier {inp['modifier']!r}: cannot read its base "
                                       f"workflow {base} ({err}), so its output nodes are "
@@ -1063,12 +1075,12 @@ def _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results
         "/generate/sync", json.dumps(payload).encode(), "application/json",
         {"x-return-outputs-as-base64": "true"}, timeout=timeout)
     if status == 0:
-        results.append(_no_response(f"external/comfyui/{wf}", "/generate/sync", r,
+        results.append(_no_response(f"{COMFYUI_CHECK}/{wf}", "/generate/sync", r,
                                     kind="structural"))
         return
     if status != 200 or not isinstance(r, dict) or r.get("status") != "completed":
         msg = r.get("message") if isinstance(r, dict) else r
-        results.append({"name": f"external/comfyui/{wf}", "state": "failed",
+        results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "failed",
                         "kind": "structural",
                         "detail": f"HTTP {status}, status="
                                   f"{r.get('status') if isinstance(r, dict) else '?'}: "
@@ -1076,11 +1088,11 @@ def _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results
         return
     outputs = r.get("output") or []
     if not expected:
-        results.append({"name": f"external/comfyui/{wf}", "state": "failed",
+        results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "failed",
                         "kind": "structural",
                         "detail": "the workflow has no output node to verify"})
         return
-    results.append({"name": f"external/comfyui/{wf}", "state": "passed", "kind": "structural",
+    results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "passed", "kind": "structural",
                     "detail": f"completed; {len(outputs)} file(s) from "
                               f"{len(expected)} output node(s); generation "
                               f"{(r.get('timings') or {}).get('generation_ms', '?')} ms"})
@@ -1098,10 +1110,10 @@ def _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results
     for node_id, (cls, kind, wants_audio) in sorted(expected.items()):
         files = by_node.pop(node_id, [])
         results.extend(_guarded(
-            f"external/comfyui/{wf}/{cls}#{node_id}",
+            f"{COMFYUI_CHECK}/{wf}/{cls}#{node_id}",
             lambda: _check_node(wf, node_id, cls, kind, wants_audio, files)))
     for node_id, files in sorted(by_node.items()):
-        results.append({"name": f"external/comfyui/{wf}/#{node_id}", "state": "error",
+        results.append({"name": f"{COMFYUI_CHECK}/{wf}/#{node_id}", "state": "error",
                         "kind": "structural",
                         "detail": f"{len(files)} file(s) from node {node_id}, which is not a "
                                   f"recognised output node in this workflow"})
@@ -1126,23 +1138,23 @@ def check_comfyui_workflows(wrapper, jupyter, comfy=None, timeout=COMFY_GENERATE
     """
     names, err = jupyter.list_dir(COMFY_PAYLOADS_DIR)
     if names is None:
-        return [{"name": "external/comfyui", "state": _unreached_state(err), "kind": "structural",
+        return [{"name": COMFYUI_CHECK, "state": _unreached_state(err), "kind": "structural",
                  "detail": f"cannot list {COMFY_PAYLOADS_DIR}: {err}"}]
     names = [n for n in names if n.endswith(".json")]
     if not names:
-        return [{"name": "external/comfyui", "state": "failed", "kind": "structural",
+        return [{"name": COMFYUI_CHECK, "state": "failed", "kind": "structural",
                  "detail": f"no workflow payloads in {COMFY_PAYLOADS_DIR}"}]
     output_classes = comfy_output_node_classes(comfy)
     results = []
     if output_classes is None:
-        results.append({"name": "external/comfyui/object_info", "state": "error",
+        results.append({"name": COMFYUI_OBJECT_INFO, "state": "error",
                         "kind": "structural",
                         "detail": "ComfyUI /object_info unavailable: output nodes found from "
                                   "the known table only, so custom output nodes may be missed"})
     for name in names:
         wf = name[:-5]
         if deadline is not None and deadline.expired():
-            results.append(_deadline_result(f"external/comfyui/{wf}", deadline))
+            results.append(_deadline_result(f"{COMFYUI_CHECK}/{wf}", deadline))
             continue
         mark = len(results)
         try:
@@ -1150,10 +1162,95 @@ def check_comfyui_workflows(wrapper, jupyter, comfy=None, timeout=COMFY_GENERATE
         except Exception as e:                                    # noqa: BLE001
             # One result for the workflow, not a half-written set of them.
             del results[mark:]
-            results.append({"name": f"external/comfyui/{wf}", "state": "error",
+            results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "error",
                             "kind": "structural",
                             "detail": f"the check raised {type(e).__name__}: {str(e)[:300]}"})
     return results
+
+
+# ---------------------------------------------------- the names the launcher reports
+
+STRUCTURAL, ANSWER = "structural", "answer"
+# Which images a name can be reported for: any image; an image with an OpenAI engine
+# (OPENAI_ENGINE_IMAGES), the only images whose routes the route checks exercise; an
+# image with a contract (contract.ENGINES); a ComfyUI image.
+ANY_IMAGE, OPENAI_ENGINE, CONTRACT, COMFYUI = "any image", "openai-engine", "contract", "comfyui"
+
+
+class ResultName(NamedTuple):
+    """One name the launcher can report. `shape` is the name itself, or its form with
+    <placeholders> for the parts a run fills in (a workflow, an output node). `kind`
+    is STRUCTURAL or ANSWER, or None for a row that is never a check. `passes` says
+    whether the name is ever reported `passed`."""
+    shape: str
+    kind: str | None
+    images: str
+    passes: bool
+
+
+# Every result name run_external_checks can report. qa-gate's `require_external` may
+# name only a STRUCTURAL row that passes, produced for the gated image (lint L126,
+# which reads this table); tests/test_result_names.py runs the launcher and fails if
+# it reports a name, kind or pass this table does not allow, or never reports a row.
+RESULT_NAMES = (
+    ResultName(CAPABILITIES_RESULT, None, ANY_IMAGE, False),
+    # A declared route with no external check yet: always skipped.
+    *(ResultName(f"external/{cap}", None, ANY_IMAGE, False)
+      for cap in KNOWN_CAPABILITIES if cap not in CHECKED_CAPABILITIES),
+    ResultName(CHAT_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
+    ResultName(COMPLETIONS_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
+    ResultName(EMBEDDINGS_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
+    ResultName(EMBEDDINGS_ANSWER_CHECK, ANSWER, OPENAI_ENGINE, True),
+    ResultName(ASR_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
+    ResultName(ASR_ANSWER_CHECK, ANSWER, OPENAI_ENGINE, True),
+    ResultName(TTS_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
+    ResultName(TTS_ANSWER_CHECK, ANSWER, OPENAI_ENGINE, True),
+    ResultName(UNDECLARED_CHAT_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
+    ResultName(CONTRACT_STEP, None, CONTRACT, False),
+    *(ResultName(f"contract/{check}", STRUCTURAL, CONTRACT, passes)
+      for check, passes in contract.CHECKS.items()),
+    ResultName(COMFYUI_CHECK, STRUCTURAL, COMFYUI, False),
+    ResultName(COMFYUI_OBJECT_INFO, STRUCTURAL, COMFYUI, False),
+    ResultName(f"{COMFYUI_CHECK}/<workflow>", STRUCTURAL, COMFYUI, True),
+    # A node's own name carries only a skip or a failure; each file it delivered is
+    # reported under /<n>. `<class>` is empty for a node that is not an output node.
+    ResultName(f"{COMFYUI_CHECK}/<workflow>/<class>#<node>", STRUCTURAL, COMFYUI, False),
+    ResultName(f"{COMFYUI_CHECK}/<workflow>/<class>#<node>/<n>", STRUCTURAL, COMFYUI, True),
+    ResultName(f"{COMFYUI_CHECK}/<workflow>/<class>#<node>/<n>:content", ANSWER, COMFYUI, True),
+)
+
+_PLACEHOLDERS = {"<workflow>": r"[^/\s,]+", "<class>": r"[^/\s,#]*", "<node>": r"[^/\s,#]+",
+                 "<n>": r"[0-9]+"}
+_EXACT_NAMES = {r.shape: r for r in RESULT_NAMES if "<" not in r.shape}
+_SHAPED_NAMES = [(re.compile("".join(_PLACEHOLDERS.get(part, re.escape(part))
+                                     for part in re.split(r"(<[a-z]+>)", r.shape))), r)
+                 for r in RESULT_NAMES if "<" in r.shape]
+
+
+def result_name(name):
+    """The RESULT_NAMES row a reported name belongs to, or None if the launcher never
+    reports it."""
+    if name in _EXACT_NAMES:
+        return _EXACT_NAMES[name]
+    return next((r for rx, r in _SHAPED_NAMES if rx.fullmatch(name)), None)
+
+
+# What an image is an instance of, whatever namespace it was pushed to.
+image_repo = contract.image_repo
+
+
+def is_comfyui_image(image):
+    return "/comfy" in str(image or "")
+
+
+def produced_on(images, image):
+    """True when a row whose `images` is this can be reported for `image` (repo or
+    repo:tag)."""
+    repo = contract.image_repo(image)
+    return (images == ANY_IMAGE
+            or (images == OPENAI_ENGINE and repo in OPENAI_ENGINE_IMAGES)
+            or (images == CONTRACT and repo in contract.ENGINES)
+            or (images == COMFYUI and is_comfyui_image(image)))
 
 
 def parse_capabilities(value):
@@ -1197,12 +1294,13 @@ def resolve_capabilities(template, env_overrides=(), override=None):
                 problems.append(f"OPENAI_ROUTES names unknown route {r}")
         return caps, "OPENAI_ROUTES", problems
     image = _image_name(template)
-    if ("/comfy" in image
+    if (is_comfyui_image(image)
             or _env_with_overrides(env, env_overrides, "PROVISIONING_COMFYUI_WORKFLOWS") is not None):
         return {COMFYUI_CAPABILITY}, "ComfyUI image", []
-    repo = image.split(":", 1)[0]
+    repo = contract.image_repo(image)
     if repo not in OPENAI_ENGINE_IMAGES:
-        return set(), f"no OpenAI engine in image {repo or '?'}: no external checks", []
+        given = image.split(":", 1)[0]
+        return set(), f"no OpenAI engine in image {given or '?'}: no external checks", []
     caps = {ROUTE_CAPABILITIES[r] for r in PYWORKER_DEFAULT_ROUTES}
     variable = endpoint_test_var(repo)
     if chat_disabled(env, env_overrides, variable):
@@ -1325,14 +1423,14 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
     portal = _env_with_overrides(env, env_overrides, "PORTAL_CONFIG")
     host = (instance or {}).get("public_ipaddr", "").strip()
     caps, source, problems = resolve_capabilities(template, env_overrides, capabilities)
-    results = [{"name": "external/capabilities", "state": "info",
+    results = [{"name": CAPABILITIES_RESULT, "state": "info",
                 "detail": f"{', '.join(sorted(caps)) or 'none'} ({source})"}]
-    results += [{"name": "external/capabilities", "state": "error", "detail": p} for p in problems]
+    results += [{"name": CAPABILITIES_RESULT, "state": "error", "detail": p} for p in problems]
 
     engine_caps = caps & set(_ENGINE_CAPABILITIES)
     guard = None                     # the undeclared-chat guard, run after everything
     first = (CHAT_CHECK if "chat" in caps else
-             UNDECLARED_CHAT_CHECK if engine_caps else "external/comfyui")
+             UNDECLARED_CHAT_CHECK if engine_caps else COMFYUI_CHECK)
 
     # With a serving test in the image, the engine was shown to start once it has
     # run. Without one (old images), the checks wait for the engine themselves.
@@ -1354,7 +1452,7 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
             endpoint = _attach_deadline(endpoint_factory(host, port, token), dl)
             # (names reported if the deadline leaves no time for the step, step). A step
             # with no names is not a check (a skip) and always runs.
-            steps = [(("contract",), lambda: check_contract(
+            steps = [((CONTRACT_STEP,), lambda: check_contract(
                 host, port, token, _image_name(template), env, env_overrides,
                 caps & set(_ENGINE_CAPABILITIES), client_factory=contract_client_factory,
                 remote_factory=remote_factory, deadline=dl))]
@@ -1398,7 +1496,7 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
                     if dl.expired():
                         results += [_deadline_result(n, dl) for names, _ in steps for n in names]
                         if COMFYUI_CAPABILITY in caps:
-                            results.append(_deadline_result("external/comfyui", dl))
+                            results.append(_deadline_result(COMFYUI_CHECK, dl))
                         if guard:
                             results.append(_deadline_result(UNDECLARED_CHAT_CHECK, dl))
                         return mark(results)
@@ -1417,10 +1515,10 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
         wport = host_port(instance or {}, public_api_port(portal, COMFY_WRAPPER_INTERNAL_PORT))
         jport = host_port(instance or {}, JUPYTER_PORT)
         if not (host and wport and jport):
-            results.append({"name": "external/comfyui", "state": "skipped",
+            results.append({"name": COMFYUI_CHECK, "state": "skipped",
                             "detail": "the API wrapper or Jupyter port is not mapped"})
         elif dl.expired():
-            results.append(_deadline_result("external/comfyui", dl))
+            results.append(_deadline_result(COMFYUI_CHECK, dl))
         else:
             timeout = int(_env_with_overrides(env, env_overrides, "COMFYUI_GENERATE_TIMEOUT")
                           or COMFY_GENERATE_TIMEOUT)
@@ -1448,14 +1546,14 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
             else:
                 ready = True
             if not ready and dl.expired():
-                results.append(_deadline_result("external/comfyui", dl))
+                results.append(_deadline_result(COMFYUI_CHECK, dl))
             elif not ready:
-                results.append({"name": "external/comfyui", "kind": "structural",
+                results.append({"name": COMFYUI_CHECK, "kind": "structural",
                                 "state": "error" if last.get("unanswered") else "failed",
                                 "detail": f"ComfyUI not ready after {waited:g}s ({detail}); "
                                           f"the image has no serving test to wait on"})
             else:
-                results.extend(_guarded("external/comfyui", lambda: check_comfyui_workflows(
+                results.extend(_guarded(COMFYUI_CHECK, lambda: check_comfyui_workflows(
                     wrapper, jupyter, comfy=comfy, timeout=timeout, deadline=dl)))
 
     if guard:

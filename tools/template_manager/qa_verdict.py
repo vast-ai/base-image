@@ -78,21 +78,28 @@ EXTERNAL_BLOCKS = ("failed", "error")
 EXTERNAL_LISTED = ("skipped", "advisory")
 EXTERNAL_DEVIATION = "deviation"
 EXTERNAL_IGNORED = ("info",)
+# An answer check judges what the model said. ADR 0059 D4: it never gates image
+# promotion, so a failed or errored one is listed, not blocking — unless the caller
+# required it by name, which lint L126 refuses.
+EXTERNAL_ANSWER_KIND = "answer"
 
 
 def classify_external(results, required=()) -> tuple[bool, str]:
     """(blocks, summary) for the raw payload's `external_checks` under the opt-in.
 
-    failed/error block; skipped/advisory are listed; deviation is listed as a
-    documented deviation; info is ignored; any other state blocks (an unknown state
-    is not a pass). A required name absent, or present but not passed, blocks.
+    failed/error block, except on an answer check (kind `answer`), which is listed
+    and never gates (ADR 0059 D4); skipped/advisory are listed; deviation is listed
+    as a documented deviation; info is ignored; any other state blocks (an unknown
+    state is not a pass). A required name absent, or present but not passed, blocks.
     """
     results = [r for r in results or () if isinstance(r, dict)]
-    blocking, listed, deviations, passed = [], [], [], 0
+    blocking, listed, deviations, answers, passed = [], [], [], [], 0
     for r in results:
         name, state = r.get("name", "?"), r.get("state")
         if state == "passed":
             passed += 1
+        elif r.get("kind") == EXTERNAL_ANSWER_KIND and state in ("failed", "error"):
+            answers.append(f"{name}={state}")   # D4: an answer check never gates
         elif state in EXTERNAL_IGNORED:
             continue
         elif state == EXTERNAL_DEVIATION:
@@ -117,6 +124,8 @@ def classify_external(results, required=()) -> tuple[bool, str]:
     blocks = bool(bits)
     if listed:
         bits.append("not checked: " + ", ".join(sorted(listed)))
+    if answers:
+        bits.append("answer checks (never gating): " + ", ".join(sorted(answers)))
     if deviations:
         bits.append("documented deviations: " + ", ".join(sorted(deviations)))
     summary = f"{passed} external check(s) passed" + ("; " + "; ".join(bits) if bits else "")

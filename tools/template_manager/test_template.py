@@ -22,8 +22,8 @@ import urllib.request
 # on sys.path; loading the file by path (as some tests do) does not, so fall back to
 # loading the sibling by path rather than breaking those callers.
 try:
-    from external_checks import (CHAT_CHECK, KNOWN_CAPABILITIES, parse_capabilities,
-                                 run_external_checks)
+    from external_checks import (CHAT_CHECK, KNOWN_CAPABILITIES, image_repo,
+                                 parse_capabilities, run_external_checks)
 except ImportError:  # loaded by path from elsewhere
     import importlib.util as _ilu
     _spec = _ilu.spec_from_file_location(
@@ -31,8 +31,8 @@ except ImportError:  # loaded by path from elsewhere
                                         "external_checks.py"))
     _ec = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_ec)
-    CHAT_CHECK, KNOWN_CAPABILITIES, parse_capabilities, run_external_checks = (
-        _ec.CHAT_CHECK, _ec.KNOWN_CAPABILITIES, _ec.parse_capabilities,
+    CHAT_CHECK, KNOWN_CAPABILITIES, image_repo, parse_capabilities, run_external_checks = (
+        _ec.CHAT_CHECK, _ec.KNOWN_CAPABILITIES, _ec.image_repo, _ec.parse_capabilities,
         _ec.run_external_checks)
 
 try:
@@ -1542,7 +1542,7 @@ def redacted_raw_json(raw_output):
     return json.dumps(out)
 
 
-# The engine log each image writes, by image repository. Every engine's supervisor
+# The engine log each image writes, by image repository (in any namespace: image_repo). Every engine's supervisor
 # wrapper writes /var/log/portal/<program>.log (utils/logging.sh). The runner tails
 # files only and waits for a path that does not exist yet.
 ENGINE_LOGS = {
@@ -1565,7 +1565,7 @@ def select_logs(explicit, no_logs, image):
     if explicit:
         return list(explicit), "logs: " + ", ".join(explicit) + " (--log)"
     repo = str(image or "").split(":", 1)[0]
-    paths = ENGINE_LOGS.get(repo)
+    paths = ENGINE_LOGS.get(image_repo(image))
     if not paths:
         return [], (f"no default engine log for image {repo or '?'}; "
                     f"use --log PATH to stream one")

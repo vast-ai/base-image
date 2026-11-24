@@ -169,7 +169,8 @@ every capability it declares, with correct output, through the public endpoint?*
   sidecar log scans, port exposure, and serverless-worker internals.
 - **Image promotion keeps an inference check.** CI tests each image with a single
   chat-capable model; the launcher checks chat (and the contract) for it, and those
-  checks gate promotion once `require_tests` names them (D7 step 3.3).
+  checks gate promotion once the image's gate names them in `require_external` (D7
+  step 3.3).
 - **The model-capability checks** (embeddings, transcription, speech, ComfyUI
   outputs) are the launcher's too; they need test media and answer checks, which never
   belong in an image.
@@ -224,8 +225,8 @@ declaration exists to drift.
 ### D4. Structural checks gate promotion; answer checks gate model-library approval
 
 - **Image promotion** gates on the in-image suite plus the launcher's structural
-  checks — inference and the contract (D5) — once `require_tests` names them (D7 step
-  3.3). All of them are deterministic, per ADR 0031. Answer checks never gate image
+  checks — inference and the contract (D5) — once `require_external` names them (D7
+  step 3.3). All of them are deterministic, per ADR 0031. Answer checks never gate image
   promotion.
 - **Model-library approval** requires every declared capability to pass its probes,
   answer checks included. A template cannot ship unless its declared capabilities
@@ -294,8 +295,8 @@ generated video, audio and 3D.
   arguments) stay in the image. Loopback binding is checked today by `check_bind` in
   each engine's in-image contract suite; when an image's in-image contract copy is
   deleted, `check_bind` moves into that image's serving test in the same PR.
-- The in-image copies stay until each image's `require_tests` has switched to the
-  client's checks, in the same PR that deletes them, so no image is ungated mid-move.
+- The in-image copies stay until each image's gate requires the client's checks
+  (`require_external`), in the same PR that deletes them, so no image is ungated mid-move.
 
 ### D6. Public/private line
 
@@ -334,8 +335,9 @@ Each step lands and is used before the next starts:
    2. capability-keyed checks for non-chat endpoints are added to the launcher, in
       this order: embeddings, ASR, TTS, then image generation. Video generation
       follows once its fixtures are written;
-   3. each image's `require_tests` switches from the in-image inference and contract
-      checks to the launcher's, in the same PR that deletes the in-image sections.
+   3. each image's gate switches from the in-image inference and contract checks
+      (`require_tests`) to the launcher's (`require_external`), in the same PR that
+      deletes the in-image sections.
 4. Switch launchers (D3), side by side, before the fork is deleted.
 5. Port the contract check to the launcher (D5), then switch images one at a time
    (step 3.3). Before the first switch, add a launcher mode that runs the checks
@@ -357,8 +359,8 @@ the same origin, one deadline for the whole phase); a check that raises, or an S
 session that cannot be set up, is reported as an error without stopping the rest;
 and redaction covers addresses beside terminal escapes and inside JSON strings. The
 `--instance` mode step 5 asks for is built. Still open before any check can gate:
-step 3.3 (`require_tests` switches, once the in-image and launcher verdicts are seen to
-agree) and step 4 (D3).
+step 3.3 (each gate switches to `require_external`, once the in-image and launcher
+verdicts are seen to agree) and step 4 (D3).
 
 Preconditions for the gate switch. All five are required before any image's gate uses
 external results:
@@ -370,15 +372,26 @@ external results:
 2. **`--instance <id>` in the launcher — built.** It runs the in-image result
    retrieval and the external checks against an instance that is already running,
    and never stops or destroys it.
-3. **`require_tests` cannot name a check that never runs — built for in-image tests,
-   open for external checks.** L097 fails a `require_tests` entry naming an in-image
-   test the image does not ship, and refuses an external check name, which
-   `require_tests` can never be satisfied by. There is no workflow input yet that
-   declares required external checks, so nothing exists to lint for them.
+3. **A gate cannot require a check that never runs — built.** L097 fails
+   a `require_tests` entry naming an in-image test the image does not ship, and refuses
+   an external check name, which `require_tests` can never be satisfied by. qa-gate's
+   `require_external` input declares the required external checks: non-empty, the
+   verdict runs with `--external-verdict --require-external`; empty, the verdict
+   command is unchanged. L126 fails a `require_external` entry the launcher cannot
+   report passed as a structural check for the image the job's QA template declares,
+   using the launcher's own table of result names (`external_checks.RESULT_NAMES`),
+   which a launcher test holds to what it reports. A check that runs or not depending
+   on the template is left to `qa_verdict`, which blocks when it is absent. No caller
+   sets `require_external` yet; each image sets it in its step 3.3 PR. A qa-gate cell
+   launches the staging namespace's copy of the image, so the launcher's tables keyed
+   by image repository (engine routes, the contract's engine table, the default engine
+   log) match on the repository name in any namespace (`contract.image_repo`). Not yet
+   seen on a real gate run.
 4. **`qa_verdict` reads external results — built, off by default.** With
-   `--external-verdict`, failed and error block, skipped is listed, deviation is listed
-   as documented, info is ignored, and a `--require-external` name that is absent or
-   not passed blocks. No image or workflow uses it.
+   `--external-verdict`, failed and error block unless the check is an answer check,
+   which is listed and never gates (D4); skipped is listed, deviation is listed as
+   documented, info is ignored, and a `--require-external` name that is absent or not
+   passed blocks. No image or workflow uses it.
 5. **Every run leaves a proof — built (D10).** Locally and in CI, each launcher run
    writes a proof directory; qa-gate uploads every attempt's proof for every caller.
 
@@ -477,8 +490,8 @@ version), `summary.md` (a short table) and the streamed logs as streamed.
      published model-library template pins.
 3. **Public/private line** as in D6, including the IP-redaction tests.
 4. **Gate hygiene:**
-   - Launcher checks enter `require_tests` as advisory and become gating per image only
-     after a clean-run streak.
+   - Launcher checks run as advisory and become gating per image, through
+     `require_external`, only after a clean-run streak.
    - A `require_tests` entry is renamed or moved only in the same change that updates
      it; a CI lint fails when an entry names a test that does not exist, so a move
      cannot silently ungate an image.

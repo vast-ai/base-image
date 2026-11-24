@@ -117,6 +117,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, and base/29-ca-trust blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env`, `tests/base/29-ca-trust.sh` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh while its own copy of the test checks against that same old floor and passes -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
     ("L119", ERROR, "Every in-image engine contract suite (a `*.d/contract_check.py` that defines the NO_SUCH_MODEL probe) carries a `check_bind` whose bind-loopback verdict is the POSITIVE predicate: a `_is_loopback` that accepts only 127.0.0.0/8 and ::1, and `exposed = [a for a in bound if not _is_loopback(a)]`. The older form listed the wildcard spellings (`0.0.0.0:`, `*:`, `[::]:`) and passed everything else, so an engine bound to the docker bridge address (172.17.0.2) — reachable by co-tenant containers, never through Caddy's auth — reported bind-loopback ok. Enumerating bad addresses cannot be complete; enumerating good ones can. vLLM and vLLM-Omni had the positive form; SGLang and llama.cpp still had the wildcard list"),
+    ("L126", ERROR, "A qa-gate caller's `require_external` names only a STRUCTURAL check the launcher can report PASSED for the image that job gates (the `image:` its `template_dir`'s template.yml declares). qa_verdict blocks when a required external result is absent or not passed, so any other name blocks every run, on a rented GPU after a full build. ERROR for a token that is not a name the launcher reports (a typo, an in-image test, which belongs in `require_tests`); an ANSWER check (ADR 0059 D4: answer checks gate model-library approval, never image promotion); the informational `external/capabilities` row; a name the launcher only ever reports skipped or as an error (`contract/engine-args`, `external/comfyui`, a declared route with no check yet such as `external/rerank`); a `contract/*` check on an image with no contract (`contract.ENGINES`) or one that engine declares as a deviation; a route check (chat, completions, embeddings, transcriptions, speech, the undeclared-chat guard) on an image with no OpenAI engine; a ComfyUI check on a non-ComfyUI image. The names, kinds and images are the launcher's own table, `external_checks.RESULT_NAMES`, read from the linted tree's `tools/template_manager`; the launcher's tests fail if the table and what it reports drift, so this rule holds no list of its own. A check that runs or not depending on the template (`contract/cap:tools` without the tools flag, chat checks on a template that does not declare chat, a ComfyUI workflow by name) is allowed here: qa_verdict blocks at run time when it is absent or not passed. Parsing, per-job pairing and token splitting are L097's; a runtime-expression value or template, a non-string value, a template with no image and an unreadable launcher are each a WARN naming itself, never dropped silently"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
     ("L103", ERROR, "No boot stage removes a `PORTAL_CONFIG` entry because a binary probe failed (`command -v`/`which`). The desktop images stripped the Selkies Desktop route whenever `selkies-gstreamer` was absent; Selkies 2.0 renamed the binary, so a rename silently deletes the route and every QA cell still passes, because nothing streams through it. A route the image ships is installed on every arch it builds, and a missing app is a build failure, not a silent boot-time edit (ADR 0050)"),
@@ -3871,6 +3872,29 @@ def _job_with_blocks(data: object) -> Iterable[tuple[str, dict]]:
             yield str(jid), job["with"]
 
 
+def _with_string(w: dict, key: str):
+    """One input's value from a job's `with:`: the string, None when it is absent or
+    blank, or _UNREADABLE when it is present and not a string.
+
+    Not a string -- a sequence, a mapping, a number. qa-gate declares its inputs
+    `type: string` so GitHub would refuse it there, but the callers walk jobs calling
+    ANY reusable workflow, where nothing guarantees that. A `${{ }}` value is the only
+    sanctioned way to not-read a value; everything else gets named, per the principle
+    L097 quotes from L087.
+    """
+    v = w.get(key)
+    if isinstance(v, str):
+        return v if v.strip() else None
+    return None if v is None else _UNREADABLE
+
+
+def _split_names(value: str) -> list[str]:
+    """A require-set split the way its consumers split it: runner.sh
+    (`${INSTANCE_TEST_REQUIRE_PASS//,/ }` then `read -ra`) and qa_verdict.py's
+    parse_required (`replace(",", " ").split()`)."""
+    return value.replace(",", " ").split()
+
+
 def _require_declarations(w: dict) -> Iterable[tuple[str, str]]:
     """The require-set declarations in one job's `with:`, as (where, value).
 
@@ -3878,17 +3902,9 @@ def _require_declarations(w: dict) -> Iterable[tuple[str, str]]:
     the `INSTANCE_TEST_REQUIRE_PASS` inside `extra_env` is the runner's own. They fail
     differently on purpose, so both are read.
     """
-    v = w.get("require_tests")
-    if isinstance(v, str):
-        if v.strip():
-            yield "require_tests", v
-    elif v is not None:
-        # Present but not a string -- a sequence, a mapping, a number. qa-gate declares
-        # the input `type: string` so GitHub would refuse it there, but this walks jobs
-        # calling ANY reusable workflow, where nothing guarantees that. The `${{ }}`
-        # branch below is the only sanctioned way to not-read a value; everything else
-        # gets named, per the principle this rule quotes from L087.
-        yield "require_tests", _UNREADABLE
+    v = _with_string(w, "require_tests")
+    if v is not None:
+        yield "require_tests", v
 
     env = w.get("extra_env")
     if isinstance(env, str):
@@ -3908,6 +3924,19 @@ def _require_declarations(w: dict) -> Iterable[tuple[str, str]]:
         yield "extra_env", _UNREADABLE
 
 
+def _template_image(repo: Path, template_dir: str) -> str | None:
+    """The `image:` a QA template declares (`vastai/vllm`), or None if it has none or
+    cannot be read."""
+    import yaml  # lazy
+    tpl = repo / template_dir / "template.yml"
+    try:
+        declared = (yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
+                    or {}).get("image")
+    except Exception:
+        return None
+    return declared if isinstance(declared, str) else None
+
+
 def _image_dir_for_template(repo: Path, template_dir: str) -> Path | None:
     """The image a QA template belongs to.
 
@@ -3924,14 +3953,8 @@ def _image_dir_for_template(repo: Path, template_dir: str) -> Path | None:
         return repo / template_dir.split("/templates/")[0]
     if not template_dir.startswith("templates/"):
         return None
-    import yaml  # lazy
-    tpl = repo / template_dir / "template.yml"
-    try:
-        declared = (yaml.safe_load(tpl.read_text(encoding="utf-8", errors="replace"))
-                    or {}).get("image")
-    except Exception:
-        return None
-    if not isinstance(declared, str):
+    declared = _template_image(repo, template_dir)
+    if declared is None:
         return None
     stem = declared.rsplit("/", 1)[-1].split(":")[0]
     for img in discover(repo):
@@ -4021,7 +4044,7 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                                   f"which this check cannot read - the names in it are "
                                   f"ungated (L097)")
                     continue
-                for tok in value.replace(",", " ").split():
+                for tok in _split_names(value):
                     if _TEST_NAME.fullmatch(tok):
                         names.add(tok)
                     elif _TEST_REF.fullmatch(tok):
@@ -4038,14 +4061,14 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                         # An external check (ADR 0059) is a launcher result, reported
                         # in the raw JSON's `external_checks`, never in `tests`, which
                         # is all require_tests and runner.sh read. Naming one here is
-                        # certain to block, and no gate can require one yet: say so.
+                        # certain to block: say so, and where it belongs (L126).
                         yield Finding("L097", ERROR, "-", rel,
                                       f"job `{jid}` requires `{tok}` in `{where}`, an "
                                       f"external check: those are launcher results "
                                       f"(raw `external_checks`), never in-image tests, so "
                                       f"require_tests can never be satisfied by one - "
-                                      f"external checks are required through qa_verdict's "
-                                      f"opt-in, not here (L097)")
+                                      f"external checks are required through qa-gate's "
+                                      f"`require_external`, not here (L097)")
                     else:
                         # runner.sh only discovers `base/` and `*.d/` suites and names
                         # each test by its path under them, so a token without that
@@ -4075,6 +4098,134 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                                   f"job `{jid}` requires `{name}`, which is not a file "
                                   f"in {suite[-1].relative_to(repo)} - the gate would fail "
                                   f"on a rented GPU over something visible here (L097)")
+
+
+# L126 — a qa-gate caller's `require_external` names only a structural check the
+# launcher can pass for the image that workflow gates.
+#
+# The names, their kinds and the images each comes from are the launcher's own table
+# (external_checks.RESULT_NAMES), read from the tree being linted -- the launcher that
+# tree's qa-gate runs -- the way imagegen/qa.py reaches tools/template_manager. The
+# launcher's tests pin that table to what it actually reports, so this rule holds no
+# list of its own to drift.
+_LAUNCHER_DIR = "tools/template_manager"
+_LAUNCHERS: dict[str, tuple[object, str]] = {}
+
+
+def _launcher_external_checks(repo: Path):
+    """(the tree's external_checks module, None), or (None, why it cannot be read)."""
+    path = (repo / _LAUNCHER_DIR / "external_checks.py").resolve()
+    if not path.is_file():
+        return None, "not in this tree"
+    if str(path) not in _LAUNCHERS:
+        import hashlib
+        import importlib.util
+        name = "_imagegen_external_checks_" + hashlib.sha256(str(path).encode()).hexdigest()[:12]
+        try:
+            spec = importlib.util.spec_from_file_location(name, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _LAUNCHERS[str(path)] = (mod, "")
+        except Exception as exc:                    # noqa: BLE001 - named below
+            _LAUNCHERS[str(path)] = (None, f"{type(exc).__name__}: {exc}"[:160])
+    mod, why = _LAUNCHERS[str(path)]
+    return (mod, None) if mod is not None else (None, why)
+
+
+def _external_name_problem(ec, tok: str, image: str) -> str | None:
+    """Why `tok` can never be satisfied as a required external check on `image`, or
+    None when the launcher can report it there as a structural check that passes."""
+    repo_ = image.split(":", 1)[0]
+    row = ec.result_name(tok)
+    if row is None:
+        if _TEST_REF.fullmatch(tok):
+            return ("is an in-image test, not a result the launcher reports: it belongs "
+                    "in `require_tests`")
+        return (f"is not a result the launcher reports (no row of RESULT_NAMES in "
+                f"{_LAUNCHER_DIR}/external_checks.py matches it)")
+    if row.kind == ec.ANSWER:
+        return ("is an answer check: answer checks gate model-library approval, never "
+                "image promotion (ADR 0059 D4)")
+    if tok == ec.CAPABILITIES_RESULT:
+        return "is informational: it says what the run checked and is never a check"
+    if row.kind is None or not row.passes:
+        return "is never reported passed, so requiring it can only block"
+    if not ec.produced_on(row.images, image):
+        if row.images == ec.CONTRACT:
+            return f"is a contract check and `{repo_}` has no contract (contract.ENGINES)"
+        if row.images == ec.OPENAI_ENGINE:
+            return (f"is a route check and `{repo_}` has no OpenAI engine "
+                    f"(OPENAI_ENGINE_IMAGES)")
+        return f"is a ComfyUI check and `{repo_}` is not a ComfyUI image"
+    if row.images == ec.CONTRACT:
+        deviations = (ec.contract.ENGINES.get(repo_) or {}).get("deviations") or {}
+        if tok.split("/", 1)[1] in deviations:
+            return (f"is a declared deviation for `{repo_}` (contract.ENGINES): it is "
+                    f"reported as a deviation and never passed")
+    return None
+
+
+def check_workflow_required_external_checks(repo: Path) -> Iterable[Finding]:
+    """L126 — require_external names only structural checks the launcher can pass for
+    the image the job gates."""
+    import yaml  # lazy
+    wfdir = repo / ".github" / "workflows"
+    if not wfdir.is_dir():
+        return
+    for wf in sorted(wfdir.iterdir()):
+        if wf.suffix not in (".yml", ".yaml") or not wf.is_file():
+            continue
+        rel = f".github/workflows/{wf.name}"
+        try:
+            data = yaml.safe_load(wf.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue    # L097 already names an unparseable workflow
+        for jid, w in _job_with_blocks(data):
+            value = _with_string(w, "require_external")
+            if value is None:
+                continue
+            if value is _UNREADABLE:
+                yield Finding("L126", WARN, "-", rel,
+                              f"job `{jid}` declares `require_external` as something other "
+                              f"than a string, which this check cannot read - the names "
+                              f"in it are ungated (L126)")
+                continue
+            if "${{" in value:
+                yield Finding("L126", WARN, "-", rel,
+                              f"job `{jid}` requires external checks from a runtime "
+                              f"expression (`{value.strip()[:40]}...`), which this check "
+                              f"cannot read - the names in it are ungated (L126)")
+                continue
+            tdir = w.get("template_dir")
+            tdir = tdir if isinstance(tdir, str) else ""
+            if "${{" in tdir:
+                yield Finding("L126", WARN, "-", rel,
+                              f"job `{jid}` boots a template chosen at runtime "
+                              f"(`{tdir[:40]}...`), so the image its required external "
+                              f"checks belong to cannot be read here and they are "
+                              f"ungated (L126)")
+                continue
+            image = _template_image(repo, tdir) if tdir else None
+            if image is None:
+                yield Finding("L126", WARN, "-", rel,
+                              f"job `{jid}`'s QA template `{tdir or '(none)'}` declares no "
+                              f"image, so the external checks it requires cannot be "
+                              f"matched to one and are ungated (L126)")
+                continue
+            ec, why = _launcher_external_checks(repo)
+            if ec is None:
+                yield Finding("L126", WARN, "-", rel,
+                              f"job `{jid}` requires external checks, but "
+                              f"{_LAUNCHER_DIR}/external_checks.py cannot be read here "
+                              f"({why}), so they are ungated (L126)")
+                continue
+            for tok in _split_names(value):
+                problem = _external_name_problem(ec, tok, image)
+                if problem:
+                    yield Finding("L126", ERROR, "-", rel,
+                                  f"job `{jid}` requires `{tok}` in `require_external`, "
+                                  f"which {problem} - qa_verdict would block on it every "
+                                  f"run (L126)")
 
 
 # L098 — a serverless image owns its engine's log path.
@@ -4731,6 +4882,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_bind_loopback_is_a_positive_predicate,
     check_vllm_audio_extra_is_installed,
     check_workflow_required_tests_exist,
+    check_workflow_required_external_checks,
     check_qa_selection_is_validated,
     check_qa_override_is_the_pattern,
     check_convert_builds_the_mirror,

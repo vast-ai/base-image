@@ -142,6 +142,7 @@ def test_evidence_upload_runs_even_when_the_cell_blocked():
 BEHAVIOUR_PRESERVING_DEFAULTS = {
     "require_key": False,      # advisory-skip on a missing key, as before ADR 0019
     "require_tests": "",       # no name required to have passed
+    "require_external": "",    # external results stay advisory
     "retries": 0,              # one attempt
     "evidence_name": "",       # no artifact uploaded
 }

@@ -78,6 +78,19 @@ on:
         required: false
         type: string
         default: ""
+      require_external:
+        description: >-
+          Space/comma-separated launcher check names (ADR 0059: `external/...`,
+          `contract/...`) that must be PRESENT and PASSED in the verdict payload's
+          external_checks. Non-empty turns on qa_verdict's --external-verdict, so every
+          failed or error STRUCTURAL external result then blocks as well; an answer
+          check is listed and never gates (ADR 0059 D4). Empty (the default)
+          leaves external results advisory and the verdict exactly as before. Lint L126
+          refuses a name the launcher cannot pass as a structural check for the image
+          this template gates.
+        required: false
+        type: string
+        default: ""
       retries:
         description: >-
           Extra attempts on ANY failure except config_error (4) and interrupted
@@ -513,8 +526,17 @@ jobs:
       - name: Verdict
         id: verdict
         if: steps.guard.outputs.run == 'true'
+        env:
+          # Via env, never spliced into the script, like the live-test step's inputs.
+          REQUIRE_EXTERNAL: ${{ inputs.require_external }}
         run: |
           CODE="${{ steps.test.outputs.exit_code }}"
+          # External results gate only when the caller names some (ADR 0059 D7 step
+          # 3.3). A value of only spaces and commas names none, as qa_verdict reads it.
+          EXT=()
+          if [ -n "${REQUIRE_EXTERNAL//[[:space:],]/}" ]; then
+            EXT=(--external-verdict --require-external "${REQUIRE_EXTERNAL}")
+          fi
           # The decision (pass / block / inconclusive) lives in qa_verdict.py — pure,
           # unit-tested, and the place the required-tests assertion is enforced. It
           # also owns the "take the last complete {...} line" parsing: a whole-file
@@ -528,7 +550,8 @@ jobs:
           python "${TM}/qa_verdict.py" \
             --exit-code "${CODE}" \
             --raw /tmp/qa-raw.json \
-            --require-tests "${{ inputs.require_tests }}"
+            --require-tests "${{ inputs.require_tests }}" \
+            "${EXT[@]}"
           verdict=$(sed -n 's/^verdict=//p' "$GITHUB_OUTPUT" | tail -n1)
           echo "exit_code=${CODE} verdict=${verdict}"
 

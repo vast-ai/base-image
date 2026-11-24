@@ -90,10 +90,24 @@ ENGINES = {
 ENGINE = ENGINES["vastai/vllm"]          # the engine of the current run (set_engine)
 
 
+def image_repo(image) -> str:
+    """The repository an image is an instance of, as the tables here key it.
+
+    The tag or digest is dropped and the namespace is replaced with `vastai/`: the
+    repository NAME says what an image is, the namespace only where a build was
+    pushed. A QA-gate cell launches `<staging namespace>/<repo>`, and must resolve
+    the same row as the published `vastai/<repo>`.
+    """
+    repo = str(image or "").split("@", 1)[0]
+    name = repo.rsplit("/", 1)[-1].split(":", 1)[0]
+    return f"vastai/{name}" if name else ""
+
+
 def set_engine(image: str) -> dict | None:
-    """Select the engine row for an image (`repo` or `repo:tag`); None if unknown."""
+    """Select the engine row for an image (`repo` or `repo:tag`, in any namespace);
+    None if unknown."""
     global ENGINE
-    row = ENGINES.get(str(image or "").split(":", 1)[0])
+    row = ENGINES.get(image_repo(image))
     if row is not None:
         ENGINE = row
     return row
@@ -973,6 +987,27 @@ def check_malformed_body_on(rep: Report, cli: Client, route) -> None:
 
 CHAT_ONLY = ("token-arithmetic", "finish-reason", "prompt-roundtrip", "error-context-overflow",
              "streaming", "cap:tools", "cap:structured-output")
+
+# Every check name this module reports, and whether it can ever be reported passed.
+# `engine-args` and `capabilities` are only ever errors: an argument string that does
+# not parse, a declared capability with no probe. The launcher reports each as
+# `contract/<name>` and builds its result-name table (external_checks.RESULT_NAMES)
+# from this; a test (tests/test_result_names.py) reads every name this module's Report
+# calls pass and fails if one is missing here or listed here and never reported.
+CHECKS = {
+    "engine-args": False,
+    "identity": True,
+    "token-arithmetic": True,
+    "finish-reason": True,
+    "prompt-roundtrip": True,
+    "error-context-overflow": True,
+    "streaming": True,
+    "completions-route": True,
+    "error-unknown-model": True,
+    "error-malformed-body": True,
+    "capabilities": False,
+    **{f"cap:{name}": True for name in CAPABILITIES},
+}
 
 
 def run_contract(rep: Report, cli: Client, *, model: str, engine_args: str,
