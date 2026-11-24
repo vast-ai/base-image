@@ -115,6 +115,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, which blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L129", ERROR, "A workflow that builds upstream registry tags on both amd64 and arm64 builds and merges only the architectures upstream published for each tag. The variant matrix used to be crossed with a fixed [amd64, arm64] list. Upstream publishes some tags for one architecture only (measured 2026-11-23 on lmsysorg/sglang: `dev-ernie-55-flash` is amd64 only, `dev-inkling-2-small-cu134` and `qwen38-fn-rubin` are arm64 only), so the build for the missing architecture failed with `no match for platform in manifest` or `exec format error`, and because promotion requires every build job to succeed, the run published nothing, including a sibling variant that had built on both. The rule requires three things of a workflow that has a `check-dockerhub-release` step and an `ARCHES_JSON` naming linux/arm64: the matrix entry records `arches`, the cross-product filters on it, and `merge-arch-manifests` is passed `arches:`. ADR 0035, amendment 2026-11-23"),
     ("L120", ERROR, "Every `--with` in an `xcaddy build` names a version, including one that replaces the module with a local path (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`). xcaddy turns a `--with` that has no version into `go get <module>`, which Go reads as the latest release. On the Caddy module that request sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the two agree only while the pin IS the latest release: the base built while v2.11.7 was the latest, and once upstream published v2.11.8 and v2.11.9 every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`, though the local replacement meant v2.11.9 would never have been compiled. On any other module a versionless `--with` floats silently. ADR 0057 requires every Caddy build input to be pinned"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
     ("L106", ERROR, "No template maps one port number for both TCP and UDP (`73478:73478` with `73478:73478/udp`). Vast's port validator refuses the pair, so the template cannot launch; the platform names its variables per protocol (`VAST_TCP_PORT_N`, `VAST_UDP_PORT_N`), and a service that needs both protocols takes a separate number for each. The desktop images' TURN server did: Selkies 2.0 relays over UDP as well as TCP, and both were first mapped on 73478. It now takes 73478 for TCP and 73479 for UDP (ADR 0050)"),
@@ -4655,6 +4656,31 @@ def check_xcaddy_with_is_versioned(repo: Path) -> Iterable[Finding]:
                                       f"latest {module}; name the pinned version (`{module}@<version>`) "
                                       "(ADR 0057, L120)")
 
+
+def check_upstream_arches_come_from_the_artifact(repo: Path) -> Iterable[Finding]:
+    """L129 (repo) -- a workflow that builds upstream tags on amd64 and arm64 builds and
+    merges only the architectures upstream published for each tag (ADR 0035 amendment)."""
+    for wf in sorted((repo / ".github/workflows").glob("*.yml")):
+        text = wf.read_text()
+        m = re.search(r"ARCHES_JSON='\[(.*?)\]'", text, re.S)
+        if "check-dockerhub-release" not in text or not m or "linux/arm64" not in m.group(1):
+            continue
+        rel = f".github/workflows/{wf.name}"
+        if not re.search(r"\+ \[\{[^}]*\barches: \$a\b", text):
+            yield Finding("L129", ERROR, "repo", rel,
+                          "the variant matrix does not record the architectures upstream "
+                          "published for each tag (`arches`) (L129)")
+        if not re.search(r"\$v\.arches\b[^\n]*index\(\$a\.suffix\)", text):
+            yield Finding("L129", ERROR, "repo", rel,
+                          "the build matrix crosses every variant with every architecture "
+                          "without filtering on the variant's `arches` (L129)")
+        for step in re.finditer(r"uses: \./\.github/actions/merge-arch-manifests\n\s+with:\n((?:\s{10,}.*\n)+)", text):
+            if not re.search(r"^\s+arches: .*matrix\.arches", step.group(1), re.M):
+                yield Finding("L129", ERROR, "repo", rel,
+                              "merge-arch-manifests is not passed the variant's `arches`, so it "
+                              "merges amd64 and arm64 whether or not both were built (L129)")
+
+
 REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_adr_secrets, check_internal_ticket_ids, check_update_portal_paths_agree,
     check_env_lists_use_the_splitter,
@@ -4666,6 +4692,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_fail_later_arity, check_curl_status_capture,
     check_test_timeout_covers_its_waits, check_running_is_not_a_serving_verdict,
     check_upstream_cuda_label_comes_from_the_artifact,
+    check_upstream_arches_come_from_the_artifact,
     check_a_test_ships_the_sibling_it_reaches_for,
     check_copyleft_licence_path_resolves,
     check_workflow_if_has_no_folded_comment,

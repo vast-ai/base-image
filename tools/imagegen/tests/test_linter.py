@@ -5484,6 +5484,50 @@ def test_L108_catches_an_unguarded_mini_job(tmp_path, job, old):
     assert where == [f".github/workflows/build-base-image.yml:{job}"], where
 
 
+# --- L129: upstream tags build only on the architectures upstream published --------- #
+
+def _l129_tree(tmp_path, wf, mutate):
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    text = (repo / ".github/workflows" / wf).read_text()
+    new = mutate(text)
+    assert new != text, "mutation did not apply"
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows" / wf).write_text(new)
+    return [f.msg for f in L.check_upstream_arches_come_from_the_artifact(tmp_path)]
+
+
+def test_L129_real_tree_is_clean():
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    assert list(L.check_upstream_arches_come_from_the_artifact(repo)) == []
+
+
+@pytest.mark.parametrize("wf", ["build-sglang.yml", "build-vllm.yml"])
+@pytest.mark.parametrize("old,new,says", [
+    # the matrix entry stops recording what upstream published
+    ("'. + [{tag: $t, cuda: $c, arches: $a}]'", "'. + [{tag: $t, cuda: $c}]'", "does not record"),
+    # the incident: every variant crossed with both architectures
+    ('             | select(($v.arches // ["amd64", "arm64"]) | index($a.suffix) != null)\n', "",
+     "without filtering"),
+    # the merge assumes both architectures were built
+    ("          arches: ${{ matrix.arches && join(matrix.arches, ',') || 'amd64,arm64' }}\n", "",
+     "merge-arch-manifests is not passed"),
+])
+def test_L129_catches_a_fixed_architecture_list(tmp_path, wf, old, new, says):
+    """2026-11-23: three sglang tags upstream publishes for one architecture failed their
+    other build, and each run published nothing."""
+    found = _l129_tree(tmp_path, wf, lambda t: t.replace(old, new, 1))
+    assert len(found) == 1 and says in found[0], found
+
+
+def test_L129_leaves_a_single_architecture_workflow_alone(tmp_path):
+    """vllm-omni names amd64 alone in ARCHES_JSON; there is no cross-product to filter."""
+    repo = find_repo_root(Path(__file__).resolve().parent)
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows/build-vllm-omni.yml").write_text(
+        (repo / ".github/workflows/build-vllm-omni.yml").read_text())
+    assert list(L.check_upstream_arches_come_from_the_artifact(tmp_path)) == []
+
+
 # --- L109: every job refreshes the runner's CA store first ------------------------- #
 
 _L109_WF = "build-llama-cpp.yml"
