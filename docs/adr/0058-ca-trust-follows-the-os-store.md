@@ -159,10 +159,12 @@ needed a base rebuild, a promotion and a pin bump in every derivative. Six more 
   Python, an interpreter installed at boot). That gap is accepted.
 - Images already built keep the test they were built with. A derivative takes it from its dated
   base, so one still pinned to a base that has the test fails on any rebuild from 2027-01-01,
-  when the last of the old rows expires. Every base pin moves to a base without the test before
-  then. A derivative that cannot wait deletes the file in its own Dockerfile; the two serverless
-  derivatives (llama.cpp and ComfyUI) do so now, because the row for the worker's interpreter
-  has already expired.
+  when the last of the old rows expires. The row for the worker's interpreter has already
+  expired, so a serverless image fails on such a base today. The pins in this repository moved to
+  the 2026-11-20 bases, which do not ship the test, in the same change that removed it; the two
+  serverless derivatives (llama.cpp and ComfyUI) were rebuilt on them first. The aio-studio base
+  is the one pin still on an older image and is rebuilt before that date. A derivative that has
+  to stay on an older base deletes the file in its own Dockerfile.
 - The QA gate still parses and reports exemption lines. With no test printing them it reports
   nothing; removing it is follow-up work.
 
