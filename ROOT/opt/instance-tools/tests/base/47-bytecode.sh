@@ -17,10 +17,8 @@ min="${BYTECODE_MIN_VALID:-0.95}"
 while IFS=$'\t' read -r py tree; do
     [[ -n "$py" ]] || continue
     where="$tree"
-    if [[ "$tree" == /opt/workspace-internal/* ]]; then
-        copy="${WORKSPACE:-/workspace}/${tree#/opt/workspace-internal/}"
-        [[ -d "$copy" ]] && where="$copy"
-    fi
+    # The app runs from the copy; a missing copy fails below rather than judging the build tree.
+    [[ "$tree" == /opt/workspace-internal/* ]] && where="${WORKSPACE:-/workspace}/${tree#/opt/workspace-internal/}"
     [[ -x "$py" ]] || { fail_later "$tree" "interpreter $py is missing"; continue; }
     [[ -d "$where" ]] || { fail_later "$tree" "$where is missing"; continue; }
     read -r total valid < <("$py" - "$where" <<'PY'

@@ -15,6 +15,7 @@ Data tiers (see the design plan):
 
 from __future__ import annotations
 
+import errno
 import glob
 import json
 import os
@@ -479,21 +480,30 @@ def _proc_net_has(name: str) -> bool:
     return os.path.exists(os.path.join(PROC_NET, name))
 
 
-def _tcp_port_accepts(port: int) -> bool:
-    """True when something accepts a TCP connect on loopback (v4 or v6).
+def _tcp_port_accepts(port: int) -> Optional[bool]:
+    """True when something accepts a TCP connect on loopback (v4 or v6), False when
+    both refuse (or the family is unavailable), None when a probe was inconclusive
+    (a timeout: a full accept queue looks the same as a filtered port).
 
     Connects and closes without sending data. Used only when the tcp6 table is
     missing, to catch listeners the table scan cannot see.
     """
+    conclusive = True
     for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as s:
                 s.settimeout(_PROBE_TIMEOUT)
-                if s.connect_ex((host, port)) == 0:
-                    return True
+                err = s.connect_ex((host, port))
         except OSError:
-            continue
-    return False
+            continue                    # no such family here: nothing can listen on it
+        if err == 0:
+            return True
+        if err not in _PROBE_NOT_LISTENING:
+            conclusive = False
+    return False if conclusive else None
+
+
+_PROBE_NOT_LISTENING = {errno.ECONNREFUSED, errno.EADDRNOTAVAIL, errno.ENETUNREACH}
 
 
 SUPERVISOR_SOCK = "/var/run/supervisor.sock"
@@ -918,7 +928,10 @@ def assemble(
         svc_name = svc_by_ext.get(cp)
         p["in_use"] = (bind in listening) or (svc_name is not None)
         if not p["in_use"] and p["proto"] == "tcp" and probe_tcp:
-            p["in_use"] = _tcp_port_accepts(bind)
+            accepts = _tcp_port_accepts(bind)
+            p["in_use"] = bool(accepts)
+            if accepts is None:
+                p["in_use_verified"] = False
         if not p["in_use"] and p["proto"] == "udp" and udp_unverifiable:
             # UDP cannot be connect-probed; "free" here is a guess.
             p["in_use_verified"] = False

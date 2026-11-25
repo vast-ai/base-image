@@ -1471,8 +1471,9 @@ header and file contents, failure keeps the record, gVisor-only stage).
 
 The capability manifest decides a TCP port is in use from `/proc/net/tcp` and `tcp6`; only when
 the `tcp6` table is ABSENT (not empty) does it also connect-probe 127.0.0.1 and ::1 (150 ms, no
-data), so hosts with full tables are never probed. A UDP port that looks free while `udp6` is
-absent carries `in_use_verified: false`. The manifest reports supervisord's control socket at
+data), so hosts with full tables are never probed. A port is free only when both refuse; a probe
+that times out leaves the TCP port marked free with `in_use_verified: false`, as does a UDP port
+that looks free while `udp6` is absent. The manifest reports supervisord's control socket at
 `supervisor.control_socket`; a symlink at `/var/run/supervisor.sock` means the `/dev/shm`
 fallback is in use. Tests: `test_capabilities.py`.
 

@@ -127,6 +127,33 @@ def test_on_an_external_image_the_mirror_is_compiled_not_the_engine(tmp_path):
     assert not list(engine_site.rglob("*.pyc"))
 
 
+def test_a_mirror_link_to_unusable_engine_bytecode_is_replaced_and_a_usable_one_kept(tmp_path):
+    # The mirror links the engine's .pyc files too; compileall will not write over a link, so a
+    # stale or hash-based one would stay and count against coverage.
+    env, site, _ = _world(tmp_path)
+    engine = tmp_path / "engine-pkg"
+    links = {}
+    for k, mode in enumerate(["checked-hash", "stale", "timestamp"] * 7):
+        src = _module(engine, f"x{k}")
+        subprocess.run([sys.executable, "-m", "py_compile", str(src)], check=True,
+                       env=dict(os.environ, SOURCE_DATE_EPOCH="1") if mode == "checked-hash" else None)
+        if mode == "stale":
+            os.utime(src, (src.stat().st_mtime + 100,) * 2)
+        mirror_src = site / "pkg" / src.name
+        mirror_src.symlink_to(src)
+        mirror_pyc = Path(importlib.util.cache_from_source(str(mirror_src)))
+        mirror_pyc.parent.mkdir(exist_ok=True)
+        mirror_pyc.symlink_to(importlib.util.cache_from_source(str(src)))
+        links[mirror_src] = (mirror_pyc, mode)
+    r = _run(env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for src, (pyc, mode) in links.items():
+        assert pyc.is_symlink() == (mode == "timestamp"), mode
+        flags, mtime, size = struct.unpack("<III", pyc.read_bytes()[4:16])
+        st = src.stat()
+        assert (flags, mtime, size) == (0, int(st.st_mtime) & 0xFFFFFFFF, st.st_size), mode
+
+
 def test_a_venv_outside_venv_is_found_by_its_pyvenv_cfg(tmp_path):
     # The portal's and the provisioner's venvs live under /opt, not /venv.
     env, _, _ = _world(tmp_path)
@@ -243,6 +270,14 @@ def test_instance_test_fails_when_the_copy_lost_its_timestamps(tmp_path):
     r = _test47(tmp_path, ws)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "valid bytecode" in r.stdout + r.stderr
+
+
+def test_instance_test_fails_when_the_workspace_copy_is_missing(tmp_path):
+    # The build-time tree's bytecode is valid, but the app is not imported from there.
+    env, _, app = _world(tmp_path)
+    assert _run(env).returncode == 0
+    r = _test47(tmp_path, tmp_path / "workspace")
+    assert r.returncode == 1 and "MyApp is missing" in r.stdout + r.stderr, r.stdout + r.stderr
 
 
 def test_instance_test_skips_on_an_image_without_the_marker(tmp_path):

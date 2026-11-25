@@ -100,6 +100,9 @@ directories, where Python writes it at runtime anyway. It runs before `venv-mirr
 final RUN, so the verify proves the mirror still holds. The engine's own site-packages are not
 compiled, nor an engine that is itself a venv under `/opt` (sglang): it is imported through the
 mirror too. Measured on vLLM: 100% of every tree compiled in 38 s, and the verify passed.
+The mirror also links the engine's own `.pyc` files. A link to bytecode Python would accept is
+kept; a link to stale or hash-based bytecode is removed first, because compileall will not write
+over a link, and the source is then compiled to a real file.
 
 ## Binding conditions
 1. Every image runs `compile-bytecode` in its final RUN, before `env-hash` (and on an external
