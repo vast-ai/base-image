@@ -23,16 +23,20 @@ set -u
 NVIDIA_DRIVERS_DIR="/opt/nvidia-drivers"
 # Lower priority than container toolkit libs
 NVIDIA_DRIVERS_LDCONF="/etc/ld.so.conf.d/zz-nvidia-drivers.conf"
+NVIDIA_DRIVER_VERSION_BIN="/opt/instance-tools/bin/nvidia-driver-version"
 
 configure_nvidia_display_drivers() {
     command -v nvidia-smi &>/dev/null || { echo "No nvidia-smi / GPU — nothing to do"; return 0; }
 
-    # Read driver version from kernel module
+    # The shared helper, not /proc directly: under gVisor the /proc file is
+    # absent while the GPU and nvidia-smi work. nvidia-smi is present here, so
+    # no version is a real failure, not a CPU-only container.
     local DRIVER_VERSION
-    DRIVER_VERSION="$(head -n1 </proc/driver/nvidia/version | awk '{ for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) { print $i; exit } }')"
-    if [[ -z "$DRIVER_VERSION" ]]; then
-        echo "Warning: Could not determine NVIDIA driver version from /proc"
-        return 0
+    if ! DRIVER_VERSION="$("$NVIDIA_DRIVER_VERSION_BIN")" || [[ -z "$DRIVER_VERSION" ]]; then
+        echo "ERROR: nvidia-smi is present but the NVIDIA driver version could not be" \
+             "determined ($NVIDIA_DRIVER_VERSION_BIN gave no answer); display driver libs" \
+             "NOT installed" >&2
+        return 1
     fi
 
     # If we already extracted libs for this exact driver version, ensure

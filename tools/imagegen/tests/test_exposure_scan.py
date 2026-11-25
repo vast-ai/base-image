@@ -17,7 +17,12 @@ The two properties worth pinning, because both are one careless edit from revert
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import shutil
+import socket
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -300,3 +305,111 @@ def test_a_published_raw_port_is_still_fine():
 
 def test_internal_is_a_recognised_class():
     assert es.INTERNAL_CLASS in es.VALID_CLASSES
+
+
+# ---------------------------------------------------------------- visibility (gVisor)
+#
+# Observed under gVisor: IPv4 rows in /proc/self/net/tcp and udp, no tcp6 or udp6
+# table, and `ss` printing "Cannot open netlink socket" yet exiting 0. `ss -ltn` still
+# showed tcp4; `ss -lun` showed nothing, though /proc/self/net/udp held the udp4 rows.
+
+NETLINK_ERR = "Cannot open netlink socket: Protocol not supported\n"
+SS_HDR = "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port\n"
+SENT = {"tcp": 41000, "udp": 41001}
+SENT_ROW = {"tcp4": "LISTEN 0 1 127.0.0.1:41000 0.0.0.0:*",
+            "tcp6": "LISTEN 0 1 [::1]:41000 [::]:*",
+            "udp4": "UNCONN 0 0 127.0.0.1:41001 0.0.0.0:*",
+            "udp6": "UNCONN 0 0 [::1]:41001 [::]:*"}
+
+
+def _proc(tmp_path, v6=True, udp_port=None):
+    tmp_path = tmp_path / "net"
+    tmp_path.mkdir()
+    (tmp_path / "tcp").write_text(HDR + proc_line(18000, addr="0100007F"))
+    udp = proc_line(udp_port, state="07") if udp_port else ""
+    (tmp_path / "udp").write_text(HDR + udp)
+    if v6:
+        (tmp_path / "tcp6").write_text(HDR)
+        (tmp_path / "udp6").write_text(HDR)
+    return str(tmp_path)
+
+
+def _held(v6=True):
+    """Stand-in sentinels at fixed ports, so a fake `ss` can choose to show them."""
+    return lambda proto: contextlib.nullcontext(
+        [(proto + "4", SENT[proto])] + ([(proto + "6", SENT[proto])] if v6 else []))
+
+
+def _ss(stdout=SS_HDR, stderr="", rc=0, blind=()):
+    """Fake `ss`: -ltun prints STDOUT; -ltnH/-lunH print every sentinel not in BLIND."""
+    def run(cmd, **kw):
+        if cmd[0] != "ss":
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+        if cmd[1] in ("-ltnH", "-lunH"):
+            proto = "tcp" if cmd[1] == "-ltnH" else "udp"
+            rows_ = [SENT_ROW[f] for f in (proto + "4", proto + "6") if f not in blind]
+            return subprocess.CompletedProcess(cmd, rc, "".join(r + "\n" for r in rows_), stderr)
+        return subprocess.CompletedProcess(cmd, rc, stdout, stderr)
+    return run
+
+
+def _main(tmp_path, proc_root, ipv6, runner):
+    return es.main([str(tmp_path / "no-allowlist")], out=io.StringIO(), env={},
+                   proc_root=proc_root, ipv6=lambda: ipv6, runner=runner, held=_held(ipv6))
+
+
+def test_a_missing_tcp6_table_with_ipv6_enabled_decides_nothing(tmp_path):
+    root = _proc(tmp_path, v6=False)
+    assert _main(tmp_path, root, True, _ss()) == 2
+
+
+def test_a_missing_v6_table_on_an_ipv6_disabled_host_still_decides(tmp_path):
+    root = _proc(tmp_path, v6=False, udp_port=5353)
+    ss = _ss(SS_HDR + "udp UNCONN 0 0 0.0.0.0:5353 0.0.0.0:*\n")
+    assert _main(tmp_path, root, False, ss) == 1
+
+
+@pytest.mark.parametrize("ss", [_ss(stderr=NETLINK_ERR), _ss(rc=1)], ids=["netlink", "exit1"])
+def test_a_failing_ss_decides_nothing(tmp_path, ss):
+    assert _main(tmp_path, _proc(tmp_path), True, ss) == 2
+
+
+def test_runc_with_every_table_and_a_working_ss_decides_clean(tmp_path):
+    assert _main(tmp_path, _proc(tmp_path), True, _ss()) == 0
+
+
+@pytest.mark.parametrize("proto", ["tcp", "udp"])
+def test_ss_exiting_0_with_the_netlink_error_is_blind_for_both_protocols(proto):
+    """The observed failure exits 0, and here even lists the sentinels: the stderr alone decides."""
+    assert "netlink" in es.ss_blind(proto, _ss(stderr=NETLINK_ERR), _held())
+
+
+def test_udp4_in_proc_but_missing_from_ss_decides_nothing(tmp_path):
+    """The gVisor UDP replay without the netlink message: /proc holds a public udp4
+    listener that would otherwise be judged, but `ss -lun` cannot show udp4."""
+    root = _proc(tmp_path, udp_port=5353)
+    ss = _ss(SS_HDR + "udp UNCONN 0 0 0.0.0.0:5353 0.0.0.0:*\n", blind=("udp4",))
+    out = io.StringIO()
+    assert es.main([str(tmp_path / "x")], out=out, env={}, proc_root=root, ipv6=lambda: True,
+                   runner=ss, held=_held()) == 2
+    assert "udp4 sentinel" in out.getvalue()
+
+
+def test_an_invisible_v6_family_is_named(tmp_path):
+    assert "tcp6" in es.ss_blind("tcp", _ss(blind=("tcp6",)), _held())
+
+
+def test_a_v4_sentinel_that_cannot_bind_is_invisible_not_vacuous(monkeypatch):
+    """Nothing bound must not read as nothing to prove; only v6 may be absent."""
+    class Unbindable(socket.socket):
+        def bind(self, addr):
+            raise OSError("refused")
+    monkeypatch.setattr(es.socket, "socket", Unbindable)
+    assert es.ss_blind("udp", _ss()).startswith("ss -lunH does not show the udp4 sentinel")
+
+
+@pytest.mark.skipif(shutil.which("ss") is None, reason="iproute2 ss not installed")
+@pytest.mark.parametrize("proto", ["tcp", "udp"])
+def test_real_sentinels_are_found_in_real_ss_output(proto):
+    """Runc arm against the real tool: the parser reads the format `ss` actually prints."""
+    assert es.ss_blind(proto) == ""

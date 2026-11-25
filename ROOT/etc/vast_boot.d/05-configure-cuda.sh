@@ -69,9 +69,10 @@ sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0) == 0 else 1)
 # notices by luck (it needs the image to ship an INDIRECT /usr/local/cuda for the
 # symlink assertion to catch it). Detection should be designed, not accidental.
 #
-# Cleared at the top of every run, not just written on failure: /run is part of
-# the container's own overlay here (docker does not tmpfs-mount it), so a stale
-# breadcrumb from a previous boot would fail the QA test forever.
+# Cleared at the top of every run, not just written on failure: /run may persist
+# across restarts (it is part of the container's root filesystem unless the runtime
+# mounts a tmpfs there), so a stale breadcrumb from a previous boot would otherwise
+# fail the QA test forever.
 #
 # The path is duplicated in base/60-gpu-cuda (the assertion) and in
 # tools/imagegen/tests/harness/cuda-boot-and-test-harness.sh (which pins both

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Exit 0 if this container is running under gVisor (runsc), non-zero otherwise.
+# Prints nothing.
+#
+# Test for the capability you need, not for the runtime. Use this only where
+# there is no capability to probe (a mode choice, wording in docs or metrics).
+# It is the one sanctioned runtime check for shell and Python callers; never
+# use uname strings or environment labels instead. gVisor always provides
+# /proc/gvisor; runc never does.
+
+[[ -d /proc/gvisor ]]
