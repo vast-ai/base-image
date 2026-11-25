@@ -507,22 +507,28 @@ def test_tcp6_absent_inconclusive_probe_is_unverified(tmp_path, monkeypatch):
 
 def test_tcp_probe_refused_is_conclusive_and_a_timeout_is_not(monkeypatch):
     import errno as _errno
-    results = iter([])
+    queue = []      # per family: an OSError raised by socket(), else connect_ex's result
 
     class _Sock:
-        def __init__(self, *a): pass
+        def __init__(self, *a):
+            if isinstance(queue[0], OSError):
+                raise queue.pop(0)
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def settimeout(self, t): pass
-        def connect_ex(self, addr): return next(results)
+        def connect_ex(self, addr): return queue.pop(0)
 
     monkeypatch.setattr(manifest.socket, "socket", _Sock)
-    results = iter([_errno.ECONNREFUSED, _errno.ECONNREFUSED])
-    assert manifest._tcp_port_accepts(8080) is False
-    results = iter([_errno.ECONNREFUSED, _errno.EAGAIN])
-    assert manifest._tcp_port_accepts(8080) is None
-    results = iter([_errno.EAGAIN, 0])
-    assert manifest._tcp_port_accepts(8080) is True
+    cases = [
+        ([_errno.ECONNREFUSED, _errno.ECONNREFUSED], False),
+        ([_errno.ECONNREFUSED, _errno.EAGAIN], None),          # a timeout proves nothing
+        ([_errno.EAGAIN, 0], True),
+        ([_errno.ECONNREFUSED, OSError(_errno.EAFNOSUPPORT, "no v6")], False),
+        ([_errno.ECONNREFUSED, OSError(_errno.EMFILE, "no fds")], None),
+    ]
+    for q, want in cases:
+        queue[:] = q
+        assert manifest._tcp_port_accepts(8080) is want, q
 
 
 # --- supervisord control socket -------------------------------------------- #

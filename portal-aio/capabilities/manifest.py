@@ -494,7 +494,9 @@ def _tcp_port_accepts(port: int) -> Optional[bool]:
             with socket.socket(family, socket.SOCK_STREAM) as s:
                 s.settimeout(_PROBE_TIMEOUT)
                 err = s.connect_ex((host, port))
-        except OSError:
+        except OSError as e:
+            if e.errno not in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
+                conclusive = False      # out of descriptors, denied: we did not look
             continue                    # no such family here: nothing can listen on it
         if err == 0:
             return True
