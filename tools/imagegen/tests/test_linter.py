@@ -5929,3 +5929,20 @@ def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
     other = ("# uv pip install --python /venv/main/bin/python anything\n"
              "RUN uv pip install --python /opt/model-ui/venv/bin/python -r requirements.txt\n")
     assert not _codes(_l130_tree(tmp_path, dockerfile=other, script=other), "L130")
+
+
+@pytest.mark.parametrize("line", [
+    # a later command's constraint is not this command's
+    "uv pip install --python /venv/main/bin/python ipykernel && "
+    "uv pip install --python /venv/main/bin/python --constraint /tmp/c.txt ray",
+    "uv pip install --python /venv/main/bin/python ipykernel; echo --constraint",
+    # nor is a comment's
+    "uv pip install --python /venv/main/bin/python ipykernel  # --constraint later",
+    # a quoted literal path is the same environment
+    'uv pip install --python "/venv/main/bin/python" ipykernel',
+    "uv pip install --python '/venv/main/bin/python' ipykernel",
+])
+def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
+    found = _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
+    assert len(found) == 1 and "ipykernel" in found[0].msg
+

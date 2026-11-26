@@ -4273,8 +4273,13 @@ def check_convert_builds_the_mirror(repo: Path) -> Iterable[Finding]:
 
 
 # L130 — an install into the mirrored /venv/main is held to what the engine provides.
+# One command: from `uv pip install` to the next `&&`, `||`, `;`, `|` or word-initial
+# `#`, so a `--constraint` belonging to a later command or to a comment does not count.
+# The path may be quoted. A requirement that itself contains `;` ends the match early,
+# which can only report an install that is in fact constrained, never pass one that is not.
 _MAIN_VENV_INSTALL_RE = re.compile(
-    r"uv\s+pip\s+install\b[^\n]*--python\s+/venv/main/bin/python[^\n]*")
+    r"""uv\s+pip\s+install\b(?:(?!\s\#)[^\n;&|])*?--python\s+["']?/venv/main/bin/python["']?"""
+    r"""(?:(?!\s\#)[^\n;&|])*""")
 
 
 def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
