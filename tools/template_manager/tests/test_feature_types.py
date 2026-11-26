@@ -93,7 +93,7 @@ def test_vision_without_chat_is_an_error_and_the_other_checks_still_run():
                    for b in endpoint.bodies if b and "messages" in b), "an image was sent"
 
 
-@pytest.mark.parametrize("feature", sorted(set(ec.KNOWN_FEATURES) - {"vision"}))
+@pytest.mark.parametrize("feature", sorted(set(ec.KNOWN_FEATURES) - {"vision", "tools"}))
 def test_a_declared_feature_with_no_check_yet_is_skipped_never_passed(feature):
     out = _by_name(_run("chat", features=feature))
     assert out[f"external/{feature}"]["state"] == "skipped"
@@ -104,7 +104,7 @@ def test_a_declared_feature_with_no_check_yet_is_skipped_never_passed(feature):
 
 def test_types_add_checks_and_leave_the_routes_as_they_were():
     plain, typed = _run("chat,embeddings"), _run("chat,embeddings", features="vision,tools")
-    added = {vision.VISION_CHECK, vision.VISION_READ_CHECK, "external/tools"}
+    added = {vision.VISION_CHECK, vision.VISION_READ_CHECK}      # tools is the contract's
     assert [r for r in typed[1:] if r["name"] not in added] == plain[1:]
     assert {r["name"] for r in typed} - {r["name"] for r in plain} == added
     # --features never implies a route: with no engine route there is nothing to run.
@@ -113,6 +113,81 @@ def test_types_add_checks_and_leave_the_routes_as_they_were():
                                    endpoint_factory=None, features="vision")
     assert [(r["name"], r["state"]) for r in alone] == [
         (ec.CAPABILITIES_RESULT, "info"), (vision.VISION_CHECK, "error")]
+
+
+def test_a_template_declares_features_in_its_engines_expect_caps():
+    template = {"image": "vastai/vllm", "env": "-e VLLM_MODEL=m -e VLLM_EXPECT_CAPS=vision,tools"}
+    run = lambda **kw: ec.run_external_checks(                                  # noqa: E731
+        fakes.INSTANCE, template, fakes.ENGINE_TESTS, capabilities="chat",
+        endpoint_factory=lambda h, p, t: fakes._Engine(), **kw)
+    out = run()
+    # tools stays the contract's: it reads the same variable, so it is not listed twice.
+    assert out[0]["detail"] == "chat (--capabilities); features: vision (VLLM_EXPECT_CAPS)"
+    assert _by_name(out)[vision.VISION_CHECK]["state"] in ("passed", "failed")
+    # The caller adds to the template's declaration, and each source is named.
+    assert run(features="vision,reasoning")[0]["detail"].endswith(
+        "features: vision (VLLM_EXPECT_CAPS) + reasoning (--features)")
+    # An override of the variable wins, as for every template variable.
+    assert "features" not in run(env_overrides=["VLLM_EXPECT_CAPS=tools"])[0]["detail"]
+    # Another engine's variable declares nothing for this image.
+    other = {"image": "vastai/vllm", "env": "-e SGLANG_EXPECT_CAPS=vision"}
+    assert ec.template_features(other) == {}
+
+
+def test_tools_named_by_the_caller_is_declared_to_the_contract_not_checked_twice(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ec.checks.contract_step, "check_contract",
+                        lambda *a, **k: seen.update(k) or [])
+    out = _by_name(_run("chat", features="tools"))
+    assert seen["declared_caps"] == frozenset({"tools"})
+    assert "external/tools" not in out
+    # Declared caps reach the contract beside the template's own.
+    passed = {}
+    monkeypatch.setattr(ec.checks.contract_step.contract, "run_contract",
+                        lambda rep, cli, **k: passed.update(k))
+    ec.checks.contract_step._run_contract(
+        None, None, {"model_env": "VLLM_MODEL", "args_env": "VLLM_ARGS",
+                     "caps_env": "VLLM_EXPECT_CAPS"},
+        "-e VLLM_EXPECT_CAPS=structured-output", (), {"chat"}, {"tools"}, None)
+    assert passed["expect_caps"].split() == ["structured-output", "tools"]
+
+
+def test_every_contract_checker_knows_the_feature_names_as_declared_elsewhere():
+    """<ENGINE>_EXPECT_CAPS carries features too. A checker that did not know a
+    feature's name would report the template's declaration as an error."""
+    contract = ec.contract
+    expected = set(ec.KNOWN_FEATURES) - set(contract.CAPABILITIES)
+    assert set(contract.CLIENT_CHECKED) == expected
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    onbox = sorted(glob.glob(os.path.join(repo, "..", "*", "*", "ROOT", "opt", "instance-tools",
+                                          "tests", "*.d", "contract_check.py")))
+    assert len(onbox) == 4, onbox
+    for path in onbox:
+        spec = importlib.util.spec_from_file_location("onbox_contract_check", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert set(module.CLIENT_CHECKED) == expected, path
+        assert not (set(module.CLIENT_CHECKED) & set(module.CAPABILITIES)), path
+
+
+def test_a_feature_in_expect_caps_is_not_an_unknown_capability_to_the_contract():
+    contract = ec.contract
+    assert contract.set_engine("vastai/vllm")
+
+    class _Rep:
+        errors = []
+        def error(self, name, detail): self.errors.append(name)        # noqa: E704
+        def __getattr__(self, _): return lambda *a, **k: None           # noqa: E704
+
+    probes = dict(contract.CAPABILITIES)
+    try:
+        contract.CAPABILITIES.clear()
+        contract.run_capabilities(_Rep(), None, "m", {}, {"vision"})
+        assert _Rep.errors == []
+        contract.run_capabilities(_Rep(), None, "m", {}, {"vison"})
+        assert _Rep.errors == ["capabilities"]
+    finally:
+        contract.CAPABILITIES.update(probes)
 
 
 # ---------------------------------------------------------------- 2. what is recorded

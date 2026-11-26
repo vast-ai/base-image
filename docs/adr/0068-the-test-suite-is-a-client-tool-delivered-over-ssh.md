@@ -7,6 +7,9 @@
   competing designs, three independent assessments (feasibility, value, risk), and a
   final critical review of the plan. The final review asked for changes; they are
   addressed in this text and were not re-reviewed.
+- **Amended 2026-11-26 (owner decision, not reviewed):** a template declares its
+  model's features in `<ENGINE>_EXPECT_CAPS`; the caller's argument adds to that
+  (decisions 2 and 4). The reviewed text had the caller as the only source.
 - **Amends:** [ADR 0059](0059-template-testing-lives-in-base-image-in-two-layers.md)
   D1 (where on-box checks are stored), D2 (the vocabulary a caller may declare) and D3
   (what a consumer pins).
@@ -76,8 +79,9 @@ it releases the baked runner.
 - **A hand-kept version number per layer, with per-check version headers and retained
   older variants.** It depends on a manual bump on most check changes, and a forgotten
   bump can be neither detected nor attributed.
-- **A template variable for model features.** It would be a second stored declaration
-  beside `OPENAI_ROUTES`.
+- **A new template variable for model features.** A template already has a variable
+  that says what its model must be able to do, `<ENGINE>_EXPECT_CAPS`; a second one
+  beside it would be a third stored declaration.
 - **Selecting types by probing the model.** A broken image path would read as "this is
   a text-only model" and pass silently, and probing undeclared inputs has taken a
   server down.
@@ -105,16 +109,29 @@ What changes is where the on-box code is stored and how it reaches the box.
    - What a template **serves** comes from `OPENAI_ROUTES`, exactly as ADR 0059 D2
      decides. That is unchanged.
    - What the chat model **accepts or returns** (`vision`, `multi-image`,
-     `video-input`, `reasoning`, `tools`) is stated by the caller at run time: a
-     `--features` argument, and a `features` input per cell in the QA gate. This amends
-     ADR 0059 D2's statement that names are the routes'. No new value is stored in a
-     template.
+     `video-input`, `reasoning`, `tools`) comes from the template's
+     `<ENGINE>_EXPECT_CAPS`, the variable the contract already reads for the
+     capabilities it probes. A template for a vision model declares `vision` there and
+     is checked for it on every run, with nothing for a caller to remember. A caller
+     may add to it for one run: a `--features` argument, and a `features` input per
+     cell in the QA gate. This amends ADR 0059 D2's statement that names are the
+     routes'. No new variable is introduced.
+   - A capability declared there and absent is a violation, as it already is for the
+     contract's own capabilities.
 3. **Declaration problems are reported, never absorbed.** An unknown type is a
    configuration error. A type whose required route is not declared is an error. A
    declared type with no unit yet is skipped, never passed. Every run's first result
    says which routes and types were selected and where each came from.
-4. **`tools` reuses the contract's existing declaration** (`<ENGINE>_EXPECT_CAPS`)
-   instead of adding a second check.
+4. **`tools` is the contract's, and every contract checker knows the feature names.**
+   - The contract already probes `tools` and already reads `<ENGINE>_EXPECT_CAPS`, so
+     it is not checked a second time. Named by a caller, it is handed to the contract
+     as declared, which makes the contract's result required.
+   - `<ENGINE>_EXPECT_CAPS` is read by the client's contract and by each engine's
+     on-box contract check, and each reports an unknown name as an error. All of them
+     accept the feature names, and a test holds the lists equal.
+   - A copy of the on-box check baked into an image built before this does not accept
+     them. A template starts declaring a feature only once its gate runs the delivered
+     checks (decision 11).
 5. **Vision is the first new type.** Its structural check is deterministic: the request
    is accepted, and the prompt costs more tokens with the image than without. Its
    answer check reads a known token from a committed fixture. Further types are built
@@ -222,8 +239,9 @@ One thing at a time (ADR 0059 D7). Each step lands and is used before the next s
   still gated. The shadow step is the proof of that, not a lint rule.
 - An exposure allowlist is delivered from the client's commit, so loosening one
   applies to every tag tested afterwards.
-- A model-library approval tests the types the caller names. A run that is not told a
-  model accepts images does not test images, and its first result says so.
+- A model-library approval tests the features the template declares and any the
+  caller adds. A template that does not declare that its model accepts images is not
+  tested with images, and the run's first result says what was selected.
 - ADR 0059 D3 changes form: a consumer pins a checkout of this repository, because the
   bundle is repository content.
 

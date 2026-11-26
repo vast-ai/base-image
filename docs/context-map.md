@@ -95,7 +95,8 @@ stock pytorch -mini image, with its own lock file and README (ADR 0046).
   instance for a template and tests it (ADR 0059). Its client-side checks are one
   module per test type under `checks/`, listed in `checks.REGISTRY` (ADR 0068);
   `external_checks.py` selects them: route types from the template's `OPENAI_ROUTES`,
-  feature types (`vision`) from the caller's `--features`. Fixtures sit beside the checks.
+  feature types (`vision`) from the template's `<ENGINE>_EXPECT_CAPS` and the caller's
+  `--features`. Fixtures sit beside the checks.
   With `--delivered` the on-box checks are not the image's baked copy: `bundle.py` packs
   the image's suites from this checkout (resolved by `imagegen/suites.py`, the linter's
   own rule), `delivered.py` sends them over one SSH session (`remote.py`), and

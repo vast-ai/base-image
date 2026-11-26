@@ -86,6 +86,8 @@ class Context:
     jupyter: object = None              # read-only file access (external_checks.Jupyter)
     comfy: object = None                # ComfyUI itself, or None when its port is not mapped
     generate_timeout: int | None = None
+    # Capabilities the caller declared that the contract probes itself (tools).
+    declared_caps: frozenset = frozenset()
 
     @property
     def image(self):

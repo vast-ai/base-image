@@ -38,11 +38,13 @@ class _LazySession:
 # Report findings -> result states. A declared deviation is reported, never blocking
 # (ADR 0031 decision 6a), so it gets its own state rather than passing or failing.
 def check_contract(host, port, token, image, env, env_overrides, routes,
-                   client_factory=None, remote_factory=None, deadline=None):
+                   client_factory=None, remote_factory=None, deadline=None,
+                   declared_caps=()):
     """The OpenAI contract (contract.py, ported from the in-image checkers) for an
     engine image, keyed on the declared routes. Results are `contract/<check>`.
     `deadline` (contract.Deadline) caps every contract request's timeout and the SSH
-    session's connect retries and remote script."""
+    session's connect retries and remote script. `declared_caps` adds to what the
+    template's <ENGINE>_EXPECT_CAPS declares."""
     row = contract.set_engine(image)
     if row is None:
         return []
@@ -51,7 +53,7 @@ def check_contract(host, port, token, image, env, env_overrides, routes,
     cli = _attach_deadline((client_factory or contract.Client)(f"{host}:{port}", token), deadline)
     lazy = _LazySession(remote_factory, deadline) if remote_factory else None
     try:
-        _run_contract(rep, cli, row, env, env_overrides, routes,
+        _run_contract(rep, cli, row, env, env_overrides, routes, declared_caps,
                       contract.remote_counter(lazy) if lazy else None)
     finally:
         if lazy:
@@ -66,12 +68,13 @@ def check_contract(host, port, token, image, env, env_overrides, routes,
     return results
 
 
-def _run_contract(rep, cli, row, env, env_overrides, routes, counter):
+def _run_contract(rep, cli, row, env, env_overrides, routes, declared_caps, counter):
     contract.run_contract(
         rep, cli,
         model=_env_with_overrides(env, env_overrides, row["model_env"]) or "",
         engine_args=_env_with_overrides(env, env_overrides, row["args_env"]) or "",
-        expect_caps=_env_with_overrides(env, env_overrides, row["caps_env"]) or "",
+        expect_caps=" ".join([_env_with_overrides(env, env_overrides, row["caps_env"]) or "",
+                              *sorted(declared_caps)]),
         routes=set(routes), counter=counter)
 
 
@@ -79,7 +82,8 @@ def _run(ctx):
     return check_contract(
         ctx.host, ctx.engine_port, ctx.token, ctx.image, ctx.env, ctx.env_overrides,
         ctx.engine_capabilities, client_factory=ctx.contract_client_factory,
-        remote_factory=ctx.remote_factory, deadline=ctx.deadline)
+        remote_factory=ctx.remote_factory, deadline=ctx.deadline,
+        declared_caps=ctx.declared_caps)
 
 
 # Needs no particular route: it runs whenever the template declares an engine route,

@@ -1,7 +1,7 @@
 """Vision: the model behind /v1/chat/completions takes an image (ADR 0068).
 
-A feature of the chat model, not a route: nothing in a template declares it, so the
-caller names it with --features. Two results. The structural one shows the image reached
+A feature of the chat model, not a route: a template declares it in its engine's
+<ENGINE>_EXPECT_CAPS, and a caller can add it with --features. Two results. The structural one shows the image reached
 the model (the request is accepted and costs more prompt tokens than the same text
 alone). The answer one shows the model read it (a known number drawn in the fixture).
 """

@@ -20,8 +20,8 @@ else gets no external checks. The first result is always `external/capabilities`
 saying which and why.
 
 Features of the model behind the chat route (vision and the rest of checks.FEATURES)
-are a second declaration, made by the caller with --features (ADR 0068). They add checks
-to the ones the routes select and never change the routes. A feature whose route the
+are a second declaration: the template's <ENGINE>_EXPECT_CAPS, plus whatever the caller
+adds with --features (ADR 0068). They add checks to the ones the routes select and never change the routes. A feature whose route the
 template does not declare is an error; one with no check yet is skipped, never passed.
 
 What runs, for an engine image: the OpenAI contract (contract.py, `contract/<check>`),
@@ -515,6 +515,29 @@ def parse_features(value):
     return names & set(KNOWN_FEATURES), sorted(names - set(KNOWN_FEATURES))
 
 
+def template_features(template, env_overrides=()):
+    """({feature: source}, the names it leaves to the contract) from the template's
+    <ENGINE>_EXPECT_CAPS. That variable is the template's declaration of what its model
+    must be able to do (ADR 0068, decision 2); the contract reads the same value for
+    the capabilities it probes itself, so those names are not features here."""
+    row = contract.ENGINES.get(contract.image_repo(_image_name(template)))
+    if not row:
+        return {}
+    raw = _env_with_overrides((template or {}).get("env", "") or "", env_overrides,
+                              row["caps_env"]) or ""
+    names = {n.lower() for n in raw.replace(",", " ").split()}
+    return {n: row["caps_env"] for n in names & set(KNOWN_FEATURES) - set(contract.CAPABILITIES)}
+
+
+def _features_text(sources):
+    """`vision (VLLM_EXPECT_CAPS) + reasoning (--features)`: each source once, the
+    template's first."""
+    by_source = {}
+    for feature in sorted(sources, key=lambda f: (sources[f] == FEATURES_SOURCE, f)):
+        by_source.setdefault(sources[feature], []).append(feature)
+    return " + ".join(f"{', '.join(names)} ({source})" for source, names in by_source.items())
+
+
 def _image_name(template):
     return str((template or {}).get("image") or "")
 
@@ -638,12 +661,16 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
     portal = _env_with_overrides(env, env_overrides, "PORTAL_CONFIG")
     host = (instance or {}).get("public_ipaddr", "").strip()
     caps, source, problems = resolve_capabilities(template, env_overrides, capabilities)
-    features, unknown_features = parse_features(features)
+    named, unknown_features = parse_features(features)
     problems = problems + [f"unknown feature {u}" for u in unknown_features]
+    # Where each feature was declared: the template first, the caller for the rest.
+    sources = {**{f: FEATURES_SOURCE for f in named},
+               **template_features(template, env_overrides)}
+    features = set(sources)
     info = {"name": CAPABILITIES_RESULT, "state": "info",
             "detail": f"{', '.join(sorted(caps)) or 'none'} ({source})"}
     if features:
-        info["detail"] += f"; features: {', '.join(sorted(features))} ({FEATURES_SOURCE})"
+        info["detail"] += f"; features: {_features_text(sources)}"
     results = [info]
     results += [{"name": CAPABILITIES_RESULT, "state": "error", "detail": p} for p in problems]
     # A feature whose route is not declared cannot be checked: an error under its own
@@ -652,10 +679,18 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
         missing = [c for c in feature_requires(feature) if c not in caps]
         if missing:
             results.append({"name": f"external/{feature}", "state": "error",
-                            "detail": f"declared ({FEATURES_SOURCE}) but it needs "
+                            "detail": f"declared ({sources[feature]}) but it needs "
                                       f"{', '.join(missing)}, which is not among the "
                                       f"template's capabilities ({source})"})
             features.discard(feature)
+
+    # A feature the contract probes itself (tools) is handed to the contract as
+    # declared, which makes its own result required: one check, not two (ADR 0068,
+    # decision 4).
+    to_contract = set()
+    if contract.image_repo(_image_name(template)) in contract.ENGINES:
+        to_contract = features & set(contract.CAPABILITIES)
+        features -= to_contract
 
     engine_caps = caps & set(_ENGINE_CAPABILITIES)
     # The name a result about the phase as a whole is reported under.
@@ -674,13 +709,14 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
                         "detail": f"declared ({source}); no external check for {cap} yet"})
     for feature in sorted(features - set(_FEATURE_TYPES)):
         results.append({"name": f"external/{feature}", "state": "skipped",
-                        "detail": f"declared ({FEATURES_SOURCE}); no external check for "
+                        "detail": f"declared ({sources[feature]}); no external check for "
                                   f"{feature} yet"})
 
     ctx = checks.Context(
         template=template, env=env, env_overrides=env_overrides, host=host, token=token,
         capabilities=caps, engine_capabilities=engine_caps, deadline=dl,
-        contract_client_factory=contract_client_factory, remote_factory=remote_factory)
+        contract_client_factory=contract_client_factory, remote_factory=remote_factory,
+        declared_caps=frozenset(to_contract))
     # (type, the names reported if the deadline leaves it no time), in run order. A type
     # with no names is not a check here (it reports a skip) and always runs.
     plan = [(t, t.names_if_not_run(ctx)) for t in select_types(caps, features)]

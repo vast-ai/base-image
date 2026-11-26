@@ -1647,12 +1647,16 @@ reports and with which outcome.
 
 The table is derived from the test types registered in
 `tools/template_manager/checks/` (ADR 0068). Route types are selected by the template's
-`OPENAI_ROUTES`; feature types by the caller's `--features`, which adds checks and never
+`OPENAI_ROUTES`; feature types by the template's `<ENGINE>_EXPECT_CAPS` and, for one
+run, the caller's `--features`. A feature adds checks and never
 changes the routes. An unknown type is a configuration error, a feature whose route is
 not declared is an `error` row, and a feature with no check yet (`external/tools` and
-the rest) is `skipped`, never passed. `external/vision` is structural and scoped to
-OpenAI engine images, so L126 accepts it; it runs only when a caller passes
-`--features vision`, and no gate does. `external/vision-read` is an answer check.
+the rest) is `skipped`, never passed. `tools` is the contract's: declared, it makes
+`contract/cap:tools` required and adds no second check. `external/vision` is structural
+and scoped to OpenAI engine images, so L126 accepts it; it runs when the template or the
+caller declares `vision`, and no gate does yet. A template declares a feature only once
+its gate runs the delivered checks, because an on-box contract check baked before
+2026-11-26 reports the name as unknown. `external/vision-read` is an answer check.
 
 **Allowed, deliberately: checks that run or not depending on the template.**
 `contract/cap:tools` without the tools flag, the chat-only contract checks on a template

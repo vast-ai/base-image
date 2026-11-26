@@ -827,6 +827,11 @@ def cap_structured(cli: Client, model: str, _tokens: list[str]):
     return True, "json_schema output parses and satisfies the schema"
 
 
+# Names <ENGINE>_EXPECT_CAPS may also carry: features of the model that the launcher checks
+# from the client (tools/template_manager/checks/, ADR 0068). Known here, so that a
+# template declaring one is not an error.
+CLIENT_CHECKED = frozenset({"vision", "multi-image", "video-input", "reasoning"})
+
 CAPABILITIES = {
     "tools": cap_tools,
     "structured-output": cap_structured,
@@ -848,7 +853,7 @@ def run_capabilities(rep: Report, cli: Client, model: str, tokens: list[str],
     A probe that got no HTTP response (UNDECIDED) is an error either way: it decided
     nothing, so it is neither absent, broken, nor present.
     """
-    unknown = declared - set(CAPABILITIES)
+    unknown = declared - set(CAPABILITIES) - CLIENT_CHECKED
     if unknown:
         rep.error("capabilities",
                   f"{ENGINE['caps_env']} names unknown capabilities {sorted(unknown)} — "

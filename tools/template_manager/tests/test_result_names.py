@@ -175,6 +175,8 @@ def _all_runs(monkeypatch):
         _engine_run(monkeypatch, "embeddings", chat=False),      # the undeclared-chat guard
         _engine_run(monkeypatch, "chat", contract_raises=True),  # the contract step's own name
         _engine_run(monkeypatch, "chat", features=",".join(ec.KNOWN_FEATURES)),  # every feature
+        # tools without chat: its own row. With chat it is declared to the contract.
+        _engine_run(monkeypatch, "embeddings", chat=False, features="tools"),
         _comfy_run({"t2i": T2I}, [("9", _png()), ("42", _png())]),
         _comfy_run({"t2i": T2I}, [("9", _png())], object_info=500),
         _comfy_run({}, []),                                      # no payloads at all

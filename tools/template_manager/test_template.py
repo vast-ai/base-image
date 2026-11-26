@@ -1765,9 +1765,9 @@ def parse_args():
     parser.add_argument("--features", metavar="LIST", default=None, type=_features_arg,
                         help="Features of the model behind the chat route to check as "
                              "well, as comma-separated names (" + ", ".join(KNOWN_FEATURES)
-                             + "). Nothing in a template declares these, so they are "
-                             "named here. They add checks and never change the "
-                             "capabilities (ADR 0068).")
+                             + "). They add to what the template declares in its "
+                             "engine's <ENGINE>_EXPECT_CAPS. A feature adds checks "
+                             "and never changes the capabilities (ADR 0068).")
     parser.add_argument("--env", metavar="KEY=VAL", action="append", default=[],
                         help="Set instance env var (repeatable). Timeout overrides: "
                              "PROV_TIMEOUT, VLLM_HEALTH_TIMEOUT, INSTANCE_TEST_DEFAULT_TIMEOUT")
