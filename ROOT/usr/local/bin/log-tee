@@ -41,8 +41,10 @@ def _clean_for_stdout(text: str) -> str:
 
 # What may be the start of something that finishes in the next read: a carriage
 # return (\r\n arrives as two reads) or an escape sequence cut short. Capped, so
-# text that merely looks like the start of a sequence is not held for ever.
-_UNFINISHED_RE = re.compile(r"\r?(?:\x1b(?:\[\??[0-9;]{0,32})?)?\Z")
+# text that merely looks like the start of a sequence is not held for ever. The cap is
+# far above any real sequence: a 24-bit foreground and background in one code is 37
+# characters of parameters.
+_UNFINISHED_RE = re.compile(r"\r?(?:\x1b(?:\[\??[0-9;]{0,256})?)?\Z")
 
 
 class CleanStream:

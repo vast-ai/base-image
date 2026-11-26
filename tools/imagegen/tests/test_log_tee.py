@@ -36,7 +36,10 @@ def _fed(log_tee, pieces):
 
 
 def test_a_split_anywhere_gives_the_same_clean_text(log_tee):
-    text = "\x1b[32mINFO\x1b[0m loading \x1b[1;38;5;208mweights\x1b[0m 40%\r\x1b[?25l100%\r\ndone\n"
+    # The third code is a 24-bit foreground and background together: 37 characters of
+    # parameters, longer than a short cap on what is held.
+    text = ("\x1b[32mINFO\x1b[0m loading \x1b[1;38;5;208mweights\x1b[0m 40%\r\x1b[?25l100%\r\n"
+            "\x1b[38;2;255;128;100;48;2;100;128;255mdone\x1b[0m\n")
     whole = _fed(log_tee, [text])
     assert whole == "INFO loading weights 40%\n100%\ndone\n"
     for cut in range(1, len(text)):
@@ -46,7 +49,7 @@ def test_a_split_anywhere_gives_the_same_clean_text(log_tee):
 
 def test_text_that_only_looks_like_a_sequence_is_not_held_for_ever(log_tee):
     stream = log_tee.CleanStream()
-    never_ends = "\x1b[" + "1;" * 40
+    never_ends = "\x1b[" + "1;" * 200
     assert stream.feed(never_ends) != ""
 
 
