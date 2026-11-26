@@ -39,35 +39,51 @@ def _clean_for_stdout(text: str) -> str:
     return text
 
 
-# What may be the start of something that finishes in the next read: a carriage
-# return (\r\n arrives as two reads) or an escape sequence cut short. Capped, so
-# text that merely looks like the start of a sequence is not held for ever. The cap is
-# far above any real sequence: a 24-bit foreground and background in one code is 37
-# characters of parameters.
-_UNFINISHED_RE = re.compile(r"\r?(?:\x1b(?:\[\??[0-9;]{0,256})?)?\Z")
+# The start of an escape sequence that the next read may finish. Capped, so text that
+# merely looks like the start of one is not held for ever. The cap is far above any real
+# sequence: a 24-bit foreground and background in one code is 37 characters of
+# parameters.
+_UNFINISHED_ESCAPE_RE = re.compile(r"\x1b(?:\[\??[0-9;]{0,256})?\Z")
 
 
 class CleanStream:
-    """The clean copy of a stream that arrives in arbitrary pieces.
+    """The clean copy of a stream that arrives in arbitrary pieces: for any way of
+    cutting the input, the pieces' output joined is _clean_for_stdout of the whole.
 
-    A read can end anywhere, including inside an escape sequence or between \r and
-    \n. Each piece cannot be cleaned on its own: the two halves of a split
-    sequence match nothing and, written one after the other, are the sequence
-    again. So the unfinished end of a piece waits for the next one.
+    A read can end anywhere, so no piece can be cleaned on its own. Two things wait
+    for the next piece, in the order the cleaning applies them:
+
+    1. an escape sequence cut short. Its two halves match nothing and, written one
+       after the other, are the sequence again;
+    2. a carriage return at the end of what is left once escapes are removed. Whether
+       it is a line ending of its own or half of \\r\\n depends on the next character,
+       which may arrive after an escape sequence that sat between them.
     """
 
     def __init__(self) -> None:
-        self._held = ""
+        self._escape = ""
+        self._cr = False
+
+    def _lines(self, text: str, last: bool) -> str:
+        if self._cr:
+            text = "\r" + text
+        self._cr = not last and text.endswith("\r")
+        if self._cr:
+            text = text[:-1]
+        return text.replace("\r\n", "\n").replace("\r", "\n")
 
     def feed(self, text: str) -> str:
-        text = self._held + text
-        cut = _UNFINISHED_RE.search(text).start()
-        text, self._held = text[:cut], text[cut:]
-        return _clean_for_stdout(text)
+        text = self._escape + text
+        cut = _UNFINISHED_ESCAPE_RE.search(text)
+        cut = cut.start() if cut else len(text)
+        text, self._escape = text[:cut], text[cut:]
+        return self._lines(_ALL_CSI_RE.sub("", text), last=False)
 
     def flush(self) -> str:
-        text, self._held = self._held, ""
-        return _clean_for_stdout(text)
+        """The end of the input. An escape sequence still unfinished is dropped: it
+        is not text, and the clean copy carries no escape character."""
+        self._escape = ""
+        return self._lines("", last=True)
 
 
 def _derive_clean_path(portal_path: str) -> str | None:

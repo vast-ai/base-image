@@ -35,16 +35,22 @@ def _fed(log_tee, pieces):
     return "".join(stream.feed(p) for p in pieces) + stream.flush()
 
 
-def test_a_split_anywhere_gives_the_same_clean_text(log_tee):
-    # The third code is a 24-bit foreground and background together: 37 characters of
-    # parameters, longer than a short cap on what is held.
-    text = ("\x1b[32mINFO\x1b[0m loading \x1b[1;38;5;208mweights\x1b[0m 40%\r\x1b[?25l100%\r\n"
-            "\x1b[38;2;255;128;100;48;2;100;128;255mdone\x1b[0m\n")
-    whole = _fed(log_tee, [text])
-    assert whole == "INFO loading weights 40%\n100%\ndone\n"
-    for cut in range(1, len(text)):
-        assert _fed(log_tee, [text[:cut], text[cut:]]) == whole, f"split at {cut}: {text[:cut]!r}"
-    assert _fed(log_tee, list(text)) == whole          # one character per read
+# Every construct the cleaning treats specially, and the orders that matter: a colour
+# code between \r and \n, a code directly after \r, \r\r\n, and a 24-bit foreground
+# and background in one code (37 characters of parameters).
+TEXT = ("\x1b[32mINFO\x1b[0m load \x1b[1;38;5;208mweights\x1b[0m 40%\r\x1b[?25l100%\r\x1b[0m\n"
+        "a\r\r\nb\r\x1b[2Kc\x1b[0m\r\n\x1b[38;2;255;128;100;48;2;100;128;255mdone\x1b[0m\n")
+CLEAN = "INFO load weights 40%\n100%\na\n\nb\nc\ndone\n"
+
+
+def test_any_way_of_cutting_the_input_gives_the_same_clean_text(log_tee):
+    assert log_tee._clean_for_stdout(TEXT) == CLEAN
+    assert _fed(log_tee, [TEXT]) == CLEAN
+    assert _fed(log_tee, list(TEXT)) == CLEAN              # one character per read
+    for i in range(1, len(TEXT)):                          # every two cuts
+        for j in range(i, len(TEXT)):
+            pieces = [TEXT[:i], TEXT[i:j], TEXT[j:]]
+            assert _fed(log_tee, pieces) == CLEAN, f"cut at {i} and {j}: {pieces!r}"
 
 
 def test_text_that_only_looks_like_a_sequence_is_not_held_for_ever(log_tee):
@@ -53,10 +59,10 @@ def test_text_that_only_looks_like_a_sequence_is_not_held_for_ever(log_tee):
     assert stream.feed(never_ends) != ""
 
 
-def test_the_end_of_input_writes_what_was_held(log_tee):
+def test_the_end_of_input_ends_a_held_line_and_drops_a_sequence_cut_short(log_tee):
     assert _fed(log_tee, ["progress\r"]) == "progress\n"
-    assert _fed(log_tee, ["cut short \x1b[3"]).startswith("cut short ")
-    assert len(_fed(log_tee, ["cut short \x1b[3"])) > len("cut short ")
+    for cut_short in ("\x1b", "\x1b[", "\x1b[38;2;25"):
+        assert _fed(log_tee, ["done\n" + cut_short]) == "done\n"
 
 
 def test_a_sequence_across_the_read_size_stays_out_of_the_clean_log(tmp_path):
