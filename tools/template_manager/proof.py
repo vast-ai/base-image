@@ -59,10 +59,13 @@ HARDWARE_FIELDS = ("gpu_name", "num_gpus", "gpu_ram", "gpu_total_ram", "cpu_arch
 IDENTIFYING_FIELDS = ("machine_id", "host_id", "ssh_host", "ssh_port", "public_ipaddr",
                       "local_ipaddrs", "hostname", "geolocation", "datacenter", "ask_contract_id",
                       "bundle_id")
+# What a proof records about a delivered run (ADR 0068). An allowlist, like the rest.
+DELIVERY_FIELDS = ("bundle_digest", "client_commit", "client_dirty", "baked_copy",
+                   "environment_source", "layer_state")
 _FLAG_WITH_SECRET = ("--api-key",)
 # Options whose value is a local filesystem path (it can carry the user's name): the
 # proof records that the option was given, not its value.
-_FLAG_WITH_LOCAL_PATH = ("--proof-dir",)
+_FLAG_WITH_LOCAL_PATH = ("--proof-dir", "--repo")
 # Options whose value identifies a host (the machines a redraw excludes): recorded as
 # given, never the value, whatever its length.
 _FLAG_WITH_HOST_ID = ("--exclude-machine",)
@@ -143,6 +146,7 @@ class ProofRecorder:
         self.tests = []
         self.external = []
         self.logs: dict[str, list[str]] = {}
+        self.delivery = None                        # a delivered run's report (ADR 0068)
         self.outcome = None                         # (state, exit_code, reason)
         self.path = None
         self.written = False
@@ -230,6 +234,14 @@ class ProofRecorder:
                               "kind": str(r.get("kind") or ""),
                               "detail": str(r.get("detail") or "")}
                              for r in external if isinstance(r, dict)]
+
+    def set_delivery(self, report):
+        """How a delivered run's on-box checks reached the box (delivered.Delivery.report):
+        the bundle digest, the client commit and dirty flag, whether a baked copy was
+        removed, the environment's source by name and the layer state. Held by
+        reference and read when the proof is written, so it is the final state. It
+        carries no SSH coordinates, host key or environment values."""
+        self.delivery = report
 
     def set_outcome(self, state, exit_code, reason=""):
         self.outcome = (str(state), int(exit_code), str(reason or ""))
@@ -322,7 +334,12 @@ class ProofRecorder:
             "tests": self.tests,
             "external_checks": [r for r in self.external if r["name"] != "external/capabilities"],
         }
-        return self._scrub_doc(rec)
+        rec = self._scrub_doc(rec)
+        if self.delivery is not None:
+            # After the scrub: every value is this tool's own (hex digests, flags, fixed
+            # words), and a digest holding the digits of a host id would be rewritten.
+            rec["delivery"] = {k: self.delivery.get(k) for k in DELIVERY_FIELDS}
+        return rec
 
     def summary(self, rec):
         def cell(text):
@@ -340,6 +357,13 @@ class ProofRecorder:
                  f"| run | {run['started_at']} → {run['ended_at']} ({run['duration_s']} s) |"]
         if rec["ci"].get("run_url"):
             lines.append(f"| CI run | {rec['ci']['run_url']} |")
+        if rec.get("delivery"):
+            d = rec["delivery"]
+            lines.append(f"| on-box checks | delivered over SSH; bundle "
+                         f"`{cell(d['bundle_digest'])}`, commit `{cell(d['client_commit'])}` "
+                         f"(dirty: {cell(d['client_dirty'])}); baked copy "
+                         f"{cell(d['baked_copy'])}; environment from "
+                         f"{cell(d['environment_source'])}; layers {cell(d['layer_state'])} |")
         if rec["tests"] or rec["external_checks"]:
             lines += ["", "| check | state | detail |", "|---|---|---|"]
             lines += [f"| `{cell(t['name'])}` | {t['state']} | |" for t in rec["tests"]]

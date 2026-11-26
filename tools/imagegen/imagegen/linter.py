@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .discover import Image, discover
+from .discover import Image
+from .suites import image_dir, suite_layers, tests_roots
 from .dockerfile import parse, stages, code_text, ini_sections, arg_defaults, resolve, parse_ref
 
 _DOCKER_HUB = (None, "docker.io", "index.docker.io", "registry-1.docker.io")
@@ -739,10 +740,7 @@ def _own_test_prefixes(img: Image) -> list[str]:
     # naming two of them. Generalised by glob rather than by hardcoding ROOT_BASE, so a
     # future second overlay is not a second silent gap.
     out = []
-    for overlay in sorted(img.dir.glob("ROOT*")):
-        tests = overlay / "opt/instance-tools/tests"
-        if not tests.is_dir():
-            continue
+    for tests in tests_roots(img.dir):
         for sub in sorted(tests.iterdir()):
             if sub.is_dir() and any(re.match(r"\d+-.*\.sh$", f.name) for f in sub.iterdir() if f.is_file()):
                 if sub.name not in out:
@@ -3848,16 +3846,6 @@ _ENV_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _UNREADABLE = object()
 
 
-def _suite_dirs(root: Path) -> dict[str, Path]:
-    """The test suites one image ships, by directory name."""
-    out: dict[str, Path] = {}
-    for tests in sorted(root.glob("ROOT*/opt/instance-tools/tests")):
-        for suite in sorted(tests.iterdir()):
-            if suite.is_dir():
-                out.setdefault(suite.name, suite)
-    return out
-
-
 def _job_with_blocks(data: object) -> Iterable[tuple[str, dict]]:
     """Each job's `with:` mapping — the inputs it passes to the workflow it calls.
 
@@ -3958,18 +3946,14 @@ def _image_dir_for_template(repo: Path, template_dir: str) -> Path | None:
     if declared is None:
         return None
     stem = declared.rsplit("/", 1)[-1].split(":")[0]
-    for img in discover(repo):
-        if img.name == stem:
-            return img.dir
     # The base image is discovered under the checkout's directory name, so a clone
     # named anything but `base-image` would not match `vastai/base-image` by stem.
-    return repo
+    return image_dir(repo, stem) or repo
 
 
 def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
     """L097 — every test a workflow requires ships in the image that workflow builds."""
     import yaml  # lazy
-    base_suites = _suite_dirs(repo)                     # base's own overlay
 
     wfdir = repo / ".github" / "workflows"
     if not wfdir.is_dir():
@@ -4013,22 +3997,13 @@ def check_workflow_required_tests_exist(repo: Path) -> Iterable[Finding]:
                 continue
             img = _image_dir_for_template(repo, tdir) if tdir else None
 
-            # A suite name can be shipped by several layers (an overlay that patches one
-            # base test still inherits the rest), so each name keeps every directory.
-            suites = {k: [v] for k, v in base_suites.items()}
-            if img is not None:
-                # Suites are INHERITED through the image chain, not only shipped in an
-                # image's own overlay: every class carries base's, and a pytorch-nested
-                # image carries pytorch's too. aio-studio requires `pytorch.d/05-venv-
-                # manifest` and ships no pytorch.d of its own, which is correct and was
-                # this check's first false positive.
-                df = img / "Dockerfile"
-                layers = [_suite_dirs(img)]
-                if df.exists() and "vastai/pytorch" in df.read_text(errors="replace"):
-                    layers.insert(0, _suite_dirs(repo / "derivatives/pytorch"))
-                for layer in layers:
-                    for k, v in layer.items():
-                        suites.setdefault(k, []).append(v)
+            # Suites are INHERITED through the image chain, not only shipped in an
+            # image's own overlay: every class carries base's, and a pytorch-nested
+            # image carries pytorch's too. aio-studio requires `pytorch.d/05-venv-
+            # manifest` and ships no pytorch.d of its own, which is correct and was
+            # this check's first false positive. The resolution is suites.py's, shared
+            # with the launcher's bundle so the two cannot disagree (ADR 0068).
+            suites = suite_layers(repo, img)
 
             names: set[str] = set()
             for where, value in declarations:

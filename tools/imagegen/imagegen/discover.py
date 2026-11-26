@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .suites import image_dirs
+
 
 @dataclass
 class Image:
@@ -37,22 +39,7 @@ def _mk(d: Path, cls: str) -> Image:
 
 
 def discover(repo: Path) -> list[Image]:
-    images: list[Image] = []
-
-    # the base image itself (root of the FROM chain) — class "base", limited checks
-    if (repo / "Dockerfile").is_file():
-        images.append(_mk(repo, "base"))
-
-    nested_parent = repo / "derivatives" / "pytorch" / "derivatives"
-
-    for df in sorted((repo / "external").glob("*/Dockerfile")):
-        images.append(_mk(df.parent, "external"))
-
-    for df in sorted(nested_parent.glob("*/Dockerfile")):
-        images.append(_mk(df.parent, "pytorch-nested"))
-
-    # direct children of derivatives/ (non-recursive) — includes the pytorch hub
-    for df in sorted((repo / "derivatives").glob("*/Dockerfile")):
-        images.append(_mk(df.parent, "derivative"))
-
-    return images
+    """Every image in the tree: the base image itself (class "base", limited checks),
+    then external, pytorch-nested and the direct children of derivatives/ (which
+    include the pytorch hub). The walk is suites.image_dirs, shared with the launcher."""
+    return [_mk(d, cls) for d, cls in image_dirs(repo)]

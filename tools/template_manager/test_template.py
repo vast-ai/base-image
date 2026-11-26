@@ -37,14 +37,14 @@ except ImportError:  # loaded by path from elsewhere
         _ec.parse_capabilities, _ec.parse_features, _ec.run_external_checks)
 
 try:
-    from remote import RemoteSession
+    from remote import RemoteSession, _ssh_target
 except ImportError:  # loaded by path from elsewhere
     import importlib.util as _ilu
     _rspec = _ilu.spec_from_file_location(
         "remote", os.path.join(os.path.dirname(os.path.abspath(__file__)), "remote.py"))
     _rmod = _ilu.module_from_spec(_rspec)
     _rspec.loader.exec_module(_rmod)
-    RemoteSession = _rmod.RemoteSession
+    RemoteSession, _ssh_target = _rmod.RemoteSession, _rmod._ssh_target
 
 try:
     from proof import ProofRecorder
@@ -55,6 +55,30 @@ except ImportError:  # loaded by path from elsewhere
     _pmod = _ilu.module_from_spec(_pspec)
     _pspec.loader.exec_module(_pmod)
     ProofRecorder = _pmod.ProofRecorder
+
+
+def _sibling(name):
+    """A module beside this script: by name when this directory is on sys.path, by
+    path when this file was loaded from elsewhere."""
+    import importlib
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        import importlib.util as _ilu
+        # Under a name of its own: `bundle` may name something else where this file
+        # was loaded from. Registered, because a dataclass looks its module up.
+        spec = _ilu.spec_from_file_location(
+            f"_template_manager_{name}",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+        module = _ilu.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+# The delivered run (ADR 0068): the on-box checks are sent over SSH (--delivered).
+bundle = _sibling("bundle")
+delivered = _sibling("delivered")
 
 API_BASE = "https://console.vast.ai"
 
@@ -166,6 +190,12 @@ def install_teardown(api, ctx, args, log):
     def cleanup(destroy=False):
         if ctx.panel:
             ctx.panel.cleanup()
+        # A delivered run's SSH session: its key is detached and deleted on every
+        # exit, before the instance goes, and also when the instance is not ours to end.
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            ctx.session = None
+            session.close()
         if ctx.instance_id is None:
             return
         if args.keep and not destroy:
@@ -614,7 +644,18 @@ def test_server_endpoint(full):
     return f"http://{full['public_ipaddr']}:{test_port}", full.get("jupyter_token")
 
 
-def attach_instance(api, instance_id, template_hash, log):
+def ssh_ready_endpoint(full):
+    """("ssh://host:port", auth_token) from a full instance record once its SSH
+    endpoint is published, else (None, None). A delivered run (--delivered) waits for
+    this where the baked path waits for the test server's port mapping."""
+    target = _ssh_target(full) if full else None
+    if not target:
+        return None, None
+    return f"ssh://{target[0]}:{target[1]}", full.get("jupyter_token")
+
+
+def attach_instance(api, instance_id, template_hash, log, endpoint=test_server_endpoint,
+                    missing="publishes no test server port"):
     """(instance_id, test_url, auth_token, machine_id) for an instance that is
     ALREADY running (--instance), or (None, reason). Nothing is launched, and the
     caller never hands this instance to teardown.
@@ -636,15 +677,15 @@ def attach_instance(api, instance_id, template_hash, log):
     if not recorded:
         log(f"  Instance {instance_id} does not record its template: checking it "
             f"against {template_hash} as given")
-    test_url, token = test_server_endpoint(full)
+    test_url, token = endpoint(full)
     if not test_url:
-        return None, f"instance {instance_id} publishes no test server port"
+        return None, f"instance {instance_id} {missing}"
     log(f"Using running instance {instance_id} ({test_url.split('//', 1)[1]}); "
         f"it is never stopped or destroyed by this run")
     return (instance_id, test_url, token, full.get("machine_id")), None
 
 
-def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
+def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT, endpoint=test_server_endpoint):
     """Poll instance until running with ports available.
 
     Returns (test_url, auth_token) tuple. auth_token is the instance's
@@ -706,7 +747,7 @@ def poll_until_running(api, instance_id, timeout=POLL_TIMEOUT):
             # Now — and only now — pull the full record (one heavy list call per
             # instance, not one per tick) for the Docker port mapping + public IP.
             full = api.get_instance(instance_id, safe=True)
-            test_url, token = test_server_endpoint(full)
+            test_url, token = endpoint(full)
             if test_url:
                 # Clear status line and print final
                 print(f"\r\033[KInstance {instance_id} running "
@@ -1389,8 +1430,12 @@ def monitor_instance_health(api, instance_id, dead_event, set_dead,
 def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
                       max_attempts, on_instance_created, log,
                       server_probe_timeout=NETWORK_PROBE_TIMEOUT,
-                      exclude_machines=()):
+                      exclude_machines=(), endpoint=test_server_endpoint, accept=None):
     """Try candidate offers until one launches and provisions adequate disk.
+
+    A delivered run (--delivered) has no test server to wait for or probe: `endpoint`
+    says when the instance's SSH endpoint is published, and `accept(instance_id)`
+    opens the run's SSH session, returning None, or why this machine is unusable.
 
     Walks ``candidate_offers`` (assumed pre-sorted best-first), attempting
     each until one yields a running instance with ``disk_space`` at least
@@ -1454,7 +1499,7 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
         on_instance_created(instance_id)
         log(f"  Instance {instance_id} created, waiting for startup...")
 
-        test_url, auth_token = poll_until_running(api, instance_id)
+        test_url, auth_token = poll_until_running(api, instance_id, endpoint=endpoint)
         if not test_url:
             log(f"  Instance {instance_id} never reached running state — destroying")
             _safe_destroy(api, instance_id, log)
@@ -1482,8 +1527,16 @@ def launch_with_retry(api, candidate_offers, payload_factory, requested_disk,
         # networking never answers and is abandoned within seconds; a
         # healthy host still provisioning is waited out up to
         # server_probe_timeout (see probe_test_server).
-        if not probe_test_server(test_url, auth_token,
-                                 server_timeout=server_probe_timeout, log=log):
+        if accept is not None:
+            refused = accept(instance_id)
+            if refused:
+                log(f"  [Bad instance] {instance_id} {refused} — destroying, retrying")
+                _safe_destroy(api, instance_id, log)
+                _blacklist(offer)
+                on_instance_created(None)
+                continue
+        elif not probe_test_server(test_url, auth_token,
+                                   server_timeout=server_probe_timeout, log=log):
             log(f"  [Bad instance] {instance_id} test server unreachable "
                 f"(broken networking, or never started) — destroying, retrying")
             _safe_destroy(api, instance_id, log)
@@ -1695,6 +1748,14 @@ def parse_args():
                              "the streamed logs, with no host data (ADR 0059, D10)")
     parser.add_argument("--no-logs", action="store_true",
                         help="Do not stream any instance log")
+    parser.add_argument("--delivered", action="store_true",
+                        help="Deliver the on-box checks over SSH instead of running the "
+                             "copy baked into the image (ADR 0068). The instance boots as "
+                             "a customer's does: no INSTANCE_TEST, no results port. The "
+                             "template must offer SSH.")
+    parser.add_argument("--repo", metavar="DIR", default=None,
+                        help="With --delivered: the base-image checkout the on-box checks "
+                             "are taken from (default: the checkout this tool is in)")
     parser.add_argument("--capabilities", metavar="LIST", default=None, type=_capabilities_arg,
                         help="Override the capabilities the external checks verify, as "
                              "comma-separated names (chat, completions, embeddings, "
@@ -1873,7 +1934,7 @@ def main():
     # retry helper — SimpleNamespace lets nested functions assign attributes.
     # ctx.instance_id tracks the currently booting or running instance so
     # the signal handler can clean up mid-retry.
-    ctx = types.SimpleNamespace(panel=None, dead_reason="", instance_id=None)
+    ctx = types.SimpleNamespace(panel=None, dead_reason="", instance_id=None, session=None)
 
     # Teardown on ANY exit — normal path, emit_outcome (config_error/interrupted),
     # signal, or unhandled exception — so a launched instance is never orphaned.
@@ -1921,16 +1982,37 @@ def main():
     log(f"Disk: {disk} GB")
     log(logs_note.capitalize() if logs_note.startswith("logs") else logs_note)
 
+    # A delivered run is refused here, before anything is rented, when it could not
+    # work: SSH is its only transport, and the checks it sends are this image's suites.
+    run_bundle = None
+    if args.delivered:
+        if not delivered.offers_ssh(template):
+            log("--delivered: the template does not offer SSH (runtype "
+                f"{template.get('runtype')!r}), and SSH is how the checks are delivered")
+            emit_outcome("config_error", EXIT_CONFIG_ERROR,
+                         reason="--delivered: the template does not offer SSH")
+        try:
+            run_bundle = bundle.build(args.repo or bundle.default_repo(), image)
+        except bundle.BundleError as e:
+            log(f"--delivered: {e}")
+            emit_outcome("config_error", EXIT_CONFIG_ERROR, reason=f"--delivered: {e}")
+        log(f"On-box checks: delivered over SSH, bundle {run_bundle.digest[:12]} "
+            f"({', '.join(run_bundle.suites)}; commit {run_bundle.commit[:12]}"
+            f"{', uncommitted changes' if run_bundle.dirty is True else ''}"
+            f"{', git state unknown' if run_bundle.dirty == bundle.UNKNOWN else ''})")
+
     # 2. Build instance env overrides.  With template_hash_id, the server
     # uses the template's full config; we only send our additions.
     port_map = f"-p {TEST_SERVER_PORT}:{TEST_SERVER_PORT}"
-    env = {"INSTANCE_TEST": "true", port_map: "1"}
+    # A delivered run sets no test variable and maps no extra port (ADR 0068, 15):
+    # the image never starts its baked runner, and the client follows the logs itself.
+    env = {} if args.delivered else {"INSTANCE_TEST": "true", port_map: "1"}
     # Non-serverless templates already have OPEN_BUTTON_TOKEN=1 in their config.
     # For serverless templates we must send it as an override so the backend
     # generates an auth token (jupyter_token) we can use to connect.
     if is_serverless:
         env["OPEN_BUTTON_TOKEN"] = "1"
-    if args.log:
+    if args.log and not args.delivered:
         env["INSTANCE_TEST_SYSTEM_LOG"] = ",".join(args.log)
     for kv in args.env:
         if "=" not in kv:
@@ -2100,7 +2182,43 @@ def main():
         # unrecorded box — the recovery no longer depends on instance_id reaching --raw.
         print(f"QA-INSTANCE-CREATED {new_id}", file=sys.stderr, flush=True)
 
-    if args.instance:
+    # A delivered run's one SSH session (ADR 0068, 13 and 14), opened per machine as
+    # the last step of accepting it. SSH refused on one machine is that machine's
+    # fault and the next offer is tried; refused on every machine that got this far,
+    # it is the image's, and blocks.
+    ssh_refusals = []
+
+    def _open_session(new_id):
+        # Held by ctx before the first connection: an interrupt while the machine is
+        # still pulling the key must find the session, or the key outlives the run.
+        ctx.session = session = RemoteSession(api, new_id, persistent=True).__enter__()
+        ok, why = session.connect()
+        if not ok:
+            ctx.session = None
+            session.close()
+            ssh_refusals.append(why)
+            return f"SSH unusable ({why})"
+        return None
+
+    def _ssh_unreachable():
+        row = {"name": "delivery/ssh-unreachable", "state": "error"}
+        detail = (f"SSH was refused on every machine tried ({len(ssh_refusals)}); "
+                  f"last: {ssh_refusals[-1]}")
+        log(f"{row['name']}: {detail}")
+        _PROOF.set_results(tests=[row])
+        emit_outcome("instance_error", EXIT_INSTANCE_ERROR,
+                     reason=f"{row['name']}: {detail}", tests=[row])
+
+    if args.instance and args.delivered:
+        launch, why = attach_instance(api, args.instance, args.template_hash, log,
+                                      endpoint=ssh_ready_endpoint,
+                                      missing="publishes no SSH endpoint")
+        if launch is None:
+            log(f"--instance: {why}")
+            emit_outcome("config_error", EXIT_CONFIG_ERROR, reason=f"--instance: {why}")
+        if _open_session(args.instance):
+            _ssh_unreachable()
+    elif args.instance:
         # --instance: attach, never launch. ctx.instance_id is NOT set, so no
         # teardown path (normal, error, signal, atexit) can stop or destroy it.
         launch, why = attach_instance(api, args.instance, args.template_hash, log)
@@ -2111,6 +2229,13 @@ def main():
                                  log=log):
             emit_outcome("bad_instance", EXIT_BAD_INSTANCE,
                          reason=f"--instance {args.instance}: test server unreachable")
+    elif args.delivered:
+        launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
+                                   max_attempts, _track_instance, log,
+                                   exclude_machines=args.exclude_machines,
+                                   endpoint=ssh_ready_endpoint, accept=_open_session)
+        if launch is None and ssh_refusals:
+            _ssh_unreachable()
     else:
         launch = launch_with_retry(api, candidate_offers, _payload_factory, disk,
                                    max_attempts, _track_instance, log,
@@ -2155,8 +2280,17 @@ def main():
     #   event: output  — raw test output lines (printed to stderr)
     #   event: log     — system log lines, e.g. /var/log/portal (with --log)
     #   event: result  — final JSON summary (used for exit code + --raw stdout)
-    stream_url = f"{test_url}/test-stream?log=1"
-    log(f"Streaming results from {stream_url} ...\n")
+    delivery = None
+    if args.delivered:
+        delivery = delivered.Delivery(ctx.session, run_bundle, _PROOF.run_id, logs=args.log,
+                                      log=log, stop=instance_dead.is_set)
+        _PROOF.set_delivery(delivery.report)
+        log("Delivering the on-box checks over SSH ...\n")
+        events = delivery.events(args.timeout)
+    else:
+        stream_url = f"{test_url}/test-stream?log=1"
+        log(f"Streaming results from {stream_url} ...\n")
+        events = stream_sse(stream_url, timeout=args.timeout, token=auth_token)
     final_state = "failed"
     final_result = None
 
@@ -2178,7 +2312,7 @@ def main():
 
     got_result_event = False
     stream_had_gap = False   # set if the SSE stream dropped and reconnected
-    for event in stream_sse(stream_url, timeout=args.timeout, token=auth_token):
+    for event in events:
         # Check if instance died unexpectedly
         if instance_dead.is_set():
             panel.cleanup()
@@ -2211,6 +2345,20 @@ def main():
             final_state = "error"
             break
 
+        if event.get("_delivery"):
+            # A step of the delivered run failed: an error row, never a skip. It
+            # follows whatever the box had reported before the step failed.
+            failed_step = event["_delivery"]
+            panel.cleanup()
+            line = f"{failed_step['name']}: {failed_step['detail']}"
+            log(f"\n{line}")
+            _PROOF.add_test_output(line)
+            final_state = failed_step["final_state"]
+            final_result = {"state": final_state, "tests": [
+                *(dict(t) for t in tracker.tests),
+                {"name": failed_step["name"], "state": failed_step["state"]}]}
+            break
+
         if event.get("_event") == "output":
             line = event.get("_data", "")
             panel.write_output(line)
@@ -2241,9 +2389,12 @@ def main():
     # Don't overwrite final_result — the JSON's per-test states have a write
     # race and often show "running"; stream-tracked data is authoritative.
     elapsed = None
-    if not got_result_event:
+    # A delivered run has no results server to ask: its result came over SSH or not
+    # at all.
+    status_polls = 0 if args.delivered else 10
+    if not got_result_event and status_polls:
         time.sleep(2)  # give runner time to write final state
-    for attempt in range(10):
+    for attempt in range(status_polls):
         if instance_dead.is_set():
             reason = _get_dead_reason() or "unknown"
             log(f"Instance {instance_id} went to '{reason}' during post-test polling")
@@ -2262,6 +2413,14 @@ def main():
         time.sleep(2)
 
     instance_dead.set()  # stop the monitor thread
+
+    # With --delivered a run with no on-box results is never a pass.
+    if (args.delivered and final_state == "passed"
+            and not (tracker.tests and (final_result or {}).get("tests"))):
+        log("\ndelivery/stream: the run reported passed without any test result")
+        final_state = "error"
+        final_result = {"state": final_state,
+                        "tests": [{"name": "delivery/stream", "state": "error"}]}
 
     if final_result and elapsed is None:
         elapsed = final_result.get("elapsed_s")
@@ -2306,8 +2465,10 @@ def main():
                 env_overrides=args.env, token=auth_token,
                 capabilities=args.capabilities, features=args.features,
                 # Checks that need the box (prompt-roundtrip) run there over SSH, with a
-                # key attached to this instance only and removed straight after.
-                remote_factory=lambda: RemoteSession(api, instance_id))
+                # key attached to this instance only and removed straight after. A
+                # delivered run lends them its own session instead of opening a second.
+                remote_factory=(ctx.session.shared if ctx.session is not None
+                                else lambda: RemoteSession(api, instance_id)))
         except Exception as e:  # noqa: BLE001 — advisory: never break the run
             external = [{"name": CHAT_CHECK, "state": "error", "advisory": True,
                          "detail": f"{type(e).__name__}: {e}"}]
@@ -2342,6 +2503,9 @@ def main():
         # the verdict: qa_exemptions.py turns them into warnings on the gate.
         raw_output["exemptions"] = tracker.exemptions
         raw_output["exemptions_declared"] = tracker.exemptions_declared
+        if delivery is not None:
+            # How the on-box checks reached the box (ADR 0068). No host data.
+            raw_output["delivery"] = dict(delivery.report)
         # Address the held box for the QA-fix loop: instance id + SSH coords (only when the
         # box persists, i.e. --keep). The loop SSHes in to diagnose against a live workbench.
         if machine_id is not None:

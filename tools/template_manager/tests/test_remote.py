@@ -366,3 +366,82 @@ def test_without_a_deadline_the_modules_own_timeouts_apply():
     with RemoteSession(FakeAPI(), 5555, runner=runner, sleep=lambda s: None) as s:
         assert s.run("x") == (True, "ok")
     assert runner.timeouts == [remote.CONNECT_PROBE_TIMEOUT, remote.SSH_TIMEOUT]
+
+
+# ── one session for a delivered run (ADR 0068) ──────────────────────────────
+
+def _options(cmd):
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-o"]
+
+
+def test_a_persistent_session_pins_the_host_key_and_reuses_one_connection():
+    api, runner = FakeAPI(), FakeRunner([(0, "", ""), (0, b"", b"")])
+    with RemoteSession(api, 5555, runner=runner, sleep=lambda s: None, persistent=True) as s:
+        key_dir = s.dir
+        s.command("true")
+    commands = [cmd for cmd, _ in runner.ssh_calls if "-O" not in cmd]
+    assert len(commands) == 2                       # the first connection and a later one
+    for cmd in commands:
+        opts = _options(cmd)
+        assert "StrictHostKeyChecking=accept-new" in opts
+        assert f"UserKnownHostsFile={key_dir}/known_hosts" in opts
+        assert "ControlMaster=auto" in opts and f"ControlPath={key_dir}/cm" in opts
+        assert "ServerAliveInterval=15" in opts and "ServerAliveCountMax=4" in opts
+        assert "StrictHostKeyChecking=no" not in opts
+
+
+def test_a_session_that_is_not_persistent_connects_as_it_always_has():
+    api, runner = FakeAPI(), FakeRunner([(0, "", ""), (0, "", "")])
+    with RemoteSession(api, 5555, runner=runner, sleep=lambda s: None) as s:
+        s.run("pass")
+    opts = _options(runner.ssh_calls[-1][0])
+    assert opts == ["BatchMode=yes", "IdentitiesOnly=yes", "StrictHostKeyChecking=no",
+                    "UserKnownHostsFile=/dev/null", "LogLevel=ERROR", "ConnectTimeout=15"]
+
+
+def test_closing_a_persistent_session_ends_its_connection_before_the_key_goes():
+    from fakebox import BoxRunner
+    runner = BoxRunner()
+    with RemoteSession(FakeAPI(), 5555, runner=runner, sleep=lambda s: None,
+                       persistent=True) as s:
+        key_dir = s.dir
+        assert s.connect() == (True, "")
+    assert len(runner.control) == 1
+    assert runner.control[0][:3] == ["ssh", "-O", "exit"]
+    assert f"ControlPath={key_dir}/cm" in _options(runner.control[0])
+
+
+def test_command_hands_stdin_bytes_to_bash_and_returns_the_exit_code_and_bytes():
+    from fakebox import BoxRunner
+    with RemoteSession(FakeAPI(), 5555, runner=BoxRunner(), sleep=lambda s: None,
+                       persistent=True) as s:
+        code, out, err = s.command("cat; echo \"it's $((1 + 1))\" >&2; exit 3",
+                                   stdin=b"\x00\xffbytes")
+    assert (code, out) == (3, b"\x00\xffbytes") and err == "it's 2\n"
+
+
+def test_a_command_that_could_not_be_run_has_no_exit_code():
+    from fakebox import BoxRunner
+    runner = BoxRunner()
+    with RemoteSession(FakeAPI(), 5555, runner=runner, sleep=lambda s: None,
+                       persistent=True) as s:
+        assert s.connect()[0]
+        runner.down = 1
+        code, out, err = s.command("exit 0")
+        assert code is None and "Connection refused" in err
+        assert s.command("exit 0")[0] == 0          # and the next one reconnects
+
+
+def test_a_borrowed_session_runs_on_the_owner_and_closes_nothing():
+    class Deadline:
+        def remaining(self):
+            return 100
+    api, runner = FakeAPI(), FakeRunner([(0, "", ""), (0, "counted\n", "")])
+    with RemoteSession(api, 5555, runner=runner, sleep=lambda s: None, persistent=True) as s:
+        borrowed = s.shared()
+        borrowed.deadline = Deadline()
+        with borrowed as inner:
+            assert inner.run("print('counted')") == (True, "counted\n")
+        assert not [c for c in api.calls if c[0] == "DELETE"], "the borrower detached the key"
+        assert s.dir and os.path.isdir(s.dir)
+        assert s.deadline is None                   # the borrower's deadline left with it

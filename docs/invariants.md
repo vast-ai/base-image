@@ -1667,6 +1667,37 @@ itself. Mutation tests: `test_L126_*` in `tools/imagegen/tests/test_linter.py` i
 each class into a real caller workflow; the wiring is executed in
 `tools/template_manager/tests/test_qa_gate_require_external.py`.
 
+### A delivered run sends the image's own suites, verified, and never passes without results — **enforced by executed tests (ADR 0068)**
+
+`test_template.py --delivered` boots the instance as a customer's (no `INSTANCE_TEST`,
+no results port), sends the on-box checks over SSH and runs them detached. It is not a
+gate yet: every gate still runs the baked suite. What holds for a delivered run:
+
+- **The suites are the image's, by the linter's rule.** `imagegen/suites.py` resolves
+  base, pytorch for an image built on it, then the image's own overlays; L097 and
+  `tools/template_manager/bundle.py` both call it, so they cannot disagree. An image
+  with no directory in the tree, or a `base/` with nothing executable, is a
+  `config_error` before anything is rented, as is a template without SSH.
+- **The delivery is verified.** The box's files must match the bundle's manifest, the
+  box's file list must be the manifest's and nothing more, and the manifest digest is
+  echoed back. The digest covers the checks and not the run, so two runs from one
+  commit carry the same digest. A bundle from uncommitted changes is recorded as dirty.
+- **A failed step is an error row, never a skip.** `delivery/tools`, `/baked-copy`,
+  `/transfer`, `/start`, `/busy`, `/stream`, `/driver-died` and `/ssh-unreachable` end
+  the run as `instance_error`; `onbox/environment` (supervisord never started) as
+  `failed`. A run that reports passed without on-box results is `instance_error`.
+- **The checks run in supervisord's environment**, read once from `/proc`, not in the
+  SSH login's. The driver's output is the baked runner's, line for line, so the
+  launcher parses both with one parser.
+- **One SSH session per run**, with the host key pinned from the first connection.
+- **The proof records** the bundle digest, the client commit and dirty flag, whether a
+  baked copy was removed, the environment source and the layer state (`unstamped`
+  until layer stamps exist). No SSH coordinates, host key or environment values.
+
+Tests: `tools/template_manager/tests/test_bundle.py`, `test_delivered.py` (a local
+fake box), `test_onbox_driver.py` (the driver against `runner.sh`),
+`test_delivered_launcher.py` and `test_remote.py`.
+
 ### A `curl` that writes a file fails on an HTTP error — **GATED (L092)**
 
 Without `-f`/`--fail`, curl writes the ERROR BODY to the target and exits 0. The build then

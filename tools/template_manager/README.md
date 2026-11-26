@@ -53,6 +53,23 @@ python3 test_template.py <template_hash> --dry-run
 ```
 See `python3 test_template.py --help` for offer/price/timeout/keep flags.
 
+### Delivered on-box checks (`--delivered`)
+
+```bash
+python test_template.py <hash> --delivered
+```
+
+The instance boots as a customer's does: no `INSTANCE_TEST`, no results port. The
+launcher packs the image's suites from this checkout (`bundle.py`), sends them over one
+SSH session, verifies them against their manifest, and starts `onbox/driver.sh`
+detached on the box. The driver waits for supervisord, takes its environment, and runs
+the checks with the baked runner's output, which the launcher follows by polling. The
+template must offer SSH. `--repo DIR` names the checkout when this directory is a copy
+outside one. A failed step is an error row named `delivery/<step>`; the run is never a
+pass without on-box results. On the box, `/var/tmp/vast-test/<run-id>/` holds the
+bundle, `output.log`, `results.json` and the markers; rerun a check there with
+`bash bundle/driver.sh --only base/10-supervisor`. Design: ADR 0068.
+
 ### Run a one-off Template QA in CI
 
 `.github/workflows/template-qa.yml` ("Template QA") runs the launcher's one command

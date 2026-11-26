@@ -23,12 +23,20 @@ never passes because the box was unreachable.
 With a `deadline` (anything with remaining(), e.g. contract.Deadline), the connect
 retries and the remote script are bounded by the time left; without one, by this
 module's own timeouts.
+
+A delivered run (ADR 0068) opens ONE session for the whole run (`persistent=True`):
+every command reuses one connection (ControlMaster) kept alive by keepalives, and the
+host key the first connection sees is recorded in a known-hosts file beside the key
+and must match on every later connection, so a reconnect cannot be redirected.
+`command()` runs a shell command there with optional stdin bytes; `shared()` lends the
+session to a caller that opens and closes its own (the contract roundtrip).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +49,7 @@ CONNECT_WAIT = 10
 SSH_TIMEOUT = 300
 CONNECT_PROBE_TIMEOUT = 30
 DEADLINE_EXCEEDED = "deadline exceeded"
+SSH_TRANSPORT_FAILED = 255     # ssh's own exit code: the command's is anything else
 
 
 def _key_id(attach_response):
@@ -80,8 +89,10 @@ class RemoteSession:
     """
 
     def __init__(self, api, instance_id, runner=subprocess.run, sleep=time.sleep,
-                 attempts=CONNECT_ATTEMPTS, wait=CONNECT_WAIT, deadline=None):
+                 attempts=CONNECT_ATTEMPTS, wait=CONNECT_WAIT, deadline=None,
+                 persistent=False):
         self.api, self.instance_id = api, instance_id
+        self.persistent = persistent
         self._run, self._sleep = runner, sleep
         self.attempts, self.wait = attempts, wait
         self.deadline = deadline
@@ -162,8 +173,21 @@ class RemoteSession:
             pass                    # best effort; a destroyed instance takes its keys
         finally:
             if self.dir:
+                self._close_connection()
                 shutil.rmtree(self.dir, ignore_errors=True)
                 self.dir = None
+
+    def _close_connection(self):
+        """End the shared connection, so no ssh process outlives the key."""
+        if not (self.persistent and self._connected and self.target):
+            return
+        host, port = self.target
+        try:
+            self._run(["ssh", "-O", "exit", "-p", str(port),
+                       "-o", f"ControlPath={os.path.join(self.dir, 'cm')}", f"root@{host}"],
+                      capture_output=True, timeout=15)
+        except Exception:                                         # noqa: BLE001
+            pass
 
     def _left(self):
         """Seconds left before the deadline, or None without one."""
@@ -177,15 +201,25 @@ class RemoteSession:
         return max(left, 0), True
 
     # -- use -----------------------------------------------------------------
-    def _ssh(self, command, stdin=None, timeout=SSH_TIMEOUT):
+    def _host_options(self):
+        if not self.persistent:
+            return ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+        return ["-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"UserKnownHostsFile={os.path.join(self.dir, 'known_hosts')}",
+                "-o", "ControlMaster=auto",
+                "-o", f"ControlPath={os.path.join(self.dir, 'cm')}",
+                "-o", "ControlPersist=120",
+                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
+
+    def _ssh(self, command, stdin=None, timeout=SSH_TIMEOUT, text=True):
         host, port = self.target
         return self._run(
             ["ssh", "-i", os.path.join(self.dir, "id"), "-p", str(port),
              "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+             *self._host_options(),
              "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=15",
              f"root@{host}", command],
-            input=stdin, capture_output=True, text=True, timeout=timeout)
+            input=stdin, capture_output=True, text=text, timeout=timeout)
 
     def _connect(self):
         """Wait until the attached key is accepted (the machine pulls it async)."""
@@ -210,6 +244,44 @@ class RemoteSession:
                 self._sleep(pause)
         return False, f"SSH not accepted after {self.attempts} attempts: {last}"
 
+    def connect(self):
+        """(ok, reason): the session is usable. Waits while the machine pulls the key."""
+        if self.unavailable:
+            return False, self.unavailable
+        if self._connected:
+            return True, ""
+        return self._connect()
+
+    def command(self, command, stdin=None, timeout=SSH_TIMEOUT):
+        """Run a shell command on the box, with optional stdin bytes.
+
+        (exit code, stdout bytes, stderr text). The exit code is None when the command
+        could not be run or its outcome is unknown (no session, SSH not accepted, the
+        connection failed or timed out); stderr then holds the reason. The command is
+        handed to bash whatever the login shell is.
+        """
+        ok, why = self.connect()
+        if not ok:
+            return None, b"", why
+        timeout, capped = self._bounded(timeout)
+        if timeout <= 0:
+            return None, b"", f"{DEADLINE_EXCEEDED} before the remote command started"
+        try:
+            r = self._ssh(f"bash -c {shlex.quote(command)}", stdin=stdin, timeout=timeout,
+                          text=False)
+        except subprocess.TimeoutExpired:
+            return None, b"", (f"{DEADLINE_EXCEEDED}: the remote command was stopped"
+                               if capped else "the remote command timed out")
+        err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
+        if r.returncode == SSH_TRANSPORT_FAILED:
+            return None, r.stdout or b"", f"the SSH connection failed: {err.strip()[-300:]}"
+        return r.returncode, r.stdout or b"", err
+
+    def shared(self):
+        """This session, for a caller that enters and exits a session of its own: the
+        connection and the key stay until this session is closed."""
+        return _SharedSession(self)
+
     def run(self, script, python="python3"):
         """Run a Python script on the box (via stdin). (ok, stdout or reason)."""
         if self.unavailable:
@@ -230,3 +302,25 @@ class RemoteSession:
         if r.returncode != 0:
             return False, f"the remote script failed (exit {r.returncode}): {(r.stderr or '')[-300:]}"
         return True, r.stdout
+
+
+class _SharedSession:
+    """A borrowed RemoteSession: run() goes to the owner's connection under this
+    borrower's own deadline, and leaving the context closes nothing."""
+
+    def __init__(self, owner):
+        self._owner = owner
+        self.deadline = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def run(self, script, python="python3"):
+        previous, self._owner.deadline = self._owner.deadline, self.deadline
+        try:
+            return self._owner.run(script, python=python)
+        finally:
+            self._owner.deadline = previous
