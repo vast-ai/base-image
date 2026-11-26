@@ -4273,13 +4273,73 @@ def check_convert_builds_the_mirror(repo: Path) -> Iterable[Finding]:
 
 
 # L130 — an install into the mirrored /venv/main is held to what the engine provides.
-# One command: from `uv pip install` to the next `&&`, `||`, `;`, `|` or word-initial
-# `#`, so a `--constraint` belonging to a later command or to a comment does not count.
-# The path may be quoted. A requirement that itself contains `;` ends the match early,
-# which can only report an install that is in fact constrained, never pass one that is not.
-_MAIN_VENV_INSTALL_RE = re.compile(
-    r"""uv\s+pip\s+install\b(?:(?!\s\#)[^\n;&|])*?--python\s+["']?/venv/main/bin/python["']?"""
-    r"""(?:(?!\s\#)[^\n;&|])*""")
+_MAIN_VENV_PYTHON = "/venv/main/bin/python"
+
+
+def _shell_commands(line: str) -> list[list[str]]:
+    """One logical line as commands, each a list of words. Commands end at an unquoted
+    `&&`, `||`, `;` or `|`; an unquoted `#` that starts a word ends the line. Quotes
+    group a word and are removed, so a quoted `;` or `#` is part of its word."""
+    commands, words, word, quote, in_word = [], [], [], None, False
+    i, n = 0, len(line)
+
+    def end_word():
+        nonlocal word, in_word
+        if in_word:
+            words.append("".join(word))
+        word, in_word = [], False
+
+    def end_command():
+        nonlocal words
+        end_word()
+        if words:
+            commands.append(words)
+        words = []
+
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"' and i + 1 < n:
+                i += 1
+                word.append(line[i])
+            else:
+                word.append(c)
+        elif c in "'\"":
+            quote, in_word = c, True
+        elif c == "\\" and i + 1 < n:
+            i += 1
+            word.append(line[i])
+            in_word = True
+        elif c.isspace():
+            end_word()
+        elif c in ";&|":
+            end_command()
+        elif c == "#" and not in_word:
+            break
+        else:
+            word.append(c)
+            in_word = True
+        i += 1
+    end_command()
+    return commands
+
+
+def _unconstrained_main_venv_install(words: list[str]) -> bool:
+    """Whether a command is `uv pip install` into /venv/main with no constraint file."""
+    for k in range(len(words) - 2):
+        if words[k:k + 3] == ["uv", "pip", "install"]:
+            args = words[k + 3:]
+            break
+    else:
+        return False
+    target = any(a in ("--python", "-p") and nxt == _MAIN_VENV_PYTHON
+                 for a, nxt in zip(args, args[1:])) or \
+        any(a in (f"--python={_MAIN_VENV_PYTHON}", f"-p={_MAIN_VENV_PYTHON}") for a in args)
+    constrained = any(a in ("--constraint", "--constraints", "-c")
+                      or a.startswith(("--constraint=", "--constraints=")) for a in args)
+    return target and not constrained
 
 
 def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
@@ -4291,16 +4351,16 @@ def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8", errors="replace").replace("\\\n", " ")
-        code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
-        for m in _MAIN_VENV_INSTALL_RE.finditer(code):
-            if "--constraint" in m.group(0):
-                continue
-            what = " ".join(m.group(0).split())[:110]
-            yield Finding("L130", ERROR, "repo", str(path.relative_to(repo)),
-                          f"`{what}` installs into /venv/main without `--constraint`: it "
-                          f"can replace a package mirrored from the engine with a newer "
-                          f"copy, and `venv-mirror verify` then fails the build (L130)")
-
+        for line in text.splitlines():
+            for words in _shell_commands(line):
+                if not _unconstrained_main_venv_install(words):
+                    continue
+                what = " ".join(words)[:110]
+                yield Finding("L130", ERROR, "repo", str(path.relative_to(repo)),
+                              f"`{what}` installs into /venv/main without `--constraint`: "
+                              f"it can replace a package mirrored from the engine with a "
+                              f"newer copy, and `venv-mirror verify` then fails the build "
+                              f"(L130)")
 
 def check_update_portal_paths_agree(repo: Path) -> Iterable[Finding]:
     """L104 (repo) — update-portal sets up its download and its argument parse on every

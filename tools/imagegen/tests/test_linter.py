@@ -5941,8 +5941,23 @@ def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
     # a quoted literal path is the same environment
     'uv pip install --python "/venv/main/bin/python" ipykernel',
     "uv pip install --python '/venv/main/bin/python' ipykernel",
+    "uv pip install --python=/venv/main/bin/python ipykernel",
+    "uv pip install -p /venv/main/bin/python ipykernel",
+    # a quoted `;` or `#` is part of a requirement, not the end of the command
+    """uv pip install 'ipykernel; python_version >= "3.9"' --python /venv/main/bin/python""",
+    "uv pip install 'ipykernel #egg' --python /venv/main/bin/python",
 ])
 def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
     found = _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
     assert len(found) == 1 and "ipykernel" in found[0].msg
+
+
+@pytest.mark.parametrize("line", [
+    "uv pip install --python /venv/main/bin/python --constraint=/tmp/c.txt ipykernel",
+    "uv pip install -c /tmp/c.txt 'ipykernel; python_version >= \"3.9\"' -p /venv/main/bin/python",
+    "echo 'uv pip install --python /venv/main/bin/python ipykernel'",
+    'uv pip install --python "$VAST_ENGINE_PYTHON" ipykernel',
+])
+def test_L130_passes_a_constrained_install_and_what_is_not_an_install_there(tmp_path, line):
+    assert not _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
 
