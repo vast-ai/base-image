@@ -185,6 +185,11 @@ serves completions and chat when it is unset. The tests read the same variable, 
 serverless and the tests cannot disagree about what a template is, and no second
 declaration exists to drift.
 
+> **Amended 2026-11-25 by ADR 0068.** The routes a template serves still come from
+> `OPENAI_ROUTES`, exactly as below. Features of the model behind the chat route
+> (`vision` and the like) are not routes: the caller names them at run time with
+> `--features`.
+
 - **Names are the routes'.** `/v1/chat/completions` → `chat`, `/v1/completions` →
   `completions`, `/v1/embeddings` → `embeddings`, `/v1/audio/transcriptions` →
   `transcriptions`, `/v1/audio/speech` → `speech`, and a name for every other route

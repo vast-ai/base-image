@@ -22,8 +22,8 @@ import urllib.request
 # on sys.path; loading the file by path (as some tests do) does not, so fall back to
 # loading the sibling by path rather than breaking those callers.
 try:
-    from external_checks import (CHAT_CHECK, KNOWN_CAPABILITIES, image_repo,
-                                 parse_capabilities, run_external_checks)
+    from external_checks import (CHAT_CHECK, KNOWN_CAPABILITIES, KNOWN_FEATURES, image_repo,
+                                 parse_capabilities, parse_features, run_external_checks)
 except ImportError:  # loaded by path from elsewhere
     import importlib.util as _ilu
     _spec = _ilu.spec_from_file_location(
@@ -31,9 +31,10 @@ except ImportError:  # loaded by path from elsewhere
                                         "external_checks.py"))
     _ec = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_ec)
-    CHAT_CHECK, KNOWN_CAPABILITIES, image_repo, parse_capabilities, run_external_checks = (
-        _ec.CHAT_CHECK, _ec.KNOWN_CAPABILITIES, _ec.image_repo, _ec.parse_capabilities,
-        _ec.run_external_checks)
+    (CHAT_CHECK, KNOWN_CAPABILITIES, KNOWN_FEATURES, image_repo, parse_capabilities,
+     parse_features, run_external_checks) = (
+        _ec.CHAT_CHECK, _ec.KNOWN_CAPABILITIES, _ec.KNOWN_FEATURES, _ec.image_repo,
+        _ec.parse_capabilities, _ec.parse_features, _ec.run_external_checks)
 
 try:
     from remote import RemoteSession
@@ -1300,12 +1301,12 @@ def probe_test_server(test_url, auth_token=None,
     slow-but-healthy host is not mistaken for a broken one:
 
       * Connection refused / reset — the host is reachable and its port
-        forwarding works; nothing is bound to the test port yet.  This is
-        expected: the boot sequence runs provisioning (model downloads,
-        pip installs) to completion *before* it launches the test runner
-        (75-provisioning-manifest.sh precedes 85-instance-test.sh), so the
-        results server can be many minutes away.  Keep waiting, up to
-        ``server_timeout``.
+        forwarding works; nothing is bound to the test port yet.  The boot
+        sequence starts the test runner (70-instance-test.sh) once
+        supervisord is up and BEFORE provisioning
+        (75-provisioning-manifest.sh), and the runner binds its results
+        server at once, so this state is normally brief.  Keep waiting, up
+        to ``server_timeout``.
 
       * Connection timeout / unreachable — packets are being black-holed.
         Some hosts enter "running" with broken networking and never
@@ -1700,6 +1701,12 @@ def parse_args():
                              "transcriptions, speech, comfyui-workflows, ...). By default "
                              "they come from the template's OPENAI_ROUTES, a ComfyUI image, "
                              "or pyworker's default (completions, chat) (ADR 0059).")
+    parser.add_argument("--features", metavar="LIST", default=None, type=_features_arg,
+                        help="Features of the model behind the chat route to check as "
+                             "well, as comma-separated names (" + ", ".join(KNOWN_FEATURES)
+                             + "). Nothing in a template declares these, so they are "
+                             "named here. They add checks and never change the "
+                             "capabilities (ADR 0068).")
     parser.add_argument("--env", metavar="KEY=VAL", action="append", default=[],
                         help="Set instance env var (repeatable). Timeout overrides: "
                              "PROV_TIMEOUT, VLLM_HEALTH_TIMEOUT, INSTANCE_TEST_DEFAULT_TIMEOUT")
@@ -1814,6 +1821,20 @@ def _capabilities_arg(value):
             f"valid: {', '.join(sorted(KNOWN_CAPABILITIES))}")
     if not caps:
         raise argparse.ArgumentTypeError("no capability named")
+    return value
+
+
+def _features_arg(value):
+    """argparse type for --features: every name must be a known feature, refused at the
+    door for the same reason as an unknown capability. The comma string is returned
+    unchanged: run_external_checks parses it again."""
+    features, unknown = parse_features(value)
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown feature{'' if len(unknown) == 1 else 's'} {', '.join(unknown)}; "
+            f"valid: {', '.join(KNOWN_FEATURES)}")
+    if not features:
+        raise argparse.ArgumentTypeError("no type named")
     return value
 
 
@@ -1943,11 +1964,9 @@ def main():
     )
     min_timeout = prov + derivative + TIMEOUT_HEADROOM
 
-    # The test results server only binds its port after provisioning finishes (boot
-    # runs 75-provisioning-manifest.sh before 85-instance-test.sh), so where a template
-    # PROVISIONS, the probe must tolerate that whole window once the host is reachable.
-    # Where it does not, that window is inherited rather than earned -- see
-    # compute_probe_timeout.
+    # The test results server binds its port during boot: 70-instance-test.sh starts the
+    # runner BEFORE provisioning (75-provisioning-manifest.sh). The probe window is
+    # nevertheless sized by whether the template PROVISIONS -- see compute_probe_timeout.
     server_probe_timeout = compute_probe_timeout(
         instance_timeouts, declares_provisioning=bool(env.get("PROVISIONING_SCRIPT")))
 
@@ -2285,7 +2304,7 @@ def main():
             external = run_external_checks(
                 inst, template, (final_result or {}).get("tests") or stream_tests,
                 env_overrides=args.env, token=auth_token,
-                capabilities=args.capabilities,
+                capabilities=args.capabilities, features=args.features,
                 # Checks that need the box (prompt-roundtrip) run there over SSH, with a
                 # key attached to this instance only and removed straight after.
                 remote_factory=lambda: RemoteSession(api, instance_id))

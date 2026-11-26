@@ -5,6 +5,12 @@ it through the instance's public endpoint — Caddy, the instance token and the 
 port, the path a user's client takes. They run once the in-image serving test has
 run (passed or failed); an image with no serving test is waited on here instead.
 
+Each kind of check is a test type: one module in the `checks` package, listed in
+`checks.REGISTRY` (ADR 0068). This module resolves what a template declares, selects
+the registered types that declaration calls for, opens the endpoints they need and
+runs them in order. Its capability and result-name tables are derived from the
+registry.
+
 What is checked comes from the template's capabilities (resolve_capabilities), in
 this order: an explicit --capabilities override; the template's OPENAI_ROUTES (an
 --env override wins); a ComfyUI image or PROVISIONING_COMFYUI_WORKFLOWS, meaning
@@ -13,10 +19,16 @@ with nothing declared, meaning pyworker's default of completions and chat; anyth
 else gets no external checks. The first result is always `external/capabilities`,
 saying which and why.
 
+Features of the model behind the chat route (vision and the rest of checks.FEATURES)
+are a second declaration, made by the caller with --features (ADR 0068). They add checks
+to the ones the routes select and never change the routes. A feature whose route the
+template does not declare is an error; one with no check yet is skipped, never passed.
+
 What runs, for an engine image: the OpenAI contract (contract.py, `contract/<check>`),
 then one check per declared capability — chat, completions, embeddings,
 transcriptions, speech — each structural, some with an answer check beside it
-(embedding ranking, transcript accuracy, speech-like audio). A declared capability
+(embedding ranking, transcript accuracy, speech-like audio), then one check per
+declared feature. A declared capability
 with no check yet is skipped, never passed. `comfyui-workflows` runs every provisioned
 workflow and checks every output node. When chat is NOT declared, the
 `external/undeclared/chat` guard runs last of everything: chat must be refused.
@@ -37,37 +49,115 @@ Structural checks assert status codes, response shape and tokens produced (ADR
 from __future__ import annotations
 
 import base64
-import io
 import json
-import math
 import os
-import struct
-import urllib.parse
-import wave
-import zlib
-
-try:                                    # a sibling module; loaded by path when needed
-    import contract
-except ImportError:                     # pragma: no cover - imported by path from elsewhere
-    import importlib.util as _ilu
-    _cspec = _ilu.spec_from_file_location(
-        "contract", os.path.join(os.path.dirname(os.path.abspath(__file__)), "contract.py"))
-    contract = _ilu.module_from_spec(_cspec)
-    _cspec.loader.exec_module(contract)
 import re
-import uuid
+import sys
 import time
 import urllib.error
-from typing import NamedTuple
+import urllib.parse
 
-# The check names the launcher reports. Prefixed so they can never collide with an
+
+def _load_checks():
+    """The `checks` package beside this file. It is imported by name when this
+    directory is on sys.path. When this file was loaded by path from elsewhere, or
+    `checks` names some other package, it is loaded by path under a name of its own,
+    so the types always come from the same tree as this file."""
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checks")
+    try:
+        import checks
+        if os.path.realpath(os.path.dirname(checks.__file__ or "")) == os.path.realpath(here):
+            return checks
+    except ImportError:
+        pass
+    import hashlib
+    import importlib.util
+    name = "_template_manager_checks_" + hashlib.sha256(here.encode()).hexdigest()[:12]
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(here, "__init__.py"), submodule_search_locations=[here])
+    package = importlib.util.module_from_spec(spec)
+    sys.modules[name] = package                 # its modules import it by this name
+    try:
+        spec.loader.exec_module(package)
+    except BaseException:
+        for loaded in [m for m in sys.modules if m == name or m.startswith(name + ".")]:
+            del sys.modules[loaded]
+        raise
+    return package
+
+
+checks = _load_checks()
+contract = checks.contract
+REGISTRY = checks.REGISTRY
+
+# Everything the types define stays importable from this module under the name it has
+# always had.
+ResultName = checks.ResultName
+STRUCTURAL, ANSWER = checks.STRUCTURAL, checks.ANSWER
+ANY_IMAGE, OPENAI_ENGINE, CONTRACT, COMFYUI = (
+    checks.ANY_IMAGE, checks.OPENAI_ENGINE, checks.CONTRACT, checks.COMFYUI)
+_env_value, _env_with_overrides = checks._env_value, checks._env_with_overrides
+_deadline_result, _guarded, _attach_deadline = (
+    checks._deadline_result, checks._guarded, checks._attach_deadline)
+_no_response, _no_response_pair = checks._no_response, checks._no_response_pair
+
+_m = checks.chat
+CHAT_CHECK, CHAT_PROMPTS, check_chat = _m.CHAT_CHECK, _m.CHAT_PROMPTS, _m.check_chat
+
+_m = checks.completions
+COMPLETIONS_CHECK, check_completions = _m.COMPLETIONS_CHECK, _m.check_completions
+
+_m = checks.embeddings
+EMBEDDINGS_CHECK, EMBEDDINGS_ANSWER_CHECK, EMBED_TEXTS = (
+    _m.EMBEDDINGS_CHECK, _m.EMBEDDINGS_ANSWER_CHECK, _m.EMBED_TEXTS)
+_cosine, _vectors, check_embeddings = _m._cosine, _m._vectors, _m.check_embeddings
+
+_m = checks.transcriptions
+ASR_CHECK, ASR_ANSWER_CHECK, ASR_FIXTURE, ASR_REFERENCE, ASR_MAX_WER = (
+    _m.ASR_CHECK, _m.ASR_ANSWER_CHECK, _m.ASR_FIXTURE, _m.ASR_REFERENCE, _m.ASR_MAX_WER)
+_DIGIT_WORDS, _words, word_error_rate, _multipart, check_asr = (
+    _m._DIGIT_WORDS, _m._words, _m.word_error_rate, _m._multipart, _m.check_asr)
+
+_m = checks.speech
+TTS_CHECK, TTS_ANSWER_CHECK, TTS_TEXT, TTS_SECONDS_PER_WORD, TTS_MIN_RMS = (
+    _m.TTS_CHECK, _m.TTS_ANSWER_CHECK, _m.TTS_TEXT, _m.TTS_SECONDS_PER_WORD, _m.TTS_MIN_RMS)
+_wav_stats, check_tts = _m._wav_stats, _m.check_tts
+
+_m = checks.undeclared_chat
+UNDECLARED_CHAT_CHECK, CHAT_REFUSED, check_chat_refused = (
+    _m.UNDECLARED_CHAT_CHECK, _m.CHAT_REFUSED, _m.check_chat_refused)
+
+_m = checks.contract_step
+CONTRACT_STEP, _LazySession, check_contract, _run_contract = (
+    _m.CONTRACT_STEP, _m._LazySession, _m.check_contract, _m._run_contract)
+
+_m = checks.comfyui
+COMFYUI_CAPABILITY, COMFYUI_CHECK, COMFYUI_OBJECT_INFO = (
+    _m.COMFYUI_CAPABILITY, _m.COMFYUI_CHECK, _m.COMFYUI_OBJECT_INFO)
+COMFY_WRAPPER_INTERNAL_PORT, COMFY_INTERNAL_PORT, JUPYTER_PORT = (
+    _m.COMFY_WRAPPER_INTERNAL_PORT, _m.COMFY_INTERNAL_PORT, _m.JUPYTER_PORT)
+COMFY_PAYLOADS_DIR, COMFY_MODIFIER_WORKFLOWS_DIR, COMFY_GENERATE_TIMEOUT = (
+    _m.COMFY_PAYLOADS_DIR, _m.COMFY_MODIFIER_WORKFLOWS_DIR, _m.COMFY_GENERATE_TIMEOUT)
+IMAGE_MIN_STDDEV, IMAGE_MIN_BYTES_PER_PIXEL, IMAGE_MIN_SIDE = (
+    _m.IMAGE_MIN_STDDEV, _m.IMAGE_MIN_BYTES_PER_PIXEL, _m.IMAGE_MIN_SIDE)
+_OUTPUT_KINDS, _PREVIEW_PREFIX, _ACCEPTS = _m._OUTPUT_KINDS, _m._PREVIEW_PREFIX, _m._ACCEPTS
+_png_pixels, _image_info, _media_kind, _file_kind, _mp4_has_audio = (
+    _m._png_pixels, _m._image_info, _m._media_kind, _m._file_kind, _m._mp4_has_audio)
+_vhs_kind, _is_link, _expects_audio_track = _m._vhs_kind, _m._is_link, _m._expects_audio_track
+check_output_file, expected_outputs, comfy_output_node_classes = (
+    _m.check_output_file, _m.expected_outputs, _m.comfy_output_node_classes)
+NoResponse, _unreached_state = _m.NoResponse, _m._unreached_state
+_check_node, _check_workflow, check_comfyui_workflows = (
+    _m._check_node, _m._check_workflow, _m.check_comfyui_workflows)
+del _m
+
+# The names the launcher reports are prefixed so they can never collide with an
 # in-image test name (`base/..`, `vllm.d/..`). RESULT_NAMES (below) lists them all.
-CHAT_CHECK = "external/chat-inference"
-# The first result of every run: what was checked and why. Informational, not a check.
+# This one is the first result of every run: what was checked and why. Informational,
+# not a check.
 CAPABILITIES_RESULT = "external/capabilities"
-# The name a contract run is reported under when it raises or the deadline leaves it
-# no time; its own results are `contract/<check>`.
-CONTRACT_STEP = "contract"
 
 # The in-image serving test. The external check runs once one of these has RUN,
 # passed or failed: that test bundles readiness, log scans, port exposure and
@@ -86,10 +176,6 @@ DEFAULT_PUBLIC_API_PORT = 8000
 # DEFAULT_PUBLIC_API_PORT, as every port did before this table.
 DEFAULT_PUBLIC_PORTS = {18000: 8000, 18288: 8288, 18188: 8188}
 
-CHAT_PROMPTS = (
-    "Say hello in one sentence.",
-    "What is 2+2? Reply with just the number.",
-)
 REQUEST_TIMEOUT = 300
 CONNECT_RETRIES = 2
 
@@ -124,45 +210,12 @@ def wait_ready(probe, timeout=READY_TIMEOUT, poll=READY_POLL, sleep=time.sleep, 
         waited += pause
 
 
-def _deadline_result(name, deadline):
-    """A check the overall deadline left no time for: not run, so `error`."""
-    return {"name": name, "state": "error",
-            "detail": f"{contract.DEADLINE_EXCEEDED}: the external checks' overall deadline "
-                      f"({deadline.seconds:g}s) passed before this check ran"}
-
-
-def _guarded(name, step):
-    """step()'s results; an unexpected exception becomes ONE `error` result named
-    `name`, so one broken check never costs the others their result. Only Exception
-    is caught: KeyboardInterrupt and SystemExit still stop the run."""
-    try:
-        return step()
-    except Exception as e:                                        # noqa: BLE001
-        return [{"name": name, "state": "error",
-                 "detail": f"the check raised {type(e).__name__}: {str(e)[:300]}"}]
-
-
-def _attach_deadline(client, deadline):
-    """Give a transport the run's deadline. Test fakes without one are left alone."""
-    if hasattr(client, "deadline"):
-        client.deadline = deadline
-    return client
-
-
 def serving_test_ran(tests):
     """The in-image serving test that ran (passed or failed), or None."""
     for t in tests or ():
         if _SERVING_TEST.match(t.get("name", "")) and t.get("state") in ("passed", "failed"):
             return t["name"]
     return None
-
-
-def _env_value(env_str, name):
-    """Value of `-e NAME=...` in a template env string (quoted or bare)."""
-    m = re.search(rf'(?:^|\s)-e\s+{re.escape(name)}=("([^"]*)"|\'([^\']*)\'|(\S+))', env_str or "")
-    if not m:
-        return None
-    return next(g for g in m.groups()[1:] if g is not None)
 
 
 # The variable each engine image's in-image serving test reads to skip its chat
@@ -216,21 +269,6 @@ def host_port(instance, container_port):
     if isinstance(mappings, list) and mappings:
         return mappings[0].get("HostPort")
     return None
-
-
-def _no_response(name, what, body, **extra):
-    """The result for a request that got no HTTP response at all (status 0:
-    unreachable, timed out, the deadline passed). The check could not be run, so it
-    is `error` — never a pass, and never a failure of the template."""
-    return {"name": name, "state": "error", **extra,
-            "detail": f"{what}: no HTTP response ({str(body)[:200]})"}
-
-
-def _no_response_pair(structural, answer, what, body):
-    """_no_response for a structural check and the answer check that depends on it."""
-    return [_no_response(structural, what, body, kind="structural"),
-            {"name": answer, "state": "skipped", "kind": "answer",
-             "detail": "structural check could not run"}]
 
 
 class Endpoint(contract.Transport):
@@ -295,81 +333,7 @@ class Endpoint(contract.Transport):
             return r.status, raw.decode(errors="replace")
 
 
-def check_chat(endpoint):
-    """Structural chat check through the public endpoint.
-
-    Passes when /v1/models names a model and every prompt returns HTTP 200 with a
-    choice, an assistant message, and at least one completion token — the same bar
-    as the in-image serving test ("produced completion tokens").
-    """
-    detail = []
-    status, models = endpoint.call("/v1/models")
-    if status == 0:
-        return _no_response(CHAT_CHECK, "/v1/models", models)
-    if status != 200 or not isinstance(models, dict) or not models.get("data"):
-        return {"name": CHAT_CHECK, "state": "failed",
-                "detail": f"/v1/models returned HTTP {status}: {str(models)[:200]}"}
-    model = models["data"][0].get("id")
-    detail.append(f"model {model}")
-    for prompt in CHAT_PROMPTS:
-        status, r = endpoint.call("/v1/chat/completions", {
-            "model": model, "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 32, "temperature": 0})
-        if status == 0:
-            return _no_response(CHAT_CHECK, "chat", r)
-        if status != 200 or not isinstance(r, dict):
-            return {"name": CHAT_CHECK, "state": "failed",
-                    "detail": f"chat returned HTTP {status}: {str(r)[:200]}"}
-        choices = r.get("choices") or []
-        msg = choices[0].get("message") if choices else None
-        tokens = (r.get("usage") or {}).get("completion_tokens") or 0
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            return {"name": CHAT_CHECK, "state": "failed",
-                    "detail": f"no assistant message in the response: {str(r)[:200]}"}
-        if tokens < 1:
-            return {"name": CHAT_CHECK, "state": "failed",
-                    "detail": f"no completion tokens produced (usage: {r.get('usage')})"}
-        detail.append(f"{tokens} tokens")
-    return {"name": CHAT_CHECK, "state": "passed", "detail": ", ".join(detail)}
-
-
-def check_completions(endpoint):
-    """Structural /v1/completions check: HTTP 200, a text choice, completion tokens.
-    pyworker's default benchmark drives this route, so a template that serves it must
-    answer it."""
-    status, models = endpoint.call("/v1/models")
-    if status == 0:
-        return _no_response(COMPLETIONS_CHECK, "/v1/models", models)
-    if status != 200 or not isinstance(models, dict) or not models.get("data"):
-        return {"name": COMPLETIONS_CHECK, "state": "failed",
-                "detail": f"/v1/models returned HTTP {status}: {str(models)[:200]}"}
-    model = models["data"][0].get("id")
-    status, r = endpoint.call("/v1/completions", {"model": model, "prompt": "The capital of France is",
-                                                  "max_tokens": 8, "temperature": 0})
-    if status == 0:
-        return _no_response(COMPLETIONS_CHECK, "completions", r)
-    if status != 200 or not isinstance(r, dict):
-        return {"name": COMPLETIONS_CHECK, "state": "failed",
-                "detail": f"completions returned HTTP {status}: {str(r)[:200]}"}
-    choices = r.get("choices") or []
-    tokens = (r.get("usage") or {}).get("completion_tokens") or 0
-    if not choices or not isinstance(choices[0].get("text"), str):
-        return {"name": COMPLETIONS_CHECK, "state": "failed",
-                "detail": f"no text choice in the response: {str(r)[:200]}"}
-    if tokens < 1:
-        return {"name": COMPLETIONS_CHECK, "state": "failed",
-                "detail": f"no completion tokens produced (usage: {r.get('usage')})"}
-    return {"name": COMPLETIONS_CHECK, "state": "passed", "detail": f"model {model}, {tokens} tokens"}
-
-
-# ---------------------------------------------------------------- non-chat checks
-
-UNDECLARED_CHAT_CHECK = "external/undeclared/chat"
-# The statuses that mean "this route is not served here" — the contract's NOT_OFFERED.
-CHAT_REFUSED = contract.NOT_OFFERED
-COMPLETIONS_CHECK = "external/completions"
-EMBEDDINGS_CHECK = "external/embeddings"
-EMBEDDINGS_ANSWER_CHECK = "external/embeddings-ranking"
+# ---------------------------------------------------------------- capabilities
 
 # Capabilities are the routes a template serves, named after them (ADR 0059, D2).
 # They come from the same declaration pyworker reads, OPENAI_ROUTES, so serverless and
@@ -393,562 +357,51 @@ ROUTE_CAPABILITIES = {
 }
 # pyworker serves these when OPENAI_ROUTES is unset (workers/openai/core.py DEFAULT_ROUTES).
 PYWORKER_DEFAULT_ROUTES = ("/v1/completions", "/v1/chat/completions")
-COMFYUI_CAPABILITY = "comfyui-workflows"
 # Images that run an OpenAI-compatible engine. pyworker's default routes only make
 # sense for these; any other image (base-image, PyTorch, desktops, apps) has no
 # engine to check, and its in-image suite is the whole test.
 OPENAI_ENGINE_IMAGES = ("vastai/vllm", "vastai/vllm-omni", "vastai/sglang", "vastai/llama-cpp")
-# Unknown names are an error, not silently ignored: a typo must not turn a check off.
-KNOWN_CAPABILITIES = tuple(ROUTE_CAPABILITIES.values()) + (COMFYUI_CAPABILITY,)
+
+
+def _in_order(names):
+    """`names` as a tuple, each once, in first-seen order."""
+    return tuple(dict.fromkeys(names))
+
+
+# The three tables below are derived from the registry (ADR 0068).
 # Capabilities that have an external check today; the rest are reported as declared
 # with no check yet, never as passed.
-CHECKED_CAPABILITIES = ("chat", "completions", "embeddings", "transcriptions", "speech",
-                        COMFYUI_CAPABILITY)
-
-ASR_CHECK = "external/transcriptions"
-ASR_ANSWER_CHECK = "external/transcriptions-accuracy"
-# Speech we generated ourselves (VoxCPM2), committed with the probes.
-ASR_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "probes", "fixtures", "voxcpm2-speech.wav")
-ASR_REFERENCE = "Hello from Vast. The secret number is seven three one nine."
-# Word error rate at or under this passes. The clip is short and clean, so a correct
-# model is at or near 0; 0.25 allows two wrong words in this eleven-word sentence.
-ASR_MAX_WER = 0.25
-
-TTS_CHECK = "external/speech"
-TTS_ANSWER_CHECK = "external/speech-audio"
-TTS_TEXT = "Hello from Vast. This is a short test of text to speech."
-# Speech runs at roughly 2.5 words per second; accept a wide band around that.
-TTS_SECONDS_PER_WORD = (0.15, 1.5)
-# 16-bit PCM RMS below this is silence or near-silence.
-TTS_MIN_RMS = 100
-
-EMBED_TEXTS = (
-    "The cat sat on the warm windowsill in the sun.",
-    "A kitten was lying on a sunny window ledge.",
-    "Quarterly revenue grew because of strong GPU rental demand.",
-)
-
-
-def check_chat_refused(endpoint):
-    """A template that does NOT declare chat must refuse it (ADR 0059, D4).
-
-    Keeps the signal a plain skip loses: an engine that answers chat for a model
-    that cannot chat is serving something other than what was declared. Structural:
-    only a refusal that means "not served here" passes (CHAT_REFUSED: 400, 404, 422,
-    501); a 2xx fails (chat is served though undeclared). Anything else says nothing
-    about chat and is an error: 401/403 is an auth problem, 408/429 and the like are
-    the request not being judged, a 5xx is the server breaking, and no response
-    (status 0) is the check not running.
-    """
-    status, models = endpoint.call("/v1/models")
-    if status == 0:
-        return _no_response(UNDECLARED_CHAT_CHECK, "/v1/models", models, kind="structural")
-    if status != 200 or not isinstance(models, dict) or not models.get("data"):
-        return {"name": UNDECLARED_CHAT_CHECK, "state": "failed", "kind": "structural",
-                "detail": f"/v1/models returned HTTP {status}: {str(models)[:200]}"}
-    model = models["data"][0].get("id")
-    status, r = endpoint.call("/v1/chat/completions", {
-        "model": model, "messages": [{"role": "user", "content": "hello"}],
-        "max_tokens": 1, "temperature": 0})
-    if status == 0:
-        return _no_response(UNDECLARED_CHAT_CHECK, "chat", r, kind="structural")
-    if status in CHAT_REFUSED:
-        return {"name": UNDECLARED_CHAT_CHECK, "state": "passed", "kind": "structural",
-                "detail": f"chat refused with HTTP {status}"}
-    if 200 <= status < 300:
-        return {"name": UNDECLARED_CHAT_CHECK, "state": "failed", "kind": "structural",
-                "detail": f"chat is not declared but returned HTTP {status}: {str(r)[:160]}"}
-    return {"name": UNDECLARED_CHAT_CHECK, "state": "error", "kind": "structural",
-            "detail": f"chat returned HTTP {status}, which is not a refusal "
-                      f"({', '.join(map(str, CHAT_REFUSED))}): the guard could not decide: "
-                      f"{str(r)[:160]}"}
-
-
-def _cosine(a, b):
-    num = sum(x * y for x, y in zip(a, b))
-    den = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
-    return num / den if den else 0.0
-
-
-def _vectors(r, n):
-    """The n embedding vectors in an OpenAI embeddings response, or an error string."""
-    if not isinstance(r, dict):
-        return f"not a JSON object: {str(r)[:160]}"
-    data = r.get("data")
-    if not isinstance(data, list) or len(data) != n:
-        return f"expected {n} embeddings, got {len(data) if isinstance(data, list) else data!r}"
-    vecs = []
-    for d in sorted(data, key=lambda d: d.get("index", 0)):
-        v = d.get("embedding") if isinstance(d, dict) else None
-        if not isinstance(v, list) or not v or not all(isinstance(x, (int, float)) for x in v):
-            return "an embedding is not a non-empty list of numbers"
-        if any(x != x or x in (float("inf"), float("-inf")) for x in v):
-            return "an embedding contains NaN or infinity"
-        if not any(v):
-            return "an embedding is all zeros"
-        vecs.append(v)
-    if len({len(v) for v in vecs}) != 1:
-        return f"embeddings have different dimensions: {sorted({len(v) for v in vecs})}"
-    return vecs
-
-
-def check_embeddings(endpoint):
-    """Embeddings checks: one structural, one answer check (ADR 0059, D4).
-
-    Structural (can gate): HTTP 200, one vector per input, numbers only, a single
-    dimension, no NaN/zero vectors, and the same input embeds to the same vector.
-    Answer (model-library approval): a paraphrase ranks above an unrelated sentence.
-    """
-    def fail(detail):
-        return [{"name": EMBEDDINGS_CHECK, "state": "failed", "kind": "structural",
-                 "detail": detail},
-                {"name": EMBEDDINGS_ANSWER_CHECK, "state": "skipped", "kind": "answer",
-                 "detail": "structural check failed"}]
-
-    def unanswered(what, body):
-        return _no_response_pair(EMBEDDINGS_CHECK, EMBEDDINGS_ANSWER_CHECK, what, body)
-
-    status, models = endpoint.call("/v1/models")
-    if status == 0:
-        return unanswered("/v1/models", models)
-    if status != 200 or not isinstance(models, dict) or not models.get("data"):
-        return fail(f"/v1/models returned HTTP {status}: {str(models)[:200]}")
-    model = models["data"][0].get("id")
-    status, r = endpoint.call("/v1/embeddings", {"model": model, "input": list(EMBED_TEXTS)})
-    if status == 0:
-        return unanswered("/v1/embeddings", r)
-    if status != 200:
-        return fail(f"/v1/embeddings returned HTTP {status}: {str(r)[:200]}")
-    vecs = _vectors(r, len(EMBED_TEXTS))
-    if isinstance(vecs, str):
-        return fail(vecs)
-    status, again = endpoint.call("/v1/embeddings", {"model": model, "input": [EMBED_TEXTS[0]]})
-    if status == 0:
-        return unanswered("/v1/embeddings (repeat request)", again)
-    again_vecs = _vectors(again, 1) if status == 200 else f"HTTP {status}"
-    if isinstance(again_vecs, str):
-        return fail(f"repeat request: {again_vecs}")
-    same = _cosine(vecs[0], again_vecs[0])
-    if same < 0.999:
-        return fail(f"the same input embedded differently (cosine {same:.4f})")
-    dim = len(vecs[0])
-    near, far = _cosine(vecs[0], vecs[1]), _cosine(vecs[0], vecs[2])
-    return [{"name": EMBEDDINGS_CHECK, "state": "passed", "kind": "structural",
-             "detail": f"model {model}, dim {dim}, repeat cosine {same:.4f}"},
-            {"name": EMBEDDINGS_ANSWER_CHECK, "kind": "answer",
-             "state": "passed" if near > far else "failed",
-             "detail": f"paraphrase {near:.3f} vs unrelated {far:.3f}"}]
-
-
-_DIGIT_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-                "nine")
-
-
-def _words(text):
-    """Lowercase words, punctuation dropped, each digit spoken as a word, so "7319"
-    and "seven three one nine" compare equal."""
-    text = re.sub(r"\d", lambda m: f" {_DIGIT_WORDS[int(m.group())]} ", text.lower())
-    return re.findall(r"[a-z']+", text)
-
-
-def word_error_rate(reference, hypothesis):
-    """Word-level edit distance divided by the reference length."""
-    ref, hyp = _words(reference), _words(hypothesis)
-    if not ref:
-        return 0.0 if not hyp else 1.0
-    prev = list(range(len(hyp) + 1))
-    for i, r in enumerate(ref, 1):
-        cur = [i] + [0] * len(hyp)
-        for j, h in enumerate(hyp, 1):
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (r != h))
-        prev = cur
-    return prev[-1] / len(ref)
-
-
-def _multipart(fields, file_field, filename, file_bytes, file_type):
-    boundary = uuid.uuid4().hex
-    parts = [f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n"
-             .encode() for k, v in fields.items()]
-    parts.append((f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
-                  f"filename=\"{filename}\"\r\nContent-Type: {file_type}\r\n\r\n").encode()
-                 + file_bytes + b"\r\n")
-    parts.append(f"--{boundary}--\r\n".encode())
-    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
-
-
-def check_asr(endpoint, audio=None, reference=ASR_REFERENCE):
-    """Speech-to-text checks: one structural, one answer check (ADR 0059, D4).
-
-    Structural (can gate): /v1/audio/transcriptions accepts a multipart WAV and
-    returns HTTP 200 with a non-empty `text`.
-    Answer (model-library approval): the transcript matches the reference sentence
-    with a word error rate at or under ASR_MAX_WER.
-    """
-    def fail(detail):
-        return [{"name": ASR_CHECK, "state": "failed", "kind": "structural", "detail": detail},
-                {"name": ASR_ANSWER_CHECK, "state": "skipped", "kind": "answer",
-                 "detail": "structural check failed"}]
-
-    if audio is None:
-        with open(ASR_FIXTURE, "rb") as f:
-            audio = f.read()
-    status, models = endpoint.call("/v1/models")
-    if status == 0:
-        return _no_response_pair(ASR_CHECK, ASR_ANSWER_CHECK, "/v1/models", models)
-    if status != 200 or not isinstance(models, dict) or not models.get("data"):
-        return fail(f"/v1/models returned HTTP {status}: {str(models)[:200]}")
-    model = models["data"][0].get("id")
-    body, ctype = _multipart({"model": model}, "file", "probe.wav", audio, "audio/wav")
-    status, r = endpoint.call_raw("/v1/audio/transcriptions", body, ctype)
-    if status == 0:
-        return _no_response_pair(ASR_CHECK, ASR_ANSWER_CHECK, "/v1/audio/transcriptions", r)
-    if status != 200:
-        return fail(f"/v1/audio/transcriptions returned HTTP {status}: {str(r)[:200]}")
-    text = r.get("text") if isinstance(r, dict) else None
-    if not isinstance(text, str) or not text.strip():
-        return fail(f"no transcript text in the response: {str(r)[:200]}")
-    wer = word_error_rate(reference, text)
-    return [{"name": ASR_CHECK, "state": "passed", "kind": "structural",
-             "detail": f"model {model}, {len(text)} chars"},
-            {"name": ASR_ANSWER_CHECK, "kind": "answer",
-             "state": "passed" if wer <= ASR_MAX_WER else "failed",
-             "detail": f"WER {wer:.2f} (max {ASR_MAX_WER}): {text.strip()[:120]!r}"}]
-
-
-def _wav_stats(data):
-    """(sample_rate, seconds, rms or None) for a PCM WAV, or an error string."""
-    if not isinstance(data, (bytes, bytearray)) or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-        head = data[:16] if isinstance(data, (bytes, bytearray)) else str(data)[:60]
-        return f"not a WAV file (starts {head!r})"
-    try:
-        w = wave.open(io.BytesIO(data))
-        n, rate, width = w.getnframes(), w.getframerate(), w.getsampwidth()
-        frames = w.readframes(n)
-    except (wave.Error, EOFError) as e:
-        return f"WAV does not decode: {e}"
-    if n == 0 or rate == 0:
-        return "WAV has no audio frames"
-    rms = None
-    if width == 2:
-        count = len(frames) // 2
-        samples = struct.unpack(f"<{count}h", frames[: count * 2])
-        rms = math.sqrt(sum(x * x for x in samples) / max(count, 1))
-    return rate, n / rate, rms
-
-
-def check_tts(endpoint, text=TTS_TEXT):
-    """Text-to-speech checks: one structural, one answer check (ADR 0059, D4).
-
-    Structural (can gate): /v1/audio/speech returns HTTP 200 with a WAV that decodes
-    and holds audio frames.
-    Answer (model-library approval): the audio is speech-like — not silent, and a
-    plausible length for the text. A round trip through speech recognition is the
-    stronger check and needs an ASR endpoint; it is not done here.
-    """
-    def fail(detail):
-        return [{"name": TTS_CHECK, "state": "failed", "kind": "structural", "detail": detail},
-                {"name": TTS_ANSWER_CHECK, "state": "skipped", "kind": "answer",
-                 "detail": "structural check failed"}]
-
-    status, models = endpoint.call("/v1/models")
-    if status == 0:
-        return _no_response_pair(TTS_CHECK, TTS_ANSWER_CHECK, "/v1/models", models)
-    if status != 200 or not isinstance(models, dict) or not models.get("data"):
-        return fail(f"/v1/models returned HTTP {status}: {str(models)[:200]}")
-    model = models["data"][0].get("id")
-    body = json.dumps({"model": model, "input": text, "response_format": "wav"}).encode()
-    status, data = endpoint.call_raw("/v1/audio/speech", body, "application/json", binary=True)
-    if status == 0:
-        return _no_response_pair(TTS_CHECK, TTS_ANSWER_CHECK, "/v1/audio/speech", data)
-    if status != 200:
-        return fail(f"/v1/audio/speech returned HTTP {status}: {str(data)[:200]}")
-    stats = _wav_stats(data)
-    if isinstance(stats, str):
-        return fail(stats)
-    rate, seconds, rms = stats
-    words = len(text.split())
-    lo, hi = words * TTS_SECONDS_PER_WORD[0], words * TTS_SECONDS_PER_WORD[1]
-    problems = []
-    if not lo <= seconds <= hi:
-        problems.append(f"{seconds:.1f}s is implausible for {words} words ({lo:.1f}-{hi:.1f}s)")
-    if rms is not None and rms < TTS_MIN_RMS:
-        problems.append(f"near-silent (rms {rms:.0f} < {TTS_MIN_RMS})")
-    level = f"rms {rms:.0f}" if rms is not None else "rms n/a (not 16-bit PCM)"
-    return [{"name": TTS_CHECK, "state": "passed", "kind": "structural",
-             "detail": f"model {model}, WAV {rate} Hz, {seconds:.1f}s"},
-            {"name": TTS_ANSWER_CHECK, "kind": "answer",
-             "state": "failed" if problems else "passed",
-             "detail": "; ".join(problems) if problems else f"{seconds:.1f}s for {words} words, {level}"}]
-
-
-# ---------------------------------------------------------------- ComfyUI workflows
-
-# ComfyUI results are this name, or this name followed by `/<workflow>` and so on
-# (RESULT_NAMES). The bare name and `object_info` are reported only when the workflows
-# could not be run or their output nodes could not be read.
-COMFYUI_CHECK = "external/comfyui"
-COMFYUI_OBJECT_INFO = f"{COMFYUI_CHECK}/object_info"
-COMFY_WRAPPER_INTERNAL_PORT = 18288
-COMFY_PAYLOADS_DIR = "opt/comfyui-api-wrapper/payloads"
-# A `modifier` payload names one of the wrapper's built-in workflows instead of
-# carrying one; the wrapper's convention is modifier `Text2Image` ->
-# modifiers/text2image.py -> WORKFLOW_JSON "workflows/text2image.json". Modifications
-# change inputs (prompt, checkpoint), not which output nodes exist.
-COMFY_MODIFIER_WORKFLOWS_DIR = "opt/comfyui-api-wrapper/workflows"
-JUPYTER_PORT = 8080
-COMFY_GENERATE_TIMEOUT = 1800
-# Standard deviation of 0-255 luminance below this is a blank or uniform image.
-IMAGE_MIN_STDDEV = 4.0
-# Compressed bytes per pixel below this means a near-uniform image (non-PNG formats).
-IMAGE_MIN_BYTES_PER_PIXEL = 0.01
-IMAGE_MIN_SIDE = 64
-
-
-def _png_pixels(data):
-    """(width, height, luminance samples) for an 8-bit non-interlaced PNG, or None
-    when the PNG uses a layout this decoder does not handle."""
-    pos, chunks, ihdr = 8, [], None
-    while pos + 8 <= len(data):
-        length = struct.unpack(">I", data[pos:pos + 4])[0]
-        ctype = data[pos + 4:pos + 8]
-        body = data[pos + 8:pos + 8 + length]
-        if ctype == b"IHDR":
-            ihdr = struct.unpack(">IIBBBBB", body)
-        elif ctype == b"IDAT":
-            chunks.append(body)
-        elif ctype == b"IEND":
-            break
-        pos += 12 + length
-    if not ihdr:
-        return None
-    w, h, depth, color, _, _, interlace = ihdr
-    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color)
-    if depth != 8 or interlace or channels is None:
-        return None
-    raw = zlib.decompress(b"".join(chunks))
-    stride, bpp = w * channels, channels
-    prev, lum, off = bytearray(stride), [], 0
-    step = max(1, h // 64)                       # sample rows; enough for variance
-    for y in range(h):
-        ftype, line = raw[off], bytearray(raw[off + 1:off + 1 + stride])
-        off += 1 + stride
-        for i in range(stride):
-            a = line[i - bpp] if i >= bpp else 0
-            b, c = prev[i], prev[i - bpp] if i >= bpp else 0
-            if ftype == 1:
-                line[i] = (line[i] + a) & 255
-            elif ftype == 2:
-                line[i] = (line[i] + b) & 255
-            elif ftype == 3:
-                line[i] = (line[i] + ((a + b) >> 1)) & 255
-            elif ftype == 4:
-                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
-                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
-        if y % step == 0:
-            for x in range(0, w, max(1, w // 64)):
-                px = line[x * channels:x * channels + min(channels, 3)]
-                lum.append(sum(px) / len(px))
-        prev = line
-    return w, h, lum
-
-
-def _image_info(data):
-    """(format, width, height) from an image header, or None if not an image."""
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        w, h = struct.unpack(">II", data[16:24])
-        return "png", w, h
-    if data[:3] == b"\xff\xd8\xff":
-        i = 2
-        while i + 9 < len(data):
-            if data[i] != 0xFF:
-                i += 1
-                continue
-            marker, seglen = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
-            if marker in (0xC0, 0xC1, 0xC2):
-                h, w = struct.unpack(">HH", data[i + 5:i + 9])
-                return "jpeg", w, h
-            i += 2 + seglen
-        return "jpeg", 0, 0
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        if data[12:16] == b"VP8X":
-            w = 1 + int.from_bytes(data[24:27], "little")
-            h = 1 + int.from_bytes(data[27:30], "little")
-            return "webp", w, h
-        if data[12:16] == b"VP8 ":
-            w, h = struct.unpack("<HH", data[26:30])
-            return "webp", w & 0x3FFF, h & 0x3FFF
-        if data[12:16] == b"VP8L":
-            b = data[21:25]
-            w = 1 + (((b[1] & 0x3F) << 8) | b[0])
-            h = 1 + (((b[3] & 0xF) << 10) | (b[2] << 2) | ((b[1] & 0xC0) >> 6))
-            return "webp", w, h
-        return "webp", 0, 0
-    return None
-
-
-def _media_kind(data):
-    """'video', 'audio' or None from a container signature."""
-    if data[4:8] == b"ftyp" or data[:4] == b"\x1aE\xdf\xa3" or data[:4] == b"GIF8":
-        return "video"
-    if (data[:4] == b"RIFF" and data[8:12] == b"WAVE") or data[:3] == b"ID3" or data[:4] == b"fLaC" \
-            or data[:4] == b"OggS":
-        return "audio"
-    return None
-
-
-def check_output_file(name, data):
-    """(structural result, answer result) for one workflow output file."""
-    prefix = f"{COMFYUI_CHECK}/{name}"
-    info = _image_info(data)
-    if info:
-        fmt, w, h = info
-        if min(w, h) < IMAGE_MIN_SIDE:
-            return ({"name": prefix, "state": "failed", "kind": "structural",
-                     "detail": f"{fmt} is {w}x{h}, below {IMAGE_MIN_SIDE}px"},
-                    {"name": prefix + ":content", "state": "skipped", "kind": "answer",
-                     "detail": "structural check failed"})
-        structural = {"name": prefix, "state": "passed", "kind": "structural",
-                      "detail": f"{fmt} {w}x{h}, {len(data)} bytes"}
-        pixels = _png_pixels(data) if fmt == "png" else None
-        if pixels:
-            lum = pixels[2]
-            mean = sum(lum) / len(lum)
-            sd = (sum((v - mean) ** 2 for v in lum) / len(lum)) ** 0.5
-            ok = sd >= IMAGE_MIN_STDDEV
-            detail = f"luminance stddev {sd:.1f} (min {IMAGE_MIN_STDDEV})"
-        else:
-            bpp = len(data) / (w * h)
-            ok = bpp >= IMAGE_MIN_BYTES_PER_PIXEL
-            detail = f"{bpp:.3f} bytes/pixel (min {IMAGE_MIN_BYTES_PER_PIXEL}; compression proxy)"
-        return structural, {"name": prefix + ":content", "kind": "answer",
-                            "state": "passed" if ok else "failed",
-                            "detail": detail if ok else "blank or uniform image: " + detail}
-    kind = _media_kind(data)
-    if kind:
-        return ({"name": prefix, "state": "passed", "kind": "structural",
-                 "detail": f"{kind} container, {len(data)} bytes"},
-                {"name": prefix + ":content", "state": "skipped", "kind": "answer",
-                 "detail": f"{kind} content checks are not written yet"})
-    return ({"name": prefix, "state": "failed", "kind": "structural",
-             "detail": f"not a recognised image, video or audio file (starts {data[:12]!r})"},
-            {"name": prefix + ":content", "state": "skipped", "kind": "answer",
-             "detail": "structural check failed"})
-
-
-COMFY_INTERNAL_PORT = 18188
-
-# What each known output node writes. Output nodes are DISCOVERED from ComfyUI's own
-# /object_info (`output_node: true`), so a node missing here is never silently
-# passed: it is reported as unclassified, by class name, so the table can grow.
-_OUTPUT_KINDS = {
-    "SaveImage": "image",
-    "SaveImageWebsocket": "image",
-    "SaveAnimatedWEBP": "animation",
-    "SaveAnimatedPNG": "animation",
-    "SaveVideo": "video",
-    "SaveWEBM": "video",
-    "SaveAudio": "audio",
-    "SaveAudioMP3": "audio",
-    "SaveAudioOpus": "audio",
-    "SaveGLB": "3d",
-}
-# Nodes whose output the wrapper deliberately does not return (temp/preview files).
-_PREVIEW_PREFIX = "Preview"
-
-
-def _vhs_kind(inputs):
-    """VideoHelperSuite's VHS_VideoCombine picks its container from `format`."""
-    fmt = str(inputs.get("format", ""))
-    if fmt.startswith("video/"):
-        return "video"
-    if fmt.startswith("image/"):
-        return "animation"
-    return None
-
-
-def _is_link(value):
-    """In API-format workflows an input wired to another node is [node_id, slot]."""
-    return isinstance(value, list) and len(value) == 2 and isinstance(value[1], int)
-
-
-def _expects_audio_track(workflow, node):
-    """True when a video save node is fed audio: an `audio` input wired on the node
-    itself (VHS_VideoCombine) or on the node feeding its video (CreateVideo)."""
-    inputs = node.get("inputs") or {}
-    if _is_link(inputs.get("audio")):
-        return True
-    for key in ("video", "images"):
-        src = inputs.get(key)
-        if _is_link(src):
-            upstream = workflow.get(str(src[0])) or {}
-            if _is_link((upstream.get("inputs") or {}).get("audio")):
-                return True
-    return False
-
-
-def expected_outputs(workflow, output_node_classes):
-    """{node_id: (class_type, kind, wants_audio)} for every output node in an
-    API-format workflow. kind is image|animation|video|audio|3d|preview|unclassified.
-
-    `output_node_classes` is the set of class names ComfyUI reports as output
-    nodes, or None when /object_info could not be read (then only the known table
-    is used, and the result says so).
-    """
-    out = {}
-    for node_id, node in (workflow or {}).items():
-        if not isinstance(node, dict):
-            continue
-        cls = node.get("class_type", "")
-        known = cls in _OUTPUT_KINDS or cls == "VHS_VideoCombine" or cls.startswith(_PREVIEW_PREFIX)
-        is_output = (cls in output_node_classes) if output_node_classes is not None else known
-        if not is_output:
-            continue
-        if cls.startswith(_PREVIEW_PREFIX):
-            kind = "preview"
-        elif cls == "VHS_VideoCombine":
-            kind = _vhs_kind(node.get("inputs") or {}) or "unclassified"
-        else:
-            kind = _OUTPUT_KINDS.get(cls, "unclassified")
-        wants_audio = kind == "video" and _expects_audio_track(workflow, node)
-        out[str(node_id)] = (cls, kind, wants_audio)
-    return out
-
-
-def _mp4_has_audio(data):
-    """An MP4/MOV with a sound track carries an `hdlr` box with handler type `soun`."""
-    return re.search(rb"hdlr.{8}soun", data, re.S) is not None
-
-
-def _file_kind(data):
-    """What a file actually is, from its signature."""
-    info = _image_info(data)
-    if info:
-        return "image"
-    if data[:4] == b"glTF":
-        return "3d"
-    return _media_kind(data)
-
-
-# Which file kinds satisfy each expected node kind.
-_ACCEPTS = {"image": {"image"}, "animation": {"image", "video"}, "video": {"video"},
-            "audio": {"audio"}, "3d": {"3d"}}
-
-
-class NoResponse(str):
-    """An error string that means no HTTP response at all (status 0), so the caller
-    reports `error` (could not check) rather than `failed`."""
-
+CHECKED_CAPABILITIES = _in_order(c for t in REGISTRY if t.axis == checks.ROUTE for c in t.requires)
+# The capabilities checked on the engine API. Declaring any of them brings in the
+# contract and, when chat is not among them, the undeclared-chat guard.
+_ENGINE_CAPABILITIES = _in_order(c for t in REGISTRY
+                                 if t.axis == checks.ROUTE and t.images == OPENAI_ENGINE
+                                 for c in t.requires)
+# Unknown names are an error, not silently ignored: a typo must not turn a check off.
+KNOWN_CAPABILITIES = _in_order((*ROUTE_CAPABILITIES.values(),
+                                *(c for t in REGISTRY for c in t.requires)))
+
+# Features of the model behind the chat route (ADR 0068). Routes say what a template
+# serves; these say what its chat model accepts or returns, and no template variable
+# holds them, so the caller names them at run time.
+KNOWN_FEATURES = checks.FEATURES
+FEATURES_SOURCE = "--features"
+# The features that have a check today, by name.
+_FEATURE_TYPES = {t.name: t for t in REGISTRY if t.axis == checks.FEATURE}
+
+
+def feature_requires(feature):
+    """The capabilities a feature needs declared before it can be checked."""
+    t = _FEATURE_TYPES.get(feature)
+    return tuple(t.requires) if t else (checks.FEATURE_ROUTE,)
+
+
+# ---------------------------------------------------------------- Jupyter
 
 def _jupyter_error(status, r):
     if status == 0:
         return NoResponse(f"no HTTP response ({str(r)[:160]})")
     return f"HTTP {status}: {str(r)[:160]}"
-
-
-def _unreached_state(err):
-    """`error` when a Jupyter read got no HTTP response, else `failed`."""
-    return "error" if isinstance(err, NoResponse) else "failed"
 
 
 class Jupyter:
@@ -991,232 +444,23 @@ class Jupyter:
         return base64.b64decode(r.get("content") or ""), None
 
 
-def comfy_output_node_classes(comfy):
-    """The set of output-node class names from ComfyUI's /object_info, or None."""
-    if comfy is None:
-        return None
-    status, info = comfy.call("/object_info")
-    if status != 200 or not isinstance(info, dict):
-        return None
-    return {name for name, spec in info.items()
-            if isinstance(spec, dict) and spec.get("output_node")}
-
-
-def _check_node(wf, node_id, cls, kind, wants_audio, files):
-    """Results for one expected output node and the files it produced."""
-    name = f"{COMFYUI_CHECK}/{wf}/{cls}#{node_id}"
-    if kind == "preview":
-        return [{"name": name, "state": "skipped", "kind": "structural",
-                 "detail": "preview node: the wrapper does not return preview files"}]
-    if kind == "unclassified":
-        return [{"name": name, "state": "error", "kind": "structural",
-                 "detail": f"unclassified output node {cls}: add it to the known output "
-                           f"kinds so its output can be checked"}]
-    if not files:
-        return [{"name": name, "state": "failed", "kind": "structural",
-                 "detail": f"expected {kind} output, the node produced no files"}]
-    results = []
-    for i, (label, data, err) in enumerate(files, 1):
-        fname = f"{name}/{i}"
-        if not data:
-            results.append({"name": fname, "state": _unreached_state(err), "kind": "structural",
-                            "detail": f"{label}: output bytes unavailable: {err}"})
-            continue
-        got = _file_kind(data)
-        if got not in _ACCEPTS[kind]:
-            results.append({"name": fname, "state": "failed", "kind": "structural",
-                            "detail": f"{label}: expected {kind}, got "
-                                      f"{got or 'an unrecognised file'} ({len(data)} bytes)"})
-            continue
-        if wants_audio:
-            if data[4:8] == b"ftyp" and not _mp4_has_audio(data):
-                results.append({"name": fname, "state": "failed", "kind": "structural",
-                                "detail": f"{label}: the node is fed audio but the video has "
-                                          f"no sound track"})
-                continue
-        structural, content = check_output_file(f"{wf}/{cls}#{node_id}/{i}", data)
-        structural["name"], content["name"] = fname, fname + ":content"
-        if structural["state"] == "passed":
-            structural["detail"] = f"{label}: {kind}" + (
-                " with audio" if wants_audio else "") + f"; {structural['detail']}"
-        results.extend([structural, content])
-    return results
-
-
-def _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results):
-    """Run one provisioned workflow and check its outputs, appending to `results`."""
-    text, err = jupyter.read_text(f"{COMFY_PAYLOADS_DIR}/{name}")
-    try:
-        payload = json.loads(text) if text is not None else None
-    except ValueError as e:
-        payload, err = None, f"not valid JSON: {e}"
-    if payload is None:
-        results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": _unreached_state(err),
-                        "kind": "structural", "detail": f"cannot read payload: {err}"})
-        return
-    inp = payload.get("input") or {}
-    workflow = inp.get("workflow_json") or {}
-    if not workflow and inp.get("modifier"):
-        base = f"{COMFY_MODIFIER_WORKFLOWS_DIR}/{str(inp['modifier']).lower()}.json"
-        text, err = jupyter.read_text(base)
-        try:
-            workflow = json.loads(text) if text is not None else None
-        except ValueError as e:
-            workflow, err = None, f"not valid JSON: {e}"
-        if not workflow:
-            results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "error",
-                            "kind": "structural",
-                            "detail": f"modifier {inp['modifier']!r}: cannot read its base "
-                                      f"workflow {base} ({err}), so its output nodes are "
-                                      f"unknown"})
-            return
-    expected = expected_outputs(workflow, output_classes)
-    status, r = wrapper.call_raw_with_headers(
-        "/generate/sync", json.dumps(payload).encode(), "application/json",
-        {"x-return-outputs-as-base64": "true"}, timeout=timeout)
-    if status == 0:
-        results.append(_no_response(f"{COMFYUI_CHECK}/{wf}", "/generate/sync", r,
-                                    kind="structural"))
-        return
-    if status != 200 or not isinstance(r, dict) or r.get("status") != "completed":
-        msg = r.get("message") if isinstance(r, dict) else r
-        results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "failed",
-                        "kind": "structural",
-                        "detail": f"HTTP {status}, status="
-                                  f"{r.get('status') if isinstance(r, dict) else '?'}: "
-                                  f"{str(msg)[:200]}"})
-        return
-    outputs = r.get("output") or []
-    if not expected:
-        results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "failed",
-                        "kind": "structural",
-                        "detail": "the workflow has no output node to verify"})
-        return
-    results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "passed", "kind": "structural",
-                    "detail": f"completed; {len(outputs)} file(s) from "
-                              f"{len(expected)} output node(s); generation "
-                              f"{(r.get('timings') or {}).get('generation_ms', '?')} ms"})
-    by_node = {}
-    for o in outputs:
-        data, ferr = None, None
-        if o.get("data"):
-            data = base64.b64decode(o["data"])
-        elif o.get("local_path"):                # too large to inline (video)
-            data, ferr = jupyter.read_bytes(o["local_path"].lstrip("/"))
-        else:
-            ferr = o.get("error") or "no data and no local_path"
-        by_node.setdefault(str(o.get("node_id")), []).append(
-            (o.get("filename", "?"), data, ferr))
-    for node_id, (cls, kind, wants_audio) in sorted(expected.items()):
-        files = by_node.pop(node_id, [])
-        results.extend(_guarded(
-            f"{COMFYUI_CHECK}/{wf}/{cls}#{node_id}",
-            lambda: _check_node(wf, node_id, cls, kind, wants_audio, files)))
-    for node_id, files in sorted(by_node.items()):
-        results.append({"name": f"{COMFYUI_CHECK}/{wf}/#{node_id}", "state": "error",
-                        "kind": "structural",
-                        "detail": f"{len(files)} file(s) from node {node_id}, which is not a "
-                                  f"recognised output node in this workflow"})
-
-
-def check_comfyui_workflows(wrapper, jupyter, comfy=None, timeout=COMFY_GENERATE_TIMEOUT,
-                            deadline=None):
-    """Run EVERY provisioned workflow through the public API wrapper and check that
-    every output node delivered what it is built to produce (ADR 0059: if we ship a
-    workflow, we verify it).
-
-    Output nodes are discovered from ComfyUI's /object_info, so custom packs are
-    covered; their expected kind comes from a known table (unclassified nodes are an
-    error, never a pass). Each node must deliver at least one file of its kind; a
-    video node fed audio must carry a sound track. Image content is checked for
-    blank or uniform output; video, audio and 3D content checks are not written yet.
-
-    A request that gets no HTTP response is an `error` (not checked), not a failure.
-    Once `deadline` (contract.Deadline) has passed, each workflow not yet run is
-    reported by name as an `error`. A workflow, or one node's check, that raises
-    unexpectedly is one `error` result under its own name; the rest still run.
-    """
-    names, err = jupyter.list_dir(COMFY_PAYLOADS_DIR)
-    if names is None:
-        return [{"name": COMFYUI_CHECK, "state": _unreached_state(err), "kind": "structural",
-                 "detail": f"cannot list {COMFY_PAYLOADS_DIR}: {err}"}]
-    names = [n for n in names if n.endswith(".json")]
-    if not names:
-        return [{"name": COMFYUI_CHECK, "state": "failed", "kind": "structural",
-                 "detail": f"no workflow payloads in {COMFY_PAYLOADS_DIR}"}]
-    output_classes = comfy_output_node_classes(comfy)
-    results = []
-    if output_classes is None:
-        results.append({"name": COMFYUI_OBJECT_INFO, "state": "error",
-                        "kind": "structural",
-                        "detail": "ComfyUI /object_info unavailable: output nodes found from "
-                                  "the known table only, so custom output nodes may be missed"})
-    for name in names:
-        wf = name[:-5]
-        if deadline is not None and deadline.expired():
-            results.append(_deadline_result(f"{COMFYUI_CHECK}/{wf}", deadline))
-            continue
-        mark = len(results)
-        try:
-            _check_workflow(name, wf, wrapper, jupyter, output_classes, timeout, results)
-        except Exception as e:                                    # noqa: BLE001
-            # One result for the workflow, not a half-written set of them.
-            del results[mark:]
-            results.append({"name": f"{COMFYUI_CHECK}/{wf}", "state": "error",
-                            "kind": "structural",
-                            "detail": f"the check raised {type(e).__name__}: {str(e)[:300]}"})
-    return results
-
-
 # ---------------------------------------------------- the names the launcher reports
 
-STRUCTURAL, ANSWER = "structural", "answer"
-# Which images a name can be reported for: any image; an image with an OpenAI engine
-# (OPENAI_ENGINE_IMAGES), the only images whose routes the route checks exercise; an
-# image with a contract (contract.ENGINES); a ComfyUI image.
-ANY_IMAGE, OPENAI_ENGINE, CONTRACT, COMFYUI = "any image", "openai-engine", "contract", "comfyui"
-
-
-class ResultName(NamedTuple):
-    """One name the launcher can report. `shape` is the name itself, or its form with
-    <placeholders> for the parts a run fills in (a workflow, an output node). `kind`
-    is STRUCTURAL or ANSWER, or None for a row that is never a check. `passes` says
-    whether the name is ever reported `passed`."""
-    shape: str
-    kind: str | None
-    images: str
-    passes: bool
-
-
-# Every result name run_external_checks can report. qa-gate's `require_external` may
-# name only a STRUCTURAL row that passes, produced for the gated image (lint L126,
-# which reads this table); tests/test_result_names.py runs the launcher and fails if
-# it reports a name, kind or pass this table does not allow, or never reports a row.
+# Every result name run_external_checks can report: its own three kinds of row, then
+# each registered type's. qa-gate's `require_external` may name only a STRUCTURAL row
+# that passes, produced for the gated image (lint L126, which reads this table);
+# tests/test_result_names.py runs the launcher and fails if it reports a name, kind or
+# pass this table does not allow, or never reports a row.
 RESULT_NAMES = (
     ResultName(CAPABILITIES_RESULT, None, ANY_IMAGE, False),
     # A declared route with no external check yet: always skipped.
     *(ResultName(f"external/{cap}", None, ANY_IMAGE, False)
       for cap in KNOWN_CAPABILITIES if cap not in CHECKED_CAPABILITIES),
-    ResultName(CHAT_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
-    ResultName(COMPLETIONS_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
-    ResultName(EMBEDDINGS_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
-    ResultName(EMBEDDINGS_ANSWER_CHECK, ANSWER, OPENAI_ENGINE, True),
-    ResultName(ASR_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
-    ResultName(ASR_ANSWER_CHECK, ANSWER, OPENAI_ENGINE, True),
-    ResultName(TTS_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
-    ResultName(TTS_ANSWER_CHECK, ANSWER, OPENAI_ENGINE, True),
-    ResultName(UNDECLARED_CHAT_CHECK, STRUCTURAL, OPENAI_ENGINE, True),
-    ResultName(CONTRACT_STEP, None, CONTRACT, False),
-    *(ResultName(f"contract/{check}", STRUCTURAL, CONTRACT, passes)
-      for check, passes in contract.CHECKS.items()),
-    ResultName(COMFYUI_CHECK, STRUCTURAL, COMFYUI, False),
-    ResultName(COMFYUI_OBJECT_INFO, STRUCTURAL, COMFYUI, False),
-    ResultName(f"{COMFYUI_CHECK}/<workflow>", STRUCTURAL, COMFYUI, True),
-    # A node's own name carries only a skip or a failure; each file it delivered is
-    # reported under /<n>. `<class>` is empty for a node that is not an output node.
-    ResultName(f"{COMFYUI_CHECK}/<workflow>/<class>#<node>", STRUCTURAL, COMFYUI, False),
-    ResultName(f"{COMFYUI_CHECK}/<workflow>/<class>#<node>/<n>", STRUCTURAL, COMFYUI, True),
-    ResultName(f"{COMFYUI_CHECK}/<workflow>/<class>#<node>/<n>:content", ANSWER, COMFYUI, True),
+    # A declared feature with no check yet: skipped, or an error when its route is
+    # not declared.
+    *(ResultName(f"external/{feature}", None, ANY_IMAGE, False)
+      for feature in KNOWN_FEATURES if feature not in _FEATURE_TYPES),
+    *(row for t in REGISTRY for row in t.results),
 )
 
 _PLACEHOLDERS = {"<workflow>": r"[^/\s,]+", "<class>": r"[^/\s,#]*", "<node>": r"[^/\s,#]+",
@@ -1259,6 +503,16 @@ def parse_capabilities(value):
         return None, []
     caps = {c.strip().lower() for c in value.split(",") if c.strip()}
     return caps, sorted(caps - set(KNOWN_CAPABILITIES))
+
+
+def parse_features(value):
+    """`--features vision,tools` -> (set of features, unknown names). None means none."""
+    if value is None:
+        return set(), []
+    if not isinstance(value, str):                   # a set or list from code/tests
+        value = ",".join(sorted(value))
+    names = {n.strip().lower() for n in value.split(",") if n.strip()}
+    return names & set(KNOWN_FEATURES), sorted(names - set(KNOWN_FEATURES))
 
 
 def _image_name(template):
@@ -1310,86 +564,44 @@ def resolve_capabilities(template, env_overrides=(), override=None):
     return caps, "OPENAI_ROUTES unset: pyworker default", []
 
 
-_ENGINE_CAPABILITIES = ("chat", "completions", "embeddings", "transcriptions", "speech")
+# ---------------------------------------------------------------- the run
+
+def _on_engine_api(test_type):
+    """True for a type that is run against the engine API (the rest are ComfyUI's)."""
+    return test_type.images in (OPENAI_ENGINE, CONTRACT)
 
 
-def _env_with_overrides(env, env_overrides, name):
-    """`-e NAME=...` from the template env, with a later --env NAME=... winning."""
-    value = _env_value(env, name)
-    for kv in env_overrides or ():
-        k, _, v = kv.partition("=")
-        if k == name:
-            value = v
-    return value
+def select_types(capabilities, features=()):
+    """The registered types a set of capabilities and features selects, in the order
+    they run.
+
+    A route type runs when every capability it requires is declared; a guard when
+    none of them is; a feature type when its feature is named and every capability it
+    requires is declared. A type on the engine API runs only when an engine route is
+    declared at all."""
+    capabilities, features = set(capabilities), set(features)
+    engine = capabilities & set(_ENGINE_CAPABILITIES)
+
+    def selected(t):
+        if _on_engine_api(t) and not engine:
+            return False
+        if t.axis == checks.FEATURE and t.name not in features:
+            return False
+        if t.axis == checks.GUARD:
+            return not capabilities & set(t.requires)
+        return set(t.requires) <= capabilities
+
+    return sorted((t for t in REGISTRY if selected(t)), key=lambda t: t.order)
 
 
-class _LazySession:
-    """Opens a remote.RemoteSession only if a check actually needs the box, and
-    closes it (detaching and deleting the ephemeral key) as soon as the contract is
-    done — the key exists for those seconds only. The run's deadline, when given, is
-    handed to the session so SSH cannot run past it."""
-
-    def __init__(self, factory, deadline=None):
-        self.factory, self.session, self.deadline = factory, None, deadline
-
-    def run(self, script, python="python3"):
-        if self.session is None:
-            session = self.factory()
-            if self.deadline is not None:
-                _attach_deadline(session, self.deadline)
-            self.session = session.__enter__()
-        return self.session.run(script, python=python)
-
-    def close(self):
-        if self.session is not None:
-            self.session.__exit__(None, None, None)
-            self.session = None
-
-
-# Report findings -> result states. A declared deviation is reported, never blocking
-# (ADR 0031 decision 6a), so it gets its own state rather than passing or failing.
-def check_contract(host, port, token, image, env, env_overrides, routes,
-                   client_factory=None, remote_factory=None, deadline=None):
-    """The OpenAI contract (contract.py, ported from the in-image checkers) for an
-    engine image, keyed on the declared routes. Results are `contract/<check>`.
-    `deadline` (contract.Deadline) caps every contract request's timeout and the SSH
-    session's connect retries and remote script."""
-    row = contract.set_engine(image)
-    if row is None:
-        return []
-    out = io.StringIO()
-    rep = contract.Report(out)
-    cli = _attach_deadline((client_factory or contract.Client)(f"{host}:{port}", token), deadline)
-    lazy = _LazySession(remote_factory, deadline) if remote_factory else None
-    try:
-        _run_contract(rep, cli, row, env, env_overrides, routes,
-                      contract.remote_counter(lazy) if lazy else None)
-    finally:
-        if lazy:
-            lazy.close()
-    results = [{"name": f"contract/{c}", "state": "passed", "kind": "structural", "detail": ""}
-               for c in rep.passed]
-    for bucket, state in ((rep.violations, "failed"), (rep.deviated, "deviation"),
-                          (rep.advisories, "advisory"), (rep.errors, "error"),
-                          (rep.na, "skipped")):
-        results += [{"name": f"contract/{c}", "state": state, "kind": "structural", "detail": d}
-                    for c, d in bucket]
-    return results
-
-
-def _run_contract(rep, cli, row, env, env_overrides, routes, counter):
-    contract.run_contract(
-        rep, cli,
-        model=_env_with_overrides(env, env_overrides, row["model_env"]) or "",
-        engine_args=_env_with_overrides(env, env_overrides, row["args_env"]) or "",
-        expect_caps=_env_with_overrides(env, env_overrides, row["caps_env"]) or "",
-        routes=set(routes), counter=counter)
-
+# What opening an endpoint came to: its types run, its types are dropped (it said why),
+# or the whole phase ends here.
+_OPEN, _UNAVAILABLE, _STOP = "open", "unavailable", "stop"
 
 
 def run_external_checks(instance, template, tests, env_overrides=(), token=None,
                         endpoint_factory=Endpoint, capabilities=None,
-                        jupyter_factory=Jupyter, ready_timeout=READY_TIMEOUT,
+                        features=None, jupyter_factory=Jupyter, ready_timeout=READY_TIMEOUT,
                         sleep=time.sleep, contract_client_factory=None, remote_factory=None,
                         deadline=EXTERNAL_DEADLINE, clock=time.monotonic):
     """The advisory external checks for one run, as a list of result dicts.
@@ -1397,10 +609,13 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
     Each result is {"name", "state": passed|failed|skipped|error|info, "detail",
     "advisory": True, and "kind": structural|answer when it ran}. The first result is
     always `external/capabilities` (state info): what was checked and where that came
-    from.
+    from, and the same for any features named.
 
     `capabilities` is an explicit override (a comma string, from --capabilities);
-    without it they are resolved from the template (resolve_capabilities).
+    without it they are resolved from the template (resolve_capabilities). `features`
+    names features of the chat model (a comma string, from --features); they add to the
+    capabilities and never change them. Together they select the registered test
+    types (select_types), which run in order.
 
     `deadline` is ONE budget in seconds (measured on `clock`) for the whole phase:
     the readiness wait (itself bounded by `ready_timeout`), every check and the
@@ -1423,12 +638,27 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
     portal = _env_with_overrides(env, env_overrides, "PORTAL_CONFIG")
     host = (instance or {}).get("public_ipaddr", "").strip()
     caps, source, problems = resolve_capabilities(template, env_overrides, capabilities)
-    results = [{"name": CAPABILITIES_RESULT, "state": "info",
-                "detail": f"{', '.join(sorted(caps)) or 'none'} ({source})"}]
+    features, unknown_features = parse_features(features)
+    problems = problems + [f"unknown feature {u}" for u in unknown_features]
+    info = {"name": CAPABILITIES_RESULT, "state": "info",
+            "detail": f"{', '.join(sorted(caps)) or 'none'} ({source})"}
+    if features:
+        info["detail"] += f"; features: {', '.join(sorted(features))} ({FEATURES_SOURCE})"
+    results = [info]
     results += [{"name": CAPABILITIES_RESULT, "state": "error", "detail": p} for p in problems]
+    # A feature whose route is not declared cannot be checked: an error under its own
+    # name, and the rest of the run goes on.
+    for feature in sorted(features):
+        missing = [c for c in feature_requires(feature) if c not in caps]
+        if missing:
+            results.append({"name": f"external/{feature}", "state": "error",
+                            "detail": f"declared ({FEATURES_SOURCE}) but it needs "
+                                      f"{', '.join(missing)}, which is not among the "
+                                      f"template's capabilities ({source})"})
+            features.discard(feature)
 
     engine_caps = caps & set(_ENGINE_CAPABILITIES)
-    guard = None                     # the undeclared-chat guard, run after everything
+    # The name a result about the phase as a whole is reported under.
     first = (CHAT_CHECK if "chat" in caps else
              UNDECLARED_CHAT_CHECK if engine_caps else COMFYUI_CHECK)
 
@@ -1442,123 +672,109 @@ def run_external_checks(instance, template, tests, env_overrides=(), token=None,
     for cap in sorted(caps - set(CHECKED_CAPABILITIES)):
         results.append({"name": f"external/{cap}", "state": "skipped",
                         "detail": f"declared ({source}); no external check for {cap} yet"})
+    for feature in sorted(features - set(_FEATURE_TYPES)):
+        results.append({"name": f"external/{feature}", "state": "skipped",
+                        "detail": f"declared ({FEATURES_SOURCE}); no external check for "
+                                  f"{feature} yet"})
 
-    if engine_caps:
+    ctx = checks.Context(
+        template=template, env=env, env_overrides=env_overrides, host=host, token=token,
+        capabilities=caps, engine_capabilities=engine_caps, deadline=dl,
+        contract_client_factory=contract_client_factory, remote_factory=remote_factory)
+    # (type, the names reported if the deadline leaves it no time), in run order. A type
+    # with no names is not a check here (it reports a skip) and always runs.
+    plan = [(t, t.names_if_not_run(ctx)) for t in select_types(caps, features)]
+
+    def open_engine(remaining):
+        """Find the engine API and, when the image has no serving test, wait for it."""
         port = host_port(instance or {}, public_api_port(portal))
         if not (host and port):
             results.append({"name": first, "state": "skipped",
                             "detail": "the engine API port is not mapped on this instance"})
-        else:
-            endpoint = _attach_deadline(endpoint_factory(host, port, token), dl)
-            # (names reported if the deadline leaves no time for the step, step). A step
-            # with no names is not a check (a skip) and always runs.
-            steps = [((CONTRACT_STEP,), lambda: check_contract(
-                host, port, token, _image_name(template), env, env_overrides,
-                caps & set(_ENGINE_CAPABILITIES), client_factory=contract_client_factory,
-                remote_factory=remote_factory, deadline=dl))]
-            if "chat" in caps:
-                steps.append(((CHAT_CHECK,), lambda: [check_chat(endpoint)]))
-            if "completions" in caps:
-                steps.append(((COMPLETIONS_CHECK,), lambda: [check_completions(endpoint)]))
-            if "embeddings" in caps:
-                steps.append(((EMBEDDINGS_CHECK, EMBEDDINGS_ANSWER_CHECK),
-                              lambda: check_embeddings(endpoint)))
-            if "transcriptions" in caps:
-                steps.append(((ASR_CHECK, ASR_ANSWER_CHECK), lambda: check_asr(endpoint)))
-            if "speech" in caps:
-                if (_env_with_overrides(env, env_overrides, "SPEECH_KIND")
-                        or "speech").strip().lower() == "music":
-                    steps.append(((), lambda: [{
-                        "name": TTS_CHECK, "state": "skipped",
-                        "detail": "SPEECH_KIND=music: the song variant of the speech "
-                                  "check is not written yet"}]))
+            return _UNAVAILABLE
+        ctx.engine_port = port
+        ctx.endpoint = endpoint = _attach_deadline(endpoint_factory(host, port, token), dl)
+        if own_readiness:
+            last = {}
+
+            def models_up():
+                st, m = endpoint.call("/v1/models")
+                last["status"] = st
+                if st == 0:
+                    return False, f"/v1/models: no HTTP response ({str(m)[:120]})"
+                return st == 200 and isinstance(m, dict) and bool(m.get("data")), f"/v1/models HTTP {st}"
+            ready, detail, waited = wait_ready(models_up, timeout=ready_timeout, sleep=sleep,
+                                               deadline=dl)
+            if not ready:
+                if dl.expired():
+                    results.extend(_deadline_result(n, dl) for _, names in remaining for n in names)
                 else:
-                    steps.append(((TTS_CHECK, TTS_ANSWER_CHECK), lambda: check_tts(endpoint)))
-            # Last of the WHOLE phase, deliberately, after ComfyUI too: probing a route
-            # the template does not declare can take the server down (seen live: one
-            # /v1/completions call killed a vLLM-Omni TTS server), and that must never
-            # cost the declared checks their result.
-            if "chat" not in caps:
-                guard = lambda: [check_chat_refused(endpoint)]  # noqa: E731
-
-            if own_readiness:
-                last = {}
-
-                def models_up():
-                    st, m = endpoint.call("/v1/models")
-                    last["status"] = st
-                    if st == 0:
-                        return False, f"/v1/models: no HTTP response ({str(m)[:120]})"
-                    return st == 200 and isinstance(m, dict) and bool(m.get("data")), f"/v1/models HTTP {st}"
-                ready, detail, waited = wait_ready(models_up, timeout=ready_timeout, sleep=sleep,
-                                                   deadline=dl)
-                if not ready:
-                    if dl.expired():
-                        results += [_deadline_result(n, dl) for names, _ in steps for n in names]
-                        if COMFYUI_CAPABILITY in caps:
-                            results.append(_deadline_result(COMFYUI_CHECK, dl))
-                        if guard:
-                            results.append(_deadline_result(UNDECLARED_CHAT_CHECK, dl))
-                        return mark(results)
                     results.append({"name": first, "kind": "structural",
                                     "state": "error" if last.get("status") == 0 else "failed",
                                     "detail": f"engine not ready after {waited:g}s ({detail}); "
                                               f"the image has no serving test to wait on"})
-                    return mark(results)
-            for names, step in steps:
-                if names and dl.expired():
-                    results += [_deadline_result(n, dl) for n in names]
-                else:
-                    results.extend(_guarded(names[0] if names else first, step))
+                return _STOP
+        return _OPEN
 
-    if COMFYUI_CAPABILITY in caps:
+    def open_comfyui(names):
+        """Find the API wrapper, Jupyter and ComfyUI and, when the image has no serving
+        test, wait for them. The deadline is checked here, before anything is opened;
+        the workflows check it again between workflows."""
         wport = host_port(instance or {}, public_api_port(portal, COMFY_WRAPPER_INTERNAL_PORT))
         jport = host_port(instance or {}, JUPYTER_PORT)
         if not (host and wport and jport):
             results.append({"name": COMFYUI_CHECK, "state": "skipped",
                             "detail": "the API wrapper or Jupyter port is not mapped"})
-        elif dl.expired():
-            results.append(_deadline_result(COMFYUI_CHECK, dl))
-        else:
-            timeout = int(_env_with_overrides(env, env_overrides, "COMFYUI_GENERATE_TIMEOUT")
-                          or COMFY_GENERATE_TIMEOUT)
-            cport = host_port(instance or {}, public_api_port(portal, COMFY_INTERNAL_PORT))
-            comfy = _attach_deadline(endpoint_factory(host, cport, token), dl) if cport else None
-            wrapper = _attach_deadline(endpoint_factory(host, wport, token), dl)
-            jupyter = _attach_deadline(jupyter_factory(host, jport, token), dl)
-            if own_readiness:
-                last = {}
-
-                def comfy_up():
-                    st, body = wrapper.call("/health")
-                    last["unanswered"] = st == 0
-                    if st == 0:
-                        return False, f"wrapper /health: no HTTP response ({str(body)[:120]})"
-                    if st != 200:
-                        return False, f"wrapper /health HTTP {st}"
-                    names, err = jupyter.list_dir(COMFY_PAYLOADS_DIR)
-                    last["unanswered"] = isinstance(err, NoResponse)
-                    if not names:
-                        return False, f"no payloads yet ({err or 'empty'})"
-                    return True, "ready"
-                ready, detail, waited = wait_ready(comfy_up, timeout=ready_timeout, sleep=sleep,
-                                                   deadline=dl)
-            else:
-                ready = True
-            if not ready and dl.expired():
-                results.append(_deadline_result(COMFYUI_CHECK, dl))
-            elif not ready:
-                results.append({"name": COMFYUI_CHECK, "kind": "structural",
-                                "state": "error" if last.get("unanswered") else "failed",
-                                "detail": f"ComfyUI not ready after {waited:g}s ({detail}); "
-                                          f"the image has no serving test to wait on"})
-            else:
-                results.extend(_guarded(COMFYUI_CHECK, lambda: check_comfyui_workflows(
-                    wrapper, jupyter, comfy=comfy, timeout=timeout, deadline=dl)))
-
-    if guard:
+            return _UNAVAILABLE
         if dl.expired():
-            results.append(_deadline_result(UNDECLARED_CHAT_CHECK, dl))
+            results.extend(_deadline_result(n, dl) for n in names)
+            return _UNAVAILABLE
+        ctx.generate_timeout = int(_env_with_overrides(env, env_overrides, "COMFYUI_GENERATE_TIMEOUT")
+                                   or COMFY_GENERATE_TIMEOUT)
+        cport = host_port(instance or {}, public_api_port(portal, COMFY_INTERNAL_PORT))
+        ctx.comfy = _attach_deadline(endpoint_factory(host, cport, token), dl) if cport else None
+        ctx.wrapper = wrapper = _attach_deadline(endpoint_factory(host, wport, token), dl)
+        ctx.jupyter = jupyter = _attach_deadline(jupyter_factory(host, jport, token), dl)
+        if not own_readiness:
+            return _OPEN
+        last = {}
+
+        def comfy_up():
+            st, body = wrapper.call("/health")
+            last["unanswered"] = st == 0
+            if st == 0:
+                return False, f"wrapper /health: no HTTP response ({str(body)[:120]})"
+            if st != 200:
+                return False, f"wrapper /health HTTP {st}"
+            names, err = jupyter.list_dir(COMFY_PAYLOADS_DIR)
+            last["unanswered"] = isinstance(err, NoResponse)
+            if not names:
+                return False, f"no payloads yet ({err or 'empty'})"
+            return True, "ready"
+        ready, detail, waited = wait_ready(comfy_up, timeout=ready_timeout, sleep=sleep,
+                                           deadline=dl)
+        if ready:
+            return _OPEN
+        if dl.expired():
+            results.extend(_deadline_result(n, dl) for n in names)
         else:
-            results.extend(_guarded(UNDECLARED_CHAT_CHECK, guard))
+            results.append({"name": COMFYUI_CHECK, "kind": "structural",
+                            "state": "error" if last.get("unanswered") else "failed",
+                            "detail": f"ComfyUI not ready after {waited:g}s ({detail}); "
+                                      f"the image has no serving test to wait on"})
+        return _UNAVAILABLE
+
+    opened = {}                          # endpoint -> what opening it came to
+    for i, (t, names) in enumerate(plan):
+        on_engine = _on_engine_api(t)
+        if on_engine not in opened:
+            opened[on_engine] = open_engine(plan[i:]) if on_engine else open_comfyui(names)
+            if opened[on_engine] == _STOP:
+                return mark(results)
+        if opened[on_engine] != _OPEN:
+            continue
+        if on_engine and names and dl.expired():
+            results += [_deadline_result(n, dl) for n in names]
+        else:
+            results.extend(_guarded(names[0] if names else first, lambda: t.run(ctx)))
     return mark(results)

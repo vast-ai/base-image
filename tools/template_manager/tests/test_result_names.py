@@ -76,8 +76,12 @@ class _Engine:
         if path == "/v1/chat/completions":
             if not self.chat:
                 return 404, {"detail": "Not Found"}
-            return 200, {"choices": [{"message": {"role": "assistant", "content": "hi"}}],
-                         "usage": {"completion_tokens": 2}}
+            # A request carrying an image costs more prompt tokens and is read.
+            image = isinstance(body["messages"][0]["content"], list)
+            return 200, {"choices": [{"message": {
+                             "role": "assistant",
+                             "content": ec.checks.vision.VISION_TOKEN if image else "hi"}}],
+                         "usage": {"prompt_tokens": 209 if image else 9, "completion_tokens": 2}}
         if path == "/v1/completions":
             return 200, {"choices": [{"text": " Paris"}], "usage": {"completion_tokens": 2}}
         if path == "/v1/embeddings":
@@ -145,14 +149,14 @@ def _fake_run_contract(rep, cli, **_):
         (rep.ok(name) if passes else rep.error(name, "fake"))
 
 
-def _engine_run(monkeypatch, caps, chat=True, contract_raises=False):
+def _engine_run(monkeypatch, caps, chat=True, contract_raises=False, features=None):
     monkeypatch.setattr(contract, "run_contract", _fake_run_contract)
     if contract_raises:
-        monkeypatch.setattr(ec, "check_contract",
+        monkeypatch.setattr(ec.checks.contract_step, "check_contract",
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     return ec.run_external_checks(
         INSTANCE, {"image": "vastai/vllm", "env": "-e VLLM_MODEL=m"}, ENGINE_TESTS,
-        endpoint_factory=lambda h, p, t: _Engine(chat=chat), capabilities=caps,
+        endpoint_factory=lambda h, p, t: _Engine(chat=chat), capabilities=caps, features=features,
         contract_client_factory=lambda base, token: object())
 
 
@@ -170,6 +174,7 @@ def _all_runs(monkeypatch):
         _engine_run(monkeypatch, everything),                    # every route, chat served
         _engine_run(monkeypatch, "embeddings", chat=False),      # the undeclared-chat guard
         _engine_run(monkeypatch, "chat", contract_raises=True),  # the contract step's own name
+        _engine_run(monkeypatch, "chat", features=",".join(ec.KNOWN_FEATURES)),  # every feature
         _comfy_run({"t2i": T2I}, [("9", _png()), ("42", _png())]),
         _comfy_run({"t2i": T2I}, [("9", _png())], object_info=500),
         _comfy_run({}, []),                                      # no payloads at all

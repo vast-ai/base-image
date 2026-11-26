@@ -36,7 +36,7 @@ def _no_contract(request, monkeypatch):
     """These tests are about the capability checks; the contract (contract.py) has
     its own tests and is exercised here only by the tests marked `contract`."""
     if "contract" not in request.keywords:
-        monkeypatch.setattr(ec, "check_contract", lambda *a, **k: [])
+        monkeypatch.setattr(ec.checks.contract_step, "check_contract", lambda *a, **k: [])
 
 SERVING_PASSED = [{"name": "base/10-supervisor", "state": "passed"},
                   {"name": "vllm.d/10-vllm-serving", "state": "passed"}]
@@ -1729,7 +1729,7 @@ def _boom(*a, **k):
 
 
 def test_a_check_that_raises_is_one_named_error_and_the_rest_still_run(monkeypatch):
-    monkeypatch.setattr(ec, "check_completions", _boom)
+    monkeypatch.setattr(ec.checks.completions, "check_completions", _boom)
     routes = dict(EMBED_ROUTES)
     routes["/v1/chat/completions"] = _chat_ok_any
     out = _run_ep(_Scripted(routes), {"chat", "completions", "embeddings"})
@@ -1740,7 +1740,7 @@ def test_a_check_that_raises_is_one_named_error_and_the_rest_still_run(monkeypat
 
 
 def test_a_multi_result_check_that_raises_is_one_error_under_its_structural_name(monkeypatch):
-    monkeypatch.setattr(ec, "check_embeddings", _boom)
+    monkeypatch.setattr(ec.checks.embeddings, "check_embeddings", _boom)
     out = ec.run_external_checks(_instance(), {"image": "vastai/vllm", "env": ""}, SERVING_PASSED,
                                  endpoint_factory=_factory(_Scripted(EMBED_ROUTES)),
                                  capabilities={"embeddings"})
@@ -1750,7 +1750,7 @@ def test_a_multi_result_check_that_raises_is_one_error_under_its_structural_name
 
 
 def test_a_contract_that_raises_is_one_error_named_contract(monkeypatch):
-    monkeypatch.setattr(ec, "check_contract", _boom)
+    monkeypatch.setattr(ec.checks.contract_step, "check_contract", _boom)
     out = _run_ep(_Scripted({"/v1/models": MODELS, "/v1/chat/completions": _chat_ok}), {"chat"})
     assert out["contract"]["state"] == "error" and "RuntimeError" in out["contract"]["detail"]
     assert out[ec.CHAT_CHECK]["state"] == "passed"
@@ -1760,7 +1760,7 @@ def test_a_contract_that_raises_is_one_error_named_contract(monkeypatch):
 def test_an_interrupt_still_stops_the_run(monkeypatch, exc):
     def stop(*a, **k):
         raise exc()
-    monkeypatch.setattr(ec, "check_chat", stop)
+    monkeypatch.setattr(ec.checks.chat, "check_chat", stop)
     with pytest.raises(exc):
         _run_ep(_Scripted({"/v1/models": MODELS}), {"chat"})
 
@@ -1797,7 +1797,7 @@ def test_a_node_check_that_raises_is_one_error_and_the_other_nodes_still_run(mon
         if node_id == "20":
             raise IndexError("odd file")
         return real(wf, node_id, cls, kind, wants_audio, files)
-    monkeypatch.setattr(ec, "_check_node", check)
+    monkeypatch.setattr(ec.checks.comfyui, "_check_node", check)
     wf = _wf(**{"9": ("SaveImage", {}), "20": ("SaveVideo", {})})
     out = _check({"both": wf}, {"both": _result(("9", _png()), ("20", MP4))})
     assert out["external/comfyui/both/SaveVideo#20"]["state"] == "error"

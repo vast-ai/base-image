@@ -5961,6 +5961,7 @@ def test_L119_a_suite_without_the_contract_probe_is_out_of_scope(tmp_path):
 
 _L126_LAUNCHER = ("tools/template_manager/external_checks.py",
                   "tools/template_manager/contract.py")
+_L126_CHECKS = "tools/template_manager/checks"     # the test-type units it loads
 _L126_VLLM, _L126_COMFY = "build-vllm.yml", "build-comfyui.yml"
 _L126_LLAMA, _L126_BASE = "build-llama-cpp.yml", "promote-base-image.yml"
 
@@ -5984,6 +5985,7 @@ def _l126_caller(tmp_path, caller, value, launcher=True):
         for f in _L126_LAUNCHER:
             (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(_REAL_REPO / f, tmp_path / f)
+        shutil.copytree(_REAL_REPO / _L126_CHECKS, tmp_path / _L126_CHECKS)
     return tmp_path
 
 

@@ -1645,6 +1645,15 @@ covering every row and fails if it reports a name, kind or pass the table does n
 allow, or never reports a row; it reads contract.py's source for every check name it
 reports and with which outcome.
 
+The table is derived from the test types registered in
+`tools/template_manager/checks/` (ADR 0068). Route types are selected by the template's
+`OPENAI_ROUTES`; feature types by the caller's `--features`, which adds checks and never
+changes the routes. An unknown type is a configuration error, a feature whose route is
+not declared is an `error` row, and a feature with no check yet (`external/tools` and
+the rest) is `skipped`, never passed. `external/vision` is structural and scoped to
+OpenAI engine images, so L126 accepts it; it runs only when a caller passes
+`--features vision`, and no gate does. `external/vision-read` is an answer check.
+
 **Allowed, deliberately: checks that run or not depending on the template.**
 `contract/cap:tools` without the tools flag, the chat-only contract checks on a template
 that does not declare chat, `external/undeclared/chat` on one that does, and a ComfyUI

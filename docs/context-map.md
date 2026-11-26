@@ -91,6 +91,11 @@ stock pytorch -mini image, with its own lock file and README (ADR 0046).
   Requires `ENV VAST_ENGINE_PYTHON` (and `VAST_ENGINE_IMPORT`) in the Dockerfile; builds
   `/venv/main` via `venv-mirror build`, never with `--system-site-packages` (L101).
 - `model-ui/` (**Python**, Starlette proxy) — shared inference UI for vLLM/SGLang.
+- `template_manager/` (**Python**) — `test_template.py` rents an
+  instance for a template and tests it (ADR 0059). Its client-side checks are one
+  module per test type under `checks/`, listed in `checks.REGISTRY` (ADR 0068);
+  `external_checks.py` selects them: route types from the template's `OPENAI_ROUTES`,
+  feature types (`vision`) from the caller's `--features`. Fixtures sit beside the checks.
 
 ## 7. CI — .github/
 Per `.github/AGENTS.md`: native-arch builds (no QEMU) → arch-suffixed tags to
