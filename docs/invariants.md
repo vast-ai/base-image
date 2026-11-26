@@ -2547,3 +2547,22 @@ the engine interpreter's own site directories (ADR 0048). Verified against the i
 Exemptions: base and pytorch images (their conda `/venv/main` owns its packages and never
 inherited); `VAST_ENGINE_PYTHON=none` images have no mirror and nothing to verify.
 Runtime check: `base/46-venv-mirror.sh`.
+
+### An install into the mirrored /venv/main is held to what the engine provides — **GATED (L130)**
+
+On an external image `/venv/main` mirrors the engine's packages (the section above). An
+install that is free to choose versions replaces a mirrored package with a newer copy
+whenever something it pulls asks for one, and `venv-mirror verify` then fails the build,
+correctly: the engine would run the copy.
+
+- Measured 2026-11-26 on the vllm-omni v0.34.0 build. `tools/convert-non-vast-image.sh`
+  ran a plain `uv pip install ipykernel`; that resolved ipython 9.19.1, which requires
+  psutil >= 7; the engine ships psutil 6.1.0; uv removed it and installed 7.2.2. Nothing
+  in this tree had changed. The engine's psutil had.
+- The rule: every `uv pip install --python /venv/main/bin/python` in the convert script
+  and in an external image's Dockerfile carries `--constraint`. The script freezes what
+  is installed and constrains its own installs to that; the two Dockerfiles that add Ray
+  already did.
+- Not covered: an install that names its interpreter through a variable, as
+  `tools/install-vllm-audio-extras.sh` does. Its package list is read from the engine's
+  own metadata. The build's `venv-mirror verify` is what catches a miss there.

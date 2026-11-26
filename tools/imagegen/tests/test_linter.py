@@ -582,7 +582,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L113", "L114", "L120",
+    "L110", "L111", "L113", "L114", "L120", "L130",
 })
 
 
@@ -5885,3 +5885,47 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     tpl.write_text(text.replace(anchor, extra + anchor, 1))
     codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
     assert codes == (["L106"] if fires else []), codes
+
+
+# ---- L130: an install into the mirrored /venv/main is constrained ----
+#
+# Measured 2026-11-26 on the vllm-omni v0.34.0 build. The convert script's plain
+# `uv pip install ipykernel` resolved an ipython that requires psutil >= 7; the engine
+# ships 6.1.0, uv replaced the mirrored copy, and `venv-mirror verify` failed the build.
+
+_L130_REPO = find_repo_root(Path(__file__).resolve().parent)
+
+
+def _l130_tree(tmp_path, script=None, dockerfile=None):
+    (tmp_path / "tools").mkdir(parents=True, exist_ok=True)
+    if script is not None:
+        (tmp_path / "tools/convert-non-vast-image.sh").write_text(script)
+    if dockerfile is not None:
+        d = tmp_path / "external/engine"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "Dockerfile").write_text(dockerfile)
+    return tmp_path
+
+
+def test_mut_L130_the_real_convert_script_with_its_constraint_dropped_fires(tmp_path):
+    real = (_L130_REPO / "tools/convert-non-vast-image.sh").read_text()
+    assert not _codes(_l130_tree(tmp_path / "ok", script=real), "L130")
+    dropped = real.replace(' --constraint "$main_constraints"', "")
+    assert dropped != real
+    found = _codes(_l130_tree(tmp_path / "mut", script=dropped), "L130")
+    assert len(found) == 2 and any("ipykernel" in f.msg for f in found)
+
+
+def test_L130_reads_a_dockerfile_install_across_its_continuation_lines(tmp_path):
+    free = ("RUN uv pip freeze --python /venv/main/bin/python > /tmp/c.txt && \\\n"
+            "    uv pip install --python /venv/main/bin/python \\\n"
+            "        --no-cache-dir ray[default]\n")
+    assert _codes(_l130_tree(tmp_path / "free", dockerfile=free), "L130")
+    held = free.replace("--no-cache-dir", "--no-cache-dir --constraint /tmp/c.txt")
+    assert not _codes(_l130_tree(tmp_path / "held", dockerfile=held), "L130")
+
+
+def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
+    other = ("# uv pip install --python /venv/main/bin/python anything\n"
+             "RUN uv pip install --python /opt/model-ui/venv/bin/python -r requirements.txt\n")
+    assert not _codes(_l130_tree(tmp_path, dockerfile=other, script=other), "L130")

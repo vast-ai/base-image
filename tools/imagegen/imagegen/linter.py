@@ -115,6 +115,7 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, which blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L130", ERROR, "Every `uv pip install` into `/venv/main` in `tools/convert-non-vast-image.sh` and in an external image's Dockerfile carries `--constraint`. On an external image `/venv/main` mirrors the engine's own packages (ADR 0048), and an install that is free to choose versions replaces a mirrored package with a newer copy whenever something it pulls asks for one. `venv-mirror verify` then fails the build, correctly: the engine would run the copy. Measured 2026-11-26 on the vllm-omni v0.34.0 build: the script's plain `uv pip install ipykernel` resolved ipython 9.19.1, which requires psutil >= 7; the engine ships psutil 6.1.0, so uv removed it and installed 7.2.2, and no v0.34.0 image could be built. Nothing in our tree had changed; the engine's psutil had. Constrained to what is already installed, the same command resolves ipython 9.12.0 and leaves psutil alone. The two Dockerfiles that add Ray already did this; the shared script did not"),
     ("L129", ERROR, "A workflow that builds upstream registry tags on both amd64 and arm64 builds and merges only the architectures upstream published for each tag. The variant matrix used to be crossed with a fixed [amd64, arm64] list. Upstream publishes some tags for one architecture only (measured 2026-11-23 on lmsysorg/sglang: `dev-ernie-55-flash` is amd64 only, `dev-inkling-2-small-cu134` and `qwen38-fn-rubin` are arm64 only), so the build for the missing architecture failed with `no match for platform in manifest` or `exec format error`, and because promotion requires every build job to succeed, the run published nothing, including a sibling variant that had built on both. The rule requires three things of a workflow that has a `check-dockerhub-release` step and an `ARCHES_JSON` naming linux/arm64: the matrix entry records `arches`, the cross-product filters on it, and `merge-arch-manifests` is passed `arches:`. ADR 0035, amendment 2026-11-23"),
     ("L120", ERROR, "Every `--with` in an `xcaddy build` names a version, including one that replaces the module with a local path (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`). xcaddy turns a `--with` that has no version into `go get <module>`, which Go reads as the latest release. On the Caddy module that request sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the two agree only while the pin IS the latest release: the base built while v2.11.7 was the latest, and once upstream published v2.11.8 and v2.11.9 every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`, though the local replacement meant v2.11.9 would never have been compiled. On any other module a versionless `--with` floats silently. ADR 0057 requires every Caddy build input to be pinned"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
@@ -4271,6 +4272,31 @@ def check_convert_builds_the_mirror(repo: Path) -> Iterable[Finding]:
                       "mirror the engine's site-packages")
 
 
+# L130 — an install into the mirrored /venv/main is held to what the engine provides.
+_MAIN_VENV_INSTALL_RE = re.compile(
+    r"uv\s+pip\s+install\b[^\n]*--python\s+/venv/main/bin/python[^\n]*")
+
+
+def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
+    """L130 — every `uv pip install` into /venv/main, in the convert script and in an
+    external Dockerfile, carries `--constraint`."""
+    paths = [repo / "tools" / "convert-non-vast-image.sh",
+             *sorted(repo.glob("external/*/Dockerfile"))]
+    for path in paths:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace").replace("\\\n", " ")
+        code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+        for m in _MAIN_VENV_INSTALL_RE.finditer(code):
+            if "--constraint" in m.group(0):
+                continue
+            what = " ".join(m.group(0).split())[:110]
+            yield Finding("L130", ERROR, "repo", str(path.relative_to(repo)),
+                          f"`{what}` installs into /venv/main without `--constraint`: it "
+                          f"can replace a package mirrored from the engine with a newer "
+                          f"copy, and `venv-mirror verify` then fails the build (L130)")
+
+
 def check_update_portal_paths_agree(repo: Path) -> Iterable[Finding]:
     """L104 (repo) — update-portal sets up its download and its argument parse on every
     path, and never finishes with an empty installed VERSION."""
@@ -4702,6 +4728,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_qa_selection_is_validated,
     check_qa_override_is_the_pattern,
     check_convert_builds_the_mirror,
+    check_main_venv_installs_are_constrained,
     check_jobs_refresh_runner_ca_first,
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
     check_base_defaults_are_dated,
