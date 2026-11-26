@@ -4279,8 +4279,10 @@ _MAIN_VENV_PYTHON = "/venv/main/bin/python"
 
 def _shell_commands(line: str) -> list[list[str]]:
     """One logical line as commands, each a list of words. Commands end at an unquoted
-    `&&`, `||`, `;` or `|`; an unquoted `#` that starts a word ends the line. Quotes
-    group a word and are removed, so a quoted `;` or `#` is part of its word."""
+    `&&`, `||`, `;` or `|`, and at a parenthesis or backquote (a subshell or a command
+    substitution holds commands of its own); an unquoted `#` that starts a word ends
+    the line. Quotes group a word and are removed, so a quoted `;` or `#` is part of
+    its word."""
     commands, words, word, quote, in_word = [], [], [], None, False
     i, n = 0, len(line)
 
@@ -4315,7 +4317,7 @@ def _shell_commands(line: str) -> list[list[str]]:
             in_word = True
         elif c.isspace():
             end_word()
-        elif c in ";&|":
+        elif c in ";&|()`":
             end_command()
         elif c == "#" and not in_word:
             break
@@ -4328,7 +4330,8 @@ def _shell_commands(line: str) -> list[list[str]]:
 
 
 # Words that may stand before the command a shell actually runs.
-_SHELL_PREFIX = frozenset({"RUN", "then", "else", "do", "!", "{", "(", "time", "exec", "env"})
+_SHELL_PREFIX = frozenset({"RUN", "if", "elif", "then", "else", "while", "until", "do", "!",
+                           "{", "time", "exec", "env"})
 
 
 def _unconstrained_main_venv_install(words: list[str]) -> bool:

@@ -5949,6 +5949,11 @@ def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
     # a Dockerfile's exec form, and the words a shell allows before a command
     'RUN ["uv", "pip", "install", "--python", "/venv/main/bin/python", "ipykernel"]',
     "if true; then UV_NO_CACHE=1 uv pip install --python /venv/main/bin/python ipykernel; fi",
+    # a subshell, a command substitution, and a command used as a condition
+    "(uv pip install --python /venv/main/bin/python ipykernel)",
+    "out=$(uv pip install --python /venv/main/bin/python ipykernel)",
+    "if ! uv pip install --python /venv/main/bin/python ipykernel; then exit 1; fi",
+    "while uv pip install --python /venv/main/bin/python ipykernel; do :; done",
 ])
 def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
     found = _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
