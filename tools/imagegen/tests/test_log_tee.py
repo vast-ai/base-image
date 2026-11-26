@@ -53,10 +53,16 @@ def test_any_way_of_cutting_the_input_gives_the_same_clean_text(log_tee):
             assert _fed(log_tee, pieces) == CLEAN, f"cut at {i} and {j}: {pieces!r}"
 
 
-def test_text_that_only_looks_like_a_sequence_is_not_held_for_ever(log_tee):
+def test_text_that_only_looks_like_a_sequence_is_released_without_its_escape(log_tee):
+    # Past the cap it is not held for ever, and what is released carries no ESC: a
+    # final letter arriving later must not complete a sequence in the clean copy.
     stream = log_tee.CleanStream()
     never_ends = "\x1b[" + "1;" * 200
-    assert stream.feed(never_ends) != ""
+    out = stream.feed(never_ends)
+    assert out != "" and "\x1b" not in out
+    assert "\x1b" not in stream.feed("m rest\n") + stream.flush()
+    # An ESC that begins nothing this tool recognises does not survive either.
+    assert "\x1b" not in _fed(log_tee, ["a\x1b[1~b\n"])
 
 
 def test_the_end_of_input_ends_a_held_line_and_drops_a_sequence_cut_short(log_tee):
