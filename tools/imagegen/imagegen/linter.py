@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import datetime
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -4326,20 +4327,40 @@ def _shell_commands(line: str) -> list[list[str]]:
     return commands
 
 
+# Words that may stand before the command a shell actually runs.
+_SHELL_PREFIX = frozenset({"RUN", "then", "else", "do", "!", "{", "(", "time", "exec", "env"})
+
+
 def _unconstrained_main_venv_install(words: list[str]) -> bool:
-    """Whether a command is `uv pip install` into /venv/main with no constraint file."""
-    for k in range(len(words) - 2):
-        if words[k:k + 3] == ["uv", "pip", "install"]:
-            args = words[k + 3:]
-            break
-    else:
+    """Whether a command RUNS `uv pip install` into /venv/main with no constraint file.
+    `uv` must be the command itself: `echo uv pip install ...` prints text."""
+    k = 0
+    while k < len(words) and (words[k] in _SHELL_PREFIX
+                              or re.fullmatch(r"[A-Za-z_]\w*=.*", words[k])):
+        k += 1
+    if words[k:k + 3] != ["uv", "pip", "install"]:
         return False
+    args = words[k + 3:]
     target = any(a in ("--python", "-p") and nxt == _MAIN_VENV_PYTHON
                  for a, nxt in zip(args, args[1:])) or \
         any(a in (f"--python={_MAIN_VENV_PYTHON}", f"-p={_MAIN_VENV_PYTHON}") for a in args)
     constrained = any(a in ("--constraint", "--constraints", "-c")
                       or a.startswith(("--constraint=", "--constraints=")) for a in args)
     return target and not constrained
+
+
+def _line_commands(line: str) -> list[list[str]]:
+    """The commands on one logical line. A Dockerfile's exec form
+    (`RUN ["uv", "pip", ...]`) is one command given as a JSON list."""
+    m = re.match(r"\s*RUN\s+(\[.*\])\s*$", line)
+    if m:
+        try:
+            argv = json.loads(m.group(1))
+        except ValueError:
+            argv = None
+        if isinstance(argv, list) and all(isinstance(a, str) for a in argv):
+            return [argv]
+    return _shell_commands(line)
 
 
 def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
@@ -4352,7 +4373,7 @@ def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
             continue
         text = path.read_text(encoding="utf-8", errors="replace").replace("\\\n", " ")
         for line in text.splitlines():
-            for words in _shell_commands(line):
+            for words in _line_commands(line):
                 if not _unconstrained_main_venv_install(words):
                     continue
                 what = " ".join(words)[:110]

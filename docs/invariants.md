@@ -2563,6 +2563,10 @@ correctly: the engine would run the copy.
   and in an external image's Dockerfile carries `--constraint`. The script freezes what
   is installed and constrains its own installs to that; the two Dockerfiles that add Ray
   already did.
+- The rule reads commands, not text: it splits a line with shell quoting, requires
+  `uv` to be the command that runs, and reads a Dockerfile's exec form as a list.
 - Not covered: an install that names its interpreter through a variable, as
   `tools/install-vllm-audio-extras.sh` does. Its package list is read from the engine's
   own metadata. The build's `venv-mirror verify` is what catches a miss there.
+- Not handled: heredocs. An install written as data inside one is reported as if it
+  ran. That is a false report, never a missed install.

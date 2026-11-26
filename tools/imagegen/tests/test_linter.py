@@ -5946,6 +5946,9 @@ def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
     # a quoted `;` or `#` is part of a requirement, not the end of the command
     """uv pip install 'ipykernel; python_version >= "3.9"' --python /venv/main/bin/python""",
     "uv pip install 'ipykernel #egg' --python /venv/main/bin/python",
+    # a Dockerfile's exec form, and the words a shell allows before a command
+    'RUN ["uv", "pip", "install", "--python", "/venv/main/bin/python", "ipykernel"]',
+    "if true; then UV_NO_CACHE=1 uv pip install --python /venv/main/bin/python ipykernel; fi",
 ])
 def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
     found = _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
@@ -5956,6 +5959,8 @@ def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
     "uv pip install --python /venv/main/bin/python --constraint=/tmp/c.txt ipykernel",
     "uv pip install -c /tmp/c.txt 'ipykernel; python_version >= \"3.9\"' -p /venv/main/bin/python",
     "echo 'uv pip install --python /venv/main/bin/python ipykernel'",
+    "echo uv pip install --python /venv/main/bin/python ipykernel",
+    'RUN ["uv", "pip", "install", "--python", "/venv/main/bin/python", "-c", "/c.txt", "x"]',
     'uv pip install --python "$VAST_ENGINE_PYTHON" ipykernel',
 ])
 def test_L130_passes_a_constrained_install_and_what_is_not_an_install_there(tmp_path, line):
