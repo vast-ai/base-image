@@ -26,7 +26,12 @@ LOG_TEE = find_repo_root(Path(__file__).resolve()) / "ROOT/usr/local/bin/log-tee
 def log_tee():
     loader = importlib.machinery.SourceFileLoader("log_tee_under_test", str(LOG_TEE))
     module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-    loader.exec_module(module)
+    # No bytecode beside the tool: ROOT/ is copied into images as it stands.
+    was, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = was
     return module
 
 

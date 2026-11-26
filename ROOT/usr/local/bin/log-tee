@@ -53,8 +53,12 @@ _UNFINISHED_ESCAPE_RE = re.compile(r"\x1b(?:\[\??[0-9;]{0,256})?\Z")
 
 
 class CleanStream:
-    """The clean copy of a stream that arrives in arbitrary pieces: for any way of
-    cutting the input, the pieces' output joined is _clean_for_stdout of the whole.
+    """The clean copy of a stream that arrives in arbitrary pieces. However the input
+    is cut, the output carries no ESC, and it is the text _clean_for_stdout gives for
+    the whole input, except at three edges where there is no whole to agree with:
+    two ESC in a row (which one pairs with the next character depends on the cut), a
+    would-be sequence longer than the hold cap, and a sequence still unfinished when
+    the input ends, which is dropped.
 
     A read can end anywhere, so no piece can be cleaned on its own. Two things wait
     for the next piece, in the order the cleaning applies them:
