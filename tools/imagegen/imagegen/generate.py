@@ -80,9 +80,10 @@ SHELL ["/bin/bash", "-c"]
 WORKDIR /
 # An external image FROMs the upstream, so it does NOT inherit the base image's ENV. TCLLIBPATH
 # is REQUIRED (L055): without it the base pty helper's `unbuffer` (Tcl/Expect) fails early in boot
-# and the launch cascade dies. The /opt/sys-venv/shim PATH entry (convert-non-vast-image.sh puts
-# supervisord/jupyter there) matches vllm/sglang/ollama, but vast_boot.d/10-prep-env.sh also adds
-# it at runtime — belt-and-suspenders, so it's not gated (vllm-omni omits it and is fine).
+# and the launch cascade dies. The /opt/sys-venv/shim PATH entry is REQUIRED too (L131):
+# at instance create the platform runs an unpinned `pip install jupyter ... ipython ...` with
+# the first pip on PATH, which must be /opt/sys-venv's and not the engine's. A boot stage adds
+# the entry as well, but that runs after the platform's install.
 ENV DATA_DIRECTORY=/workspace \\
     WORKSPACE=/workspace \\
     DEBIAN_FRONTEND=noninteractive \\

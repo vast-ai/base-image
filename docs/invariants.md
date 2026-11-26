@@ -2578,3 +2578,29 @@ correctly: the engine would run the copy.
   ran.
 - Build time only. A customer's own packages are installed at first boot without a
   constraint, by design.
+
+### The platform's create-time install lands in /opt/sys-venv, not in the engine — **GATED (L131)**
+
+When an instance is created in Jupyter launch mode the platform rebuilds the image on the
+host and runs `pip install jupyter tornado notebook jupyterlab bash_kernel ipython ...`,
+unpinned, with the first `pip` on PATH. Then it starts Jupyter from PATH.
+
+- `tools/convert-non-vast-image.sh` builds `/opt/sys-venv` with those packages already
+  installed, and `/opt/sys-venv/shim` exposing its binaries, `pip` included. With the
+  shim first on PATH the platform's install lands there and finds nothing to do.
+- An external image does not inherit our base's ENV, so its Dockerfile must put
+  `/opt/sys-venv/shim` on `ENV PATH` ahead of the inherited PATH. That is the rule.
+- Without it the first `pip` is the engine's. The install then changes the engine's own
+  packages, on every host, to whatever PyPI holds on the day that host first builds the
+  image.
+- Measured 2026-11-26 on vllm-omni v0.34.0, the one external image without the entry.
+  The engine ships psutil 6.1.0; the newest ipython requires psutil >= 7; the platform's
+  pip upgraded it in place. On the instance `/venv/main` pointed at files that no longer
+  existed (`base/46-venv-mirror`: dangling links) and the engine failed on
+  `import psutil`. Every draw failed.
+- The entry had been left out on the reasoning that `vast_boot.d/10-prep-env.sh` adds
+  it at boot. The platform's install runs at create, before any boot stage. That stage
+  also removes the shim's `python` and `pip`, so that after boot the image's own
+  interpreters are the ones found.
+- Not covered: entrypoint launch mode and SSH launch mode were not measured.
+

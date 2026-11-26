@@ -262,6 +262,19 @@ def test_mut_external_stage_order_reversed():
     assert "L004" in errs(mut, repo)
 
 
+def test_mut_L131_external_without_the_sys_venv_shim_on_path():
+    for name in ("vllm", "vllm-omni", "sglang", "ollama", "openwebui"):
+        repo, img = _real(name)
+        assert "L131" not in errs(img, repo), name
+        mut = replace(img, text=img.text.replace(":/opt/sys-venv/shim:", ":"))
+        assert mut.text != img.text and "L131" in errs(mut, repo), name
+    # behind the inherited PATH it protects nothing: the engine's pip is found first
+    repo, img = _real("vllm")
+    late = img.text.replace("/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}",
+                            "/opt/instance-tools/bin:${PATH}:/opt/sys-venv/shim")
+    assert late != img.text and "L131" in errs(replace(img, text=late), repo)
+
+
 def test_mut_L116_external_pip_break_removed():
     repo, img = _real("vllm")
     assert "L116" not in errs(img, repo)
@@ -582,7 +595,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L113", "L114", "L120", "L130",
+    "L110", "L111", "L113", "L114", "L120", "L130", "L131",
 })
 
 
