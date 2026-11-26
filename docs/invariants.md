@@ -2548,7 +2548,7 @@ Exemptions: base and pytorch images (their conda `/venv/main` owns its packages 
 inherited); `VAST_ENGINE_PYTHON=none` images have no mirror and nothing to verify.
 Runtime check: `base/46-venv-mirror.sh`.
 
-### An install into the mirrored /venv/main is held to what the engine provides — **GATED (L130)**
+### A build-time install into the mirrored /venv/main is held to what the engine provides — **GATED (L130)**
 
 On an external image `/venv/main` mirrors the engine's packages (the section above). An
 install that is free to choose versions replaces a mirrored package with a newer copy
@@ -2557,16 +2557,24 @@ correctly: the engine would run the copy.
 
 - Measured 2026-11-26 on the vllm-omni v0.34.0 build. `tools/convert-non-vast-image.sh`
   ran a plain `uv pip install ipykernel`; that resolved ipython 9.19.1, which requires
-  psutil >= 7; the engine ships psutil 6.1.0; uv removed it and installed 7.2.2. Nothing
-  in this tree had changed. The engine's psutil had.
-- The rule: every `uv pip install --python /venv/main/bin/python` in the convert script
-  and in an external image's Dockerfile carries `--constraint`. The script freezes what
-  is installed and constrains its own installs to that; the two Dockerfiles that add Ray
-  already did.
-- The rule reads commands, not text: it splits a line with shell quoting, requires
-  `uv` to be the command that runs, and reads a Dockerfile's exec form as a list.
-- Not covered: an install that names its interpreter through a variable, as
-  `tools/install-vllm-audio-extras.sh` does. Its package list is read from the engine's
-  own metadata. The build's `venv-mirror verify` is what catches a miss there.
-- Not handled: heredocs. An install written as data inside one is reported as if it
-  ran. That is a false report, never a missed install.
+  psutil >= 7 (as every ipython from 9.13 does); the engine ships psutil 6.1.0; uv
+  removed it and installed 7.2.2. Nothing in this tree had changed. The engine's psutil
+  had.
+- The script freezes what is installed and constrains its own installs to that; the two
+  Dockerfiles that add Ray already did. `ipykernel` has a floor (`>=6.29`), so an engine
+  whose packages allow only an older kernel fails the build instead of shipping one that
+  no test starts.
+- **`venv-mirror verify --build` is the gate.** Every image with a mirror runs it, and it
+  fails the build on any replaced package however the install was written.
+- **L130 is an early warning**, so the common mistake is caught without a build. It reads
+  `uv pip install` in the convert script and in external Dockerfiles, where `uv` is the
+  command that runs and the environment is named by `--python`/`-p` (the directory or any
+  path in it) or by a `VIRTUAL_ENV=`/`UV_PYTHON=` assignment in front of the command. It
+  splits a line with shell quoting and reads a Dockerfile's exec form as a list.
+- L130 does not see: `pip` run from the environment, an activated environment, `uv`
+  behind a wrapper or with an option before `pip`, an interpreter named through a
+  variable (as `tools/install-vllm-audio-extras.sh` does), or a constraint file that
+  constrains nothing. An install written as data inside a heredoc is reported as if it
+  ran.
+- Build time only. A customer's own packages are installed at first boot without a
+  constraint, by design.

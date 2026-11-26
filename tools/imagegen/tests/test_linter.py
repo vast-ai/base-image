@@ -5954,6 +5954,13 @@ def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
     "out=$(uv pip install --python /venv/main/bin/python ipykernel)",
     "if ! uv pip install --python /venv/main/bin/python ipykernel; then exit 1; fi",
     "while uv pip install --python /venv/main/bin/python ipykernel; do :; done",
+    # the environment named another way: its directory, another path in it, a variable
+    "uv pip install --python /venv/main/bin/python3 ipykernel",
+    "uv pip install -p /venv/main ipykernel",
+    "VIRTUAL_ENV=/venv/main uv pip install ipykernel",
+    "UV_PYTHON=/venv/main/bin/python uv pip install ipykernel",
+    # a BuildKit flag between RUN and the command
+    "RUN --mount=type=cache,target=/root/.cache/uv uv pip install --python /venv/main/bin/python ipykernel",
 ])
 def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
     found = _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
@@ -5965,6 +5972,10 @@ def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
     "uv pip install -c /tmp/c.txt 'ipykernel; python_version >= \"3.9\"' -p /venv/main/bin/python",
     "echo 'uv pip install --python /venv/main/bin/python ipykernel'",
     "echo uv pip install --python /venv/main/bin/python ipykernel",
+    "uv pip install --python /venv/main/bin/python -c/tmp/c.txt ipykernel",
+    # --python names the environment even when VIRTUAL_ENV says otherwise
+    "VIRTUAL_ENV=/venv/main uv pip install --python /opt/model-ui/venv/bin/python x",
+    "VIRTUAL_ENV=/opt/sys-venv uv pip install x",
     'RUN ["uv", "pip", "install", "--python", "/venv/main/bin/python", "-c", "/c.txt", "x"]',
     'uv pip install --python "$VAST_ENGINE_PYTHON" ipykernel',
 ])
