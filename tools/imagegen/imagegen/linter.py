@@ -2424,7 +2424,7 @@ def _final_stage_path(text: str) -> list[str]:
     for ins in parse(text):
         if ins.cmd == "FROM":
             done[name] = cur
-            words = ins.value.split()
+            words = [w for w in ins.value.split() if not w.startswith("--")]
             cur = done.get(words[0], _INHERITED_PATH) if words else _INHERITED_PATH
             name = words[2] if len(words) >= 3 and words[1].upper() == "AS" else ""
         elif ins.cmd == "ENV":

@@ -281,6 +281,10 @@ def test_mut_L131_external_without_the_sys_venv_shim_on_path():
     line = "ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}\n"
     elsewhere = "FROM scratch AS other\n" + line + img.text.replace(line, "")
     assert line in img.text and "L131" in errs(replace(img, text=elsewhere), repo)
+    # a stage built FROM this one keeps its PATH, with or without a FROM flag
+    for flag in ("", "--platform=$TARGETPLATFORM "):
+        child = img.text + f"\nFROM {flag}vllm_build AS final\n"
+        assert "L131" not in errs(replace(img, text=child), repo), flag
 
 
 def test_mut_L116_external_pip_break_removed():
