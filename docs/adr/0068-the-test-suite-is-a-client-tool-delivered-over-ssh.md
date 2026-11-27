@@ -10,6 +10,10 @@
 - **Amended 2026-11-26 (owner decision, not reviewed):** a template declares its
   model's features in `<ENGINE>_EXPECT_CAPS`; the caller's argument adds to that
   (decisions 2 and 4). The reviewed text had the caller as the only source.
+- **Draft amendment 2026-11-27 (not reviewed, not yet confirmed by the owner):**
+  types beyond chat. A feature belongs to a route, not only to chat; generated media
+  is checked by its container; an input the model is given must be shown to matter
+  (decisions 17 to 22). Until confirmed, decisions 1 to 16 stand as written.
 - **Amends:** [ADR 0059](0059-template-testing-lives-in-base-image-in-two-layers.md)
   D1 (where on-box checks are stored), D2 (the vocabulary a caller may declare) and D3
   (what a consumer pins).
@@ -136,6 +140,89 @@ What changes is where the on-box code is stored and how it reaches the box.
    is accepted, and the prompt costs more tokens with the image than without. Its
    answer check reads a known token from a committed fixture. Further types are built
    when a template needs them. Answer checks never gate image promotion (ADR 0031).
+
+### Types beyond chat (draft amendment, 2026-11-27)
+
+Decisions 2 and 5 were written for a chat model. The templates now being prepared
+serve speech, transcription, images, video and generated audio, and chat models that
+take or return audio. Their routes are already names `OPENAI_ROUTES` can declare; what
+is missing is the checks, and a place for features that are not the chat route's.
+
+17. **A feature belongs to one route.** Decision 2 says a feature is what the chat
+    model accepts or returns. That becomes: what the model behind a declared route
+    accepts or returns beyond the route's plain request. Each feature names its route
+    in its unit (decision 1 already requires this), and decision 3 applies unchanged:
+    a feature whose route is not declared is an error. Features are still declared in
+    `<ENGINE>_EXPECT_CAPS`, and `--features` still adds for one run.
+18. **A name is added with its unit, not before.** The list in decision 2 named three
+    features that have no check. That is not repeated. The names expected, each added
+    by the change that builds its unit:
+    - chat: `audio-input`, `audio-output`;
+    - speech: `voice-clone` (a reference recording is given), `voice-design` (a voice
+      is described in text);
+    - videos: an image as input, audio as input, and sound in the output.
+    A plain route (`images`, `image-edits`, `videos`, `audio-generate`,
+    `transcriptions`) is a route type, not a feature, and needs no declaration beyond
+    `OPENAI_ROUTES`.
+19. **Generated media is checked by its container, on the client, with no decoder.**
+    The structural check of a generating route is: the request is accepted, and the
+    reply is a file of the kind asked for, with the size or length asked for. For
+    audio that is the header, sample rate and duration, as the speech type does today.
+    For an image, the format's header and its dimensions. For video, the container's
+    own index: a video track, its dimensions and duration, and an audio track when
+    sound is declared. All of it is read with the standard library. Whether the
+    picture shows what was asked for is an answer check and never gates (ADR 0031).
+20. **An input must be shown to matter, or the result says it was not shown.** A check
+    that only sends a reference recording or an input image passes on an engine that
+    ignores it. So a feature that gives the model an input has, as its structural
+    check, evidence that the input was used:
+    - where the engine counts it (`audio-input` on chat): the prompt costs more tokens
+      with the input than without, as vision does;
+    - where it does not (voice clone, image edit, image to video): the same request
+      with the same seed, with and without the input, gives different output.
+    If an engine offers neither a count nor a seed, the check reports the request as
+    accepted and the use of the input as not shown. That is a separate result name,
+    and it is never reported as a pass of the feature.
+21. **Each generating type carries one small workload, and a template may not tune
+    it.** The unit states the smallest request that proves the route: a few words of
+    speech, one small image at few steps, the shortest clip the route accepts. A model
+    that refuses that request is open point 1 below, not yet a reason for a per-template
+    setting. The same workloads are what a measurement run uses, so a measurement and
+    a test of one template exercise the same request.
+22. **Fixtures are made for this repository.** A reference recording is synthetic
+    speech generated for the purpose, never a person's voice. Input images and audio
+    are generated or drawn for the purpose. Each fixture is committed with a note of
+    how it was made.
+
+**Order within this amendment.** One type at a time, each used on a real template
+before the next: the speech features, then audio on chat, then images and image
+edits, then video, then generated audio. Decision 4's last point applies to each:
+a published image's baked contract check rejects a name it does not know, so a
+template declares a new feature only where the run delivers the checks.
+
+**Settled by the owner, 2026-11-27.**
+
+- Promotion checks that an image is functional. It is not expected to confirm the
+  image works with every kind of model, and it keeps its one small chat model. Testing
+  a model-library entry is what surfaces a fault in one of these types.
+- Decision 20's seed comparison stands as written. That a fixed seed repeats its
+  output is not treated as a risk to settle first.
+- The asynchronous video route and the route for generated music are left out and
+  will be revisited. The serverless worker is not expected to handle them today.
+
+- A model offered for serverless use declares at least one route in `OPENAI_ROUTES`.
+  A model with no OpenAI route is therefore not offered for serverless use; it has no
+  client check, and the on-box suite is its whole test. The flag that marks a model as
+  serverless is held where model-library entries are kept, so the rule is checked
+  there, not by this suite.
+
+**Open.**
+
+1. Decision 21 against models with a minimum request. Some video models accept only
+   certain frame counts or sizes. A variable in the template that informs the test is
+   a candidate, and would be a new declaration beside the two in decision 2. It needs
+   planning before it is decided; until then decision 21 stands and such a model has
+   no video check.
 
 ### On-box checks
 
