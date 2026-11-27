@@ -9,6 +9,7 @@ the standard library and free of imports from the rest of the package.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -42,6 +43,40 @@ def image_dir(repo: Path, name: str) -> Path | None:
         if d.name == name:
             return d
     return None
+
+
+# A QA gate call names the repository it publishes to and the template it tests with:
+#     repo: ${{ inputs.DOCKERHUB_REPO || 'comfy' }}
+#     template_dir: derivatives/pytorch/derivatives/comfyui/templates/comfyui-qa
+_GATE_REPO_RE = re.compile(
+    r"^\s*repo:\s*(?:\$\{\{[^}\n]*\|\|\s*'([^'\n]+)'\s*\}\}|([\w.-]+))\s*$", re.M)
+_GATE_TEMPLATE_RE = re.compile(r"^\s*template_dir:\s*(\S+)/templates/[^/\s]+\s*$", re.M)
+
+
+def published_image_dirs(repo: Path) -> dict[str, Path]:
+    """{published repository name: image directory}, read from the QA gates.
+
+    An image is not always published under its directory's name (`comfyui` is
+    `vastai/comfy`). The workflow that gates it says both: the repository it publishes
+    to and a template nested under the image it builds. A name that two workflows
+    give to different images is left out.
+    """
+    found: dict[str, set[Path]] = {}
+    for wf in sorted((repo / ".github" / "workflows").glob("*.y*ml")):
+        text = wf.read_text(encoding="utf-8", errors="replace")
+        dirs = {repo / d for d in _GATE_TEMPLATE_RE.findall(text)}
+        if len(dirs) != 1:
+            continue
+        for quoted, bare in _GATE_REPO_RE.findall(text):
+            found.setdefault(quoted or bare, set()).update(dirs)
+    return {name: next(iter(dirs)) for name, dirs in found.items()
+            if len(dirs) == 1 and (next(iter(dirs)) / "Dockerfile").is_file()}
+
+
+def image_dir_for_published(repo: Path, name: str) -> Path | None:
+    """The directory of the image published as `name` (the last part of an image
+    reference, without its tag): what its QA gate says, else the directory so named."""
+    return published_image_dirs(repo).get(name) or image_dir(repo, name)
 
 
 def tests_roots(image: Path) -> list[Path]:

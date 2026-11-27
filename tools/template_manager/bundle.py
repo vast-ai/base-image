@@ -134,10 +134,11 @@ def build(repo, image, *, driver=DRIVER, git_state=_git_state) -> Bundle:
     repo, driver = Path(repo).resolve(), Path(driver)
     suites = _load_suites(repo)
     stem = image_stem(image)
-    image_dir = suites.image_dir(repo, stem)
+    image_dir = suites.image_dir_for_published(repo, stem)
     if image_dir is None:
-        raise BundleError(f"no image directory named {stem!r} in {repo}: the suites for "
-                          f"image {image!r} cannot be resolved")
+        raise BundleError(f"no QA gate publishes {stem!r} and no image directory is named "
+                          f"{stem!r} in {repo}: the suites for image {image!r} cannot be "
+                          f"resolved")
 
     files: dict = {}
 

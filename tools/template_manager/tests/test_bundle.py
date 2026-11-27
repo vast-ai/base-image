@@ -77,6 +77,25 @@ def test_a_base_suite_with_nothing_to_run_is_refused(tmp_path):
         bundle.build(repo, "vastai/base-image", git_state=CLEAN)
 
 
+def test_an_image_published_under_another_name_resolves_through_its_gate(tmp_path):
+    # The real tree: comfyui is published as vastai/comfy, which only its gate says.
+    assert bundle.build(REPO, "vastai/comfy:v1").suites == ["base", "comfyui.d", "pytorch.d"]
+
+    # A name two gates give to different images names neither.
+    repo = make_repo(tmp_path, {"base/10-a.sh": PASS})
+    for image in ("one", "two"):
+        (repo / "external" / image / "templates" / "qa").mkdir(parents=True)
+        (repo / "external" / image / "Dockerfile").write_text("FROM x\n")
+        wf = repo / ".github" / "workflows" / f"build-{image}.yml"
+        wf.parent.mkdir(parents=True, exist_ok=True)
+        wf.write_text("jobs:\n  qa:\n    with:\n      repo: ${{ inputs.R || 'shared' }}\n"
+                      f"      template_dir: external/{image}/templates/qa\n")
+    with pytest.raises(bundle.BundleError, match="cannot be resolved"):
+        bundle.build(repo, "vastai/shared", git_state=CLEAN)
+    (repo / ".github/workflows/build-two.yml").unlink()
+    assert bundle.build(repo, "vastai/shared", git_state=CLEAN).suites == ["base"]
+
+
 def test_an_image_with_no_directory_is_refused_not_given_base_alone(tmp_path):
     repo = make_repo(tmp_path, {"base/10-a.sh": PASS})
     with pytest.raises(bundle.BundleError, match="cannot be resolved"):
