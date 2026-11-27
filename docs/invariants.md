@@ -2590,6 +2590,8 @@ unpinned, with the first `pip` on PATH. Then it starts Jupyter from PATH.
   shim first on PATH the platform's install lands there and finds nothing to do.
 - An external image does not inherit our base's ENV, so its Dockerfile must put
   `/opt/sys-venv/shim` on `ENV PATH` ahead of the inherited PATH. That is the rule.
+  It is read from the final stage's `ENV PATH` assignments applied in order, so a later
+  assignment that drops the shim, or one in another stage, fails it.
 - Without it the first `pip` is the engine's. The install then changes the engine's own
   packages, on every host, to whatever PyPI holds on the day that host first builds the
   image.

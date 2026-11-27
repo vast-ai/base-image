@@ -273,6 +273,14 @@ def test_mut_L131_external_without_the_sys_venv_shim_on_path():
     late = img.text.replace("/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}",
                             "/opt/instance-tools/bin:${PATH}:/opt/sys-venv/shim")
     assert late != img.text and "L131" in errs(replace(img, text=late), repo)
+    # a later assignment that drops the shim is the image's PATH; an earlier one is not
+    dropped = img.text + "\nENV PATH=/usr/local/bin:/usr/bin:/bin\n"
+    assert "L131" in errs(replace(img, text=dropped), repo)
+    assert "L131" not in errs(replace(img, text=img.text + "\nENV PATH=/x:${PATH}\n"), repo)
+    # set only in a stage the image is not built from
+    line = "ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}\n"
+    elsewhere = "FROM scratch AS other\n" + line + img.text.replace(line, "")
+    assert line in img.text and "L131" in errs(replace(img, text=elsewhere), repo)
 
 
 def test_mut_L116_external_pip_break_removed():

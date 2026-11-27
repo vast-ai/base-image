@@ -2410,14 +2410,42 @@ def check_external_pip_break(img: Image) -> Iterable[Finding]:
                       "the base ENV, and pip refuses system installs on an externally managed Python")
 
 
+_PATH_ASSIGN = re.compile(r"""(?:^|\s)PATH(?:=|\s+)("[^"]*"|'[^']*'|\S+)""")
+_INHERITED_PATH = "<inherited>"
+
+
+def _final_stage_path(text: str) -> list[str]:
+    """The final stage's PATH as a list of entries, with the PATH it starts from (the
+    engine image's) as the one entry `_INHERITED_PATH`. ENV assignments are applied in
+    order, each `$PATH` replaced by the value so far; a stage built FROM an earlier
+    stage starts with that stage's value."""
+    done: dict[str, str] = {}
+    name, cur = "", _INHERITED_PATH
+    for ins in parse(text):
+        if ins.cmd == "FROM":
+            done[name] = cur
+            words = ins.value.split()
+            cur = done.get(words[0], _INHERITED_PATH) if words else _INHERITED_PATH
+            name = words[2] if len(words) >= 3 and words[1].upper() == "AS" else ""
+        elif ins.cmd == "ENV":
+            for m in _PATH_ASSIGN.finditer(ins.value):
+                val = m.group(1).strip("\"'")
+                cur = re.sub(r"\$\{PATH\}|\$PATH\b", lambda _m, c=cur: c, val)
+    return cur.split(":")
+
+
 def check_external_sys_venv_shim_on_path(img: Image) -> Iterable[Finding]:
-    """L131 — an external image puts /opt/sys-venv/shim on PATH ahead of the inherited
-    PATH, so the platform's create-time `pip install` lands in /opt/sys-venv and not in
-    the engine's own packages. External only."""
+    """L131 — an external image's final stage ends with /opt/sys-venv/shim on PATH ahead
+    of the PATH inherited from the engine image, so the platform's create-time
+    `pip install` lands in /opt/sys-venv and not in the engine's own packages. A later
+    `ENV PATH=` that drops the shim, or one in another stage, does not count.
+    External only."""
     if img.cls != "external":
         return
-    env = " ".join(i.value for i in parse(img.text) if i.cmd == "ENV")
-    if not re.search(r"\bPATH\s*=\s*\S*/opt/sys-venv/shim:\S*\$\{?PATH\b", env):
+    path = _final_stage_path(img.text)
+    shim = "/opt/sys-venv/shim"
+    if shim not in path or (_INHERITED_PATH in path
+                            and path.index(shim) > path.index(_INHERITED_PATH)):
         yield Finding("L131", ERROR, img.name, "Dockerfile",
                       "external image must put /opt/sys-venv/shim on ENV PATH ahead of the "
                       "inherited PATH — without it the platform's create-time `pip install` "
