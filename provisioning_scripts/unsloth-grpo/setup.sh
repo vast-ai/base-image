@@ -9,8 +9,8 @@ set -euo pipefail
 GRPO_DIR=/workspace/grpo
 
 # Recipe files; never overwrite a copy the user may have edited.
-mkdir -p "$GRPO_DIR"
-for f in train_grpo.py grpo_quickstart.ipynb; do
+mkdir -p "$GRPO_DIR/tasks"
+for f in train_grpo.py grpo_quickstart.ipynb tasks/README.md tasks/math_task.py tasks/toolcall_task.py; do
     [[ -f "$GRPO_DIR/$f" ]] && continue
     curl -fsSL --retry 3 -o "$GRPO_DIR/$f.part" "$GRPO_SRC/$f"
     mv "$GRPO_DIR/$f.part" "$GRPO_DIR/$f"
