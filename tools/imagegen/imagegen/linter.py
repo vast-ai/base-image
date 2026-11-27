@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import datetime
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,6 +116,8 @@ RULES: list[tuple[str, str, str]] = [
     ("L113", ERROR, "A default base reference in an external or derivative Dockerfile (`ARG <NAME>=vastai/base-image:<tag>`) is a DATED tag. The base promote writes dated tags and moves `-auto` ones; it never touches an undated tag like `stock-ubuntu24.04-py312`, so a default pointing at one builds from whatever that tag last held. In 2026-10 all five externals defaulted to it, no workflow overrode it, and its last write was January: every external shipped January's Caddy fork and base tooling through the CA-distrust remediation (ADR 0058)"),
     ("L114", ERROR, "An image built on a base that ships `lib/refresh-ca-data.sh` runs it after its last install step and before `env-hash` (the Dockerfiles in `linter.REFRESH_CA_DATA_DOCKERFILES`, widened as each derivative moves to such a base). The base refreshes its own CA data, but every later install can bring a stale copy back: in 2026-10 the pytorch multi images created supplementary venvs after the base's refresh, each bundling an ensurepip pip 25.0.1 whose vendored certifi trusted the compromised eMudhra chains, which blocked the pytorch promotion (ADR 0058)"),
     ("L115", ERROR, "A derivative or external image that overlays one of the CA-trust files (`lib/refresh-ca-data.sh`, `lib/pip-trust-floor.env` under its own `ROOT/opt/instance-tools/`) carries a byte-identical copy of the base's. Derivatives take these files from their dated base, so an image pinned to a base older than a CA-trust fix overlays the current copies as a one-off until the base is rebuilt; but its `COPY ./ROOT /` then shadows the base, and a copy left behind when the base changes again keeps the old floor and the old refresh -- the drift L110 exists to stop, invisible to L110 because L110 reads only the base's paths. Identical, or removed (ADR 0058)"),
+    ("L131", ERROR, "An external image's Dockerfile puts `/opt/sys-venv/shim` on `ENV PATH` ahead of the inherited `PATH`. When an instance is created in Jupyter launch mode the platform rebuilds the image and runs an unpinned `pip install jupyter ... ipython ...` with the first `pip` on PATH. `tools/convert-non-vast-image.sh` builds `/opt/sys-venv` with those packages already in it and a shim directory exposing its `pip`, so that install lands there and finds nothing to do. Without the shim on PATH the first `pip` is the ENGINE's, and the install changes the engine's own packages on every host, to whatever PyPI holds that day. Measured 2026-11-26 on vllm-omni v0.34.0, the one external image without the entry: the engine ships psutil 6.1.0, the newest ipython requires psutil >= 7, the platform's pip upgraded it in place, and on the instance `/venv/main` pointed at files that no longer existed and the engine could not import psutil. It failed on every draw. The entry was left out on the reasoning that `vast_boot.d/10-prep-env.sh` adds it at boot; the platform's install runs at create, before any boot stage. External only: an image built on our base inherits the entry"),
+    ("L130", ERROR, "A `uv pip install` into `/venv/main` in `tools/convert-non-vast-image.sh` or in an external image's Dockerfile carries a constraint file. On an external image `/venv/main` mirrors the engine's own packages (ADR 0048), and an install that is free to choose versions replaces a mirrored package with a newer copy whenever something it pulls asks for one. `venv-mirror verify` then fails the build, correctly: the engine would run the copy. Measured 2026-11-26 on the vllm-omni v0.34.0 build: the script's plain `uv pip install ipykernel` resolved ipython 9.19.1, which requires psutil >= 7; the engine ships psutil 6.1.0, so uv removed it and installed 7.2.2, and no v0.34.0 image could be built. Nothing in our tree had changed; the engine's psutil had. Constrained to what is already installed, the same command resolves ipython 9.12.0 and leaves psutil alone. The two Dockerfiles that add Ray already did this; the shared script did not. THIS RULE IS AN EARLY WARNING, NOT THE GATE. It reads `uv pip install` where `uv` is the command that runs and the environment is named by `--python`/`-p` (the directory or any path in it) or by a `VIRTUAL_ENV=`/`UV_PYTHON=` assignment in front of the command. It does not see `pip` run from the environment, an activated environment, `uv` behind a wrapper or with an option before `pip`, or an interpreter named through a variable. The gate for all of those is `venv-mirror verify --build`, which every image with a mirror runs and which fails the build on any replaced package"),
     ("L129", ERROR, "A workflow that builds upstream registry tags on both amd64 and arm64 builds and merges only the architectures upstream published for each tag. The variant matrix used to be crossed with a fixed [amd64, arm64] list. Upstream publishes some tags for one architecture only (measured 2026-11-23 on lmsysorg/sglang: `dev-ernie-55-flash` is amd64 only, `dev-inkling-2-small-cu134` and `qwen38-fn-rubin` are arm64 only), so the build for the missing architecture failed with `no match for platform in manifest` or `exec format error`, and because promotion requires every build job to succeed, the run published nothing, including a sibling variant that had built on both. The rule requires three things of a workflow that has a `check-dockerhub-release` step and an `ARCHES_JSON` naming linux/arm64: the matrix entry records `arches`, the cross-product filters on it, and `merge-arch-manifests` is passed `arches:`. ADR 0035, amendment 2026-11-23"),
     ("L120", ERROR, "Every `--with` in an `xcaddy build` names a version, including one that replaces the module with a local path (`--with github.com/caddyserver/caddy/v2@${CADDY_VERSION}=/src/caddy`). xcaddy turns a `--with` that has no version into `go get <module>`, which Go reads as the latest release. On the Caddy module that request sits beside xcaddy's own `go get caddy/v2@<pinned>`, and the two agree only while the pin IS the latest release: the base built while v2.11.7 was the latest, and once upstream published v2.11.8 and v2.11.9 every base build failed with `caddy/v2@v2.11.7 conflicts with caddy/v2@upgrade (v2.11.9)`, though the local replacement meant v2.11.9 would never have been compiled. On any other module a versionless `--with` floats silently. ADR 0057 requires every Caddy build input to be pinned"),
     ("L116", ERROR, "External images set ENV PIP_BREAK_SYSTEM_PACKAGES=1 (they FROM upstream, not our base, so don't inherit it) -- else pip refuses every install into the system Python of a distro that marks it externally managed, and base/55-environment fails. Open WebUI shipped without it and nothing gated it, because its build had no live QA"),
@@ -2379,10 +2382,9 @@ def check_external_env(img: Image) -> Iterable[Finding]:
     """L055 — an external image FROMs the upstream, so it does NOT inherit the base image's ENV
     and must set `TCLLIBPATH=/usr/lib/tcltk/default` itself, or the base pty helper's `unbuffer`
     (Tcl/Expect) fails early in boot ("can't find package Expect") and the launch cascade dies.
-    llama-factory scaffolded without it and died on a live box; every working external (incl.
-    vllm-omni, which omits the /opt/sys-venv/shim PATH entry — that one is runtime-provided by
-    vast_boot.d/10-prep-env.sh, so NOT gated here) sets it. Fix surface: the Dockerfile ENV.
-    External only."""
+    llama-factory scaffolded without it and died on a live box; every working external sets
+    it. Fix surface: the Dockerfile ENV. External only. (The /opt/sys-venv/shim PATH entry
+    is L131.)"""
     if img.cls != "external":
         return
     env = " ".join(i.value for i in parse(img.text) if i.cmd == "ENV")
@@ -2406,6 +2408,48 @@ def check_external_pip_break(img: Image) -> Iterable[Finding]:
         yield Finding("L116", ERROR, img.name, "Dockerfile",
                       "external image must set ENV PIP_BREAK_SYSTEM_PACKAGES=1 — it does not inherit "
                       "the base ENV, and pip refuses system installs on an externally managed Python")
+
+
+_PATH_ASSIGN = re.compile(r"""(?:^|\s)PATH(?:=|\s+)("[^"]*"|'[^']*'|\S+)""")
+_INHERITED_PATH = "<inherited>"
+
+
+def _final_stage_path(text: str) -> list[str]:
+    """The final stage's PATH as a list of entries, with the PATH it starts from (the
+    engine image's) as the one entry `_INHERITED_PATH`. ENV assignments are applied in
+    order, each `$PATH` replaced by the value so far; a stage built FROM an earlier
+    stage starts with that stage's value."""
+    done: dict[str, str] = {}
+    name, cur = "", _INHERITED_PATH
+    for ins in parse(text):
+        if ins.cmd == "FROM":
+            done[name] = cur
+            words = [w for w in ins.value.split() if not w.startswith("--")]
+            cur = done.get(words[0], _INHERITED_PATH) if words else _INHERITED_PATH
+            name = words[2] if len(words) >= 3 and words[1].upper() == "AS" else ""
+        elif ins.cmd == "ENV":
+            for m in _PATH_ASSIGN.finditer(ins.value):
+                val = m.group(1).strip("\"'")
+                cur = re.sub(r"\$\{PATH\}|\$PATH\b", lambda _m, c=cur: c, val)
+    return cur.split(":")
+
+
+def check_external_sys_venv_shim_on_path(img: Image) -> Iterable[Finding]:
+    """L131 — an external image's final stage ends with /opt/sys-venv/shim on PATH ahead
+    of the PATH inherited from the engine image, so the platform's create-time
+    `pip install` lands in /opt/sys-venv and not in the engine's own packages. A later
+    `ENV PATH=` that drops the shim, or one in another stage, does not count.
+    External only."""
+    if img.cls != "external":
+        return
+    path = _final_stage_path(img.text)
+    shim = "/opt/sys-venv/shim"
+    if shim not in path or (_INHERITED_PATH in path
+                            and path.index(shim) > path.index(_INHERITED_PATH)):
+        yield Finding("L131", ERROR, img.name, "Dockerfile",
+                      "external image must put /opt/sys-venv/shim on ENV PATH ahead of the "
+                      "inherited PATH — without it the platform's create-time `pip install` "
+                      "runs the engine's pip and replaces the engine's packages (L131)")
 
 
 def check_llama_cuda_assert(img: Image) -> Iterable[Finding]:
@@ -2881,7 +2925,8 @@ IMAGE_CHECKS: list[Callable[[Image], Iterable[Finding]]] = [
     check_labels, check_env_hash, check_copy_root, check_from_class, check_base_pin,
     check_torch_guard, check_no_auto_backend, check_uv_pip,
     check_conf_triple, check_util_order, check_supervisor_executable,
-    check_external_env, check_external_pip_break, check_llama_cuda_assert, check_llama_sass_coverage,
+    check_external_env, check_external_pip_break, check_external_sys_venv_shim_on_path,
+    check_llama_cuda_assert, check_llama_sass_coverage,
     check_vendored_script_is_executed, check_forge_opencv_is_headless,
     check_ai_toolkit_binds_loopback, check_curl_download_fails_on_http_error,
     check_engine_python_declared]
@@ -4271,6 +4316,146 @@ def check_convert_builds_the_mirror(repo: Path) -> Iterable[Finding]:
                       "mirror the engine's site-packages")
 
 
+# L130 — an install into the mirrored /venv/main is held to what the engine provides.
+_MAIN_VENV = "/venv/main"
+
+
+def _shell_commands(line: str) -> list[list[str]]:
+    """One logical line as commands, each a list of words. Commands end at an unquoted
+    `&&`, `||`, `;` or `|`, and at a parenthesis or backquote (a subshell or a command
+    substitution holds commands of its own); an unquoted `#` that starts a word ends
+    the line. Quotes group a word and are removed, so a quoted `;` or `#` is part of
+    its word."""
+    commands, words, word, quote, in_word = [], [], [], None, False
+    i, n = 0, len(line)
+
+    def end_word():
+        nonlocal word, in_word
+        if in_word:
+            words.append("".join(word))
+        word, in_word = [], False
+
+    def end_command():
+        nonlocal words
+        end_word()
+        if words:
+            commands.append(words)
+        words = []
+
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"' and i + 1 < n:
+                i += 1
+                word.append(line[i])
+            else:
+                word.append(c)
+        elif c in "'\"":
+            quote, in_word = c, True
+        elif c == "\\" and i + 1 < n:
+            i += 1
+            word.append(line[i])
+            in_word = True
+        elif c.isspace():
+            end_word()
+        elif c in ";&|()`":
+            end_command()
+        elif c == "#" and not in_word:
+            break
+        else:
+            word.append(c)
+            in_word = True
+        i += 1
+    end_command()
+    return commands
+
+
+# Words that may stand before the command a shell actually runs.
+_SHELL_PREFIX = frozenset({"RUN", "if", "elif", "then", "else", "while", "until", "do", "!",
+                           "{", "time", "exec", "env"})
+
+
+def _in_main_venv(value: str) -> bool:
+    """`/venv/main` itself (uv accepts the environment's directory) or a path in it."""
+    return value.rstrip("/") == _MAIN_VENV or value.startswith(_MAIN_VENV + "/")
+
+
+def _unconstrained_main_venv_install(words: list[str]) -> bool:
+    """Whether a command RUNS `uv pip install` into /venv/main with no constraint file.
+    `uv` must be the command itself: `echo uv pip install ...` prints text.
+
+    The environment is named by `--python`/`-p`, or, without one, by a `VIRTUAL_ENV=`
+    or `UV_PYTHON=` assignment in front of the command."""
+    k, env = 0, {}
+    if words[:1] == ["RUN"]:                       # RUN --mount=... --network=... <command>
+        k = 1
+        while k < len(words) and words[k].startswith("--"):
+            k += 1
+    while k < len(words):
+        assignment = re.fullmatch(r"([A-Za-z_]\w*)=(.*)", words[k])
+        if assignment:
+            env[assignment.group(1)] = assignment.group(2)
+        elif words[k] not in _SHELL_PREFIX:
+            break
+        k += 1
+    if words[k:k + 3] != ["uv", "pip", "install"]:
+        return False
+    args = words[k + 3:]
+
+    def values(long, short):
+        """Every value given for an option: two words, `--long=value`, or `-svalue`."""
+        out = [nxt for a, nxt in zip(args, args[1:]) if a in (long, short)]
+        out += [a.split("=", 1)[1] for a in args if a.startswith((long + "=", short + "="))]
+        out += [a[len(short):] for a in args
+                if a.startswith(short) and not a.startswith("--") and len(a) > len(short)
+                and "=" not in a]
+        return out
+
+    pythons = values("--python", "-p")
+    if pythons:
+        target = any(_in_main_venv(v) for v in pythons)
+    else:
+        target = any(_in_main_venv(env.get(name, "")) for name in ("VIRTUAL_ENV", "UV_PYTHON"))
+    constrained = bool(values("--constraint", "-c") or values("--constraints", "-c"))
+    return target and not constrained
+
+
+def _line_commands(line: str) -> list[list[str]]:
+    """The commands on one logical line. A Dockerfile's exec form
+    (`RUN ["uv", "pip", ...]`) is one command given as a JSON list."""
+    m = re.match(r"\s*RUN\s+(\[.*\])\s*$", line)
+    if m:
+        try:
+            argv = json.loads(m.group(1))
+        except ValueError:
+            argv = None
+        if isinstance(argv, list) and all(isinstance(a, str) for a in argv):
+            return [argv]
+    return _shell_commands(line)
+
+
+def check_main_venv_installs_are_constrained(repo: Path) -> Iterable[Finding]:
+    """L130 — every `uv pip install` into /venv/main, in the convert script and in an
+    external Dockerfile, carries `--constraint`."""
+    paths = [repo / "tools" / "convert-non-vast-image.sh",
+             *sorted(repo.glob("external/*/Dockerfile"))]
+    for path in paths:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace").replace("\\\n", " ")
+        for line in text.splitlines():
+            for words in _line_commands(line):
+                if not _unconstrained_main_venv_install(words):
+                    continue
+                what = " ".join(words)[:110]
+                yield Finding("L130", ERROR, "repo", str(path.relative_to(repo)),
+                              f"`{what}` installs into /venv/main without `--constraint`: "
+                              f"it can replace a package mirrored from the engine with a "
+                              f"newer copy, and `venv-mirror verify` then fails the build "
+                              f"(L130)")
+
 def check_update_portal_paths_agree(repo: Path) -> Iterable[Finding]:
     """L104 (repo) — update-portal sets up its download and its argument parse on every
     path, and never finishes with an empty installed VERSION."""
@@ -4702,6 +4887,7 @@ REPO_CHECKS: list[Callable[[Path], Iterable[Finding]]] = [
     check_qa_selection_is_validated,
     check_qa_override_is_the_pattern,
     check_convert_builds_the_mirror,
+    check_main_venv_installs_are_constrained,
     check_jobs_refresh_runner_ca_first,
     check_distrusted_roots_have_one_source, check_trust_env_is_ours_only,
     check_base_defaults_are_dated,

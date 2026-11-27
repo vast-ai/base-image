@@ -2547,3 +2547,62 @@ the engine interpreter's own site directories (ADR 0048). Verified against the i
 Exemptions: base and pytorch images (their conda `/venv/main` owns its packages and never
 inherited); `VAST_ENGINE_PYTHON=none` images have no mirror and nothing to verify.
 Runtime check: `base/46-venv-mirror.sh`.
+
+### A build-time install into the mirrored /venv/main is held to what the engine provides — **GATED (L130)**
+
+On an external image `/venv/main` mirrors the engine's packages (the section above). An
+install that is free to choose versions replaces a mirrored package with a newer copy
+whenever something it pulls asks for one, and `venv-mirror verify` then fails the build,
+correctly: the engine would run the copy.
+
+- Measured 2026-11-26 on the vllm-omni v0.34.0 build. `tools/convert-non-vast-image.sh`
+  ran a plain `uv pip install ipykernel`; that resolved ipython 9.19.1, which requires
+  psutil >= 7 (as every ipython from 9.13 does); the engine ships psutil 6.1.0; uv
+  removed it and installed 7.2.2. Nothing in this tree had changed. The engine's psutil
+  had.
+- The script freezes what is installed and constrains its own installs to that; the two
+  Dockerfiles that add Ray already did. `ipykernel` has a floor (`>=6.29`), so an engine
+  whose packages allow only an older kernel fails the build instead of shipping one that
+  no test starts.
+- **`venv-mirror verify --build` is the gate.** Every image with a mirror runs it, and it
+  fails the build on any replaced package however the install was written.
+- **L130 is an early warning**, so the common mistake is caught without a build. It reads
+  `uv pip install` in the convert script and in external Dockerfiles, where `uv` is the
+  command that runs and the environment is named by `--python`/`-p` (the directory or any
+  path in it) or by a `VIRTUAL_ENV=`/`UV_PYTHON=` assignment in front of the command. It
+  splits a line with shell quoting and reads a Dockerfile's exec form as a list.
+- L130 does not see: `pip` run from the environment, an activated environment, `uv`
+  behind a wrapper or with an option before `pip`, an interpreter named through a
+  variable (as `tools/install-vllm-audio-extras.sh` does), or a constraint file that
+  constrains nothing. An install written as data inside a heredoc is reported as if it
+  ran.
+- Build time only. A customer's own packages are installed at first boot without a
+  constraint, by design.
+
+### The platform's create-time install lands in /opt/sys-venv, not in the engine — **GATED (L131)**
+
+When an instance is created in Jupyter launch mode the platform rebuilds the image on the
+host and runs `pip install jupyter tornado notebook jupyterlab bash_kernel ipython ...`,
+unpinned, with the first `pip` on PATH. Then it starts Jupyter from PATH.
+
+- `tools/convert-non-vast-image.sh` builds `/opt/sys-venv` with those packages already
+  installed, and `/opt/sys-venv/shim` exposing its binaries, `pip` included. With the
+  shim first on PATH the platform's install lands there and finds nothing to do.
+- An external image does not inherit our base's ENV, so its Dockerfile must put
+  `/opt/sys-venv/shim` on `ENV PATH` ahead of the inherited PATH. That is the rule.
+  It is read from the final stage's `ENV PATH` assignments applied in order, so a later
+  assignment that drops the shim, or one in another stage, fails it.
+- Without it the first `pip` is the engine's. The install then changes the engine's own
+  packages, on every host, to whatever PyPI holds on the day that host first builds the
+  image.
+- Measured 2026-11-26 on vllm-omni v0.34.0, the one external image without the entry.
+  The engine ships psutil 6.1.0; the newest ipython requires psutil >= 7; the platform's
+  pip upgraded it in place. On the instance `/venv/main` pointed at files that no longer
+  existed (`base/46-venv-mirror`: dangling links) and the engine failed on
+  `import psutil`. Every draw failed.
+- The entry had been left out on the reasoning that `vast_boot.d/10-prep-env.sh` adds
+  it at boot. The platform's install runs at create, before any boot stage. That stage
+  also removes the shim's `python` and `pip`, so that after boot the image's own
+  interpreters are the ones found.
+- Not covered: entrypoint launch mode and SSH launch mode were not measured.
+

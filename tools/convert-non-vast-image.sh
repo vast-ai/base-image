@@ -283,11 +283,23 @@ else:
             /opt/instance-tools/bin/venv-mirror build --venv /venv/main \
                 --engine-python "$VAST_ENGINE_PYTHON"
         fi
+        # Everything added to /venv/main from here on is held to what is already there,
+        # so it adds only what the engine does not provide. A free install replaces a
+        # mirrored package with a newer copy whenever something it pulls asks for one
+        # (ipython >= 9.13 needs psutil >= 7; an engine shipping psutil 6 lost it), and
+        # venv-mirror verify then fails the build (L130). Direct-URL entries, such as an
+        # engine's own wheel, are not constraints.
+        # ipykernel has a floor: held to an engine's old packages, the resolver would
+        # otherwise settle on whatever old kernel fits, and no test starts a kernel. An
+        # engine too old for this floor fails the build here instead.
+        main_constraints=$(mktemp)
+        uv pip freeze --python /venv/main/bin/python | { grep -v -E ' @ |^-e ' || true; } \
+            > "$main_constraints"
         /venv/main/bin/python -m pip --version >/dev/null 2>&1 || \
-            uv pip install --python /venv/main/bin/python pip
-
-        # After the mirror, so ipykernel adds only what the engine does not provide.
-        uv pip install --python /venv/main/bin/python ipykernel
+            uv pip install --python /venv/main/bin/python --constraint "$main_constraints" pip
+        uv pip install --python /venv/main/bin/python --constraint "$main_constraints" \
+            'ipykernel>=6.29'
+        rm -f "$main_constraints"
     else
         echo "WARNING: No system Python found, skipping /venv/main creation"
         rm -f /etc/vast_boot.d/37-sync-environment.sh

@@ -17,7 +17,10 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV TCLLIBPATH=/usr/lib/tcltk/default
-ENV PATH=/opt/instance-tools/bin:${PATH}
+# /opt/sys-venv/shim ahead of the engine's directories: at instance create the platform runs
+# `pip install jupyter ... ipython ...` with the first pip on PATH, and that must be
+# /opt/sys-venv's, not the engine's (L131).
+ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}
 WORKDIR /
 
 COPY --from=base_image_source /ROOT /

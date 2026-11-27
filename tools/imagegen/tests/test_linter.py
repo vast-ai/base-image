@@ -262,6 +262,31 @@ def test_mut_external_stage_order_reversed():
     assert "L004" in errs(mut, repo)
 
 
+def test_mut_L131_external_without_the_sys_venv_shim_on_path():
+    for name in ("vllm", "vllm-omni", "sglang", "ollama", "openwebui"):
+        repo, img = _real(name)
+        assert "L131" not in errs(img, repo), name
+        mut = replace(img, text=img.text.replace(":/opt/sys-venv/shim:", ":"))
+        assert mut.text != img.text and "L131" in errs(mut, repo), name
+    # behind the inherited PATH it protects nothing: the engine's pip is found first
+    repo, img = _real("vllm")
+    late = img.text.replace("/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}",
+                            "/opt/instance-tools/bin:${PATH}:/opt/sys-venv/shim")
+    assert late != img.text and "L131" in errs(replace(img, text=late), repo)
+    # a later assignment that drops the shim is the image's PATH; an earlier one is not
+    dropped = img.text + "\nENV PATH=/usr/local/bin:/usr/bin:/bin\n"
+    assert "L131" in errs(replace(img, text=dropped), repo)
+    assert "L131" not in errs(replace(img, text=img.text + "\nENV PATH=/x:${PATH}\n"), repo)
+    # set only in a stage the image is not built from
+    line = "ENV PATH=/opt/instance-tools/bin:/opt/sys-venv/shim:${PATH}\n"
+    elsewhere = "FROM scratch AS other\n" + line + img.text.replace(line, "")
+    assert line in img.text and "L131" in errs(replace(img, text=elsewhere), repo)
+    # a stage built FROM this one keeps its PATH, with or without a FROM flag
+    for flag in ("", "--platform=$TARGETPLATFORM "):
+        child = img.text + f"\nFROM {flag}vllm_build AS final\n"
+        assert "L131" not in errs(replace(img, text=child), repo), flag
+
+
 def test_mut_L116_external_pip_break_removed():
     repo, img = _real("vllm")
     assert "L116" not in errs(img, repo)
@@ -582,7 +607,7 @@ _GATED_FLOOR = frozenset({
     "L005", "L053", "L059", "L060", "L061", "L062", "L063", "L064", "L065", "L066",
     "L067", "L069", "L070", "L071", "L079", "L082", "L086", "L089", "L090", "L091",
     "L092", "L093", "L095", "L096", "L097", "L098", "L099", "L100", "L101", "L109",
-    "L110", "L111", "L113", "L114", "L120",
+    "L110", "L111", "L113", "L114", "L120", "L130", "L131",
 })
 
 
@@ -5885,3 +5910,100 @@ def test_L106_catches_tcp_and_udp_on_one_number(tmp_path, extra, fires):
     tpl.write_text(text.replace(anchor, extra + anchor, 1))
     codes = [f.code for f in L.check_no_port_mapped_for_both_protocols(work)]
     assert codes == (["L106"] if fires else []), codes
+
+
+# ---- L130: an install into the mirrored /venv/main is constrained ----
+#
+# Measured 2026-11-26 on the vllm-omni v0.34.0 build. The convert script's plain
+# `uv pip install ipykernel` resolved an ipython that requires psutil >= 7; the engine
+# ships 6.1.0, uv replaced the mirrored copy, and `venv-mirror verify` failed the build.
+
+_L130_REPO = find_repo_root(Path(__file__).resolve().parent)
+
+
+def _l130_tree(tmp_path, script=None, dockerfile=None):
+    (tmp_path / "tools").mkdir(parents=True, exist_ok=True)
+    if script is not None:
+        (tmp_path / "tools/convert-non-vast-image.sh").write_text(script)
+    if dockerfile is not None:
+        d = tmp_path / "external/engine"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "Dockerfile").write_text(dockerfile)
+    return tmp_path
+
+
+def test_mut_L130_the_real_convert_script_with_its_constraint_dropped_fires(tmp_path):
+    real = (_L130_REPO / "tools/convert-non-vast-image.sh").read_text()
+    assert not _codes(_l130_tree(tmp_path / "ok", script=real), "L130")
+    dropped = real.replace(' --constraint "$main_constraints"', "")
+    assert dropped != real
+    found = _codes(_l130_tree(tmp_path / "mut", script=dropped), "L130")
+    assert len(found) == 2 and any("ipykernel" in f.msg for f in found)
+
+
+def test_L130_reads_a_dockerfile_install_across_its_continuation_lines(tmp_path):
+    free = ("RUN uv pip freeze --python /venv/main/bin/python > /tmp/c.txt && \\\n"
+            "    uv pip install --python /venv/main/bin/python \\\n"
+            "        --no-cache-dir ray[default]\n")
+    assert _codes(_l130_tree(tmp_path / "free", dockerfile=free), "L130")
+    held = free.replace("--no-cache-dir", "--no-cache-dir --constraint /tmp/c.txt")
+    assert not _codes(_l130_tree(tmp_path / "held", dockerfile=held), "L130")
+
+
+def test_L130_leaves_other_environments_and_comments_alone(tmp_path):
+    other = ("# uv pip install --python /venv/main/bin/python anything\n"
+             "RUN uv pip install --python /opt/model-ui/venv/bin/python -r requirements.txt\n")
+    assert not _codes(_l130_tree(tmp_path, dockerfile=other, script=other), "L130")
+
+
+@pytest.mark.parametrize("line", [
+    # a later command's constraint is not this command's
+    "uv pip install --python /venv/main/bin/python ipykernel && "
+    "uv pip install --python /venv/main/bin/python --constraint /tmp/c.txt ray",
+    "uv pip install --python /venv/main/bin/python ipykernel; echo --constraint",
+    # nor is a comment's
+    "uv pip install --python /venv/main/bin/python ipykernel  # --constraint later",
+    # a quoted literal path is the same environment
+    'uv pip install --python "/venv/main/bin/python" ipykernel',
+    "uv pip install --python '/venv/main/bin/python' ipykernel",
+    "uv pip install --python=/venv/main/bin/python ipykernel",
+    "uv pip install -p /venv/main/bin/python ipykernel",
+    # a quoted `;` or `#` is part of a requirement, not the end of the command
+    """uv pip install 'ipykernel; python_version >= "3.9"' --python /venv/main/bin/python""",
+    "uv pip install 'ipykernel #egg' --python /venv/main/bin/python",
+    # a Dockerfile's exec form, and the words a shell allows before a command
+    'RUN ["uv", "pip", "install", "--python", "/venv/main/bin/python", "ipykernel"]',
+    "if true; then UV_NO_CACHE=1 uv pip install --python /venv/main/bin/python ipykernel; fi",
+    # a subshell, a command substitution, and a command used as a condition
+    "(uv pip install --python /venv/main/bin/python ipykernel)",
+    "out=$(uv pip install --python /venv/main/bin/python ipykernel)",
+    "if ! uv pip install --python /venv/main/bin/python ipykernel; then exit 1; fi",
+    "while uv pip install --python /venv/main/bin/python ipykernel; do :; done",
+    # the environment named another way: its directory, another path in it, a variable
+    "uv pip install --python /venv/main/bin/python3 ipykernel",
+    "uv pip install -p /venv/main ipykernel",
+    "VIRTUAL_ENV=/venv/main uv pip install ipykernel",
+    "UV_PYTHON=/venv/main/bin/python uv pip install ipykernel",
+    # a BuildKit flag between RUN and the command
+    "RUN --mount=type=cache,target=/root/.cache/uv uv pip install --python /venv/main/bin/python ipykernel",
+])
+def test_L130_reads_one_command_at_a_time_and_a_quoted_path(tmp_path, line):
+    found = _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
+    assert len(found) == 1 and "ipykernel" in found[0].msg
+
+
+@pytest.mark.parametrize("line", [
+    "uv pip install --python /venv/main/bin/python --constraint=/tmp/c.txt ipykernel",
+    "uv pip install -c /tmp/c.txt 'ipykernel; python_version >= \"3.9\"' -p /venv/main/bin/python",
+    "echo 'uv pip install --python /venv/main/bin/python ipykernel'",
+    "echo uv pip install --python /venv/main/bin/python ipykernel",
+    "uv pip install --python /venv/main/bin/python -c/tmp/c.txt ipykernel",
+    # --python names the environment even when VIRTUAL_ENV says otherwise
+    "VIRTUAL_ENV=/venv/main uv pip install --python /opt/model-ui/venv/bin/python x",
+    "VIRTUAL_ENV=/opt/sys-venv uv pip install x",
+    'RUN ["uv", "pip", "install", "--python", "/venv/main/bin/python", "-c", "/c.txt", "x"]',
+    'uv pip install --python "$VAST_ENGINE_PYTHON" ipykernel',
+])
+def test_L130_passes_a_constrained_install_and_what_is_not_an_install_there(tmp_path, line):
+    assert not _codes(_l130_tree(tmp_path, script=line + "\n"), "L130")
+
