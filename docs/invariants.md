@@ -2437,6 +2437,21 @@ endpoint's template env — never to the empty string, since
 `os.environ.get("MODEL_LOG", default)` returns `""` and not the default — then revert the
 `ENV` line and re-dispatch that engine's build.
 
+### The clean log carries no escape character, wherever the reads fall
+
+`/usr/local/bin/log-tee` keeps colour in `/var/log/portal/<name>.log` and removes every
+escape sequence, and any ESC left over, from `/var/log/<name>.log` and from stdout. It
+reads in pieces, and a piece can end inside a sequence or between `\r` and `\n`. The
+unfinished end of a piece is held for the next one (`CleanStream`); cleaning each piece
+alone lets both halves of a split sequence through. Where reads fall depends on timing,
+so a regression shows on some machines only.
+
+- What is guaranteed for every way of cutting the input: no ESC in the clean copy.
+- The text also equals cleaning the input whole, except for two ESC in a row, a would-be
+  sequence longer than the hold cap, and a sequence unfinished at the end of input.
+- `tools/imagegen/tests/test_log_tee.py` cuts at every pair of positions, and
+  `base/70-logging` checks the clean copy on a live instance.
+
 ### A dispatch narrows QA only through a validated output — **GATED (L099)**
 
 `set_filters` and `max_price` are the two qa-gate inputs that decide what hardware the

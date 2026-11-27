@@ -31,12 +31,69 @@ def _strip_cursor(text: str) -> str:
     return _CURSOR_RE.sub("", text)
 
 
+def _strip_escapes(text: str) -> str:
+    """Remove every escape sequence, then any ESC still left: one that begins something
+    this tool does not recognise as a sequence. The clean copy never carries ESC."""
+    return _ALL_CSI_RE.sub("", text).replace("\x1b", "")
+
+
 def _clean_for_stdout(text: str) -> str:
     """Strip all ANSI escapes, collapse \\r\\n -> \\n, convert lone \\r -> \\n."""
-    text = _ALL_CSI_RE.sub("", text)
+    text = _strip_escapes(text)
     text = text.replace("\r\n", "\n")
     text = text.replace("\r", "\n")
     return text
+
+
+# The start of an escape sequence that the next read may finish. Capped, so text that
+# merely looks like the start of one is not held for ever. The cap is far above any real
+# sequence: a 24-bit foreground and background in one code is 37 characters of
+# parameters.
+_UNFINISHED_ESCAPE_RE = re.compile(r"\x1b(?:\[\??[0-9;]{0,256})?\Z")
+
+
+class CleanStream:
+    """The clean copy of a stream that arrives in arbitrary pieces. However the input
+    is cut, the output carries no ESC, and it is the text _clean_for_stdout gives for
+    the whole input, except at three edges where there is no whole to agree with:
+    two ESC in a row (which one pairs with the next character depends on the cut), a
+    would-be sequence longer than the hold cap, and a sequence still unfinished when
+    the input ends, which is dropped.
+
+    A read can end anywhere, so no piece can be cleaned on its own. Two things wait
+    for the next piece, in the order the cleaning applies them:
+
+    1. an escape sequence cut short. Its two halves match nothing and, written one
+       after the other, are the sequence again;
+    2. a carriage return at the end of what is left once escapes are removed. Whether
+       it is a line ending of its own or half of \\r\\n depends on the next character,
+       which may arrive after an escape sequence that sat between them.
+    """
+
+    def __init__(self) -> None:
+        self._escape = ""
+        self._cr = False
+
+    def _lines(self, text: str, last: bool) -> str:
+        if self._cr:
+            text = "\r" + text
+        self._cr = not last and text.endswith("\r")
+        if self._cr:
+            text = text[:-1]
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    def feed(self, text: str) -> str:
+        text = self._escape + text
+        cut = _UNFINISHED_ESCAPE_RE.search(text)
+        cut = cut.start() if cut else len(text)
+        text, self._escape = text[:cut], text[cut:]
+        return self._lines(_strip_escapes(text), last=False)
+
+    def flush(self) -> str:
+        """The end of the input. An escape sequence still unfinished is dropped: it
+        is not text, and the clean copy carries no escape character."""
+        self._escape = ""
+        return self._lines("", last=True)
 
 
 def _derive_clean_path(portal_path: str) -> str | None:
@@ -114,9 +171,7 @@ def main() -> None:
     # Incremental UTF-8 decoder for multi-byte chars split across reads
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
-    # Buffer a trailing \r across reads so \r\n split across chunks
-    # doesn't produce a spurious extra newline on stdout/clean log.
-    pending_cr = False
+    clean = CleanStream()
 
     # Track bytes written for periodic rotation checks
     bytes_since_check = 0
@@ -137,20 +192,12 @@ def main() -> None:
             _write(portal_fd, text.encode("utf-8"))
 
         # Stdout + clean log: strip all ANSI, convert \r to \n
-        stdout_text = text
-        if pending_cr:
-            stdout_text = "\r" + stdout_text
-            pending_cr = False
-        if stdout_text.endswith("\r"):
-            stdout_text = stdout_text[:-1]
-            pending_cr = True
-        if stdout_text:
-            cleaned = _clean_for_stdout(stdout_text)
-            if cleaned:
-                encoded = cleaned.encode("utf-8")
-                _write(stdout_fd, encoded)
-                if clean_fd is not None:
-                    _write(clean_fd, encoded)
+        cleaned = clean.feed(text)
+        if cleaned:
+            encoded = cleaned.encode("utf-8")
+            _write(stdout_fd, encoded)
+            if clean_fd is not None:
+                _write(clean_fd, encoded)
 
         # Periodic rotation check
         bytes_since_check += len(data)
@@ -160,19 +207,16 @@ def main() -> None:
             if clean_fd is not None and clean_path is not None:
                 clean_fd = _rotate_fd(clean_fd, clean_path)
 
-    # Flush remaining bytes from decoder and any pending \r
+    # Flush what the decoder and the clean stream were still holding
     remaining = decoder.decode(b"", final=True)
     if remaining:
         _write(portal_fd, remaining.encode("utf-8"))
-    if pending_cr:
-        remaining = "\r" + remaining
-    if remaining:
-        cleaned = _clean_for_stdout(remaining)
-        if cleaned:
-            encoded = cleaned.encode("utf-8")
-            _write(stdout_fd, encoded)
-            if clean_fd is not None:
-                _write(clean_fd, encoded)
+    cleaned = clean.feed(remaining) + clean.flush()
+    if cleaned:
+        encoded = cleaned.encode("utf-8")
+        _write(stdout_fd, encoded)
+        if clean_fd is not None:
+            _write(clean_fd, encoded)
 
     os.close(portal_fd)
     if clean_fd is not None:

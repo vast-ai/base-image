@@ -57,6 +57,8 @@ on:
       # if they do not run on the PR that edits what they guard.
       - "ROOT/opt/instance-tools/bin/**"
       - "ROOT/etc/vast_boot.d/**"
+      # log-tee is run by test_log_tee.py.
+      - "ROOT/usr/local/bin/log-tee"
       # The desktop sessions' export_env.sh parsers read /etc/environment and are run
       # by test_prep_env_sh.py (ADR 0052).
       - "derivatives/**/ROOT*/opt/instance-tools/bin/**"
@@ -122,6 +124,8 @@ on:
       # if they do not run on the PR that edits what they guard.
       - "ROOT/opt/instance-tools/bin/**"
       - "ROOT/etc/vast_boot.d/**"
+      # log-tee is run by test_log_tee.py.
+      - "ROOT/usr/local/bin/log-tee"
       # The desktop sessions' export_env.sh parsers read /etc/environment and are run
       # by test_prep_env_sh.py (ADR 0052).
       - "derivatives/**/ROOT*/opt/instance-tools/bin/**"
